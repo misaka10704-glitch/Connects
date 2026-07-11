@@ -1,0 +1,64 @@
+# Xcode / macOS
+.DS_Store
+*.swp
+*~.nib
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# Build / DerivedData
+build/
+DerivedData/
+*.xcresult
+*.app
+!Connects/Resources/**
+
+# CocoaPods / SPM (if added later)
+Pods/
+Carthage/Build/
+.swiftpm/
+Package.resolved
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Secrets / env / signing
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+secrets/
+api_secrets*
+*Credentials*
+GoogleService-Info.plist
+
+# Local /tmp signed apps & install artifacts
+/tmp/
+*.signed/
+Connects_signed*/
+*_payload/
+Payload/
+
+# Archives
+*.xcarchive
