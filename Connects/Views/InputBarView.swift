@@ -52,17 +52,24 @@ final class InputBarView: UIView, ThemeRefreshable {
         let c = DSTheme.c
         backgroundColor = c.background
         containerView.backgroundColor = c.inputBackground
-        containerView.layer.borderColor = c.border.cgColor
         textView.textColor = c.textPrimary
         textView.tintColor = c.accent
         placeholderLabel.textColor = c.textSecondary
         attachButton.tintColor = c.textSecondary
-        sendButton.backgroundColor = c.accent
-        sendButton.tintColor = .white
         stopButton.backgroundColor = c.textPrimary
         stopButton.tintColor = c.background
+        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: 12, color: .white), for: .normal)
         previewContainer.backgroundColor = c.surface
         removePreviewButton.setTitleColor(c.textSecondary, for: .normal)
+        updateFocusBorder()
+        updateSendEnabled()
+    }
+
+    private func updateFocusBorder() {
+        let c = DSTheme.c
+        let focused = textView.isFirstResponder
+        containerView.layer.borderWidth = focused ? 1.5 : 1 / UIScreen.main.scale
+        containerView.layer.borderColor = focused ? c.accent.withAlphaComponent(0.55).cgColor : c.inputBorder.cgColor
     }
 
     func clearText() {
@@ -70,6 +77,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         placeholderLabel.isHidden = false
         clearAttachment()
         updateTextViewHeight()
+        updateSendEnabled()
     }
 
     func setAttachment(image: UIImage, base64: String) {
@@ -77,6 +85,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         previewImageView.image = image
         previewContainer.isHidden = false
         previewHeightConstraint?.constant = 64
+        updateSendEnabled()
     }
 
     func clearAttachment() {
@@ -84,6 +93,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         previewImageView.image = nil
         previewContainer.isHidden = true
         previewHeightConstraint?.constant = 0
+        updateSendEnabled()
     }
 
     private func setup() {
@@ -138,8 +148,9 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(sendButton)
 
         stopButton.translatesAutoresizingMaskIntoConstraints = false
-        stopButton.setTitle("■", for: .normal)
-        stopButton.titleLabel?.font = UIFont.systemFont(ofSize: 10, weight: .bold)
+        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: 12, color: .white), for: .normal)
+        stopButton.tintColor = .white
+        stopButton.imageView?.contentMode = .scaleAspectFit
         stopButton.layer.cornerRadius = btnSize / 2
         stopButton.addTarget(self, action: #selector(stopTapped), for: .touchUpInside)
         stopButton.isHidden = true
@@ -201,6 +212,17 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.isHidden = !isStreaming
         textView.isEditable = !isStreaming
         attachButton.isEnabled = !isStreaming && attachEnabled
+        updateSendEnabled()
+    }
+
+    private func updateSendEnabled() {
+        let hasText = !(textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let on = (hasText || pendingImageBase64 != nil) && !isStreaming
+        sendButton.isEnabled = on
+        sendButton.alpha = on ? 1 : 0.45
+        let c = DSTheme.c
+        sendButton.backgroundColor = on ? c.sendEnabled : c.sendDisabled
+        sendButton.tintColor = .white
     }
 
     private func updateTextViewHeight() {
@@ -234,5 +256,14 @@ extension InputBarView: UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         placeholderLabel.isHidden = !textView.text.isEmpty
         updateTextViewHeight()
+        updateSendEnabled()
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+        updateFocusBorder()
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        updateFocusBorder()
     }
 }

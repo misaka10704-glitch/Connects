@@ -2,8 +2,10 @@ import UIKit
 
 /// ChatGPT-like template glyphs (drawn at screen scale — never stretch PNG points).
 enum ActionIconFactory {
+    private static let cache = NSCache<NSString, UIImage>()
+
     enum Kind {
-        case copy, retry, fork, send, plus
+        case copy, retry, fork, send, stop, plus
         case sidebar, sidebarOpen
         case more, share
         case archive, settings, search
@@ -18,6 +20,9 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = 18, color: UIColor = .black) -> UIImage {
+        let key = "\(kind)-\(Int(pointSize * 10))" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+
         let canvas = ceil(pointSize + 8)
         let size = CGSize(width: canvas, height: canvas)
         UIGraphicsBeginImageContextWithOptions(size, false, 0)
@@ -86,6 +91,10 @@ enum ActionIconFactory {
             path.addLine(to: CGPoint(x: r.midX + 4.5, y: r.minY + 7))
             path.lineWidth = 1.7
             path.stroke()
+
+        case .stop:
+            let sq = r.insetBy(dx: pointSize * 0.28, dy: pointSize * 0.28)
+            UIBezierPath(roundedRect: sq, cornerRadius: 1.5).fill()
 
         case .plus, .newChat:
             let path = UIBezierPath()
@@ -195,7 +204,8 @@ enum ActionIconFactory {
             handle.stroke()
         }
 
-        let img = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-        return img.withRenderingMode(.alwaysTemplate)
+        let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)
+        cache.setObject(img, forKey: key)
+        return img
     }
 }

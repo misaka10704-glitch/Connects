@@ -61,7 +61,8 @@ final class StreamManager {
                 object: nil,
                 userInfo: ["conversationID": conversationID]
             )
-            NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil)
+            // Sidebar / title refresh without a second full chat reload:
+            NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil, userInfo: ["source": "streamFinish"])
         }
     }
 
@@ -137,6 +138,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         APIClient.applyStreamRequestHeaders(&request)
 
+        // Caller (ChatVC) already ran ContextBuilder; only re-slim images as a safety net.
         let slim = APIClient.slimMessagesForAPI(messages)
         let payload = APIClient.chatPayload(messages: slim, model: model, stream: true)
         do {
@@ -147,7 +149,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         }
         #if DEBUG
         let bytes = request.httpBody?.count ?? 0
-        print("[Connects] Kimi/DS stream → \(url.absoluteString) body=\(bytes)B thinking=\(SettingsManager.shared.thinkingEnabled)")
+        print("[Connects] Kimi/DS stream → \(url.absoluteString) body=\(bytes)B thinking=\(model.thinkingActive)")
         #endif
         startedAt = Date()
         task = session.dataTask(with: request)
@@ -174,7 +176,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         }
         flushWork = work
         // Faster UI cadence for Instant mode
-        let delay = SettingsManager.shared.thinkingEnabled ? 0.08 : 0.03
+        let delay = model.thinkingActive ? 0.08 : 0.03
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -191,7 +193,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
                     "conversationID": self.conversationID,
                     "ms": ms,
                     "host": host,
-                    "thinking": SettingsManager.shared.thinkingEnabled
+                    "thinking": self.model.thinkingActive
                 ]
             )
         }

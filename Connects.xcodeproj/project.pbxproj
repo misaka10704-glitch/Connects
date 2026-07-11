@@ -29,6 +29,8 @@
 		A10000010000000000000019 /* AITitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* AITitleGenerator.swift */; };
 		A1000001000000000000001C /* ActionIconFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001C /* ActionIconFactory.swift */; };
 		A1000001000000000000001D /* ContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001D /* ContextBuilder.swift */; };
+		A1000001000000000000001E /* ContextCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001E /* ContextCompactor.swift */; };
+		A1000001000000000000001F /* ContextUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001F /* ContextUsageView.swift */; };
 		A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001A /* MarkdownHTMLRenderer.swift */; };
 		A1000001000000000000001B /* PlainMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* PlainMarkdown.swift */; };
 		A10000010000000000000030 /* katex in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* katex */; };
@@ -44,6 +46,7 @@
 		A10000010000000000000040 /* icon-copy.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000040 /* icon-copy.png */; };
 		A10000010000000000000041 /* icon-retry.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000041 /* icon-retry.png */; };
 		A10000010000000000000042 /* icon-fork.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000042 /* icon-fork.png */; };
+		A10000010000000000000052 /* LaunchScreen.storyboardc in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000052 /* LaunchScreen.storyboardc */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +73,8 @@
 		A20000010000000000000019 /* AITitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AITitleGenerator.swift; sourceTree = "<group>"; };
 		A2000001000000000000001C /* ActionIconFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionIconFactory.swift; sourceTree = "<group>"; };
 		A2000001000000000000001D /* ContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBuilder.swift; sourceTree = "<group>"; };
+		A2000001000000000000001E /* ContextCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCompactor.swift; sourceTree = "<group>"; };
+		A2000001000000000000001F /* ContextUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageView.swift; sourceTree = "<group>"; };
 		A2000001000000000000001A /* MarkdownHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownHTMLRenderer.swift; sourceTree = "<group>"; };
 		A2000001000000000000001B /* PlainMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainMarkdown.swift; sourceTree = "<group>"; };
 		A20000010000000000000017 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -85,6 +90,7 @@
 		A20000010000000000000030 /* katex */ = {isa = PBXFileReference; lastKnownFileType = folder; path = katex; sourceTree = "<group>"; };
 		A20000010000000000000031 /* markdown */ = {isa = PBXFileReference; lastKnownFileType = folder; path = markdown; sourceTree = "<group>"; };
 		A20000010000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000010000000000000052 /* LaunchScreen.storyboardc */ = {isa = PBXFileReference; lastKnownFileType = wrapper.storyboardc; path = LaunchScreen.storyboardc; sourceTree = "<group>"; };
 		A30000010000000000000001 /* Connects.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Connects.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -156,6 +162,7 @@
 				A20000010000000000000019 /* AITitleGenerator.swift */,
 				A2000001000000000000001C /* ActionIconFactory.swift */,
 				A2000001000000000000001D /* ContextBuilder.swift */,
+				A2000001000000000000001E /* ContextCompactor.swift */,
 				A2000001000000000000001A /* MarkdownHTMLRenderer.swift */,
 				A2000001000000000000001B /* PlainMarkdown.swift */,
 			);
@@ -177,6 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000001000000000000000D /* InputBarView.swift */,
+				A2000001000000000000001F /* ContextUsageView.swift */,
 				A2000001000000000000000E /* MessageCell.swift */,
 			);
 			path = Views;
@@ -204,6 +212,7 @@
 				A20000010000000000000042 /* icon-fork.png */,
 				A20000010000000000000030 /* katex */,
 				A20000010000000000000031 /* markdown */,
+				A20000010000000000000052 /* LaunchScreen.storyboardc */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -218,6 +227,7 @@
 				A70000010000000000000001 /* Sources */,
 				A40000010000000000000001 /* Frameworks */,
 				A70000010000000000000002 /* Resources */,
+				A70000010000000000000003 /* Copy LaunchScreen.storyboardc */,
 			);
 			buildRules = (
 			);
@@ -281,6 +291,25 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A70000010000000000000003 /* Copy LaunchScreen.storyboardc */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Connects/Resources/LaunchScreen.storyboardc",
+			);
+			name = "Copy LaunchScreen.storyboardc";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/LaunchScreen.storyboardc",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "SRC=\"${SRCROOT}/Connects/Resources/LaunchScreen.storyboardc\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/LaunchScreen.storyboardc\"\nrm -rf \"$DST\"\nditto --norsrc \"$SRC\" \"$DST\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A70000010000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -309,6 +338,8 @@
 				A10000010000000000000019 /* AITitleGenerator.swift in Sources */,
 				A1000001000000000000001C /* ActionIconFactory.swift in Sources */,
 				A1000001000000000000001D /* ContextBuilder.swift in Sources */,
+				A1000001000000000000001E /* ContextCompactor.swift in Sources */,
+				A1000001000000000000001F /* ContextUsageView.swift in Sources */,
 				A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */,
 				A1000001000000000000001B /* PlainMarkdown.swift in Sources */,
 			);

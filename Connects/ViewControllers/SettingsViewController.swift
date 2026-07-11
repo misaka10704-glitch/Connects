@@ -154,7 +154,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(makeCard(embedding: deepseekField, height: 44, inset: 0))
         contentStack.setCustomSpacing(22, after: contentStack.arrangedSubviews.last!)
 
-        contentStack.addArrangedSubview(makeSectionTitle("Kimi K2.6"))
+        contentStack.addArrangedSubview(makeSectionTitle("Kimi"))
         configureField(kimiField)
         kimiField.text = SettingsManager.shared.kimiAPIKey
         contentStack.addArrangedSubview(makeCard(embedding: kimiField, height: 44, inset: 0))
@@ -176,11 +176,26 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
 
+        contentStack.addArrangedSubview(makeSectionTitle("网课侧拉（Slide Over）"))
+        let slideTip = UILabel()
+        slideTip.numberOfLines = 0
+        slideTip.font = DSTheme.bodyFont(size: 13)
+        slideTip.text = """
+        全屏上网课时可把 Connects 侧拉到屏幕一侧一起用：
+        ① 打开网课后，从屏幕底部上滑露出 Dock
+        ② 长按 Connects 图标，拖到屏幕右侧松手（进入侧拉）
+        ③ 侧拉窗口里点左上角打开对话列表，或从左边缘向右滑
+        ④ 再点一下侧拉把手可收起，网课继续全屏看
+        """
+        footerLabels.append(slideTip)
+        contentStack.addArrangedSubview(slideTip)
+        contentStack.setCustomSpacing(22, after: slideTip)
+
         contentStack.addArrangedSubview(makeSectionTitle("关于"))
         let about = UILabel()
         about.numberOfLines = 0
         about.font = DSTheme.bodyFont(size: 14)
-        about.text = "Connects · iPad · iOS 12+"
+        about.text = "Connects · iPad · iOS 12+ · 支持 Slide Over 侧拉"
         footerLabels.append(about)
         contentStack.addArrangedSubview(about)
     }

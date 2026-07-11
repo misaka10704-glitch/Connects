@@ -82,6 +82,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     override func prepareForReuse() {
         super.prepareForReuse()
         messageID = ""
+        // Keep lastHTMLKey cleared so a recycled cell always reloads content.
         lastHTMLKey = nil
         usesWeb = false
         userLabel.text = nil
@@ -92,11 +93,19 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         imageViewMsg.image = nil
         imageViewMsg.isHidden = true
         imageHeight.constant = 0
-        hideWeb()
         showActions(false)
         setThinking(visible: false, expanded: false)
         userBubble.isHidden = true
         assistantLabel.isHidden = true
+        cachedImage = nil
+        // Do NOT destroy WKWebView — recreating it on iOS 12 is the main switch lag.
+        hideWeb()
+    }
+
+    private var cachedImage: UIImage?
+
+    func setCachedImage(_ image: UIImage?) {
+        cachedImage = image
     }
 
     func configure(with message: ChatMessage, preferredHeight: CGFloat?) {
@@ -104,24 +113,26 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
-        roleLabel.textColor = c.textTertiary
-        roleLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
 
-        if let b64 = message.imageJPEGBase64, let img = ImageAttachmentHelper.image(from: b64) {
-            imageViewMsg.image = img
-            imageViewMsg.isHidden = false
-            imageHeight.constant = 160
+        // ChatGPT-like: no per-turn role chrome — alignment + bubble carry identity
+        roleLabel.isHidden = true
+        roleLabel.text = nil
+
+        if message.hasImage {
+            imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
+            imageViewMsg.isHidden = imageViewMsg.image == nil
+            imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
         } else {
             imageViewMsg.image = nil
             imageViewMsg.isHidden = true
             imageHeight.constant = 0
+            cachedImage = nil
         }
 
         if message.role == .user {
-            roleLabel.text = "你"
-            roleLabel.textAlignment = .right
             userBubble.isHidden = false
             userBubble.backgroundColor = c.userBubble
+            userBubble.layer.cornerRadius = DSTheme.bubbleCornerRadius
             assistantLabel.isHidden = true
             hideWeb()
             setThinking(visible: false, expanded: false)
@@ -141,13 +152,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
 
         // Assistant
-        roleLabel.text = "Connects"
-        roleLabel.textAlignment = .left
         userBubble.isHidden = true
         userTopToRole.isActive = false
         userTopToImage.isActive = false
         userBubbleBottom.isActive = false
-        labelBottom.isActive = true
 
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         hasThinking = !think.isEmpty
@@ -160,12 +168,12 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             }
             setThinking(visible: true, expanded: thinkingExpanded)
             let title = message.isStreaming && message.content.isEmpty
-                ? (thinkingExpanded ? "▾  思考中" : "▸  思考中")
+                ? (thinkingExpanded ? "▾  思考中…" : "▸  思考中…")
                 : (thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考")
             thinkingHeader.setTitle(title, for: .normal)
             thinkingHeader.setTitleColor(c.textSecondary, for: .normal)
-            thinkingBox.backgroundColor = c.surface
-            thinkingBox.layer.borderColor = c.border.cgColor
+            thinkingBox.backgroundColor = c.surface.withAlphaComponent(0.65)
+            thinkingBox.layer.borderWidth = 0
             if thinkingExpanded {
                 if message.isStreaming {
                     thinkingBody.attributedText = nil
@@ -190,6 +198,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         styleActionIcons(c)
 
         let hasImage = !imageViewMsg.isHidden
+        let needsWeb = Self.needsRichRenderer(message.content)
 
         if message.isStreaming || message.content.isEmpty {
             hideWeb()
@@ -210,17 +219,34 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 assistantLabel.attributedText = nil
                 assistantLabel.text = nil
             }
-        } else {
-            assistantLabel.isHidden = true
-            labelBottom.isActive = false
+        } else if needsWeb {
+            let key = "\(message.id)|\(message.content.count)|\(Int(font))"
+            let reuseHTML = (lastHTMLKey == key) && webView != nil
+            if !reuseHTML {
+                assistantLabel.isHidden = false
+                labelBottom.isActive = true
+                assistantLabel.attributedText = PlainMarkdown.attributed(
+                    message.content,
+                    bodyFont: UIFont.systemFont(ofSize: font),
+                    textColor: c.textPrimary,
+                    secondaryColor: c.textSecondary,
+                    cacheKey: key
+                )
+            } else {
+                assistantLabel.isHidden = true
+                labelBottom.isActive = false
+            }
             ensureWeb()
             usesWeb = true
             webView?.isHidden = false
             webBottom?.isActive = true
             setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: true)
-            if let h = preferredHeight, h > 40 { webHeight?.constant = h }
-            let key = "\(message.id)|\(message.content.count)|\(Int(font))"
-            if lastHTMLKey != key {
+            if let h = preferredHeight, h > 40 {
+                webHeight?.constant = h
+                assistantLabel.isHidden = true
+                labelBottom.isActive = false
+            }
+            if !reuseHTML {
                 lastHTMLKey = key
                 let html = MarkdownHTMLRenderer.fullHTML(
                     content: message.content,
@@ -231,7 +257,27 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 )
                 loadHTML(html, id: message.id)
             }
+        } else {
+            hideWeb()
+            assistantLabel.isHidden = false
+            labelBottom.isActive = true
+            setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: false)
+            let key = "\(message.id)|\(message.content.count)|\(Int(font))"
+            assistantLabel.attributedText = PlainMarkdown.attributed(
+                message.content,
+                bodyFont: UIFont.systemFont(ofSize: font),
+                textColor: c.textPrimary,
+                secondaryColor: c.textSecondary,
+                cacheKey: key
+            )
         }
+    }
+
+    private static func needsRichRenderer(_ content: String) -> Bool {
+        if MathContentDetector.containsMath(content) { return true }
+        if content.contains("```") { return true }
+        if content.contains("\n|") || content.contains("|---") || content.contains("| ---") { return true }
+        return false
     }
 
     override func layoutSubviews() {
@@ -328,6 +374,33 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         webHeight?.constant = 0
     }
 
+    private func destroyWeb() {
+        hideWeb()
+        guard let wv = webView else { return }
+        wv.configuration.userContentController.removeScriptMessageHandler(forName: "height")
+        wv.navigationDelegate = nil
+        wv.removeFromSuperview()
+        webView = nil
+        webHeight = nil
+        webBottom = nil
+        webTopToRole = nil
+        webTopToImage = nil
+        webTopToThink = nil
+        lastHTMLKey = nil
+    }
+
+    @objc private func toggleThink() {
+        guard hasThinking else { return }
+        thinkingExpanded.toggle()
+        if thinkingExpanded { MessageCell.expandedThinkingIDs.insert(messageID) }
+        else { MessageCell.expandedThinkingIDs.remove(messageID) }
+        NotificationCenter.default.post(
+            name: Notification.Name("ConnectsThinkingToggle"),
+            object: nil,
+            userInfo: ["messageID": messageID]
+        )
+    }
+
     private func ensureWeb() {
         if webView != nil { return }
         let config = WKWebViewConfiguration()
@@ -368,14 +441,6 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         wv.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
     }
 
-    @objc private func toggleThink() {
-        guard hasThinking else { return }
-        thinkingExpanded.toggle()
-        if thinkingExpanded { MessageCell.expandedThinkingIDs.insert(messageID) }
-        else { MessageCell.expandedThinkingIDs.remove(messageID) }
-        NotificationCenter.default.post(name: Notification.Name("ConnectsThinkingToggle"), object: nil)
-    }
-
     @objc private func copyTapped() { cellDelegate?.messageCellDidTapCopy(self, messageID: messageID) }
     @objc private func retryTapped() { cellDelegate?.messageCellDidTapRetry(self, messageID: messageID) }
     @objc private func forkTapped() { cellDelegate?.messageCellDidTapFork(self, messageID: messageID) }
@@ -388,6 +453,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             guard let self = self, self.usesWeb else { return }
             if abs((self.webHeight?.constant ?? 0) - height) < 2 { return }
             self.webHeight?.constant = height
+            self.assistantLabel.isHidden = true
+            self.labelBottom.isActive = false
             self.cellDelegate?.messageCell(self, didUpdateHeight: height, for: self.messageID)
         }
     }
@@ -424,7 +491,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
         thinkingBox.translatesAutoresizingMaskIntoConstraints = false
         thinkingBox.layer.cornerRadius = 10
-        thinkingBox.layer.borderWidth = 1
+        thinkingBox.layer.borderWidth = 0
         thinkingBox.isHidden = true
         column.addSubview(thinkingBox)
 
@@ -506,6 +573,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             roleLabel.topAnchor.constraint(equalTo: column.topAnchor),
             roleLabel.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             roleLabel.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            roleLabel.heightAnchor.constraint(equalToConstant: 0),
 
             imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8),
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),

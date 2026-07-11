@@ -109,6 +109,7 @@ final class APIClient: NSObject {
 
     func complete(messages: [ChatMessage],
                   model: AIModelOption,
+                  maxTokens: Int = 32,
                   completion: @escaping (Result<String, Error>) -> Void) {
         let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
         guard !apiKey.isEmpty else {
@@ -123,8 +124,8 @@ final class APIClient: NSObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        // Title generation: always Instant + no reasoning history.
-        var payload = Self.chatPayload(messages: messages, model: model, stream: false, maxTokens: 32)
+        // Title / compaction helpers: always Instant + no reasoning history.
+        var payload = Self.chatPayload(messages: messages, model: model, stream: false, maxTokens: maxTokens)
         if model.supportsThinkingToggle {
             payload["thinking"] = ["type": "disabled"]
         }
@@ -181,7 +182,7 @@ final class APIClient: NSObject {
 
     /// Build chat/completions JSON body shared by stream + complete.
     static func chatPayload(messages: [ChatMessage], model: AIModelOption, stream: Bool, maxTokens: Int? = nil) -> [String: Any] {
-        let thinkingOn = model.supportsThinkingToggle && SettingsManager.shared.thinkingEnabled
+        let thinkingOn = model.thinkingActive
         // Default chat cap — Kimi's 32k default makes long runs feel endless; does not delay TTFT much
         // but keeps Instant replies bounded.
         let tokenCap = maxTokens ?? 8192
@@ -191,6 +192,7 @@ final class APIClient: NSObject {
             "stream": stream,
             "max_tokens": tokenCap
         ]
+        // K2.7 Code rejects thinking:disabled; omit or send enabled only when toggleable.
         if model.supportsThinkingToggle {
             payload["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
         }

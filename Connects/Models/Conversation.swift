@@ -10,6 +10,10 @@ struct Conversation: Codable, Equatable {
     var forkedFromID: String?
     /// true = user renamed; skip AI auto-title
     var titleLocked: Bool
+    /// Compact notes for turns that fell out of the API verbatim window.
+    var contextSummary: String?
+    /// Last original message id covered by `contextSummary`.
+    var contextSummaryThroughMessageID: String?
 
     init(id: String = UUID().uuidString,
          title: String = "新对话",
@@ -18,7 +22,9 @@ struct Conversation: Codable, Equatable {
          updatedAt: Date = Date(),
          isArchived: Bool = false,
          forkedFromID: String? = nil,
-         titleLocked: Bool = false) {
+         titleLocked: Bool = false,
+         contextSummary: String? = nil,
+         contextSummaryThroughMessageID: String? = nil) {
         self.id = id
         self.title = title
         self.model = model
@@ -27,10 +33,13 @@ struct Conversation: Codable, Equatable {
         self.isArchived = isArchived
         self.forkedFromID = forkedFromID
         self.titleLocked = titleLocked
+        self.contextSummary = contextSummary
+        self.contextSummaryThroughMessageID = contextSummaryThroughMessageID
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, messages, updatedAt, isArchived, forkedFromID, titleLocked
+        case contextSummary, contextSummaryThroughMessageID
         case provider, modelId
     }
 
@@ -43,6 +52,8 @@ struct Conversation: Codable, Equatable {
         isArchived = try container.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         forkedFromID = try container.decodeIfPresent(String.self, forKey: .forkedFromID)
         titleLocked = try container.decodeIfPresent(Bool.self, forKey: .titleLocked) ?? false
+        contextSummary = try container.decodeIfPresent(String.self, forKey: .contextSummary)
+        contextSummaryThroughMessageID = try container.decodeIfPresent(String.self, forKey: .contextSummaryThroughMessageID)
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
         model = AIModelOption.all.first { $0.provider == provider && $0.modelId == modelId } ?? .deepseekV4Pro
@@ -57,6 +68,8 @@ struct Conversation: Codable, Equatable {
         try container.encode(isArchived, forKey: .isArchived)
         try container.encodeIfPresent(forkedFromID, forKey: .forkedFromID)
         try container.encode(titleLocked, forKey: .titleLocked)
+        try container.encodeIfPresent(contextSummary, forKey: .contextSummary)
+        try container.encodeIfPresent(contextSummaryThroughMessageID, forKey: .contextSummaryThroughMessageID)
         try container.encode(model.provider, forKey: .provider)
         try container.encode(model.modelId, forKey: .modelId)
     }

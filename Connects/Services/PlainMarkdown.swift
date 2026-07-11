@@ -2,10 +2,30 @@ import UIKit
 
 /// Lightweight markdown → attributed string (no WKWebView). Safe on iOS 12 / low RAM.
 enum PlainMarkdown {
+    private static let cache = NSCache<NSString, NSAttributedString>()
+
     static func attributed(_ raw: String,
                            bodyFont: UIFont,
                            textColor: UIColor,
-                           secondaryColor: UIColor) -> NSAttributedString {
+                           secondaryColor: UIColor,
+                           cacheKey: String? = nil) -> NSAttributedString {
+        if let key = cacheKey as NSString? {
+            if let hit = cache.object(forKey: key) { return hit }
+            let built = build(raw, bodyFont: bodyFont, textColor: textColor, secondaryColor: secondaryColor)
+            cache.setObject(built, forKey: key)
+            return built
+        }
+        return build(raw, bodyFont: bodyFont, textColor: textColor, secondaryColor: secondaryColor)
+    }
+
+    static func clearCache() {
+        cache.removeAllObjects()
+    }
+
+    private static func build(_ raw: String,
+                              bodyFont: UIFont,
+                              textColor: UIColor,
+                              secondaryColor: UIColor) -> NSAttributedString {
         let out = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
@@ -14,11 +34,7 @@ enum PlainMarkdown {
         let boldFont = UIFont.systemFont(ofSize: bodyFont.pointSize, weight: .semibold)
         let mono = UIFont(name: "Menlo", size: bodyFont.pointSize * 0.92) ?? bodyFont
 
-        // Show thinking block prefix if present is handled by caller.
-        var text = raw
-        // Strip fenced code markers lightly; keep content
-        text = text.replacingOccurrences(of: "```", with: "")
-
+        var text = raw.replacingOccurrences(of: "```", with: "")
         let paragraphs = text.components(separatedBy: "\n")
         for (idx, line) in paragraphs.enumerated() {
             if idx > 0 {

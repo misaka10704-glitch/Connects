@@ -48,8 +48,13 @@ final class ConversationStore {
     }
 
     func selectConversation(id: String) {
+        guard currentConversationID != id else { return }
         currentConversationID = id
-        notify()
+        notify(userInfo: ["source": "select"])
+    }
+
+    private func notify(userInfo: [AnyHashable: Any]? = nil) {
+        NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil, userInfo: userInfo)
     }
 
     @discardableResult
@@ -128,8 +133,16 @@ final class ConversationStore {
                 )
             },
             forkedFromID: source.id,
-            titleLocked: false
+            titleLocked: false,
+            contextSummary: source.contextSummary,
+            contextSummaryThroughMessageID: source.contextSummaryThroughMessageID
         )
+        // If forked mid-thread, drop summary unless the covered message is still present.
+        if let tid = copy.contextSummaryThroughMessageID,
+           !copy.messages.contains(where: { $0.id == tid }) {
+            copy.contextSummary = nil
+            copy.contextSummaryThroughMessageID = nil
+        }
         copy.titleLocked = false
         conversations.insert(copy, at: 0)
         currentConversationID = copy.id
@@ -190,6 +203,16 @@ final class ConversationStore {
         scheduleSave()
     }
 
+    func updateConversation(id: String, _ mutate: (inout Conversation) -> Void) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        var conv = conversations[index]
+        mutate(&conv)
+        conv.updatedAt = Date()
+        conversations[index] = conv
+        scheduleSave()
+        notify()
+    }
+
     func setModel(_ model: AIModelOption, for conversationID: String) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[index].model = model
@@ -230,7 +253,7 @@ final class ConversationStore {
         conversations[index] = conv
         persistMarkdown(conv)
         save()
-        notify()
+        // Do not notify here — StreamManager posts streamManagerDidFinish once to avoid triple reloadData.
     }
 
     private func mutateCurrent(_ mutate: (inout Conversation) -> Void) {
@@ -246,21 +269,14 @@ final class ConversationStore {
         _ = MarkdownExporter.write(conversation)
     }
 
-    private func notify() {
-        NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil)
-    }
-
+    /// Persist JSON only while streaming (no MD rewrite every token).
     private func scheduleSave() {
         saveWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            if let cur = self.currentConversation {
-                self.persistMarkdown(cur)
-            }
-            self.save()
+            self?.save()
         }
         saveWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     private func load() {
@@ -273,12 +289,11 @@ final class ConversationStore {
         conversations = decoded
         currentConversationID = UserDefaults.standard.string(forKey: storageKey + "_current")
             ?? UserDefaults.standard.string(forKey: legacyKey + "_current")
-        for conv in conversations {
-            persistMarkdown(conv)
-        }
+        // Lazy: do not rewrite every markdown file on launch (was O(n) disk thrash).
     }
 
     private func save() {
+        // Encode off hot path would be better; keep main for iOS-12 simplicity but avoid during 30Hz UI.
         if let data = try? JSONEncoder().encode(conversations) {
             UserDefaults.standard.set(data, forKey: storageKey)
         }

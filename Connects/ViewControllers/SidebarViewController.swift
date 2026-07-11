@@ -34,13 +34,14 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         setupLayout()
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(storeChanged), name: .conversationStoreDidUpdate, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(storeChanged), name: .streamManagerDidUpdate, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(storeChanged), name: .streamManagerDidFinish, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidFinish, object: nil)
         applyTheme()
         reloadData()
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func streamFinishedSidebar() { reloadData() }
 
     func applyTheme() {
         let c = DSTheme.c
