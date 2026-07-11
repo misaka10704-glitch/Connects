@@ -9,6 +9,7 @@ enum ActionIconFactory {
         case sidebar, sidebarOpen
         case more, share
         case archive, settings, search
+        case globe
         case newChat
     }
 
@@ -202,6 +203,25 @@ enum ActionIconFactory {
             handle.addLine(to: CGPoint(x: r.maxX - 2.5, y: r.maxY - 2.5))
             handle.lineWidth = 1.7
             handle.stroke()
+
+        case .globe:
+            let oval = UIBezierPath(ovalIn: r.insetBy(dx: 1.5, dy: 1.5))
+            oval.lineWidth = 1.55
+            oval.stroke()
+            let midV = UIBezierPath()
+            midV.move(to: CGPoint(x: r.midX, y: r.minY + 1.5))
+            midV.addLine(to: CGPoint(x: r.midX, y: r.maxY - 1.5))
+            midV.lineWidth = 1.2
+            midV.stroke()
+            let eq = UIBezierPath()
+            eq.move(to: CGPoint(x: r.minX + 1.5, y: r.midY))
+            eq.addLine(to: CGPoint(x: r.maxX - 1.5, y: r.midY))
+            eq.lineWidth = 1.2
+            eq.stroke()
+            let lat = UIBezierPath(ovalIn: CGRect(x: r.midX - pointSize * 0.18, y: r.minY + 1.5,
+                                                  width: pointSize * 0.36, height: pointSize - 3))
+            lat.lineWidth = 1.15
+            lat.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)

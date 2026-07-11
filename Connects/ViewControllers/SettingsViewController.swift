@@ -171,7 +171,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let tip = UILabel()
         tip.numberOfLines = 0
         tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串。DeepSeek 与 Kimi 的 Key 不能混用。Kimi 很慢时：①确认深度思考已关 ②切换国内/海外节点试一次（Key 要与平台匹配：.cn Key 配 .cn）③新开对话（旧会话里的长思考记录会拖慢 Instant）。首包超过约 4 秒时顶栏会显示耗时与主机名。"
+        tip.text = "Key 存在本机钥匙串。DeepSeek 与 Kimi 的 Key 不能混用。Kimi 很慢时：①确认深度思考已关 ②切换国内/海外节点试一次（Key 要与平台匹配：.cn Key 配 .cn）③新开对话（旧会话里的长思考记录会拖慢 Instant）。首包超过约 4 秒时顶栏会显示耗时与主机名。\n\n输入栏地球图标可开「联网」：发送前先检索网页摘要再回答，适合时效/事实题；默认关闭以保速度。"
         footerLabels.append(tip)
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
@@ -195,7 +195,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let about = UILabel()
         about.numberOfLines = 0
         about.font = DSTheme.bodyFont(size: 14)
-        about.text = "Connects · iPad · iOS 12+ · 支持 Slide Over 侧拉"
+        about.text = "Connects · iPad · iOS 12+ · 支持 Slide Over 侧拉 · 可选联网搜索"
         footerLabels.append(about)
         contentStack.addArrangedSubview(about)
     }

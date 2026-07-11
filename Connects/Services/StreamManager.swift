@@ -209,7 +209,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         guard !r.isEmpty || !c.isEmpty else { return }
 
         let id = conversationID
-        DispatchQueue.main.async {
+        let commit = {
             ConversationStore.shared.appendStreamTokens(
                 conversationID: id,
                 reasoning: r,
@@ -220,6 +220,17 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
                 object: nil,
                 userInfo: ["conversationID": id]
             )
+        }
+        /*
+         * finishLocally runs on the main queue. Dispatching its final buffer
+         * asynchronously used to mark the message non-streaming first, so
+         * ConversationStore correctly rejected that final append. The visible
+         * reply then ended mid-sentence / mid-table row.
+         */
+        if Thread.isMainThread {
+            commit()
+        } else {
+            DispatchQueue.main.async(execute: commit)
         }
     }
 

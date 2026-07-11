@@ -33,6 +33,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var pendingHeights: [String: CGFloat] = [:]
     private var ignoreStoreReloadUntil: TimeInterval = 0
     private var chromeWork: DispatchWorkItem?
+    /// Conversation currently waiting on web search before stream starts.
+    private var webSearchPendingID: String?
+    /// Rounded chat width — heights are invalid across rotation / Slide Over.
+    private var layoutWidthBucket: Int = 0
+    private var widthInvalidateWork: DispatchWorkItem?
     private static let imageCache = NSCache<NSString, UIImage>()
     private static let attrCache = NSCache<NSString, NSAttributedString>()
 
@@ -42,6 +47,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private var isCurrentStreaming: Bool {
         guard let id = currentConversationID else { return false }
+        if webSearchPendingID == id { return true }
         return StreamManager.shared.isRunning(id)
     }
 
@@ -60,12 +66,114 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextUsageChanged(_:)), name: .contextUsageDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextCompactionFinished(_:)), name: .contextCompactionDidFinish, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(chatWidthDidChange(_:)), name: .connectsChatWidthDidChange, object: nil)
+        migrateRenderSchemaIfNeeded()
         registerKeyboard()
         applyTheme()
         reloadChat()
+        layoutWidthBucket = widthBucket(for: view.bounds.width)
+        if didMigrateRenderSchema {
+            didMigrateRenderSchema = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.remeasureVisibleRichCells()
+            }
+        }
+    }
+
+    /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
+    private static let renderSchemaKey = "connects_render_schema"
+    // v16 measures every Markdown block rather than WebKit's viewport-sized
+    // container. Re-measure rows cached by earlier rich-renderer versions.
+    private static let renderSchemaVersion = 16
+    private var didMigrateRenderSchema = false
+
+    private func migrateRenderSchemaIfNeeded() {
+        let ud = UserDefaults.standard
+        let v = ud.integer(forKey: Self.renderSchemaKey)
+        guard v < Self.renderSchemaVersion else { return }
+        contentHeights.removeAll()
+        heightCacheByConversation.removeAll()
+        pendingHeights.removeAll()
+        PlainMarkdown.clearCache()
+        ChatViewController.attrCache.removeAllObjects()
+        ud.set(Self.renderSchemaVersion, forKey: Self.renderSchemaKey)
+        didMigrateRenderSchema = true
+    }
+
+    private func remeasureVisibleRichCells() {
+        for case let cell as MessageCell in tableView.visibleCells {
+            cell.remeasureAfterWidthChange()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.flushPendingHeights(force: true)
+        }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let bucket = widthBucket(for: tableView.bounds.width)
+        guard bucket > 0 else { return }
+        if layoutWidthBucket == 0 {
+            layoutWidthBucket = bucket
+            return
+        }
+        if bucket != layoutWidthBucket {
+            layoutWidthBucket = bucket
+            scheduleInvalidateHeightsForWidthChange()
+        }
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self = self else { return }
+            self.layoutWidthBucket = self.widthBucket(for: self.tableView.bounds.width)
+            self.invalidateHeightsForWidthChange(immediate: true)
+        }
+    }
+
+    @objc private func chatWidthDidChange(_ note: Notification) {
+        // Slide Over / split from root — table width may lag one layout pass.
+        scheduleInvalidateHeightsForWidthChange()
+    }
+
+    private func widthBucket(for width: CGFloat) -> Int {
+        guard width > 1 else { return 0 }
+        // 4pt buckets absorb sub-pixel noise but catch Slide Over / rotation.
+        return Int((width / 4).rounded()) * 4
+    }
+
+    private func scheduleInvalidateHeightsForWidthChange() {
+        widthInvalidateWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.invalidateHeightsForWidthChange(immediate: true)
+        }
+        widthInvalidateWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// Drop cached web heights and remasure visible cells after width reflow.
+    private func invalidateHeightsForWidthChange(immediate: Bool) {
+        contentHeights.removeAll()
+        pendingHeights.removeAll()
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = [:]
+        }
+        for case let cell as MessageCell in tableView.visibleCells {
+            cell.remeasureAfterWidthChange()
+        }
+        let apply: () -> Void = { [weak self] in
+            self?.flushPendingHeights(force: true)
+        }
+        if immediate {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: apply)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: apply)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: apply)
+        }
+    }
 
     func applyTheme() {
         let c = DSTheme.c
@@ -716,12 +824,59 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         syncStreamingChrome()
 
         let model = ConversationStore.shared.currentConversation?.model ?? conv.model
-        StreamManager.shared.start(
-            conversationID: convID,
-            messages: apiContext(for: model),
-            model: model,
-            needsAITitle: needsAITitle
-        )
+        let userText = ConversationStore.shared.currentConversation?.messages[userIndex].content ?? ""
+        let searchOn = SettingsManager.shared.webSearchEnabled
+            && !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && userText != "[图片]"
+
+        if searchOn {
+            ConversationStore.shared.updateConversation(id: convID) { c in
+                guard var last = c.messages.last, last.isStreaming else { return }
+                last.content = "正在联网搜索…"
+                c.messages[c.messages.count - 1] = last
+            }
+            tableView.reloadData()
+            webSearchPendingID = convID
+            syncStreamingChrome()
+            navigationItem.prompt = "正在联网搜索…"
+            WebSearchService.searchAndFormat(query: userText) { [weak self] result in
+                guard let self = self else { return }
+                guard self.webSearchPendingID == convID else { return }
+                self.webSearchPendingID = nil
+                if self.navigationItem.prompt == "正在联网搜索…" {
+                    self.navigationItem.prompt = nil
+                }
+                ConversationStore.shared.updateConversation(id: convID) { c in
+                    guard var last = c.messages.last, last.isStreaming else { return }
+                    last.content = ""
+                    c.messages[c.messages.count - 1] = last
+                }
+                var msgs = self.apiContext(for: model)
+                switch result {
+                case .success(let block):
+                    msgs = WebSearchService.inject(into: msgs, searchBlock: block)
+                case .failure(let err):
+                    msgs = WebSearchService.inject(
+                        into: msgs,
+                        searchBlock: "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
+                    )
+                }
+                StreamManager.shared.start(
+                    conversationID: convID,
+                    messages: msgs,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
+                self.syncStreamingChrome()
+            }
+        } else {
+            StreamManager.shared.start(
+                conversationID: convID,
+                messages: apiContext(for: model),
+                model: model,
+                needsAITitle: needsAITitle
+            )
+        }
     }
 
     private func presentRename(_ id: String, current: String) {
@@ -852,7 +1007,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let displayText = text.isEmpty && imageBase64 != nil ? "[图片]" : text
         let userMsg = ChatMessage(role: .user, content: displayText, imageJPEGBase64: imageBase64)
-        let assistantMsg = ChatMessage(role: .assistant, content: "", reasoningContent: "", isStreaming: true)
+        let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
+        let assistantMsg = ChatMessage(
+            role: .assistant,
+            content: searchOn ? "正在联网搜索…" : "",
+            reasoningContent: "",
+            isStreaming: true
+        )
         let convID = conv.id
         let model = conv.model
 
@@ -869,15 +1030,50 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         tableView.reloadData()
         scrollToBottom(animated: true)
         stickToBottom = true
-        syncStreamingChrome()
         refreshContextUsage()
 
-        StreamManager.shared.start(
-            conversationID: convID,
-            messages: apiContext(for: model),
-            model: model,
-            needsAITitle: needsAITitle
-        )
+        if searchOn {
+            webSearchPendingID = convID
+            syncStreamingChrome()
+            navigationItem.prompt = "正在联网搜索…"
+            WebSearchService.searchAndFormat(query: displayText) { [weak self] result in
+                guard let self = self else { return }
+                guard self.webSearchPendingID == convID else { return }
+                self.webSearchPendingID = nil
+                if self.navigationItem.prompt == "正在联网搜索…" {
+                    self.navigationItem.prompt = nil
+                }
+                // Clear placeholder before tokens arrive (appendStreamTokens concatenates).
+                ConversationStore.shared.updateConversation(id: convID) { c in
+                    guard var last = c.messages.last, last.isStreaming else { return }
+                    last.content = ""
+                    c.messages[c.messages.count - 1] = last
+                }
+                var msgs = self.apiContext(for: model)
+                switch result {
+                case .success(let block):
+                    msgs = WebSearchService.inject(into: msgs, searchBlock: block)
+                case .failure(let err):
+                    let note = "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
+                    msgs = WebSearchService.inject(into: msgs, searchBlock: note)
+                }
+                StreamManager.shared.start(
+                    conversationID: convID,
+                    messages: msgs,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
+                self.syncStreamingChrome()
+            }
+        } else {
+            syncStreamingChrome()
+            StreamManager.shared.start(
+                conversationID: convID,
+                messages: apiContext(for: model),
+                model: model,
+                needsAITitle: needsAITitle
+            )
+        }
     }
 
     private func showAlert(title: String, message: String) {
@@ -912,17 +1108,26 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else { return 96 }
-        if let h = contentHeights[msg.id] {
-            return h + (msg.role == .assistant && !msg.isStreaming ? 48 : 24)
+        if let h = contentHeights[msg.id], h > 40 {
+            // Discard suspiciously short cache entries (1.4.12 freeze / 1.4.13 plain-table).
+            let chars = max(msg.content.count, 1)
+            let floor = CGFloat(min(2800, 48 + chars / 36 * 22))
+            let rich = MarkdownHTMLRenderer.needsRichMarkdown(msg.content)
+            if rich, h < floor * 0.4 {
+                contentHeights.removeValue(forKey: msg.id)
+            } else {
+                return min(h + (msg.role == .assistant && !msg.isStreaming ? 56 : 28), 8000)
+            }
         }
-        // Rough estimate avoids Autolayout measuring every cell from scratch on switch.
         let chars = max(msg.content.count, msg.reasoningContent.isEmpty ? 0 : 80)
-        let lines = max(1, chars / 42)
-        var h = CGFloat(28 + lines * 20)
-        if msg.hasImage { h += 168 }
-        if msg.hasReasoning { h += 40 }
-        if msg.role == .assistant && !msg.isStreaming { h += 36 }
-        return min(h, 900)
+        let lines = max(1, chars / 40)
+        var rough = CGFloat(28 + lines * 22)
+        if msg.hasImage { rough += 168 }
+        if msg.hasReasoning { rough += 40 }
+        if msg.role == .assistant && !msg.isStreaming { rough += 36 }
+        if MathContentDetector.containsMath(msg.content) { rough *= 1.3 }
+        if MarkdownHTMLRenderer.containsGFMTable(msg.content) { rough *= 1.2 }
+        return min(max(rough, 64), 2800)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -935,27 +1140,68 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         let frameH = scrollView.frame.height
         stickToBottom = offsetY + frameH >= contentH - 80
     }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { finishScrollHeightSettling() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        finishScrollHeightSettling()
+    }
+
+    private func finishScrollHeightSettling() {
+        for case let cell as MessageCell in tableView.visibleCells {
+            cell.applyDeferredHeightIfNeeded()
+        }
+        flushPendingHeights(force: false)
+    }
 }
 
 extension ChatViewController: MessageCellDelegate {
-    func messageCell(_ cell: MessageCell, didUpdateHeight height: CGFloat, for messageID: String) {
-        let old = contentHeights[messageID] ?? 0
-        guard abs(old - height) > 2 else { return }
-        pendingHeights[messageID] = height
-        heightWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.flushPendingHeights()
-        }
-        heightWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    func messageCellShouldFreezeHeight(_ cell: MessageCell) -> Bool {
+        tableView.isDragging || tableView.isDecelerating
     }
 
-    private func flushPendingHeights() {
+    func messageCell(_ cell: MessageCell, didUpdateHeight height: CGFloat, for messageID: String) {
+        let old = contentHeights[messageID] ?? 0
+        let scrolling = tableView.isDragging || tableView.isDecelerating
+        let growing = height > old + 4
+        // Micro-jitter while scrolling: ignore tiny shrinks only.
+        let threshold: CGFloat = scrolling ? (growing ? 6 : 32) : 8
+        guard abs(old - height) > threshold else {
+            if old == 0, height > 40 {
+                contentHeights[messageID] = height
+            }
+            return
+        }
+        pendingHeights[messageID] = height
+        heightWork?.cancel()
+        // ChatGPT-style: never leave content clipped — apply growth even mid-scroll.
+        if scrolling && !growing {
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushPendingHeights(force: scrolling && growing)
+        }
+        heightWork = work
+        let delay: TimeInterval = growing ? 0.03 : 0.18
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func flushPendingHeights(force: Bool = false) {
         guard !pendingHeights.isEmpty else { return }
+        let scrolling = tableView.isDragging || tableView.isDecelerating
+        if !force, scrolling {
+            // Drop shrinks while scrolling; keep growth entries.
+            pendingHeights = pendingHeights.filter { entry in
+                entry.value > (contentHeights[entry.key] ?? 0) + 4
+            }
+            guard !pendingHeights.isEmpty else { return }
+        }
         var changed = false
         for (id, height) in pendingHeights {
             let old = contentHeights[id] ?? 0
-            if abs(old - height) > 2 {
+            if abs(old - height) > 3 {
                 contentHeights[id] = height
                 changed = true
             }
@@ -1004,6 +1250,17 @@ extension ChatViewController: InputBarViewDelegate {
 
     func inputBarDidTapStop() {
         guard let id = currentConversationID else { return }
+        if webSearchPendingID == id {
+            webSearchPendingID = nil
+            if navigationItem.prompt == "正在联网搜索…" {
+                navigationItem.prompt = nil
+            }
+            ConversationStore.shared.finishStreamingMessage(
+                conversationID: id,
+                errorText: "已取消联网搜索。"
+            )
+            reloadChat()
+        }
         StreamManager.shared.cancel(id)
         syncStreamingChrome()
     }

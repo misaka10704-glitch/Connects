@@ -31,6 +31,7 @@
 		A1000001000000000000001D /* ContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001D /* ContextBuilder.swift */; };
 		A1000001000000000000001E /* ContextCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001E /* ContextCompactor.swift */; };
 		A1000001000000000000001F /* ContextUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001F /* ContextUsageView.swift */; };
+		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
 		A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001A /* MarkdownHTMLRenderer.swift */; };
 		A1000001000000000000001B /* PlainMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* PlainMarkdown.swift */; };
 		A10000010000000000000030 /* katex in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* katex */; };
@@ -75,6 +76,7 @@
 		A2000001000000000000001D /* ContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBuilder.swift; sourceTree = "<group>"; };
 		A2000001000000000000001E /* ContextCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCompactor.swift; sourceTree = "<group>"; };
 		A2000001000000000000001F /* ContextUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageView.swift; sourceTree = "<group>"; };
+		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
 		A2000001000000000000001A /* MarkdownHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownHTMLRenderer.swift; sourceTree = "<group>"; };
 		A2000001000000000000001B /* PlainMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainMarkdown.swift; sourceTree = "<group>"; };
 		A20000010000000000000017 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -163,6 +165,7 @@
 				A2000001000000000000001C /* ActionIconFactory.swift */,
 				A2000001000000000000001D /* ContextBuilder.swift */,
 				A2000001000000000000001E /* ContextCompactor.swift */,
+				A20000010000000000000053 /* WebSearchService.swift */,
 				A2000001000000000000001A /* MarkdownHTMLRenderer.swift */,
 				A2000001000000000000001B /* PlainMarkdown.swift */,
 			);
@@ -340,6 +343,7 @@
 				A1000001000000000000001D /* ContextBuilder.swift in Sources */,
 				A1000001000000000000001E /* ContextCompactor.swift in Sources */,
 				A1000001000000000000001F /* ContextUsageView.swift in Sources */,
+				A10000010000000000000053 /* WebSearchService.swift in Sources */,
 				A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */,
 				A1000001000000000000001B /* PlainMarkdown.swift in Sources */,
 			);

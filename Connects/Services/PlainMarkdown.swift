@@ -34,13 +34,47 @@ enum PlainMarkdown {
         let boldFont = UIFont.systemFont(ofSize: bodyFont.pointSize, weight: .semibold)
         let mono = UIFont(name: "Menlo", size: bodyFont.pointSize * 0.92) ?? bodyFont
 
-        var text = raw.replacingOccurrences(of: "```", with: "")
-        let paragraphs = text.components(separatedBy: "\n")
-        for (idx, line) in paragraphs.enumerated() {
-            if idx > 0 {
-                out.append(NSAttributedString(string: "\n", attributes: base))
+        // Keep fenced blocks as mono text — never strip ``` into blank lines.
+        let paragraphs = flattenFencedCode(raw).components(separatedBy: "\n")
+        var pendingBlank = false
+        for line in paragraphs {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                if out.length > 0 { pendingBlank = true }
+                continue
             }
+            if out.length > 0 {
+                out.append(NSAttributedString(string: pendingBlank ? "\n\n" : "\n", attributes: base))
+            }
+            pendingBlank = false
             appendLine(line, to: out, base: base, boldFont: boldFont, mono: mono, textColor: textColor, secondary: secondaryColor)
+        }
+        return out
+    }
+
+    /// ```lang ... ``` → indented mono lines (fallback when WebView not used).
+    private static func flattenFencedCode(_ raw: String) -> String {
+        guard raw.contains("```") else { return raw }
+        var out = ""
+        var i = raw.startIndex
+        while i < raw.endIndex {
+            if raw[i...].hasPrefix("```") {
+                var j = raw.index(i, offsetBy: 3, limitedBy: raw.endIndex) ?? raw.endIndex
+                while j < raw.endIndex, raw[j] != "\n" { j = raw.index(after: j) }
+                if j < raw.endIndex { j = raw.index(after: j) }
+                if let end = raw.range(of: "```", range: j..<raw.endIndex) {
+                    let body = String(raw[j..<end.lowerBound])
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+                    if !out.isEmpty, !out.hasSuffix("\n") { out += "\n" }
+                    for line in body.components(separatedBy: "\n") {
+                        out += "  " + line + "\n"
+                    }
+                    i = end.upperBound
+                    if i < raw.endIndex, raw[i] == "\n" { i = raw.index(after: i) }
+                    continue
+                }
+            }
+            out.append(raw[i])
+            i = raw.index(after: i)
         }
         return out
     }

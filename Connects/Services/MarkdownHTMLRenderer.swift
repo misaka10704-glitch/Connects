@@ -1,21 +1,20 @@
 import Foundation
 import UIKit
 
-/// Finished-message HTML: GFM markdown + KaTeX. Uses safe JS string escaping (iOS 12).
+/// Finished-message HTML: GFM markdown + KaTeX.
+/// Loads a persistent shell once; content is injected via JS (avoids re-parsing katex/marked every cell).
 enum MarkdownHTMLRenderer {
     static var resourceBaseURL: URL? { Bundle.main.resourceURL }
 
-    static func fullHTML(content: String,
-                         textColor: UIColor,
-                         backgroundColor: UIColor,
-                         secondaryColor: UIColor,
-                         fontSize: CGFloat) -> String {
+    /// Empty document with scripts + `window.__connectsRender(md)`.
+    static func shellHTML(textColor: UIColor,
+                          backgroundColor: UIColor,
+                          secondaryColor: UIColor,
+                          fontSize: CGFloat) -> String {
         let fg = cssColor(textColor)
         let bg = cssColor(backgroundColor)
         let sec = cssColor(secondaryColor)
         let border = cssColor(textColor.withAlphaComponent(0.16))
-        let normalized = normalizeMathDelimiters(content)
-        let mdJSON = jsonString(normalized)
 
         return """
         <!DOCTYPE html>
@@ -28,29 +27,35 @@ enum MarkdownHTMLRenderer {
           html, body { margin:0; padding:0; background:\(bg); color:\(fg);
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
             font-size:\(String(format: "%.1f", fontSize))px; line-height:1.65;
-            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%; }
-          #c { padding: 0; }
-          #c h1,#c h2,#c h3 { font-weight: 600; line-height: 1.3; margin: 0.9em 0 0.4em; }
-          #c h1 { font-size: 1.35em; } #c h2 { font-size: 1.2em; } #c h3 { font-size: 1.08em; }
-          #c p { margin: 0.55em 0; }
-          #c ul, #c ol { margin: 0.45em 0; padding-left: 1.35em; }
-          #c li { margin: 0.22em 0; }
-          #c strong { font-weight: 700; }
-          #c em { font-style: italic; }
-          #c a { color: #4da3ff; }
-          #c code { font-family: Menlo, Monaco, monospace; font-size: 0.9em;
-            background: rgba(127,127,127,0.16); padding: 0.12em 0.35em; border-radius: 4px; }
-          #c pre { background: rgba(127,127,127,0.12); padding: 12px 14px; border-radius: 10px;
-            overflow-x: auto; margin: 0.75em 0; }
-          #c pre code { background: transparent; padding: 0; }
-          #c blockquote { margin: 0.65em 0; padding: 0.15em 0 0.15em 0.9em;
-            border-left: 3px solid \(border); color: \(sec); }
-          #c table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 0.95em;
-            display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-          #c th, #c td { border: 1px solid \(border); padding: 7px 10px; text-align: left; }
-          #c th { background: rgba(127,127,127,0.1); font-weight: 600; }
-          #c hr { border: none; border-top: 1px solid \(border); margin: 1em 0; }
-          .katex-display { margin: 0.75em 0; overflow-x: auto; overflow-y: hidden; }
+            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
+            height:auto !important; min-height:0 !important; overflow:hidden; }
+          /*
+           * A block formatting context prevents the first/last paragraph margins
+           * from collapsing out of #c. Its bounding box is therefore the actual
+           * Markdown document height, independent of the WKWebView viewport.
+           */
+          #c { padding:0; display:flow-root; }
+          #c h1,#c h2,#c h3 { font-weight:600; line-height:1.3; margin:0.85em 0 0.35em; }
+          #c h1 { font-size:1.35em; } #c h2 { font-size:1.2em; } #c h3 { font-size:1.08em; }
+          #c p { margin:0.5em 0; }
+          #c ul, #c ol { margin:0.4em 0; padding-left:1.35em; }
+          #c li { margin:0.2em 0; }
+          #c strong { font-weight:700; }
+          #c em { font-style:italic; }
+          #c a { color:#4da3ff; }
+          #c code { font-family:Menlo, Monaco, monospace; font-size:0.9em;
+            background:rgba(127,127,127,0.16); padding:0.12em 0.35em; border-radius:4px; }
+          #c pre { background:rgba(127,127,127,0.12); padding:12px 14px; border-radius:10px;
+            overflow-x:auto; margin:0.7em 0; -webkit-overflow-scrolling:touch; }
+          #c pre code { background:transparent; padding:0; }
+          #c blockquote { margin:0.6em 0; padding:0.1em 0 0.1em 0.9em;
+            border-left:3px solid \(border); color:\(sec); }
+          #c table { border-collapse:collapse; width:100%; margin:0.75em 0; font-size:0.95em;
+            display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+          #c th, #c td { border:1px solid \(border); padding:7px 10px; text-align:left; }
+          #c th { background:rgba(127,127,127,0.1); font-weight:600; }
+          #c hr { border:none; border-top:1px solid \(border); margin:0.9em 0; }
+          .katex-display { margin:0.7em 0; overflow-x:auto; overflow-y:hidden; }
         </style>
         <script src="markdown/marked.min.js"></script>
         <script src="katex/katex.min.js"></script>
@@ -59,14 +64,34 @@ enum MarkdownHTMLRenderer {
         <body>
         <div id="c"></div>
         <script>
-          function reportHeight() {
+          function __measure() {
             var el = document.getElementById("c");
-            var h = Math.max(el ? el.scrollHeight : 0, document.body.scrollHeight, document.documentElement.scrollHeight);
-            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.height) {
+            if (!el) return 0;
+            /*
+             * Never use body/document scrollHeight here. WKWebView reports at
+             * least its viewport height for those values. Also do not use #c's
+             * own box: WebKit can clamp that box to the current viewport while a
+             * long table is laid out below it. Measure every Markdown block
+             * instead; its offset geometry is the document-flow extent.
+             */
+            var bottom = 0;
+            var kids = el.children;
+            for (var i = 0; i < kids.length; i++) {
+              var n = kids[i];
+              var style = window.getComputedStyle ? window.getComputedStyle(n) : null;
+              var marginBottom = style ? (parseFloat(style.marginBottom) || 0) : 0;
+              bottom = Math.max(bottom, n.offsetTop + n.offsetHeight + marginBottom);
+            }
+            return Math.ceil(Math.max(bottom, 1)) + 2;
+          }
+          function __report() {
+            var h = __measure();
+            if (h > 0 && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.height) {
               window.webkit.messageHandlers.height.postMessage(h);
             }
+            return h;
           }
-          function protectMath(src) {
+          function __protectMath(src) {
             var map = [];
             var i = 0;
             function stash(re) {
@@ -83,21 +108,22 @@ enum MarkdownHTMLRenderer {
             stash(/\\\\begin\\{[a-zA-Z*]+\\}[\\s\\S]+?\\\\end\\{[a-zA-Z*]+\\}/g);
             return { src: src, map: map };
           }
-          function restoreMath(html, map) {
+          function __restoreMath(html, map) {
             for (var k = 0; k < map.length; k++) {
               html = html.split(map[k][0]).join(map[k][1]);
             }
             return html;
           }
-          function run() {
-            var md = \(mdJSON);
+          window.__connectsMeasure = function() { return __measure(); };
+          window.__connectsRender = function(md) {
             var el = document.getElementById("c");
+            if (!el) return 0;
             try {
               if (typeof marked !== "undefined") {
                 marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-                var packed = protectMath(md);
+                var packed = __protectMath(md);
                 var html = marked.parse(packed.src);
-                html = restoreMath(html, packed.map);
+                html = __restoreMath(html, packed.map);
                 el.innerHTML = html;
               } else {
                 el.textContent = md;
@@ -117,17 +143,90 @@ enum MarkdownHTMLRenderer {
             } catch (e) {
               el.textContent = md;
             }
-            reportHeight();
-            setTimeout(reportHeight, 80);
-            setTimeout(reportHeight, 280);
-            setTimeout(reportHeight, 700);
+            __report();
+            if (window.requestAnimationFrame) {
+              requestAnimationFrame(function(){ __report(); });
+            }
+            // One delayed settle only — frequent reports cause mid-scroll row jumps.
+            setTimeout(__report, 280);
+            return __measure();
+          };
+          window.__connectsReady = true;
+          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.height) {
+            window.webkit.messageHandlers.height.postMessage(0);
           }
-          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run);
-          else run();
         </script>
         </body>
         </html>
         """
+    }
+
+    /// JS snippet: `window.__connectsRender(<json string>)`
+    static func renderJavaScript(content: String) -> String {
+        let normalized = normalizeForRender(content)
+        return "window.__connectsRender(\(jsonString(normalized)));"
+    }
+
+    static func measureJavaScript() -> String {
+        "(window.__connectsMeasure ? window.__connectsMeasure() : 0);"
+    }
+
+    /// ChatGPT / Claude / Gemini: one GFM+math pipeline for rich blocks (tables, code, KaTeX).
+    static func needsRichMarkdown(_ content: String) -> Bool {
+        if MathContentDetector.containsMath(content) { return true }
+        if content.contains("```") { return true }
+        if containsGFMTable(content) { return true }
+        return false
+    }
+
+    /// Detect GFM tables, including fullwidth pipes and messy model output.
+    static func containsGFMTable(_ content: String) -> Bool {
+        let s = content
+            .replacingOccurrences(of: "｜", with: "|")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = s.components(separatedBy: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        var pipeRun = 0
+        for (i, line) in lines.enumerated() {
+            let pipes = line.filter { $0 == "|" }.count
+            if pipes >= 1 {
+                if isTableSeparatorLine(line) { return true }
+                if pipes >= 2 { pipeRun += 1 } else { pipeRun = max(pipeRun, 1) }
+                if i + 1 < lines.count, isTableSeparatorLine(lines[i + 1]) { return true }
+                if pipeRun >= 3 { return true }
+            } else if !line.isEmpty {
+                pipeRun = 0
+            }
+        }
+        return false
+    }
+
+    private static func isTableSeparatorLine(_ line: String) -> Bool {
+        let t = line.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "｜", with: "|")
+        guard t.contains("|"), t.contains("-") else { return false }
+        // |---|:---:| or ---|---
+        for ch in t {
+            if ch != "|" && ch != "-" && ch != ":" { return false }
+        }
+        return t.contains("-")
+    }
+
+    /// Render-time normalize (does not mutate stored conversation text).
+    static func normalizeForRender(_ raw: String) -> String {
+        var s = normalizeMathDelimiters(raw)
+        s = s.replacingOccurrences(of: "\r\n", with: "\n")
+        s = s.replacingOccurrences(of: "\r", with: "\n")
+        // Old / CN model fullwidth table punctuation → GFM
+        s = s.replacingOccurrences(of: "｜", with: "|")
+        s = s.replacingOccurrences(of: "－", with: "-")
+        s = s.replacingOccurrences(of: "—", with: "-")
+        // Collapse 3+ blank lines left by older plain renderers / copy-paste
+        while s.contains("\n\n\n\n") {
+            s = s.replacingOccurrences(of: "\n\n\n\n", with: "\n\n\n")
+        }
+        return s
     }
 
     /// Normalize odd model outputs toward KaTeX-friendly delimiters.
@@ -135,7 +234,6 @@ enum MarkdownHTMLRenderer {
         var s = raw
         s = s.replacingOccurrences(of: "［", with: "[")
         s = s.replacingOccurrences(of: "］", with: "]")
-        // ```math / ```latex / ```tex fences → display math
         if let re = try? NSRegularExpression(
             pattern: "```(?:math|latex|tex)\\s*\\n([\\s\\S]*?)```",
             options: [.caseInsensitive]
@@ -146,7 +244,27 @@ enum MarkdownHTMLRenderer {
         return s
     }
 
-    private static func jsonString(_ s: String) -> String {
+    /// Legacy full document (unused by MessageCell shell path; kept for tooling).
+    static func fullHTML(content: String,
+                         textColor: UIColor,
+                         backgroundColor: UIColor,
+                         secondaryColor: UIColor,
+                         fontSize: CGFloat) -> String {
+        let shell = shellHTML(
+            textColor: textColor,
+            backgroundColor: backgroundColor,
+            secondaryColor: secondaryColor,
+            fontSize: fontSize
+        )
+        // Inject an immediate render call for one-shot loads.
+        let js = renderJavaScript(content: content)
+        return shell.replacingOccurrences(
+            of: "window.__connectsReady = true;",
+            with: "window.__connectsReady = true;\n          \(js)"
+        )
+    }
+
+    static func jsonString(_ s: String) -> String {
         var out = "\""
         for ch in s.unicodeScalars {
             switch ch.value {

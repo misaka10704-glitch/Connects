@@ -6,12 +6,13 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapAttach()
 }
 
-/// ChatGPT-style composer: single rounded pill, + left, send/stop right, vertically centered.
+/// ChatGPT-style composer: single rounded pill, + / 联网 left, send/stop right.
 final class InputBarView: UIView, ThemeRefreshable {
     weak var delegate: InputBarViewDelegate?
 
     private let containerView = UIView()
     private let attachButton = UIButton(type: .system)
+    private let webSearchButton = UIButton(type: .system)
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
@@ -33,6 +34,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         didSet {
             attachButton.isEnabled = attachEnabled
             attachButton.alpha = attachEnabled ? 1 : 0.35
+        }
+    }
+
+    var webSearchEnabled: Bool {
+        get { SettingsManager.shared.webSearchEnabled }
+        set {
+            SettingsManager.shared.webSearchEnabled = newValue
+            updateWebSearchAppearance()
         }
     }
 
@@ -63,6 +72,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         removePreviewButton.setTitleColor(c.textSecondary, for: .normal)
         updateFocusBorder()
         updateSendEnabled()
+        updateWebSearchAppearance()
     }
 
     private func updateFocusBorder() {
@@ -125,6 +135,13 @@ final class InputBarView: UIView, ThemeRefreshable {
         attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
         containerView.addSubview(attachButton)
 
+        webSearchButton.translatesAutoresizingMaskIntoConstraints = false
+        webSearchButton.setImage(ActionIconFactory.image(.globe, pointSize: 16), for: .normal)
+        webSearchButton.imageView?.contentMode = .scaleAspectFit
+        webSearchButton.accessibilityLabel = "联网搜索"
+        webSearchButton.addTarget(self, action: #selector(webSearchTapped), for: .touchUpInside)
+        containerView.addSubview(webSearchButton)
+
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = DSTheme.bodyFont(size: 16)
@@ -180,11 +197,15 @@ final class InputBarView: UIView, ThemeRefreshable {
             containerView.bottomAnchor.constraint(equalTo: bottomAnchor),
             containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
-            // Pin attach/send to bottom of pill (ChatGPT: controls sit on last line)
             attachButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
             attachButton.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            webSearchButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
+            webSearchButton.bottomAnchor.constraint(equalTo: attachButton.bottomAnchor),
+            webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
+            webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
@@ -197,7 +218,7 @@ final class InputBarView: UIView, ThemeRefreshable {
             stopButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             textView.topAnchor.constraint(equalTo: containerView.topAnchor),
-            textView.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 6),
+            textView.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 4),
             textView.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -6),
             textView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
             textViewHeightConstraint!,
@@ -212,7 +233,18 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.isHidden = !isStreaming
         textView.isEditable = !isStreaming
         attachButton.isEnabled = !isStreaming && attachEnabled
+        webSearchButton.isEnabled = !isStreaming
+        webSearchButton.alpha = isStreaming ? 0.35 : 1
         updateSendEnabled()
+    }
+
+    private func updateWebSearchAppearance() {
+        let c = DSTheme.c
+        let on = webSearchEnabled
+        webSearchButton.tintColor = on ? c.accent : c.textSecondary
+        webSearchButton.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
+        webSearchButton.layer.cornerRadius = btnSize / 2
+        webSearchButton.accessibilityValue = on ? "开" : "关"
     }
 
     private func updateSendEnabled() {
@@ -245,6 +277,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func attachTapped() {
         delegate?.inputBarDidTapAttach()
+    }
+
+    @objc private func webSearchTapped() {
+        webSearchEnabled.toggle()
     }
 
     @objc private func removePreview() {

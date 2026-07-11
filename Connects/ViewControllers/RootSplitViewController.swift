@@ -23,6 +23,7 @@ final class RootSplitViewController: UIViewController {
     private var isSidebarCollapsed = false
     private var isCompactLayout = false
     private var isDrawerOpen = false
+    private var lastNotifiedWidthBucket: Int = 0
 
     /// Below this width → Slide Over / 侧拉网课模式.
     private let compactBreakpoint: CGFloat = 520
@@ -138,11 +139,16 @@ final class RootSplitViewController: UIViewController {
             isCompactLayout = compact
             applyLayoutMode(animated: false)
         }
-        NotificationCenter.default.post(
-            name: .connectsCompactLayoutDidChange,
-            object: nil,
-            userInfo: ["compact": isCompactLayout]
-        )
+        // Notify only when width bucket changes (Slide Over drag), not every layout pass.
+        let bucket = Int((view.bounds.width / 4).rounded()) * 4
+        if bucket > 0, bucket != lastNotifiedWidthBucket {
+            lastNotifiedWidthBucket = bucket
+            NotificationCenter.default.post(
+                name: .connectsChatWidthDidChange,
+                object: nil,
+                userInfo: ["width": view.bounds.width, "compact": isCompactLayout]
+            )
+        }
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -314,6 +320,7 @@ final class RootSplitViewController: UIViewController {
 
 extension Notification.Name {
     static let connectsCompactLayoutDidChange = Notification.Name("ConnectsCompactLayoutDidChange")
+    static let connectsChatWidthDidChange = Notification.Name("ConnectsChatWidthDidChange")
 }
 
 extension RootSplitViewController: SidebarViewControllerDelegate {

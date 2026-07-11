@@ -36,6 +36,12 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: "connects_thinking") }
     }
 
+    /// Input-bar 联网开关：发送前先搜网页再注入上下文（默认关）。
+    var webSearchEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "connects_web_search") }
+        set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
+    }
+
     var appearanceMode: AppearanceMode {
         get { ThemeManager.shared.mode }
         set { ThemeManager.shared.mode = newValue }
