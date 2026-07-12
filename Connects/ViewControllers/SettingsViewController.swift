@@ -17,8 +17,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let kimiCNLabel = UILabel()
     private let qwenCNSwitch = UISwitch()
     private let qwenCNLabel = UILabel()
-    private let thinkingSwitch = UISwitch()
-    private let thinkingLabel = UILabel()
     private let modelVisibility = ModelVisibilityView()
 
     private var sectionLabels: [UILabel] = []
@@ -104,8 +102,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         kimiCNSwitch.onTintColor = c.accent
         qwenCNLabel.textColor = c.textPrimary
         qwenCNSwitch.onTintColor = c.accent
-        thinkingLabel.textColor = c.textPrimary
-        thinkingSwitch.onTintColor = c.accent
         modelVisibility.applyTheme()
 
         appearanceControl.tintColor = c.accent
@@ -164,23 +160,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
         contentStack.setCustomSpacing(22, after: fontTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("模型行为"))
-        let thinkRow = makeSwitchRow(
-            label: thinkingLabel,
-            text: "深度思考（关闭后更快）",
-            sw: thinkingSwitch,
-            isOn: SettingsManager.shared.thinkingEnabled,
-            action: #selector(thinkingChanged)
-        )
-        contentStack.addArrangedSubview(thinkRow)
-        let thinkTip = UILabel()
-        thinkTip.numberOfLines = 0
-        thinkTip.font = DSTheme.bodyFont(size: 13)
-        thinkTip.text = "默认关闭以更快显示正文。复杂问题可临时开启；开启后模型必须先完成思考，正文出现会明显变慢。"
-        footerLabels.append(thinkTip)
-        contentStack.addArrangedSubview(thinkTip)
-        contentStack.setCustomSpacing(22, after: thinkTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
         contentStack.addArrangedSubview(modelVisibility)
@@ -247,7 +226,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let tip = UILabel()
         tip.numberOfLines = 0
         tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串，不可混用。图片：Kimi / Qwen / 豆包。联网：输入栏地球图标。"
+        tip.text = "Key 存在本机钥匙串，不可混用。图片：Kimi / Qwen / 豆包。联网 / 深度思考：输入栏地球与灯泡图标。"
         footerLabels.append(tip)
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
@@ -362,10 +341,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func qwenCNChanged() {
         SettingsManager.shared.qwenUseChinaEndpoint = qwenCNSwitch.isOn
-    }
-
-    @objc private func thinkingChanged() {
-        SettingsManager.shared.thinkingEnabled = thinkingSwitch.isOn
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {

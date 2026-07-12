@@ -6,13 +6,14 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapAttach()
 }
 
-/// ChatGPT-style composer: rounded pill, + / 联网, inline image chip, send/stop.
+/// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
 final class InputBarView: UIView, ThemeRefreshable {
     weak var delegate: InputBarViewDelegate?
 
     private let containerView = UIView()
     private let attachButton = UIButton(type: .system)
     private let webSearchButton = UIButton(type: .system)
+    private let thinkingButton = UIButton(type: .system)
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
@@ -58,6 +59,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         }
     }
 
+    var thinkingEnabled: Bool {
+        get { SettingsManager.shared.thinkingEnabled }
+        set {
+            SettingsManager.shared.thinkingEnabled = newValue
+            updateThinkingAppearance()
+        }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         setup()
@@ -89,6 +98,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateFocusBorder()
         updateSendEnabled()
         updateWebSearchAppearance()
+        updateThinkingAppearance()
     }
 
     private func updateFocusBorder() {
@@ -180,6 +190,13 @@ final class InputBarView: UIView, ThemeRefreshable {
         webSearchButton.addTarget(self, action: #selector(webSearchTapped), for: .touchUpInside)
         containerView.addSubview(webSearchButton)
 
+        thinkingButton.translatesAutoresizingMaskIntoConstraints = false
+        thinkingButton.setImage(ActionIconFactory.image(.think, pointSize: 16), for: .normal)
+        thinkingButton.imageView?.contentMode = .scaleAspectFit
+        thinkingButton.accessibilityLabel = "深度思考"
+        thinkingButton.addTarget(self, action: #selector(thinkingTapped), for: .touchUpInside)
+        containerView.addSubview(thinkingButton)
+
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = DSTheme.bodyFont(size: 16)
@@ -256,6 +273,11 @@ final class InputBarView: UIView, ThemeRefreshable {
             webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
             webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
 
+            thinkingButton.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 2),
+            thinkingButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
+            thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
+            thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
+
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
             sendButton.widthAnchor.constraint(equalToConstant: btnSize),
@@ -266,7 +288,7 @@ final class InputBarView: UIView, ThemeRefreshable {
             stopButton.widthAnchor.constraint(equalToConstant: btnSize),
             stopButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            textView.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 4),
+            textView.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 4),
             textView.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -6),
             textView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
             textViewHeightConstraint!,
@@ -291,17 +313,26 @@ final class InputBarView: UIView, ThemeRefreshable {
         attachButton.alpha = attachButton.isEnabled ? 1 : 0.35
         webSearchButton.isEnabled = !isStreaming
         webSearchButton.alpha = isStreaming ? 0.35 : 1
+        thinkingButton.isEnabled = !isStreaming
+        thinkingButton.alpha = isStreaming ? 0.35 : 1
         chipRemove.isEnabled = !isStreaming
         updateSendEnabled()
     }
 
-    private func updateWebSearchAppearance() {
+    private func updateToggleAppearance(_ button: UIButton, on: Bool) {
         let c = DSTheme.c
-        let on = webSearchEnabled
-        webSearchButton.tintColor = on ? c.accent : c.textSecondary
-        webSearchButton.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
-        webSearchButton.layer.cornerRadius = btnSize / 2
-        webSearchButton.accessibilityValue = on ? "开" : "关"
+        button.tintColor = on ? c.accent : c.textSecondary
+        button.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
+        button.layer.cornerRadius = btnSize / 2
+        button.accessibilityValue = on ? "开" : "关"
+    }
+
+    private func updateWebSearchAppearance() {
+        updateToggleAppearance(webSearchButton, on: webSearchEnabled)
+    }
+
+    private func updateThinkingAppearance() {
+        updateToggleAppearance(thinkingButton, on: thinkingEnabled)
     }
 
     private func updateSendEnabled() {
@@ -344,6 +375,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func webSearchTapped() {
         webSearchEnabled.toggle()
+    }
+
+    @objc private func thinkingTapped() {
+        thinkingEnabled.toggle()
     }
 
     @objc private func removePreview() {

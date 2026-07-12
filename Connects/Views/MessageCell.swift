@@ -115,6 +115,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var thinkingExpanded = false
     private var hasSearch = false
     private var searchExpanded = false
+    private var streamingPresentation = false
     /// Shell document loaded (katex/marked ready).
     private var webShellReady = false
     private var injectRetryWork: DispatchWorkItem?
@@ -183,6 +184,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     override func prepareForReuse() {
         super.prepareForReuse()
         messageID = ""
+        streamingPresentation = false
         // Cancel in-flight JS callbacks for the previous identity.
         renderGeneration &+= 1
         heightNotifyWork?.cancel()
@@ -241,6 +243,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     func configure(with message: ChatMessage, preferredHeight: CGFloat?) {
         messageID = message.id
+        streamingPresentation = message.isStreaming
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
@@ -387,7 +390,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textPrimary
                 assistantLabel.font = UIFont.systemFont(ofSize: font)
-                assistantLabel.text = "正在生成…"
+                assistantLabel.text = nil
             } else if message.isStreaming {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textPrimary
@@ -475,7 +478,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     /// Updates the already-bound streaming view without resetting constraints,
     /// renderer state, or action visibility on every token batch.
     @discardableResult
-    func updateStreamingContent(_ message: ChatMessage) -> Bool {
+    func updateStreamingContent(_ message: ChatMessage, waitingGlyph: String? = nil) -> Bool {
         let searchEmpty = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !message.hasSearchProcess
         let thinkEmpty = message.reasoningContent.isEmpty
         guard messageID == message.id,
@@ -486,9 +489,12 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
               (searchBox.isHidden == searchEmpty) else {
             return false
         }
+        streamingPresentation = true
         let content = message.content
         assistantLabel.attributedText = nil
-        assistantLabel.text = content.isEmpty ? ((thinkingBox.isHidden && searchBox.isHidden) ? "正在生成…" : nil) : content
+        assistantLabel.text = content.isEmpty
+            ? nil
+            : content
         if !searchBox.isHidden {
             let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
             searchBody.attributedText = nil
@@ -515,6 +521,17 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 for: .normal
             )
         }
+        if let glyph = waitingGlyph {
+            if !content.isEmpty {
+                assistantLabel.text = content + "  " + glyph
+            } else if !thinkingBox.isHidden {
+                thinkingBody.text = (thinkingBody.text ?? "") + "  " + glyph
+            } else if !searchBox.isHidden {
+                searchBody.text = (searchBody.text ?? "") + "  " + glyph
+            } else {
+                assistantLabel.text = glyph
+            }
+        }
         schedulePlainHeightNotify()
         return true
     }
@@ -524,6 +541,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     /// after they are already available synchronously.
     func finalizeStreamingPresentation(_ message: ChatMessage) {
         guard messageID == message.id else { return }
+        streamingPresentation = false
         let c = DSTheme.c
         let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !search.isEmpty {
@@ -615,6 +633,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     /// PlainMarkdown rows don't go through web height JS — push measured height so estimates settle.
     private func schedulePlainHeightNotify() {
+        // ChatVC owns bounded live-row remeasurement. A second per-cell height
+        // loop caused duplicate beginUpdates passes and visible token stalls.
+        guard !streamingPresentation else { return }
         // Fixed-cadence height updates. A debounce is starved by a continuous
         // token stream; updating on every frame makes UITableView relayout jank.
         guard heightNotifyWork == nil else { return }
@@ -629,7 +650,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             self.cellDelegate?.messageCell(self, didUpdateHeight: h, for: id)
         }
         heightNotifyWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        // Row geometry does not need to follow the 25 fps text clock. A slower
+        // cadence keeps self-sizing table passes from blocking token painting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
     }
 
     private func applyAssistantLayoutWidth() {

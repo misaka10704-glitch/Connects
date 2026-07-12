@@ -385,7 +385,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "SRC=\"${SRCROOT}/Connects/Resources/LaunchScreen.storyboardc\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/LaunchScreen.storyboardc\"\nrm -rf \"$DST\"\nditto --norsrc \"$SRC\" \"$DST\"\n";
+			shellScript = "SRC=\"${SRCROOT}/Connects/Resources/LaunchScreen.storyboardc\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/LaunchScreen.storyboardc\"\nrm -rf \"$DST\"\n# File Provider / iCloud flags make `ditto` fail with Operation not permitted;\n# plain cp through /tmp strips those extended attributes.\nSTAGE=\"/tmp/ConnectsLaunchScreen.storyboardc.$$\"\nrm -rf \"$STAGE\"\n/bin/cp -R \"$SRC\" \"$STAGE\"\n/bin/cp -R \"$STAGE\" \"$DST\"\nrm -rf \"$STAGE\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

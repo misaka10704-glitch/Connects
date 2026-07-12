@@ -10,6 +10,7 @@ enum ActionIconFactory {
         case more, share
         case archive, settings, search
         case globe
+        case think
         case newChat
         case rename, trash
         case edit
@@ -225,6 +226,40 @@ enum ActionIconFactory {
                                                   width: pointSize * 0.36, height: pointSize - 3))
             lat.lineWidth = 1.15
             lat.stroke()
+
+        case .think:
+            // Lightbulb: deep thinking toggle in the composer.
+            let bulb = UIBezierPath(
+                ovalIn: CGRect(
+                    x: r.midX - pointSize * 0.28,
+                    y: r.minY + 1.8,
+                    width: pointSize * 0.56,
+                    height: pointSize * 0.56
+                )
+            )
+            bulb.lineWidth = 1.55
+            bulb.stroke()
+            let neck = UIBezierPath(
+                roundedRect: CGRect(
+                    x: r.midX - pointSize * 0.14,
+                    y: r.minY + pointSize * 0.52,
+                    width: pointSize * 0.28,
+                    height: pointSize * 0.18
+                ),
+                cornerRadius: 1.2
+            )
+            neck.lineWidth = 1.35
+            neck.stroke()
+            let base = UIBezierPath()
+            base.move(to: CGPoint(x: r.midX - pointSize * 0.16, y: r.maxY - 3.2))
+            base.addLine(to: CGPoint(x: r.midX + pointSize * 0.16, y: r.maxY - 3.2))
+            base.lineWidth = 1.45
+            base.stroke()
+            let filament = UIBezierPath()
+            filament.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.22))
+            filament.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.42))
+            filament.lineWidth = 1.2
+            filament.stroke()
 
         case .rename:
             // Pencil

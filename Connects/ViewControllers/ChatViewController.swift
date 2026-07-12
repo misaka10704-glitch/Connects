@@ -32,6 +32,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// this cannot be changed by WebKit/table layout callbacks.
     private var readingHistory = false
     private var streamUIWork: DispatchWorkItem?
+    private var streamUITimer: Timer?
+    private var lastStreamContent = ""
+    private var lastStreamReasoning = ""
+    private var lastStreamSearch = ""
+    private var lastStreamPhase: SearchProcessPhase = .idle
+    private var lastStreamProgressAt = Date()
+    private var lastStreamLayoutAt = Date.distantPast
+    private var streamSpinnerFrame = 0
     private var heightWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
     private var chromeWork: DispatchWorkItem?
@@ -129,7 +137,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        streamUITimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -262,6 +273,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let c = DSTheme.c
         view.backgroundColor = c.background
         tableView.backgroundColor = c.background
+        emptyContainer.backgroundColor = c.background
         emptyTitleLabel.textColor = c.textPrimary
         emptySubtitleLabel.textColor = c.textSecondary
         modelButton.setTitleColor(c.textPrimary, for: .normal)
@@ -310,14 +322,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @objc private func streamUpdated(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
-        scheduleStreamUIRefresh()
+        ensureStreamUITimer()
     }
 
     @objc private func webSearchUpdated(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
         syncStreamingChrome()
-        scheduleStreamUIRefresh()
+        ensureStreamUITimer()
     }
 
     @objc private func thinkingToggled(_ note: Notification) {
@@ -392,6 +404,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               id == currentConversationID else { return }
         streamUIWork?.cancel()
         streamUIWork = nil
+        stopStreamUITimer()
         // Streaming stays lightweight; completion performs one deterministic
         // native parse/layout and swaps under the cell snapshot cover.
         guard let messages = ConversationStore.shared.currentConversation?.messages,
@@ -421,22 +434,69 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         maybeAutoCompactContext()
     }
 
-    private func scheduleStreamUIRefresh() {
-        // Fixed-cadence throttle: continuous notifications must not keep
-        // postponing the only visible update until the stream finishes.
-        guard streamUIWork == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            self.streamUIWork = nil
-            self.refreshStreamingRow()
-        }
-        streamUIWork = work
-        // 25 fps feels continuous on iPad Air 1 while leaving headroom for
-        // UILabel layout and touch handling.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
+    private func ensureStreamUITimer() {
+        guard streamUITimer == nil, isCurrentStreaming else { return }
+        lastStreamContent = ""
+        lastStreamReasoning = ""
+        lastStreamSearch = ""
+        lastStreamPhase = .idle
+        lastStreamProgressAt = Date()
+        lastStreamLayoutAt = .distantPast
+        streamSpinnerFrame = 0
+        let timer = Timer(timeInterval: 0.04,
+                          target: self,
+                          selector: #selector(streamUITick),
+                          userInfo: nil,
+                          repeats: true)
+        streamUITimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        streamUITick()
     }
 
-    private func refreshStreamingRow() {
+    private func stopStreamUITimer() {
+        streamUITimer?.invalidate()
+        streamUITimer = nil
+    }
+
+    @objc private func streamUITick() {
+        guard isCurrentStreaming,
+              let last = ConversationStore.shared.currentConversation?.messages.last,
+              last.isStreaming else {
+            stopStreamUITimer()
+            return
+        }
+        let changed = last.content != lastStreamContent
+            || last.reasoningContent != lastStreamReasoning
+            || last.searchProcessContent != lastStreamSearch
+            || last.searchProcessPhase != lastStreamPhase
+        if changed {
+            lastStreamContent = last.content
+            lastStreamReasoning = last.reasoningContent
+            lastStreamSearch = last.searchProcessContent
+            lastStreamPhase = last.searchProcessPhase
+            lastStreamProgressAt = Date()
+            let now = Date()
+            let shouldRelayout = !readingHistory
+                && now.timeIntervalSince(lastStreamLayoutAt) >= 0.14
+            if shouldRelayout {
+                lastStreamLayoutAt = now
+            }
+            refreshStreamingRow(waitingGlyph: nil, relayout: shouldRelayout)
+            return
+        }
+        // The provider is still connected but has not produced a delta. Animate
+        // a small thinking glyph at the visible stream tail instead of looking frozen.
+        guard Date().timeIntervalSince(lastStreamProgressAt) >= 0.45 else { return }
+        streamSpinnerFrame = (streamSpinnerFrame + 1) % 12
+        guard streamSpinnerFrame % 3 == 0 else { return }
+        let glyphs = ["◐", "◓", "◑", "◒"]
+        refreshStreamingRow(
+            waitingGlyph: glyphs[(streamSpinnerFrame / 3) % glyphs.count],
+            relayout: false
+        )
+    }
+
+    private func refreshStreamingRow(waitingGlyph: String?, relayout: Bool) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last, last.isStreaming else {
             return
@@ -444,8 +504,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let path = IndexPath(row: messages.count - 1, section: 0)
         UIView.performWithoutAnimation {
             if let cell = tableView.cellForRow(at: path) as? MessageCell {
-                if !cell.updateStreamingContent(last) {
+                if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
                     cell.configure(with: last, preferredHeight: contentHeights[last.id])
+                }
+            }
+            // UILabel content can grow beyond the existing self-sized row. Merely
+            // changing its text leaves the new tail clipped until a conversation
+            // reload. Re-measure at a bounded cadence, then follow the live tail.
+            if relayout {
+                tableView.beginUpdates()
+                tableView.endUpdates()
+                if stickToBottom && !readingHistory {
+                    scrollToBottom(animated: false, force: true)
                 }
             }
         }
@@ -454,6 +524,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func syncStreamingChrome() {
         let running = isCurrentStreaming
         inputBar.isStreaming = running
+        if running {
+            ensureStreamUITimer()
+        } else {
+            stopStreamUITimer()
+        }
     }
 
     func updateSidebarToggleTitle(collapsed: Bool) {
@@ -499,6 +574,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             // reloads must preserve the reader's manual scroll position.
             stickToBottom = true
             readingHistory = false
+            // Drop in-flight stream paint and nav prompt from the previous chat
+            // before the empty/list chrome updates — otherwise iOS 12 leaves
+            // "思考中… / 正在生成…" cell ghosts and a gray prompt capsule.
+            streamUIWork?.cancel()
+            streamUIWork = nil
+            stopStreamUITimer()
+            clearNavigationPrompt()
         }
         // User rows and reasoning rows must never inherit transient estimates.
         // Reasoning height depends on expanded/collapsed UI state, which is not
@@ -518,13 +600,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         } else {
             reloadTablePreservingViewport()
         }
+        // Empty/list visibility must be sync: deferred chrome left the previous
+        // streaming cell composited under a clear empty overlay.
+        updateEmptyState()
+        syncStreamingChrome()
         if let messages = ConversationStore.shared.currentConversation?.messages {
             MessageCell.prewarmSnapshots(
                 for: Array(messages.suffix(4)),
                 targetWidth: currentRenderWidth()
             )
         }
-        // Defer chrome so the message list paints first.
+        // Defer the rest of chrome so the message list paints first.
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.updateModelButton()
@@ -537,6 +623,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         chromeWork = work
         DispatchQueue.main.async(execute: work)
         isReloadingFromStore = false
+    }
+
+    private func clearNavigationPrompt() {
+        if navigationItem.prompt != nil {
+            navigationItem.prompt = nil
+            navigationController?.navigationBar.setNeedsLayout()
+            navigationController?.navigationBar.layoutIfNeeded()
+        }
     }
 
     func shareCurrentMarkdown() {
@@ -742,6 +836,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func setupEmptyState() {
         emptyContainer.translatesAutoresizingMaskIntoConstraints = false
         emptyContainer.isUserInteractionEnabled = true
+        // Opaque so recycled streaming cells cannot bleed through on iOS 12.
+        emptyContainer.backgroundColor = DSTheme.c.background
         view.insertSubview(emptyContainer, belowSubview: inputBar)
 
         emptyTitleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -813,11 +909,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func updateEmptyState() {
         let empty = (ConversationStore.shared.currentConversation?.messages.count ?? 0) == 0
+        let c = DSTheme.c
+        emptyContainer.backgroundColor = c.background
         emptyContainer.isHidden = !empty
         tableView.isHidden = empty
-        layoutEmptyChromeForKeyboard()
         if empty {
-            let c = DSTheme.c
+            // Cancel any pending stream paint that could reconfigure a recycled cell.
+            streamUIWork?.cancel()
+            streamUIWork = nil
+            clearNavigationPrompt()
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
             if let chips = emptyChips {
@@ -828,6 +928,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 }
             }
         }
+        layoutEmptyChromeForKeyboard()
     }
 
     /// When keyboard is up, keep title/subtitle above the composer; hide suggestion chips to avoid clutter.
@@ -1189,7 +1290,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         append: String? = nil
     ) {
         if currentConversationID == convID {
-            navigationItem.prompt = phase == .done ? nil : phase.headerTitle
+            if phase == .done {
+                clearNavigationPrompt()
+            } else {
+                navigationItem.prompt = phase.headerTitle
+            }
         }
         ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             guard var last = c.messages.last, last.isStreaming else { return }
@@ -1634,7 +1739,9 @@ extension ChatViewController: MessageCellDelegate {
             self?.flushPendingHeights(force: scrolling && growing)
         }
         heightWork = work
-        let delay: TimeInterval = growing ? 0.03 : 0.18
+        // Streaming text paints at 25 fps, but UITableView self-sizing is much
+        // heavier. Limit live geometry updates so they cannot starve token paint.
+        let delay: TimeInterval = msg.isStreaming ? 0.14 : (growing ? 0.03 : 0.18)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -1680,6 +1787,9 @@ extension ChatViewController: MessageCellDelegate {
             }
             guard !pendingHeights.isEmpty else { return }
         }
+        let includesStreamingMessage = pendingHeights.keys.contains { id in
+            ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == id })?.isStreaming == true
+        }
         var changed = false
         for (id, height) in pendingHeights {
             let old = contentHeights[id] ?? 0
@@ -1689,7 +1799,9 @@ extension ChatViewController: MessageCellDelegate {
             }
         }
         pendingHeights.removeAll()
-        if changed, let cid = renderedConversationID {
+        // Live heights are transient and change several times per second. Keep
+        // them in memory only; persist the final stable height after completion.
+        if changed, !includesStreamingMessage, let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
             RenderCacheStore.saveHeights(heightCacheByConversation)
         }
