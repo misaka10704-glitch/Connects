@@ -11,6 +11,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window.rootViewController = RootSplitViewController()
         window.makeKeyAndVisible()
         self.window = window
+        // Warm light WebKit shell ASAP (marked only). KaTeX warms later in background.
+        WebKitRenderWarmup.prepare()
         return true
     }
 

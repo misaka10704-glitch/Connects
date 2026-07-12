@@ -11,6 +11,9 @@ enum ActionIconFactory {
         case archive, settings, search
         case globe
         case newChat
+        case rename, trash
+        case edit
+        case chevronLeft, chevronRight
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
@@ -222,6 +225,81 @@ enum ActionIconFactory {
                                                   width: pointSize * 0.36, height: pointSize - 3))
             lat.lineWidth = 1.15
             lat.stroke()
+
+        case .rename:
+            // Pencil
+            let body = UIBezierPath()
+            body.move(to: CGPoint(x: r.minX + 3.5, y: r.maxY - 4))
+            body.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 4))
+            body.lineWidth = 1.55
+            body.stroke()
+            let tip = UIBezierPath()
+            tip.move(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 4))
+            tip.addLine(to: CGPoint(x: r.maxX - 3.2, y: r.minY + 6.3))
+            tip.addLine(to: CGPoint(x: r.maxX - 5.2, y: r.minY + 8.3))
+            tip.close()
+            tip.fill()
+            let base = UIBezierPath()
+            base.move(to: CGPoint(x: r.minX + 2.5, y: r.maxY - 2.8))
+            base.addLine(to: CGPoint(x: r.minX + 6.5, y: r.maxY - 2.8))
+            base.lineWidth = 1.4
+            base.stroke()
+
+        case .trash:
+            let lid = UIBezierPath()
+            lid.move(to: CGPoint(x: r.minX + 3, y: r.minY + 5))
+            lid.addLine(to: CGPoint(x: r.maxX - 3, y: r.minY + 5))
+            lid.move(to: CGPoint(x: r.midX - 2.5, y: r.minY + 5))
+            lid.addLine(to: CGPoint(x: r.midX - 2.5, y: r.minY + 3.2))
+            lid.addLine(to: CGPoint(x: r.midX + 2.5, y: r.minY + 3.2))
+            lid.addLine(to: CGPoint(x: r.midX + 2.5, y: r.minY + 5))
+            lid.lineWidth = 1.45
+            lid.stroke()
+            let can = UIBezierPath(roundedRect: CGRect(x: r.minX + 4, y: r.minY + 5.5,
+                                                       width: pointSize - 8, height: pointSize - 8.5),
+                                   cornerRadius: 1.2)
+            can.lineWidth = 1.45
+            can.stroke()
+            for dx in [-2.0, 0.0, 2.0] as [CGFloat] {
+                let slit = UIBezierPath()
+                slit.move(to: CGPoint(x: r.midX + dx, y: r.minY + 8))
+                slit.addLine(to: CGPoint(x: r.midX + dx, y: r.maxY - 4.5))
+                slit.lineWidth = 1.2
+                slit.stroke()
+            }
+
+        case .edit:
+            // Pencil in square — distinct from rename
+            let box = UIBezierPath(roundedRect: r.insetBy(dx: 1.8, dy: 1.8), cornerRadius: 2.2)
+            box.lineWidth = 1.45
+            box.stroke()
+            let pen = UIBezierPath()
+            pen.move(to: CGPoint(x: r.minX + 5, y: r.maxY - 5.5))
+            pen.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 5))
+            pen.lineWidth = 1.55
+            pen.stroke()
+            let tip = UIBezierPath()
+            tip.move(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 5))
+            tip.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.minY + 7))
+            tip.addLine(to: CGPoint(x: r.maxX - 5.2, y: r.minY + 8.7))
+            tip.close()
+            tip.fill()
+
+        case .chevronLeft:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: r.midX + 2.2, y: r.minY + 3.5))
+            path.addLine(to: CGPoint(x: r.midX - 2.4, y: r.midY))
+            path.addLine(to: CGPoint(x: r.midX + 2.2, y: r.maxY - 3.5))
+            path.lineWidth = 1.7
+            path.stroke()
+
+        case .chevronRight:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: r.midX - 2.2, y: r.minY + 3.5))
+            path.addLine(to: CGPoint(x: r.midX + 2.4, y: r.midY))
+            path.addLine(to: CGPoint(x: r.midX - 2.2, y: r.maxY - 3.5))
+            path.lineWidth = 1.7
+            path.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)

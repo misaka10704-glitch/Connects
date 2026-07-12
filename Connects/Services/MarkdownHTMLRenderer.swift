@@ -7,14 +7,36 @@ enum MarkdownHTMLRenderer {
     static var resourceBaseURL: URL? { Bundle.main.resourceURL }
 
     /// Empty document with scripts + `window.__connectsRender(md)`.
+    /// `includeMath: false` skips KaTeX (~270KB JS + fonts) — much faster on A7.
     static func shellHTML(textColor: UIColor,
                           backgroundColor: UIColor,
                           secondaryColor: UIColor,
-                          fontSize: CGFloat) -> String {
+                          fontSize: CGFloat,
+                          includeMath: Bool = true) -> String {
         let fg = cssColor(textColor)
         let bg = cssColor(backgroundColor)
         let sec = cssColor(secondaryColor)
         let border = cssColor(textColor.withAlphaComponent(0.16))
+        let katexCSS = includeMath ? #"<link rel="stylesheet" href="katex/katex.min.css"/>"# : ""
+        let katexJS = includeMath
+            ? #"<script src="katex/katex.min.js"></script><script src="katex/auto-render.min.js"></script>"#
+            : ""
+        let mathRender = includeMath
+            ? """
+              if (typeof renderMathInElement === "function") {
+                renderMathInElement(el, {
+                  delimiters: [
+                    {left: "$$", right: "$$", display: true},
+                    {left: "\\\\[", right: "\\\\]", display: true},
+                    {left: "\\\\(", right: "\\\\)", display: false},
+                    {left: "$", right: "$", display: false}
+                  ],
+                  ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+                  throwOnError: false
+                });
+              }
+              """
+            : ""
 
         return """
         <!DOCTYPE html>
@@ -22,18 +44,13 @@ enum MarkdownHTMLRenderer {
         <head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
-        <link rel="stylesheet" href="katex/katex.min.css"/>
+        \(katexCSS)
         <style>
           html, body { margin:0; padding:0; background:\(bg); color:\(fg);
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
             font-size:\(String(format: "%.1f", fontSize))px; line-height:1.65;
             word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
             height:auto !important; min-height:0 !important; overflow:hidden; }
-          /*
-           * A block formatting context prevents the first/last paragraph margins
-           * from collapsing out of #c. Its bounding box is therefore the actual
-           * Markdown document height, independent of the WKWebView viewport.
-           */
           #c { padding:0; display:flow-root; }
           #c h1,#c h2,#c h3 { font-weight:600; line-height:1.3; margin:0.85em 0 0.35em; }
           #c h1 { font-size:1.35em; } #c h2 { font-size:1.2em; } #c h3 { font-size:1.08em; }
@@ -58,8 +75,7 @@ enum MarkdownHTMLRenderer {
           .katex-display { margin:0.7em 0; overflow-x:auto; overflow-y:hidden; }
         </style>
         <script src="markdown/marked.min.js"></script>
-        <script src="katex/katex.min.js"></script>
-        <script src="katex/auto-render.min.js"></script>
+        \(katexJS)
         </head>
         <body>
         <div id="c"></div>
@@ -67,13 +83,6 @@ enum MarkdownHTMLRenderer {
           function __measure() {
             var el = document.getElementById("c");
             if (!el) return 0;
-            /*
-             * Never use body/document scrollHeight here. WKWebView reports at
-             * least its viewport height for those values. Also do not use #c's
-             * own box: WebKit can clamp that box to the current viewport while a
-             * long table is laid out below it. Measure every Markdown block
-             * instead; its offset geometry is the document-flow extent.
-             */
             var bottom = 0;
             var kids = el.children;
             for (var i = 0; i < kids.length; i++) {
@@ -115,6 +124,7 @@ enum MarkdownHTMLRenderer {
             return html;
           }
           window.__connectsMeasure = function() { return __measure(); };
+          window.__connectsHasMath = \(includeMath ? "true" : "false");
           window.__connectsRender = function(md) {
             var el = document.getElementById("c");
             if (!el) return 0;
@@ -128,18 +138,7 @@ enum MarkdownHTMLRenderer {
               } else {
                 el.textContent = md;
               }
-              if (typeof renderMathInElement === "function") {
-                renderMathInElement(el, {
-                  delimiters: [
-                    {left: "$$", right: "$$", display: true},
-                    {left: "\\\\[", right: "\\\\]", display: true},
-                    {left: "\\\\(", right: "\\\\)", display: false},
-                    {left: "$", right: "$", display: false}
-                  ],
-                  ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
-                  throwOnError: false
-                });
-              }
+              \(mathRender)
             } catch (e) {
               el.textContent = md;
             }
@@ -147,8 +146,7 @@ enum MarkdownHTMLRenderer {
             if (window.requestAnimationFrame) {
               requestAnimationFrame(function(){ __report(); });
             }
-            // One delayed settle only — frequent reports cause mid-scroll row jumps.
-            setTimeout(__report, 280);
+            setTimeout(__report, 120);
             return __measure();
           };
           window.__connectsReady = true;
@@ -171,11 +169,13 @@ enum MarkdownHTMLRenderer {
         "(window.__connectsMeasure ? window.__connectsMeasure() : 0);"
     }
 
-    /// ChatGPT / Claude / Gemini: one GFM+math pipeline for rich blocks (tables, code, KaTeX).
+    /// Only math / tables need WKWebView. Code fences use PlainMarkdown (much faster on A7).
     static func needsRichMarkdown(_ content: String) -> Bool {
-        if MathContentDetector.containsMath(content) { return true }
-        if content.contains("```") { return true }
-        if containsGFMTable(content) { return true }
+        // Detect after normalization: historical turns often put TeX in
+        // ```latex / ```math fences, which are rewritten to $$...$$ below.
+        let normalized = normalizeForRender(content)
+        if MathContentDetector.containsMath(normalized) { return true }
+        if containsGFMTable(normalized) { return true }
         return false
     }
 
@@ -241,6 +241,30 @@ enum MarkdownHTMLRenderer {
             let range = NSRange(s.startIndex..<s.endIndex, in: s)
             s = re.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$$$1$$")
         }
+        // Some providers double-escape delimiters while serialising JSON.
+        // Keep ordinary backslashes untouched; only normalize actual delimiters.
+        s = s.replacingOccurrences(of: "\\\\[", with: "\\[")
+        s = s.replacingOccurrences(of: "\\\\]", with: "\\]")
+        s = s.replacingOccurrences(of: "\\\\(", with: "\\(")
+        s = s.replacingOccurrences(of: "\\\\)", with: "\\)")
+
+        // A few model responses emit a display formula as a bare TeX line
+        // (for example "\frac{a}{b}") without any delimiter. Wrap only lines
+        // that clearly begin with a math command, so prose is unaffected.
+        let lines = s.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\\"),
+                  !trimmed.hasPrefix("\\["),
+                  !trimmed.hasPrefix("\\("),
+                  !trimmed.hasPrefix("\\begin{"),
+                  trimmed.range(
+                    of: #"^\\(?:frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|right|mathbf|mathbb|mathrm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|psi|omega)\b"#,
+                    options: .regularExpression
+                  ) != nil else { return line }
+            let indent = line.prefix { $0 == " " || $0 == "\t" }
+            return "\(indent)$$\(trimmed)$$"
+        }
+        s = lines.joined(separator: "\n")
         return s
     }
 

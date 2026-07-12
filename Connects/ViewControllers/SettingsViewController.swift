@@ -9,10 +9,17 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let fontSizeControl = UISegmentedControl(items: ["小", "中", "大"])
     private let deepseekField = UITextField()
     private let kimiField = UITextField()
+    private let dashscopeField = UITextField()
+    private let zhipuField = UITextField()
+    private let doubaoField = UITextField()
+    private let doubaoEndpointField = UITextField()
     private let kimiCNSwitch = UISwitch()
     private let kimiCNLabel = UILabel()
+    private let qwenCNSwitch = UISwitch()
+    private let qwenCNLabel = UILabel()
     private let thinkingSwitch = UISwitch()
     private let thinkingLabel = UILabel()
+    private let modelVisibility = ModelVisibilityView()
 
     private var sectionLabels: [UILabel] = []
     private var cards: [UIView] = []
@@ -69,10 +76,37 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             string: "sk-… Kimi / Moonshot",
             attributes: [.foregroundColor: c.textTertiary]
         )
+        dashscopeField.textColor = c.textPrimary
+        dashscopeField.tintColor = c.accent
+        dashscopeField.attributedPlaceholder = NSAttributedString(
+            string: "sk-… DashScope / 通义",
+            attributes: [.foregroundColor: c.textTertiary]
+        )
+        zhipuField.textColor = c.textPrimary
+        zhipuField.tintColor = c.accent
+        zhipuField.attributedPlaceholder = NSAttributedString(
+            string: "智谱 API Key",
+            attributes: [.foregroundColor: c.textTertiary]
+        )
+        doubaoField.textColor = c.textPrimary
+        doubaoField.tintColor = c.accent
+        doubaoField.attributedPlaceholder = NSAttributedString(
+            string: "火山方舟 API Key",
+            attributes: [.foregroundColor: c.textTertiary]
+        )
+        doubaoEndpointField.textColor = c.textPrimary
+        doubaoEndpointField.tintColor = c.accent
+        doubaoEndpointField.attributedPlaceholder = NSAttributedString(
+            string: "可选 ep-… 接入点",
+            attributes: [.foregroundColor: c.textTertiary]
+        )
         kimiCNLabel.textColor = c.textPrimary
         kimiCNSwitch.onTintColor = c.accent
+        qwenCNLabel.textColor = c.textPrimary
+        qwenCNSwitch.onTintColor = c.accent
         thinkingLabel.textColor = c.textPrimary
         thinkingSwitch.onTintColor = c.accent
+        modelVisibility.applyTheme()
 
         appearanceControl.tintColor = c.accent
         fontSizeControl.tintColor = c.accent
@@ -134,7 +168,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(makeSectionTitle("模型行为"))
         let thinkRow = makeSwitchRow(
             label: thinkingLabel,
-            text: "深度思考（关闭后 Kimi / DeepSeek 更快）",
+            text: "深度思考（关闭后更快）",
             sw: thinkingSwitch,
             isOn: SettingsManager.shared.thinkingEnabled,
             action: #selector(thinkingChanged)
@@ -143,10 +177,21 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let thinkTip = UILabel()
         thinkTip.numberOfLines = 0
         thinkTip.font = DSTheme.bodyFont(size: 13)
-        thinkTip.text = "Kimi K2.6 / DeepSeek V4 默认会先输出长段思考再写正文，首字会很慢。关掉即 Instant 模式。"
+        thinkTip.text = "DeepSeek / Kimi K2.6 / Qwen / GLM / 豆包 默认会先思考再写正文。关掉即 Instant。Kimi K2.7 强制思考不可关。"
         footerLabels.append(thinkTip)
         contentStack.addArrangedSubview(thinkTip)
         contentStack.setCustomSpacing(22, after: thinkTip)
+
+        contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
+        contentStack.addArrangedSubview(modelVisibility)
+        cards.append(modelVisibility)
+        let visTip = UILabel()
+        visTip.numberOfLines = 0
+        visTip.font = DSTheme.bodyFont(size: 13)
+        visTip.text = "关掉的模型不会出现在顶栏选择列表里。至少保留一个。"
+        footerLabels.append(visTip)
+        contentStack.addArrangedSubview(visTip)
+        contentStack.setCustomSpacing(22, after: visTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("DeepSeek（Pro / Flash 共用）"))
         configureField(deepseekField)
@@ -167,11 +212,42 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             action: #selector(kimiCNChanged)
         )
         contentStack.addArrangedSubview(cnRow)
+        contentStack.setCustomSpacing(22, after: cnRow)
+
+        contentStack.addArrangedSubview(makeSectionTitle("Qwen（DashScope）"))
+        configureField(dashscopeField)
+        dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
+        contentStack.addArrangedSubview(makeCard(embedding: dashscopeField, height: 44, inset: 0))
+        let qwenCNRow = makeSwitchRow(
+            label: qwenCNLabel,
+            text: "国内节点 dashscope.aliyuncs.com",
+            sw: qwenCNSwitch,
+            isOn: SettingsManager.shared.qwenUseChinaEndpoint,
+            action: #selector(qwenCNChanged)
+        )
+        contentStack.addArrangedSubview(qwenCNRow)
+        contentStack.setCustomSpacing(22, after: qwenCNRow)
+
+        contentStack.addArrangedSubview(makeSectionTitle("智谱 GLM"))
+        configureField(zhipuField)
+        zhipuField.text = SettingsManager.shared.zhipuAPIKey
+        contentStack.addArrangedSubview(makeCard(embedding: zhipuField, height: 44, inset: 0))
+        contentStack.setCustomSpacing(22, after: contentStack.arrangedSubviews.last!)
+
+        contentStack.addArrangedSubview(makeSectionTitle("豆包（火山方舟）"))
+        configureField(doubaoField)
+        doubaoField.text = SettingsManager.shared.doubaoAPIKey
+        contentStack.addArrangedSubview(makeCard(embedding: doubaoField, height: 44, inset: 0))
+        configureField(doubaoEndpointField)
+        doubaoEndpointField.isSecureTextEntry = false
+        doubaoEndpointField.placeholder = "可选 ep-… 接入点"
+        doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
+        contentStack.addArrangedSubview(makeCard(embedding: doubaoEndpointField, height: 44, inset: 0))
 
         let tip = UILabel()
         tip.numberOfLines = 0
         tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串。DeepSeek 与 Kimi 的 Key 不能混用。Kimi 很慢时：①确认深度思考已关 ②切换国内/海外节点试一次（Key 要与平台匹配：.cn Key 配 .cn）③新开对话（旧会话里的长思考记录会拖慢 Instant）。首包超过约 4 秒时顶栏会显示耗时与主机名。\n\n输入栏地球图标可开「联网」：发送前先检索网页摘要再回答，适合时效/事实题；默认关闭以保速度。"
+        tip.text = "Key 存在本机钥匙串，不可混用。图片：Kimi / Qwen / 豆包。联网：输入栏地球图标。"
         footerLabels.append(tip)
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
@@ -195,7 +271,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let about = UILabel()
         about.numberOfLines = 0
         about.font = DSTheme.bodyFont(size: 14)
-        about.text = "Connects · iPad · iOS 12+ · 支持 Slide Over 侧拉 · 可选联网搜索"
+        about.text = "Connects · iPad · iOS 12+ · DeepSeek / Kimi / Qwen / GLM / 豆包 · 可选联网搜索"
         footerLabels.append(about)
         contentStack.addArrangedSubview(about)
     }
@@ -264,6 +340,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     @objc private func doneTapped() {
         SettingsManager.shared.deepseekAPIKey = deepseekField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         SettingsManager.shared.kimiAPIKey = kimiField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.dashscopeAPIKey = dashscopeField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.zhipuAPIKey = zhipuField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.doubaoAPIKey = doubaoField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.doubaoEndpointID = doubaoEndpointField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         view.endEditing(true)
         dismiss(animated: true)
     }
@@ -278,6 +358,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func kimiCNChanged() {
         SettingsManager.shared.kimiUseChinaEndpoint = kimiCNSwitch.isOn
+    }
+
+    @objc private func qwenCNChanged() {
+        SettingsManager.shared.qwenUseChinaEndpoint = qwenCNSwitch.isOn
     }
 
     @objc private func thinkingChanged() {

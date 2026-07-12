@@ -33,18 +33,20 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.4.18</string>
+	<string>1.6.1</string>
 	<key>CFBundleVersion</key>
-	<string>46</string>
+	<string>78</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
-		<false/>
+		<true/>
 	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>用于向 Kimi 发送图片进行分析。</string>
+	<string>用于向支持视觉的模型（Kimi / Qwen / 豆包）发送图片进行分析。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于拍照并发送给支持视觉的模型分析。</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>armv7</string>

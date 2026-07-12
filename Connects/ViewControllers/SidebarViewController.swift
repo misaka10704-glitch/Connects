@@ -323,27 +323,30 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         let conv = sections[indexPath.section].items[indexPath.row]
         tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
 
-        let sheet = UIAlertController(title: conv.title, message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "重命名", style: .default) { [weak self] _ in
-            self?.delegate?.sidebarDidRenameConversation(id: conv.id)
-        })
-        sheet.addAction(UIAlertAction(title: "分叉", style: .default) { [weak self] _ in
-            self?.delegate?.sidebarDidForkConversation(id: conv.id)
-        })
+        let cell = tableView.cellForRow(at: indexPath) ?? tableView
+        let local = gesture.location(in: cell)
+        let hot = CGRect(x: local.x - 14, y: local.y - 14, width: 28, height: 28)
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
-        sheet.addAction(UIAlertAction(title: archiveTitle, style: .default) { [weak self] _ in
-            self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
-        })
-        sheet.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
-            self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
-        })
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-
-        if let pop = sheet.popoverPresentationController,
-           let cell = tableView.cellForRow(at: indexPath) {
-            pop.sourceView = cell
-            pop.sourceRect = cell.bounds
-        }
-        present(sheet, animated: true)
+        ConnectsMenu.present(
+            from: self,
+            title: conv.title,
+            items: [
+                ConnectsMenuItem(title: "重命名", icon: .rename) { [weak self] in
+                    self?.delegate?.sidebarDidRenameConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: "分叉", icon: .fork) { [weak self] in
+                    self?.delegate?.sidebarDidForkConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: archiveTitle, icon: .archive) { [weak self] in
+                    self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
+                },
+                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
+                }
+            ],
+            sourceView: cell,
+            sourceRect: hot,
+            preferVertical: true
+        )
     }
 }

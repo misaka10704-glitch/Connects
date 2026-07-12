@@ -69,10 +69,6 @@ final class ConversationStore {
     }
 
     func deleteConversation(id: String) {
-        if let conv = conversations.first(where: { $0.id == id }) {
-            let url = MarkdownExporter.fileURL(for: conv)
-            try? FileManager.default.removeItem(at: url)
-        }
         conversations.removeAll { $0.id == id }
         if conversations.isEmpty {
             let fresh = Conversation()
@@ -93,7 +89,6 @@ final class ConversationStore {
         conversations[index].title = String(trimmed.prefix(40))
         conversations[index].titleLocked = true
         conversations[index].updatedAt = Date()
-        persistMarkdown(conversations[index])
         save()
         notify()
     }
@@ -106,7 +101,6 @@ final class ConversationStore {
             showArchived = false
             currentConversationID = visibleConversations.first?.id ?? id
         }
-        persistMarkdown(conversations[index])
         save()
         notify()
     }
@@ -147,7 +141,6 @@ final class ConversationStore {
         conversations.insert(copy, at: 0)
         currentConversationID = copy.id
         showArchived = false
-        persistMarkdown(copy)
         save()
         notify()
         return copy
@@ -165,7 +158,6 @@ final class ConversationStore {
         guard !cleaned.isEmpty, cleaned != "[图片]" else { return }
         conversations[index].title = String(cleaned.prefix(20))
         conversations[index].updatedAt = Date()
-        persistMarkdown(conversations[index])
         save()
         notify()
     }
@@ -184,16 +176,12 @@ final class ConversationStore {
         guard trimmed.count <= 30 else { return }
         conversations[index].title = String(trimmed.prefix(24))
         conversations[index].updatedAt = Date()
-        persistMarkdown(conversations[index])
         save()
         notify()
     }
 
     func updateCurrent(_ mutate: (inout Conversation) -> Void) {
         mutateCurrent(mutate)
-        if let cur = currentConversation {
-            persistMarkdown(cur)
-        }
         save()
         notify()
     }
@@ -217,7 +205,6 @@ final class ConversationStore {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[index].model = model
         conversations[index].updatedAt = Date()
-        persistMarkdown(conversations[index])
         save()
         notify()
     }
@@ -248,10 +235,10 @@ final class ConversationStore {
                   !last.hasReasoning {
             last.content = "模型未返回内容。可点「重跑」再试。"
         }
+        last.commitActiveVersion()
         conv.messages[conv.messages.count - 1] = last
         conv.updatedAt = Date()
         conversations[index] = conv
-        persistMarkdown(conv)
         save()
         // Do not notify here — StreamManager posts streamManagerDidFinish once to avoid triple reloadData.
     }
@@ -265,11 +252,8 @@ final class ConversationStore {
         conversations[index] = conv
     }
 
-    private func persistMarkdown(_ conversation: Conversation) {
-        _ = MarkdownExporter.write(conversation)
-    }
-
-    /// Persist JSON only while streaming (no MD rewrite every token).
+    /// Persist the raw conversation JSON only. Markdown is generated solely by
+    /// the explicit export action in ChatViewController.
     private func scheduleSave() {
         saveWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -289,7 +273,6 @@ final class ConversationStore {
         conversations = decoded
         currentConversationID = UserDefaults.standard.string(forKey: storageKey + "_current")
             ?? UserDefaults.standard.string(forKey: legacyKey + "_current")
-        // Lazy: do not rewrite every markdown file on launch (was O(n) disk thrash).
     }
 
     private func save() {

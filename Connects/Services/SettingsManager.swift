@@ -2,10 +2,14 @@ import Foundation
 
 extension Notification.Name {
     static let chatFontSizeDidChange = Notification.Name("ConnectsChatFontSizeDidChange")
+    static let visibleModelsDidChange = Notification.Name("ConnectsVisibleModelsDidChange")
 }
 
 final class SettingsManager {
     static let shared = SettingsManager()
+
+    private let enabledModelsKey = "connects_enabled_models"
+    private let knownModelsKey = "connects_known_models"
 
     var deepseekAPIKey: String {
         get { KeychainHelper.load(key: KeychainHelper.Keys.deepseekAPIKey) ?? "" }
@@ -17,17 +21,48 @@ final class SettingsManager {
         set { persist(key: KeychainHelper.Keys.kimiAPIKey, value: Self.sanitizeKey(newValue)) }
     }
 
+    var dashscopeAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.dashscopeAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.dashscopeAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var zhipuAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.zhipuAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.zhipuAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var doubaoAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.doubaoAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.doubaoAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    /// 火山方舟接入点 ID（`ep-…`）。填写后覆盖豆包默认 model id。
+    var doubaoEndpointID: String {
+        get { UserDefaults.standard.string(forKey: "connects_doubao_endpoint") ?? "" }
+        set {
+            UserDefaults.standard.set(
+                newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                forKey: "connects_doubao_endpoint"
+            )
+        }
+    }
+
     var kimiUseChinaEndpoint: Bool {
         get {
-            // Default ON for China users — api.moonshot.ai is often very slow from CN.
             if UserDefaults.standard.object(forKey: "connects_kimi_cn") == nil { return true }
             return UserDefaults.standard.bool(forKey: "connects_kimi_cn")
         }
         set { UserDefaults.standard.set(newValue, forKey: "connects_kimi_cn") }
     }
 
-    /// Shared thinking toggle for DeepSeek V4 / Kimi K2.6 (default ON).
-    /// Off = Instant mode — much faster first token, no reasoning stream.
+    var qwenUseChinaEndpoint: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "connects_qwen_cn") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "connects_qwen_cn")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "connects_qwen_cn") }
+    }
+
     var thinkingEnabled: Bool {
         get {
             if UserDefaults.standard.object(forKey: "connects_thinking") == nil { return true }
@@ -36,7 +71,6 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: "connects_thinking") }
     }
 
-    /// Input-bar 联网开关：发送前先搜网页再注入上下文（默认关）。
     var webSearchEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "connects_web_search") }
         set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
@@ -47,7 +81,6 @@ final class SettingsManager {
         set { ThemeManager.shared.mode = newValue }
     }
 
-    /// 0=小 1=中 2=大
     var chatFontSizeIndex: Int {
         get {
             let v = UserDefaults.standard.object(forKey: "connects_font_size") as? Int
@@ -71,8 +104,62 @@ final class SettingsManager {
         chatBodyFontSize - 1.5
     }
 
-    func apiKey(for provider: AIProvider) -> String {
-        sanitizedAPIKey(for: provider)
+    var enabledModelIDs: Set<String> {
+        get {
+            ensureModelCatalogSynced()
+            if let arr = UserDefaults.standard.array(forKey: enabledModelsKey) as? [String], !arr.isEmpty {
+                return Set(arr)
+            }
+            return Set(AIModelOption.defaultEnabled.map { $0.stableID })
+        }
+        set {
+            var next = newValue
+            if next.isEmpty, let first = AIModelOption.defaultEnabled.first {
+                next = [first.stableID]
+            }
+            UserDefaults.standard.set(Array(next), forKey: enabledModelsKey)
+            NotificationCenter.default.post(name: .visibleModelsDidChange, object: nil)
+        }
+    }
+
+    func isModelEnabled(_ model: AIModelOption) -> Bool {
+        enabledModelIDs.contains(model.stableID)
+    }
+
+    @discardableResult
+    func setModelEnabled(_ model: AIModelOption, enabled: Bool) -> Bool {
+        var set = enabledModelIDs
+        if enabled {
+            set.insert(model.stableID)
+        } else {
+            guard set.count > 1 else { return false }
+            set.remove(model.stableID)
+        }
+        enabledModelIDs = set
+        return true
+    }
+
+    func ensureModelCatalogSynced() {
+        let catalog = AIModelOption.all.map { $0.stableID }
+        let known = Set((UserDefaults.standard.array(forKey: knownModelsKey) as? [String]) ?? [])
+        let stored = UserDefaults.standard.array(forKey: enabledModelsKey) as? [String]
+
+        var enabled: Set<String>
+        if known.isEmpty && stored == nil {
+            enabled = Set(AIModelOption.defaultEnabled.map { $0.stableID })
+        } else {
+            enabled = Set(stored ?? AIModelOption.defaultEnabled.map { $0.stableID })
+            enabled = Set(enabled.filter { catalog.contains($0) })
+            // 新上架模型默认开启（仅 GLM / 豆包这类精选）
+            for id in catalog where !known.contains(id) {
+                enabled.insert(id)
+            }
+            if enabled.isEmpty {
+                enabled = Set(AIModelOption.defaultEnabled.map { $0.stableID })
+            }
+        }
+        UserDefaults.standard.set(Array(enabled), forKey: enabledModelsKey)
+        UserDefaults.standard.set(catalog, forKey: knownModelsKey)
     }
 
     func sanitizedAPIKey(for provider: AIProvider) -> String {
@@ -80,9 +167,14 @@ final class SettingsManager {
         switch provider {
         case .deepseek: raw = deepseekAPIKey
         case .kimi: raw = kimiAPIKey
+        case .qwen: raw = dashscopeAPIKey
+        case .zhipu: raw = zhipuAPIKey
+        case .doubao: raw = doubaoAPIKey
         }
         return Self.sanitizeKey(raw)
     }
+
+    func apiKey(for provider: AIProvider) -> String { sanitizedAPIKey(for: provider) }
 
     func hasAPIKey(for provider: AIProvider) -> Bool {
         !sanitizedAPIKey(for: provider).isEmpty

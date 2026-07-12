@@ -322,7 +322,8 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
               let choices = json["choices"] as? [[String: Any]],
               let delta = choices.first?["delta"] as? [String: Any] else { return }
 
-        if let reasoning = APIClient.deltaTextPublic(delta["reasoning_content"]), !reasoning.isEmpty {
+        if let reasoning = APIClient.deltaTextPublic(delta["reasoning_content"])
+            ?? APIClient.deltaTextPublic(delta["reasoning"]), !reasoning.isEmpty {
             reasoningBuf += reasoning
             scheduleFlush()
         }

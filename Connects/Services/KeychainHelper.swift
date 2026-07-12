@@ -67,5 +67,8 @@ enum KeychainHelper {
     enum Keys {
         static let deepseekAPIKey = "deepseek_api_key"
         static let kimiAPIKey = "kimi_api_key"
+        static let dashscopeAPIKey = "dashscope_api_key"
+        static let zhipuAPIKey = "zhipu_api_key"
+        static let doubaoAPIKey = "doubao_api_key"
     }
 }

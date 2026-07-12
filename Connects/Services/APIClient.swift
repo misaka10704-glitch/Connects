@@ -23,7 +23,7 @@ enum APIClientError: LocalizedError, Equatable {
             return "无效的 API 地址"
         case .httpError(let code, let body):
             if code == 401 {
-                return "鉴权失败 (401)：API Key 无效、过期，或用错了平台 Key。请到设置核对 DeepSeek / Kimi 对应的 Key。\(body.isEmpty ? "" : "\n\(body)")"
+                return "鉴权失败 (401)：API Key 无效、过期，或用错了平台 Key。请到设置核对对应厂商的 Key。\(body.isEmpty ? "" : "\n\(body)")"
             }
             return "请求失败 (\(code))：\(body.isEmpty ? "HTTP \(code)" : body)"
         case .decodeError:
@@ -31,7 +31,7 @@ enum APIClientError: LocalizedError, Equatable {
         case .cancelled:
             return "已取消"
         case .visionNotSupported:
-            return "当前模型不支持图片，请切换到 Kimi K2.6"
+            return "当前模型不支持图片，请切换到 Kimi / Qwen / 智谱视觉 / 豆包"
         }
     }
 }
@@ -187,14 +187,22 @@ final class APIClient: NSObject {
         // but keeps Instant replies bounded.
         let tokenCap = maxTokens ?? 8192
         var payload: [String: Any] = [
-            "model": model.modelId,
+            "model": model.resolvedModelId,
             "messages": messages.map { serializeMessagePublic($0, model: model, includeReasoning: thinkingOn) },
             "stream": stream,
             "max_tokens": tokenCap
         ]
-        // K2.7 Code rejects thinking:disabled; omit or send enabled only when toggleable.
-        if model.supportsThinkingToggle {
-            payload["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
+        switch model.thinkingStyle {
+        case .none:
+            break
+        case .enableThinking:
+            if model.supportsThinkingToggle {
+                payload["enable_thinking"] = thinkingOn
+            }
+        case .thinkingType:
+            if model.supportsThinkingToggle {
+                payload["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
+            }
         }
         return payload
     }
@@ -347,8 +355,7 @@ extension APIClient: URLSessionDataDelegate {
               let choices = json["choices"] as? [[String: Any]],
               let delta = choices.first?["delta"] as? [String: Any] else { return }
 
-        // Prefer visible reply content; also deliver reasoning separately for Think UI.
-        let reasoning = Self.deltaText(delta["reasoning_content"])
+        let reasoning = Self.deltaText(delta["reasoning_content"]) ?? Self.deltaText(delta["reasoning"])
         let content = Self.deltaText(delta["content"])
 
         if let reasoning = reasoning, !reasoning.isEmpty {

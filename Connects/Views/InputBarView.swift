@@ -6,7 +6,7 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapAttach()
 }
 
-/// ChatGPT-style composer: single rounded pill, + / 联网 left, send/stop right.
+/// ChatGPT-style composer: rounded pill, + / 联网, inline image chip, send/stop.
 final class InputBarView: UIView, ThemeRefreshable {
     weak var delegate: InputBarViewDelegate?
 
@@ -17,11 +17,17 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
-    private let previewContainer = UIView()
-    private let previewImageView = UIImageView()
-    private let removePreviewButton = UIButton(type: .system)
+
+    /// Inline attachment chip inside the composer (ChatGPT-like).
+    private let chip = UIView()
+    private let chipImage = UIImageView()
+    private let chipRemove = UIButton(type: .system)
+    private let chipLabel = UILabel()
+
     private var textViewHeightConstraint: NSLayoutConstraint?
-    private var previewHeightConstraint: NSLayoutConstraint?
+    private var chipHeightConstraint: NSLayoutConstraint?
+    private var textTopToChip: NSLayoutConstraint?
+    private var textTopToContainer: NSLayoutConstraint?
     private var pendingImageBase64: String?
 
     private let btnSize: CGFloat = 30
@@ -32,10 +38,17 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     var attachEnabled = true {
         didSet {
-            attachButton.isEnabled = attachEnabled
-            attachButton.alpha = attachEnabled ? 1 : 0.35
+            attachButton.isEnabled = attachEnabled && !isStreaming
+            attachButton.alpha = attachButton.isEnabled ? 1 : 0.35
         }
     }
+
+    /// Window for anchoring menus to the + button.
+    var attachAnchorView: UIView { attachButton }
+
+    func attachAnchorRect() -> CGRect { attachButton.bounds }
+
+    var hasAttachment: Bool { pendingImageBase64 != nil }
 
     var webSearchEnabled: Bool {
         get { SettingsManager.shared.webSearchEnabled }
@@ -68,8 +81,11 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.backgroundColor = c.textPrimary
         stopButton.tintColor = c.background
         stopButton.setImage(ActionIconFactory.image(.stop, pointSize: 12, color: .white), for: .normal)
-        previewContainer.backgroundColor = c.surface
-        removePreviewButton.setTitleColor(c.textSecondary, for: .normal)
+        chip.backgroundColor = c.surfaceHover
+        chip.layer.borderColor = c.border.cgColor
+        chipLabel.textColor = c.textSecondary
+        chipRemove.tintColor = c.textSecondary
+        chipRemove.backgroundColor = c.surface.withAlphaComponent(0.92)
         updateFocusBorder()
         updateSendEnabled()
         updateWebSearchAppearance()
@@ -79,7 +95,9 @@ final class InputBarView: UIView, ThemeRefreshable {
         let c = DSTheme.c
         let focused = textView.isFirstResponder
         containerView.layer.borderWidth = focused ? 1.5 : 1 / UIScreen.main.scale
-        containerView.layer.borderColor = focused ? c.accent.withAlphaComponent(0.55).cgColor : c.inputBorder.cgColor
+        containerView.layer.borderColor = focused
+            ? c.accent.withAlphaComponent(0.55).cgColor
+            : c.inputBorder.cgColor
     }
 
     func clearText() {
@@ -92,46 +110,66 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     func setAttachment(image: UIImage, base64: String) {
         pendingImageBase64 = base64
-        previewImageView.image = image
-        previewContainer.isHidden = false
-        previewHeightConstraint?.constant = 64
+        chipImage.image = image
+        chip.isHidden = false
+        chipHeightConstraint?.constant = 56
+        textTopToChip?.isActive = true
+        textTopToContainer?.isActive = false
         updateSendEnabled()
+        UIView.animate(withDuration: 0.15) { self.layoutIfNeeded() }
     }
 
     func clearAttachment() {
         pendingImageBase64 = nil
-        previewImageView.image = nil
-        previewContainer.isHidden = true
-        previewHeightConstraint?.constant = 0
+        chipImage.image = nil
+        chip.isHidden = true
+        chipHeightConstraint?.constant = 0
+        textTopToChip?.isActive = false
+        textTopToContainer?.isActive = true
         updateSendEnabled()
+        UIView.animate(withDuration: 0.15) { self.layoutIfNeeded() }
     }
 
     private func setup() {
-        previewContainer.translatesAutoresizingMaskIntoConstraints = false
-        previewContainer.layer.cornerRadius = 12
-        previewContainer.clipsToBounds = true
-        previewContainer.isHidden = true
-        addSubview(previewContainer)
-
-        previewImageView.translatesAutoresizingMaskIntoConstraints = false
-        previewImageView.contentMode = .scaleAspectFill
-        previewImageView.clipsToBounds = true
-        previewContainer.addSubview(previewImageView)
-
-        removePreviewButton.translatesAutoresizingMaskIntoConstraints = false
-        removePreviewButton.setTitle("×", for: .normal)
-        removePreviewButton.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .medium)
-        removePreviewButton.addTarget(self, action: #selector(removePreview), for: .touchUpInside)
-        previewContainer.addSubview(removePreviewButton)
-
         containerView.translatesAutoresizingMaskIntoConstraints = false
         containerView.layer.cornerRadius = 22
         containerView.layer.borderWidth = 1 / UIScreen.main.scale
+        containerView.clipsToBounds = true
         addSubview(containerView)
+
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.layer.cornerRadius = 12
+        chip.layer.borderWidth = 1 / UIScreen.main.scale
+        chip.clipsToBounds = true
+        chip.isHidden = true
+        containerView.addSubview(chip)
+
+        chipImage.translatesAutoresizingMaskIntoConstraints = false
+        chipImage.contentMode = .scaleAspectFill
+        chipImage.clipsToBounds = true
+        chipImage.layer.cornerRadius = 8
+        chip.addSubview(chipImage)
+
+        chipLabel.translatesAutoresizingMaskIntoConstraints = false
+        chipLabel.text = "图片"
+        chipLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        chip.addSubview(chipLabel)
+
+        chipRemove.translatesAutoresizingMaskIntoConstraints = false
+        chipRemove.setImage(ActionIconFactory.image(.plus, pointSize: 10), for: .normal)
+        // Draw a small × via title for clarity on iOS 12.
+        chipRemove.setImage(nil, for: .normal)
+        chipRemove.setTitle("×", for: .normal)
+        chipRemove.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        chipRemove.layer.cornerRadius = 11
+        chipRemove.clipsToBounds = true
+        chipRemove.addTarget(self, action: #selector(removePreview), for: .touchUpInside)
+        chip.addSubview(chipRemove)
 
         attachButton.translatesAutoresizingMaskIntoConstraints = false
         attachButton.setImage(ActionIconFactory.image(.plus, pointSize: 16), for: .normal)
         attachButton.imageView?.contentMode = .scaleAspectFit
+        attachButton.accessibilityLabel = "添加图片"
         attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
         containerView.addSubview(attachButton)
 
@@ -147,7 +185,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         textView.font = DSTheme.bodyFont(size: 16)
         textView.isScrollEnabled = false
         textView.delegate = self
-        textView.textContainerInset = UIEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
+        // Keep vertical insets balanced so the first line optically matches + / 🌐 / send.
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         containerView.addSubview(textView)
 
@@ -173,59 +212,75 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.isHidden = true
         containerView.addSubview(stopButton)
 
-        textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 44)
-        previewHeightConstraint = previewContainer.heightAnchor.constraint(equalToConstant: 0)
+        textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 36)
+        chipHeightConstraint = chip.heightAnchor.constraint(equalToConstant: 0)
+        textTopToChip = textView.topAnchor.constraint(equalTo: chip.bottomAnchor, constant: 4)
+        textTopToContainer = textView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 7)
+        textTopToContainer?.isActive = true
 
         NSLayoutConstraint.activate([
-            previewContainer.topAnchor.constraint(equalTo: topAnchor),
-            previewContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            previewContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            previewHeightConstraint!,
-
-            previewImageView.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor, constant: 8),
-            previewImageView.topAnchor.constraint(equalTo: previewContainer.topAnchor, constant: 6),
-            previewImageView.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor, constant: -6),
-            previewImageView.widthAnchor.constraint(equalToConstant: 44),
-            previewImageView.heightAnchor.constraint(equalToConstant: 44),
-
-            removePreviewButton.leadingAnchor.constraint(equalTo: previewImageView.trailingAnchor, constant: 8),
-            removePreviewButton.centerYAnchor.constraint(equalTo: previewImageView.centerYAnchor),
-
-            containerView.topAnchor.constraint(equalTo: previewContainer.bottomAnchor, constant: 6),
+            containerView.topAnchor.constraint(equalTo: topAnchor),
             containerView.leadingAnchor.constraint(equalTo: leadingAnchor),
             containerView.trailingAnchor.constraint(equalTo: trailingAnchor),
             containerView.bottomAnchor.constraint(equalTo: bottomAnchor),
             containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
+            chip.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 10),
+            chip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            chip.trailingAnchor.constraint(lessThanOrEqualTo: sendButton.leadingAnchor, constant: -8),
+            chipWidthConstraint(),
+            chipHeightConstraint!,
+
+            chipImage.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 6),
+            chipImage.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            chipImage.widthAnchor.constraint(equalToConstant: 40),
+            chipImage.heightAnchor.constraint(equalToConstant: 40),
+
+            chipLabel.leadingAnchor.constraint(equalTo: chipImage.trailingAnchor, constant: 8),
+            chipLabel.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+
+            chipRemove.leadingAnchor.constraint(equalTo: chipLabel.trailingAnchor, constant: 6),
+            chipRemove.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
+            chipRemove.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            chipRemove.widthAnchor.constraint(equalToConstant: 22),
+            chipRemove.heightAnchor.constraint(equalToConstant: 22),
+
+            // Icons share the text row’s vertical center (fixes top-heavy text vs bottom-pinned buttons).
             attachButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
-            attachButton.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
+            attachButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             webSearchButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
-            webSearchButton.bottomAnchor.constraint(equalTo: attachButton.bottomAnchor),
+            webSearchButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
             webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
             webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
-            sendButton.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
+            sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
             sendButton.widthAnchor.constraint(equalToConstant: btnSize),
             sendButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             stopButton.trailingAnchor.constraint(equalTo: sendButton.trailingAnchor),
-            stopButton.bottomAnchor.constraint(equalTo: sendButton.bottomAnchor),
+            stopButton.centerYAnchor.constraint(equalTo: sendButton.centerYAnchor),
             stopButton.widthAnchor.constraint(equalToConstant: btnSize),
             stopButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            textView.topAnchor.constraint(equalTo: containerView.topAnchor),
             textView.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 4),
             textView.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -6),
-            textView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            textView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
             textViewHeightConstraint!,
 
             placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
-            placeholderLabel.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor)
+            placeholderLabel.centerYAnchor.constraint(equalTo: textView.centerYAnchor)
         ])
+    }
+
+    private func chipWidthConstraint() -> NSLayoutConstraint {
+        // Hug content: image + label + remove + paddings ≈ 130
+        let w = chip.widthAnchor.constraint(greaterThanOrEqualToConstant: 118)
+        w.priority = .defaultHigh
+        return w
     }
 
     private func updateStreamingState() {
@@ -233,8 +288,10 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.isHidden = !isStreaming
         textView.isEditable = !isStreaming
         attachButton.isEnabled = !isStreaming && attachEnabled
+        attachButton.alpha = attachButton.isEnabled ? 1 : 0.35
         webSearchButton.isEnabled = !isStreaming
         webSearchButton.alpha = isStreaming ? 0.35 : 1
+        chipRemove.isEnabled = !isStreaming
         updateSendEnabled()
     }
 
@@ -255,12 +312,18 @@ final class InputBarView: UIView, ThemeRefreshable {
         let c = DSTheme.c
         sendButton.backgroundColor = on ? c.sendEnabled : c.sendDisabled
         sendButton.tintColor = .white
+        // Highlight attach when an image is staged.
+        if pendingImageBase64 != nil {
+            attachButton.tintColor = c.accent
+        } else {
+            attachButton.tintColor = c.textSecondary
+        }
     }
 
     private func updateTextViewHeight() {
         let width = textView.bounds.width > 0 ? textView.bounds.width : 400
         let size = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        let height = min(max(44, size.height), 120)
+        let height = min(max(36, size.height), 120)
         textViewHeightConstraint?.constant = height
         textView.isScrollEnabled = height >= 120
     }

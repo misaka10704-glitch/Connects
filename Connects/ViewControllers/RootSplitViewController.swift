@@ -325,6 +325,9 @@ extension Notification.Name {
 
 extension RootSplitViewController: SidebarViewControllerDelegate {
     func sidebarDidSelectConversation(id: String) {
+        if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }) {
+            MessageCell.prewarmSnapshots(for: target.messages)
+        }
         ConversationStore.shared.selectConversation(id: id)
         closeDrawer()
     }

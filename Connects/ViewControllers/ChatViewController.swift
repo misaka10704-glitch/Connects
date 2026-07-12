@@ -12,7 +12,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let inputBar = InputBarView()
     private let contextUsageView = ContextUsageView()
-    private let modelButton = UIButton(type: .system)
+    private let modelButton = UIButton(type: .custom)
     private let emptyTitleLabel = UILabel()
     private let emptySubtitleLabel = UILabel()
     private let emptyContainer = UIView()
@@ -28,6 +28,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var heightCacheByConversation: [String: [String: CGFloat]] = [:]
     private var renderedConversationID: String?
     private var stickToBottom = true
+    /// Set by a user drag away from the latest turn. Unlike `stickToBottom`,
+    /// this cannot be changed by WebKit/table layout callbacks.
+    private var readingHistory = false
     private var streamUIWork: DispatchWorkItem?
     private var heightWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
@@ -63,29 +66,51 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinished(_:)), name: .streamManagerDidFinish, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsThinkingToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextUsageChanged(_:)), name: .contextUsageDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextCompactionFinished(_:)), name: .contextCompactionDidFinish, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(chatWidthDidChange(_:)), name: .connectsChatWidthDidChange, object: nil)
         migrateRenderSchemaIfNeeded()
+        if !didMigrateRenderSchema {
+            heightCacheByConversation = RenderCacheStore.loadHeights()
+        }
+        WebKitRenderWarmup.prepare()
         registerKeyboard()
         applyTheme()
         reloadChat()
         layoutWidthBucket = widthBucket(for: view.bounds.width)
         if didMigrateRenderSchema {
             didMigrateRenderSchema = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.remeasureVisibleRichCells()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self = self else { return }
+                self.prewarmVisibleRichReplies(for: self.currentRenderWidth())
             }
         }
     }
 
     /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
     private static let renderSchemaKey = "connects_render_schema"
-    // v16 measures every Markdown block rather than WebKit's viewport-sized
-    // container. Re-measure rows cached by earlier rich-renderer versions.
-    private static let renderSchemaVersion = 16
+    // v30: raster-first binding removes interim text/preview presentation.
+    private static let renderSchemaVersion = 30
     private var didMigrateRenderSchema = false
+    private var didPerformColdOpenRescue = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didPerformColdOpenRescue else { return }
+        didPerformColdOpenRescue = true
+        // First appearance after launch — give WKWebView a second chance if the
+        // initial inject raced ahead of KaTeX/marked.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.rescueBlankRichCells()
+        }
+    }
+
+    /// If a rich cell is still showing blank WebView / failed inject, rebind it.
+    private func rescueBlankRichCells() {
+        prewarmVisibleRichReplies(for: currentRenderWidth())
+    }
 
     private func migrateRenderSchemaIfNeeded() {
         let ud = UserDefaults.standard
@@ -96,18 +121,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         pendingHeights.removeAll()
         PlainMarkdown.clearCache()
         ChatViewController.attrCache.removeAllObjects()
+        RenderCacheStore.clearAll()
         ud.set(Self.renderSchemaVersion, forKey: Self.renderSchemaKey)
         didMigrateRenderSchema = true
     }
 
-    private func remeasureVisibleRichCells() {
-        for case let cell as MessageCell in tableView.visibleCells {
-            cell.remeasureAfterWidthChange()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.flushPendingHeights(force: true)
-        }
-    }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
@@ -154,37 +172,97 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
-    /// Drop cached web heights and remasure visible cells after width reflow.
+    /// Snapshot keys include the width bucket. Rebind visible cells to their
+    /// matching immutable tiles while retaining the reader's exact viewport.
     private func invalidateHeightsForWidthChange(immediate: Bool) {
-        contentHeights.removeAll()
-        pendingHeights.removeAll()
-        if let cid = renderedConversationID {
-            heightCacheByConversation[cid] = [:]
+        // Keep current tiles and row geometry during the transition. Rebinding
+        // every row immediately is the main source of sidebar/rotation flashes.
+        prewarmVisibleRichReplies(for: currentRenderWidth())
+        _ = immediate
+    }
+
+    private func currentRenderWidth() -> CGFloat {
+        min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
+    }
+
+    private func prewarmVisibleRichReplies(for width: CGFloat) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let visible = tableView.indexPathsForVisibleRows ?? []
+        var rows = Set(visible.map(\.row))
+        for row in visible.map(\.row) {
+            for nearby in max(0, row - 3)...min(messages.count - 1, row + 3) {
+                rows.insert(nearby)
+            }
         }
-        for case let cell as MessageCell in tableView.visibleCells {
-            cell.remeasureAfterWidthChange()
+        let font = SettingsManager.shared.chatBodyFontSize
+        let appearance = SettingsManager.shared.appearanceMode.rawValue
+        for row in rows {
+            let message = messages[row]
+            guard message.role == .assistant,
+                  !message.isStreaming,
+                  MarkdownHTMLRenderer.needsRichMarkdown(message.content) else { continue }
+            let key = StableRichRenderer.key(
+                messageID: message.id,
+                content: message.content,
+                font: font,
+                appearance: appearance,
+                width: width
+            )
+            StableRichRenderer.shared.request(
+                key: key,
+                markdown: message.content,
+                width: width,
+                font: font,
+                colors: DSTheme.c,
+                priority: .visible
+            ) { _ in
+                // Rendering must not rebind/reload rows. The currently visible
+                // cell swaps its fixed tile directly; off-screen cells pick up
+                // the artifact synchronously on their next normal bind.
+            }
         }
-        let apply: () -> Void = { [weak self] in
-            self?.flushPendingHeights(force: true)
-        }
-        if immediate {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: apply)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: apply)
+    }
+
+    private func reloadTablePreservingViewport() {
+        let anchor = tableView.indexPathsForVisibleRows?.first
+        let oldOffset = tableView.contentOffset
+        let anchorDelta: CGFloat
+        if let anchor = anchor {
+            anchorDelta = tableView.rectForRow(at: anchor).minY - oldOffset.y
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: apply)
+            anchorDelta = 0
+        }
+        UIView.performWithoutAnimation {
+            tableView.reloadData()
+            tableView.layoutIfNeeded()
+            if stickToBottom && !readingHistory {
+                scrollToBottom(animated: false)
+            } else if let anchor = anchor,
+                      anchor.section == 0,
+                      anchor.row < tableView.numberOfRows(inSection: 0) {
+                let target = tableView.rectForRow(at: anchor).minY - anchorDelta
+                let maxOffset = max(-tableView.adjustedContentInset.top,
+                                    tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom)
+                tableView.contentOffset.y = min(max(target, -tableView.adjustedContentInset.top), maxOffset)
+            }
         }
     }
 
     func applyTheme() {
+        applyTheme(reloadMessages: true)
+    }
+
+    private func applyTheme(reloadMessages: Bool) {
         let c = DSTheme.c
         view.backgroundColor = c.background
         tableView.backgroundColor = c.background
         emptyTitleLabel.textColor = c.textPrimary
         emptySubtitleLabel.textColor = c.textSecondary
         modelButton.setTitleColor(c.textPrimary, for: .normal)
-        modelButton.backgroundColor = .clear
-        modelButton.layer.borderWidth = 0
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        modelButton.backgroundColor = c.surfaceHover
+        modelButton.layer.borderWidth = 1 / UIScreen.main.scale
+        modelButton.layer.borderColor = c.border.cgColor
+        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         navigationController?.navigationBar.barStyle = c.navBarStyle
         navigationController?.navigationBar.barTintColor = c.background
         navigationController?.navigationBar.tintColor = c.textPrimary
@@ -195,12 +273,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         setNeedsStatusBarAppearanceUpdate()
         inputBar.applyTheme()
         contextUsageView.applyTheme()
-        tableView.reloadData()
+        if reloadMessages {
+            reloadTablePreservingViewport()
+        }
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { DSTheme.c.statusBarStyle }
 
-    @objc private func themeChanged() { applyTheme() }
+    @objc private func themeChanged() {
+        applyTheme(reloadMessages: false)
+        prewarmVisibleRichReplies(for: currentRenderWidth())
+    }
 
     @objc private func storeChanged(_ note: Notification) {
         guard !isReloadingFromStore else { return }
@@ -235,11 +318,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func fontSizeChanged() {
-        contentHeights.removeAll()
-        heightCacheByConversation.removeAll()
         ChatViewController.attrCache.removeAllObjects()
         PlainMarkdown.clearCache()
-        tableView.reloadData()
+        prewarmVisibleRichReplies(for: currentRenderWidth())
+    }
+
+    @objc private func visibleModelsChanged() {
+        // If current model was hidden, fall back to first visible.
+        guard let id = ConversationStore.shared.currentConversationID,
+              let conv = ConversationStore.shared.currentConversation else {
+            updateModelButton()
+            return
+        }
+        let visible = AIModelOption.visible
+        if !visible.contains(where: { $0.stableID == conv.model.stableID }),
+           let first = visible.first {
+            ConversationStore.shared.setModel(first, for: id)
+        }
+        updateModelButton()
     }
 
     @objc private func streamTTFT(_ note: Notification) {
@@ -263,8 +359,34 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               id == currentConversationID else { return }
         streamUIWork?.cancel()
         ignoreStoreReloadUntil = Date().timeIntervalSince1970 + 0.35
+        // Streaming uses a lightweight UILabel. Finished rich replies are
+        // rendered once offscreen and then displayed as fixed snapshot tiles.
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let last = messages.last else { return }
+        contentHeights.removeValue(forKey: last.id)
         syncStreamingChrome()
-        reloadChat()
+        let path = IndexPath(row: messages.count - 1, section: 0)
+        if MarkdownHTMLRenderer.needsRichMarkdown(last.content) {
+            let width = min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
+            let key = StableRichRenderer.key(
+                messageID: last.id,
+                content: last.content,
+                font: SettingsManager.shared.chatBodyFontSize,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                width: width
+            )
+            StableRichRenderer.shared.request(
+                key: key,
+                markdown: last.content,
+                width: width,
+                font: SettingsManager.shared.chatBodyFontSize,
+                colors: DSTheme.c,
+                priority: .visible
+            ) { _ in }
+        }
+        UIView.performWithoutAnimation {
+            tableView.reloadRows(at: [path], with: .none)
+        }
         maybeAutoCompactContext()
     }
 
@@ -281,7 +403,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         syncStreamingChrome()
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last, last.isStreaming else {
-            tableView.reloadData()
             return
         }
         let path = IndexPath(row: messages.count - 1, section: 0)
@@ -338,20 +459,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             heightCacheByConversation[old] = contentHeights
         }
         let newID = ConversationStore.shared.currentConversationID
-        if newID != renderedConversationID {
+        let conversationChanged = newID != renderedConversationID
+        if conversationChanged {
             contentHeights = heightCacheByConversation[newID ?? ""] ?? [:]
             pendingHeights.removeAll()
             renderedConversationID = newID
+            // A newly selected conversation opens at its latest turn. Subsequent
+            // reloads must preserve the reader's manual scroll position.
+            stickToBottom = true
+            readingHistory = false
+        }
+        // User rows must never inherit bloated web estimates.
+        if let msgs = ConversationStore.shared.currentConversation?.messages {
+            for m in msgs where m.role == .user {
+                contentHeights.removeValue(forKey: m.id)
+            }
         }
 
         UIView.performWithoutAnimation {
             tableView.reloadData()
             tableView.layoutIfNeeded()
-            if stickToBottom || (ConversationStore.shared.currentConversation?.messages.isEmpty == false) {
+            if conversationChanged || (stickToBottom && !readingHistory) {
                 scrollToBottom(animated: false)
             }
         }
-
         // Defer chrome so the message list paints first.
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
@@ -385,36 +516,47 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func moreTapped() {
         guard let conv = ConversationStore.shared.currentConversation else { return }
-        let sheet = UIAlertController(title: conv.title, message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "分享 / 导出 Markdown", style: .default) { [weak self] _ in
-            self?.shareCurrentMarkdown()
-        })
-        sheet.addAction(UIAlertAction(title: "复制全部对话", style: .default) { [weak self] _ in
-            self?.copyEntireConversation()
-        })
-        sheet.addAction(UIAlertAction(title: "重命名", style: .default) { [weak self] _ in
-            self?.presentRename(conv.id, current: conv.title)
-        })
-        sheet.addAction(UIAlertAction(title: "分叉对话", style: .default) { _ in
-            _ = ConversationStore.shared.forkConversation(id: conv.id)
-        })
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
-        sheet.addAction(UIAlertAction(title: archiveTitle, style: .default) { _ in
-            ConversationStore.shared.setArchived(id: conv.id, archived: !conv.isArchived)
-        })
-        sheet.addAction(UIAlertAction(title: "重跑上一轮", style: .default) { [weak self] _ in
-            self?.retryLastTurn()
-        })
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        if let pop = sheet.popoverPresentationController {
-            pop.barButtonItem = navigationItem.rightBarButtonItem
-        }
-        present(sheet, animated: true)
+        ConnectsMenu.present(
+            from: self,
+            title: conv.title,
+            items: [
+                ConnectsMenuItem(title: "分享 / 导出 Markdown", icon: .share) { [weak self] in
+                    self?.shareCurrentMarkdown()
+                },
+                ConnectsMenuItem(title: "复制全部对话", icon: .copy) { [weak self] in
+                    self?.copyEntireConversation()
+                },
+                ConnectsMenuItem(title: "重命名", icon: .rename) { [weak self] in
+                    self?.presentRename(conv.id, current: conv.title)
+                },
+                ConnectsMenuItem(title: "分叉对话", icon: .fork) {
+                    _ = ConversationStore.shared.forkConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: archiveTitle, icon: .archive) {
+                    ConversationStore.shared.setArchived(id: conv.id, archived: !conv.isArchived)
+                },
+                ConnectsMenuItem(title: "重跑上一轮", icon: .retry) { [weak self] in
+                    self?.retryLastTurn()
+                }
+            ],
+            barButtonItem: navigationItem.rightBarButtonItem
+        )
     }
 
     private func setupNavBar() {
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        // Centered model chip as titleView itself (must report size — a plain wrap
+        // collapses to ~0 and draws outside its hit box, so taps never land).
+        modelButton.translatesAutoresizingMaskIntoConstraints = true
+        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        modelButton.titleLabel?.lineBreakMode = .byTruncatingTail
+        modelButton.titleLabel?.textAlignment = .center
+        modelButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+        modelButton.layer.cornerRadius = 16
+        modelButton.clipsToBounds = true
+        modelButton.isUserInteractionEnabled = true
         modelButton.addTarget(self, action: #selector(modelTapped), for: .touchUpInside)
+        modelButton.accessibilityLabel = "选择模型"
         navigationItem.titleView = modelButton
 
         sidebarToggleItem = ActionIconFactory.barItem(
@@ -423,7 +565,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             action: #selector(toggleSidebar),
             accessibility: "关闭侧栏"
         )
-        // ChatGPT-style: single overflow on the right (share/export lives inside)
         let moreItem = ActionIconFactory.barItem(
             kind: .more,
             target: self,
@@ -438,6 +579,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         navigationController?.navigationBar.setBackgroundImage(UIImage(), for: .default)
         navigationController?.navigationBar.shadowImage = UIImage()
+        navigationController?.navigationBar.isUserInteractionEnabled = true
+        updateModelButton()
     }
 
     private func setupTable() {
@@ -449,6 +592,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         tableView.register(MessageCell.self, forCellReuseIdentifier: MessageCell.reuseID)
         tableView.dataSource = self
         tableView.delegate = self
+        tableView.prefetchDataSource = self
         tableView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         view.addSubview(tableView)
 
@@ -493,7 +637,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             inputWidthFill,
             inputWidthMax,
             bottomConstraint!,
-            inputBar.heightAnchor.constraint(greaterThanOrEqualToConstant: DSTheme.inputBarHeight + 8)
+            inputBar.heightAnchor.constraint(greaterThanOrEqualToConstant: DSTheme.inputBarHeight)
         ])
     }
 
@@ -656,9 +800,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func updateModelButton() {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
-        modelButton.setTitle("\(model.displayName) ▾", for: .normal)
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        modelButton.setTitle("\(model.displayName)  ▾", for: .normal)
+        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         modelButton.sizeToFit()
+        var size = modelButton.bounds.size
+        size.width = min(max(size.width, 132), 240)
+        size.height = 32
+        modelButton.bounds = CGRect(origin: .zero, size: size)
+        // Re-assign so UINavigationBar remeasures the titleView hit box.
+        navigationItem.titleView = modelButton
     }
 
     private func updateAttachAvailability() {
@@ -711,22 +861,56 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row],
               !msg.isStreaming else { return }
 
-        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "复制", style: .default) { _ in
-            UIPasteboard.general.string = msg.copyableText
+        // AI replies: actions live in the bottom button row — no long-press menu.
+        guard msg.role == .user else { return }
+
+        let cell = tableView.cellForRow(at: indexPath) ?? tableView
+        let local = gesture.location(in: cell)
+        let hot = CGRect(x: local.x - 12, y: local.y - 12, width: 24, height: 24)
+        let items = [
+            ConnectsMenuItem(title: "复制", icon: .copy) {
+                UIPasteboard.general.string = msg.copyableText
+            },
+            ConnectsMenuItem(title: "修改", icon: .edit) { [weak self] in
+                self?.editUserMessage(at: indexPath.row)
+            }
+        ]
+        ConnectsMenu.present(
+            from: self,
+            items: items,
+            sourceView: cell,
+            sourceRect: hot,
+            preferVertical: true
+        )
+    }
+
+    private func editUserMessage(at index: Int) {
+        guard let conv = ConversationStore.shared.currentConversation,
+              index >= 0, index < conv.messages.count,
+              conv.messages[index].role == .user else { return }
+        if StreamManager.shared.isRunning(conv.id) || webSearchPendingID == conv.id {
+            showAlert(title: "正在生成", message: "请先停止或等待当前回复完成。")
+            return
+        }
+        let original = conv.messages[index].content
+        let alert = UIAlertController(title: "修改消息", message: "保存后将从本条重新生成回复。", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = original
+            field.clearButtonMode = .whileEditing
+            field.autocapitalizationType = .sentences
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "保存并重跑", style: .default) { [weak self] _ in
+            let text = alert.textFields?.first?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else { return }
+            ConversationStore.shared.updateCurrent { c in
+                guard index < c.messages.count, c.messages[index].role == .user else { return }
+                c.messages[index].content = text
+            }
+            self?.retryFromMessage(at: index)
         })
-        if msg.role == .assistant || msg.role == .user {
-            sheet.addAction(UIAlertAction(title: "重跑", style: .default) { [weak self] _ in
-                self?.retryFromMessage(at: indexPath.row)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        if let pop = sheet.popoverPresentationController,
-           let cell = tableView.cellForRow(at: indexPath) {
-            pop.sourceView = cell
-            pop.sourceRect = cell.bounds
-        }
-        present(sheet, animated: true)
+        present(alert, animated: true)
     }
 
     private func copyEntireConversation() {
@@ -808,19 +992,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let convID = conv.id
 
         ConversationStore.shared.updateCurrent { c in
-            if c.messages.count > userIndex + 1 {
-                c.messages.removeSubrange((userIndex + 1)..<c.messages.count)
+            let assistantIndex = userIndex + 1
+            if assistantIndex < c.messages.count, c.messages[assistantIndex].role == .assistant {
+                // Keep prior replies as switchable versions; drop later turns.
+                if c.messages.count > assistantIndex + 1 {
+                    c.messages.removeSubrange((assistantIndex + 1)..<c.messages.count)
+                }
+                c.contextSummary = nil
+                c.contextSummaryThroughMessageID = nil
+                var asst = c.messages[assistantIndex]
+                asst.beginNewVersion()
+                c.messages[assistantIndex] = asst
+            } else {
+                if c.messages.count > userIndex + 1 {
+                    c.messages.removeSubrange((userIndex + 1)..<c.messages.count)
+                }
+                c.contextSummary = nil
+                c.contextSummaryThroughMessageID = nil
+                c.messages.append(ChatMessage(role: .assistant, content: "", reasoningContent: "", isStreaming: true))
             }
-            // Truncation invalidates compaction covering removed turns.
-            c.contextSummary = nil
-            c.contextSummaryThroughMessageID = nil
-            c.messages.append(ChatMessage(role: .assistant, content: "", reasoningContent: "", isStreaming: true))
         }
 
         stickToBottom = true
+        readingHistory = false
         updateEmptyState()
         tableView.reloadData()
-        scrollToBottom(animated: true)
+        scrollToBottom(animated: true, force: true)
         syncStreamingChrome()
 
         let model = ConversationStore.shared.currentConversation?.model ?? conv.model
@@ -830,45 +1027,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             && userText != "[图片]"
 
         if searchOn {
-            ConversationStore.shared.updateConversation(id: convID) { c in
-                guard var last = c.messages.last, last.isStreaming else { return }
-                last.content = "正在联网搜索…"
-                c.messages[c.messages.count - 1] = last
-            }
-            tableView.reloadData()
-            webSearchPendingID = convID
-            syncStreamingChrome()
-            navigationItem.prompt = "正在联网搜索…"
-            WebSearchService.searchAndFormat(query: userText) { [weak self] result in
-                guard let self = self else { return }
-                guard self.webSearchPendingID == convID else { return }
-                self.webSearchPendingID = nil
-                if self.navigationItem.prompt == "正在联网搜索…" {
-                    self.navigationItem.prompt = nil
-                }
-                ConversationStore.shared.updateConversation(id: convID) { c in
-                    guard var last = c.messages.last, last.isStreaming else { return }
-                    last.content = ""
-                    c.messages[c.messages.count - 1] = last
-                }
-                var msgs = self.apiContext(for: model)
-                switch result {
-                case .success(let block):
-                    msgs = WebSearchService.inject(into: msgs, searchBlock: block)
-                case .failure(let err):
-                    msgs = WebSearchService.inject(
-                        into: msgs,
-                        searchBlock: "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
-                    )
-                }
-                StreamManager.shared.start(
-                    conversationID: convID,
-                    messages: msgs,
-                    model: model,
-                    needsAITitle: needsAITitle
-                )
-                self.syncStreamingChrome()
-            }
+            beginWebSearchThenStream(
+                convID: convID,
+                model: model,
+                needsAITitle: needsAITitle,
+                query: userText
+            )
         } else {
             StreamManager.shared.start(
                 conversationID: convID,
@@ -876,6 +1040,68 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 model: model,
                 needsAITitle: needsAITitle
             )
+        }
+    }
+
+    /// Search → read pages → stream. Shared by send + retry.
+    private func beginWebSearchThenStream(
+        convID: String,
+        model: AIModelOption,
+        needsAITitle: Bool,
+        query: String
+    ) {
+        webSearchPendingID = convID
+        syncStreamingChrome()
+        setWebSearchStatus(convID: convID, text: "正在搜索…")
+
+        WebSearchService.searchAndFormat(
+            query: query,
+            onStatus: { [weak self] status in
+                guard let self = self, self.webSearchPendingID == convID else { return }
+                self.setWebSearchStatus(convID: convID, text: status)
+            }
+        ) { [weak self] result in
+            guard let self = self else { return }
+            guard self.webSearchPendingID == convID else { return }
+            self.webSearchPendingID = nil
+            if self.navigationItem.prompt != nil {
+                self.navigationItem.prompt = nil
+            }
+            ConversationStore.shared.updateConversation(id: convID) { c in
+                guard var last = c.messages.last, last.isStreaming else { return }
+                last.content = ""
+                c.messages[c.messages.count - 1] = last
+            }
+            var msgs = self.apiContext(for: model)
+            switch result {
+            case .success(let block):
+                msgs = WebSearchService.inject(into: msgs, searchBlock: block)
+            case .failure(let err):
+                msgs = WebSearchService.inject(
+                    into: msgs,
+                    searchBlock: "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
+                )
+            }
+            StreamManager.shared.start(
+                conversationID: convID,
+                messages: msgs,
+                model: model,
+                needsAITitle: needsAITitle
+            )
+            self.syncStreamingChrome()
+        }
+    }
+
+    private func setWebSearchStatus(convID: String, text: String) {
+        navigationItem.prompt = text
+        ConversationStore.shared.updateConversation(id: convID) { c in
+            guard var last = c.messages.last, last.isStreaming else { return }
+            last.content = text
+            c.messages[c.messages.count - 1] = last
+        }
+        if currentConversationID == convID {
+            tableView.reloadData()
+            scrollToBottom(animated: false)
         }
     }
 
@@ -890,57 +1116,113 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func modelTapped() {
-        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        for option in AIModelOption.all {
-            sheet.addAction(UIAlertAction(title: option.displayName, style: .default) { [weak self] _ in
+        let current = ConversationStore.shared.currentConversation?.model
+        let pool = AIModelOption.visible
+        // Flip chevron while open for capsule-dropdown feel.
+        if let title = modelButton.title(for: .normal)?.replacingOccurrences(of: "▾", with: "▴") {
+            modelButton.setTitle(title, for: .normal)
+        }
+        ModelCapsuleDropdown.present(
+            from: self,
+            anchor: modelButton,
+            models: pool,
+            selected: current,
+            onPick: { [weak self] option in
+                guard let self = self else { return }
                 guard let id = ConversationStore.shared.currentConversationID else { return }
                 ConversationStore.shared.setModel(option, for: id)
-                self?.inputBar.clearAttachment()
+                self.inputBar.clearAttachment()
+                self.updateAttachAvailability()
+            },
+            onDismiss: { [weak self] in
                 self?.updateModelButton()
-            })
-        }
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        if let pop = sheet.popoverPresentationController {
-            pop.sourceView = modelButton
-            pop.sourceRect = modelButton.bounds
-        }
-        present(sheet, animated: true)
+            }
+        )
     }
 
     private func presentImagePicker() {
-        guard UIImagePickerController.isSourceTypeAvailable(.photoLibrary) else {
-            showAlert(title: "无法访问相册", message: "请在设置中允许 Connects 访问照片。")
+        var items: [ConnectsMenuItem] = [
+            ConnectsMenuItem(title: "从相册选择", icon: .plus) { [weak self] in
+                self?.openImagePicker(source: .photoLibrary)
+            }
+        ]
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            items.insert(
+                ConnectsMenuItem(title: "拍照", icon: .plus) { [weak self] in
+                    self?.openImagePicker(source: .camera)
+                },
+                at: 0
+            )
+        }
+        if inputBar.hasAttachment {
+            items.append(
+                ConnectsMenuItem(title: "移除图片", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.inputBar.clearAttachment()
+                }
+            )
+        }
+        // Anchor after keyboard has settled so the menu sits above the + button.
+        view.layoutIfNeeded()
+        ConnectsMenu.present(
+            from: self,
+            title: "添加图片",
+            items: items,
+            sourceView: inputBar.attachAnchorView,
+            sourceRect: inputBar.attachAnchorRect(),
+            preferAbove: true
+        )
+    }
+
+    private func openImagePicker(source: UIImagePickerController.SourceType) {
+        guard UIImagePickerController.isSourceTypeAvailable(source) else {
+            showAlert(title: "无法打开", message: source == .camera ? "此设备不支持相机。" : "请在设置中允许 Connects 访问照片。")
             return
         }
         let picker = UIImagePickerController()
-        picker.sourceType = .photoLibrary
+        picker.sourceType = source
         picker.delegate = self
         picker.allowsEditing = false
-        picker.modalPresentationStyle = .popover
-        if let pop = picker.popoverPresentationController {
-            pop.sourceView = inputBar
-            pop.sourceRect = CGRect(x: 20, y: 0, width: 44, height: 44)
-            pop.permittedArrowDirections = [.down, .up]
+        if source == .photoLibrary {
+            picker.modalPresentationStyle = .popover
+            if let pop = picker.popoverPresentationController {
+                pop.sourceView = inputBar
+                pop.sourceRect = CGRect(x: 8, y: 0, width: 44, height: 44)
+                pop.permittedArrowDirections = [.down, .up]
+            }
+        } else {
+            picker.modalPresentationStyle = .fullScreen
         }
         present(picker, animated: true)
+    }
+
+    /// Switch to a visible vision model if the current one cannot take images.
+    @discardableResult
+    private func ensureVisionModelIfNeeded() -> Bool {
+        guard let id = ConversationStore.shared.currentConversationID,
+              let conv = ConversationStore.shared.currentConversation else { return false }
+        if conv.model.supportsVision { return true }
+        let target = AIModelOption.preferredVision
+        guard SettingsManager.shared.hasAPIKey(for: target.provider) else {
+            showAlert(
+                title: "需要视觉模型 Key",
+                message: "图片可发给 Kimi 或 Qwen。请先在设置填写对应 API Key，并确保该模型已在「显示的模型」中开启。"
+            )
+            return false
+        }
+        ConversationStore.shared.setModel(target, for: id)
+        updateModelButton()
+        return true
     }
 
     func imagePickerController(_ picker: UIImagePickerController,
                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
         picker.dismiss(animated: true)
         guard let image = info[.originalImage] as? UIImage,
-              let b64 = ImageAttachmentHelper.prepareJPEGBase64(from: image) else { return }
-        if let id = ConversationStore.shared.currentConversationID,
-           let conv = ConversationStore.shared.currentConversation,
-           !conv.model.supportsVision {
-            if SettingsManager.shared.hasAPIKey(for: .kimi) {
-                ConversationStore.shared.setModel(.preferredVision, for: id)
-                updateModelButton()
-            } else {
-                showAlert(title: "需要 Kimi Key", message: "图片只能发给 Kimi。请先在设置填写 Kimi API Key，再切换到 Kimi K2.6。")
-                return
-            }
+              let b64 = ImageAttachmentHelper.prepareJPEGBase64(from: image) else {
+            showAlert(title: "无法添加图片", message: "图片处理失败，请换一张再试。")
+            return
         }
+        guard ensureVisionModelIfNeeded() else { return }
         inputBar.setAttachment(image: image, base64: b64)
     }
 
@@ -948,7 +1230,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         picker.dismiss(animated: true)
     }
 
-    private func scrollToBottom(animated: Bool) {
+    private func scrollToBottom(animated: Bool, force: Bool = false) {
+        guard force || !readingHistory else { return }
         guard let conv = ConversationStore.shared.currentConversation, !conv.messages.isEmpty else { return }
         let path = IndexPath(row: conv.messages.count - 1, section: 0)
         tableView.scrollToRow(at: path, at: .bottom, animated: animated)
@@ -967,24 +1250,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         if imageBase64 != nil && !conv.model.supportsVision {
-            if SettingsManager.shared.hasAPIKey(for: .kimi),
-               let id = ConversationStore.shared.currentConversationID {
-                ConversationStore.shared.setModel(.preferredVision, for: id)
-                updateModelButton()
-                conv = ConversationStore.shared.currentConversation ?? conv
-            } else {
-                showAlert(title: "需要 Kimi Key", message: "图片只能发给 Kimi。请先在设置填写 Kimi API Key，并切换到 Kimi K2.6。")
-                return
-            }
+            guard ensureVisionModelIfNeeded() else { return }
+            conv = ConversationStore.shared.currentConversation ?? conv
         }
 
         let provider = conv.model.provider
         guard SettingsManager.shared.hasAPIKey(for: provider) else {
             showAlert(title: "缺少 API Key", message: "请先在设置中填写 \(provider.displayName) 的 API Key。\n当前模型：\(conv.model.displayName)")
-            return
-        }
-        if imageBase64 != nil && !conv.model.supportsVision {
-            showAlert(title: "不支持图片", message: "当前模型不支持图片，请切换到 Kimi K2.6。")
             return
         }
 
@@ -1010,7 +1282,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
         let assistantMsg = ChatMessage(
             role: .assistant,
-            content: searchOn ? "正在联网搜索…" : "",
+            content: searchOn ? "正在搜索…" : "",
             reasoningContent: "",
             isStreaming: true
         )
@@ -1028,43 +1300,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         inputBar.clearText()
         updateEmptyState()
         tableView.reloadData()
-        scrollToBottom(animated: true)
+        readingHistory = false
+        scrollToBottom(animated: true, force: true)
         stickToBottom = true
         refreshContextUsage()
 
         if searchOn {
-            webSearchPendingID = convID
-            syncStreamingChrome()
-            navigationItem.prompt = "正在联网搜索…"
-            WebSearchService.searchAndFormat(query: displayText) { [weak self] result in
-                guard let self = self else { return }
-                guard self.webSearchPendingID == convID else { return }
-                self.webSearchPendingID = nil
-                if self.navigationItem.prompt == "正在联网搜索…" {
-                    self.navigationItem.prompt = nil
-                }
-                // Clear placeholder before tokens arrive (appendStreamTokens concatenates).
-                ConversationStore.shared.updateConversation(id: convID) { c in
-                    guard var last = c.messages.last, last.isStreaming else { return }
-                    last.content = ""
-                    c.messages[c.messages.count - 1] = last
-                }
-                var msgs = self.apiContext(for: model)
-                switch result {
-                case .success(let block):
-                    msgs = WebSearchService.inject(into: msgs, searchBlock: block)
-                case .failure(let err):
-                    let note = "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
-                    msgs = WebSearchService.inject(into: msgs, searchBlock: note)
-                }
-                StreamManager.shared.start(
-                    conversationID: convID,
-                    messages: msgs,
-                    model: model,
-                    needsAITitle: needsAITitle
-                )
-                self.syncStreamingChrome()
-            }
+            beginWebSearchThenStream(
+                convID: convID,
+                model: model,
+                needsAITitle: needsAITitle,
+                query: displayText
+            )
         } else {
             syncStreamingChrome()
             StreamManager.shared.start(
@@ -1107,38 +1354,45 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
-        guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else { return 96 }
-        if let h = contentHeights[msg.id], h > 40 {
-            // Discard suspiciously short cache entries (1.4.12 freeze / 1.4.13 plain-table).
-            let chars = max(msg.content.count, 1)
-            let floor = CGFloat(min(2800, 48 + chars / 36 * 22))
-            let rich = MarkdownHTMLRenderer.needsRichMarkdown(msg.content)
-            if rich, h < floor * 0.4 {
-                contentHeights.removeValue(forKey: msg.id)
-            } else {
-                return min(h + (msg.role == .assistant && !msg.isStreaming ? 56 : 28), 8000)
-            }
+        guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else { return 72 }
+        // Prefer underestimate — iOS 12 self-sizing with oversized estimates stretches
+        // bubbles (user gray empty / assistant gap above thinking) until remasure.
+        if msg.role == .user {
+            let lines = max(1, msg.content.count / 28)
+            return min(CGFloat(52 + lines * 22), 220)
         }
-        let chars = max(msg.content.count, msg.reasoningContent.isEmpty ? 0 : 80)
-        let lines = max(1, chars / 40)
-        var rough = CGFloat(28 + lines * 22)
+        if let h = contentHeights[msg.id], h > 40 {
+            // Completed raster rows own an immutable height. Feeding the
+            // exact value back to UITableView avoids A7 estimate→shrink churn.
+            return h + (msg.isStreaming ? 28 : 0)
+        }
+        let chars = max(msg.content.count, msg.reasoningContent.isEmpty ? 0 : 40)
+        let lines = max(1, chars / 48)
+        var rough = CGFloat(36 + lines * 18)
         if msg.hasImage { rough += 168 }
-        if msg.hasReasoning { rough += 40 }
-        if msg.role == .assistant && !msg.isStreaming { rough += 36 }
-        if MathContentDetector.containsMath(msg.content) { rough *= 1.3 }
-        if MarkdownHTMLRenderer.containsGFMTable(msg.content) { rough *= 1.2 }
-        return min(max(rough, 64), 2800)
+        if msg.hasReasoning { rough += 36 }
+        if msg.role == .assistant && !msg.isStreaming { rough += 28 }
+        return min(max(rough, 64), 420)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         stickToBottom = false
+        readingHistory = true
+        heightWork?.cancel()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Content-size changes from KaTeX/WebKit also trigger this callback.
+        // They must not turn sticky mode back on after the user scrolls up.
+        guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
         let offsetY = scrollView.contentOffset.y
         let contentH = scrollView.contentSize.height
         let frameH = scrollView.frame.height
+        let wasSticking = stickToBottom
         stickToBottom = offsetY + frameH >= contentH - 80
+        if stickToBottom && !wasSticking {
+            readingHistory = false
+        }
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -1150,10 +1404,51 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     private func finishScrollHeightSettling() {
+        // A settled history scroll must be a no-op for completed replies.
+        // Any table height transaction here is visible as the shared
+        // “reaches bottom / stops upward scroll” flash on iOS 12.
+        guard isCurrentStreaming else { return }
         for case let cell as MessageCell in tableView.visibleCells {
             cell.applyDeferredHeightIfNeeded()
         }
         flushPendingHeights(force: false)
+    }
+}
+
+extension ChatViewController: UITableViewDataSourcePrefetching {
+    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let font = SettingsManager.shared.chatBodyFontSize
+        let appearance = SettingsManager.shared.appearanceMode.rawValue
+        let width = min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
+        let colors = DSTheme.c
+        for path in indexPaths where path.section == 0 && path.row < messages.count {
+            let message = messages[path.row]
+            guard message.role == .assistant,
+                  !message.isStreaming,
+                  MarkdownHTMLRenderer.needsRichMarkdown(message.content) else { continue }
+            for profileWidth in StableRichRenderer.layoutProfileWidths(primary: width) {
+                let key = StableRichRenderer.key(
+                    messageID: message.id,
+                    content: message.content,
+                    font: font,
+                    appearance: appearance,
+                    width: profileWidth
+                )
+                StableRichRenderer.shared.request(
+                    key: key,
+                    markdown: message.content,
+                    width: profileWidth,
+                    font: font,
+                    colors: colors
+                ) { _ in }
+            }
+        }
+    }
+
+    func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
+        // Do not cancel: completed reply tiles are reusable cache artifacts and
+        // are likely to be needed again in the same scroll gesture.
     }
 }
 
@@ -1163,6 +1458,26 @@ extension ChatViewController: MessageCellDelegate {
     }
 
     func messageCell(_ cell: MessageCell, didUpdateHeight height: CGFloat, for messageID: String) {
+        // Preserve the viewport while browsing history. Fixed snapshot height
+        // metadata can still be recorded, but it must not trigger a table pass.
+        if readingHistory {
+            if height > 40 {
+                contentHeights[messageID] = height
+                if let cid = renderedConversationID {
+                    heightCacheByConversation[cid] = contentHeights
+                    RenderCacheStore.saveHeights(heightCacheByConversation)
+                }
+            }
+            return
+        }
+        guard let msg = ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == messageID }) else {
+            return
+        }
+        // Finished rich replies have their own immutable raster height path.
+        if (msg.role == .user) || (!msg.isStreaming && MarkdownHTMLRenderer.needsRichMarkdown(msg.content)) {
+            contentHeights.removeValue(forKey: messageID)
+            return
+        }
         let old = contentHeights[messageID] ?? 0
         let scrolling = tableView.isDragging || tableView.isDecelerating
         let growing = height > old + 4
@@ -1188,7 +1503,27 @@ extension ChatViewController: MessageCellDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    func messageCell(_ cell: MessageCell, didFinishStableRender height: CGFloat, for messageID: String) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let row = messages.firstIndex(where: { $0.id == messageID }),
+              !messages[row].isStreaming else { return }
+        let old = contentHeights[messageID] ?? 0
+        contentHeights[messageID] = height
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = contentHeights
+            RenderCacheStore.saveHeights(heightCacheByConversation)
+        }
+        // Do not perturb a live gesture. The cell has already atomically
+        // swapped its placeholder for tiles; its fixed height is used on the
+        // next normal layout/reuse.
+        _ = old
+    }
+
     private func flushPendingHeights(force: Bool = false) {
+        if readingHistory {
+            pendingHeights.removeAll()
+            return
+        }
         guard !pendingHeights.isEmpty else { return }
         let scrolling = tableView.isDragging || tableView.isDecelerating
         if !force, scrolling {
@@ -1209,12 +1544,13 @@ extension ChatViewController: MessageCellDelegate {
         pendingHeights.removeAll()
         if changed, let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
+            RenderCacheStore.saveHeights(heightCacheByConversation)
         }
         guard changed else { return }
         UIView.performWithoutAnimation {
             tableView.beginUpdates()
             tableView.endUpdates()
-            if stickToBottom {
+            if stickToBottom && !readingHistory {
                 scrollToBottom(animated: false)
             }
         }
@@ -1241,6 +1577,24 @@ extension ChatViewController: MessageCellDelegate {
         guard let id = ConversationStore.shared.currentConversationID else { return }
         _ = ConversationStore.shared.forkConversation(id: id, throughMessageID: messageID)
     }
+
+    func messageCellDidShiftVersion(_ cell: MessageCell, messageID: String, delta: Int) {
+        guard let convID = ConversationStore.shared.currentConversationID else { return }
+        var changed = false
+        ConversationStore.shared.updateConversation(id: convID) { c in
+            guard let idx = c.messages.firstIndex(where: { $0.id == messageID }) else { return }
+            changed = c.messages[idx].shiftVersion(by: delta)
+        }
+        guard changed else { return }
+        // Content length can differ a lot across versions — drop cached height.
+        contentHeights.removeValue(forKey: messageID)
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = contentHeights
+            RenderCacheStore.saveHeights(heightCacheByConversation)
+        }
+        ignoreStoreReloadUntil = 0
+        reloadChat()
+    }
 }
 
 extension ChatViewController: InputBarViewDelegate {
@@ -1252,7 +1606,7 @@ extension ChatViewController: InputBarViewDelegate {
         guard let id = currentConversationID else { return }
         if webSearchPendingID == id {
             webSearchPendingID = nil
-            if navigationItem.prompt == "正在联网搜索…" {
+            if navigationItem.prompt != nil {
                 navigationItem.prompt = nil
             }
             ConversationStore.shared.finishStreamingMessage(
@@ -1266,7 +1620,19 @@ extension ChatViewController: InputBarViewDelegate {
     }
 
     func inputBarDidTapAttach() {
-        presentImagePicker()
+        // Keyboard collapse moves the input bar; wait until layout settles, then
+        // anchor the menu above the + button (never leave a floating mid-screen card).
+        let waitingForKeyboard = keyboardVisible
+        view.endEditing(true)
+        let show = { [weak self] in
+            self?.view.layoutIfNeeded()
+            self?.presentImagePicker()
+        }
+        if waitingForKeyboard {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.34, execute: show)
+        } else {
+            DispatchQueue.main.async(execute: show)
+        }
     }
 }
 
