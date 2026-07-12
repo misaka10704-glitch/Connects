@@ -1,6 +1,10 @@
 # Connects
 
-面向 **老旧 iPad**（尤其是 **iPad Air 1 / iOS 12**）的 AI 聊天客户端。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）** 与 **Kimi K2.6**。
+面向 **老旧 iPad**（尤其是 **iPad Air 1 / iOS 12**）的 AI 聊天客户端。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
+
+**当前版本：1.7.0**
+
+介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
 
 ## 动机
 
@@ -10,21 +14,28 @@
 
 **Connects** 因此做了这些取舍：
 
-1. **兼容优先**：UIKit + iOS 12，不追求 SwiftUI / 最新 API。  
-2. **自己带 Key**：DeepSeek / Kimi 分开放进本机钥匙串，不经第三方中转。  
-3. **为阅读而排版**：居中阅读列、可调字号、思考过程可折叠，数学与 Markdown 尽量渲染完整。  
+1. **兼容优先**：UIKit + iOS 12，不追求 SwiftUI / 最新 API。
+2. **自己带 Key**：各提供商 Key 放进本机钥匙串，不经第三方中转。
+3. **为阅读而排版**：居中阅读列、可调字号、思考过程可折叠，数学与 Markdown 尽量渲染完整。
 4. **会话可带走**：对话自动命名、可分叉、可导出完整 Markdown，方便备份与二次整理。
 
 这不是要替代官方网页版，而是给「旧硬件也想正经用模型」的人一个能装上、能用顺的本地壳。
 
+## 1.7 亮点
+
+- **原生渲染主路径**：已完成助手回复由 Native Markdown + iosMath 绘制，不再依赖整条 WebKit 截图主路线。
+- **流式更稳**：固定节奏节流刷新；思考直播展开，结束后默认折叠，减少切入会话时的空白间隔。
+- **公式与来源**：行内 / 块级 TeX、窄侧栏缩放、参考链接折叠为可点击来源列表。
+- **可选联网检索**：App 代搜注入上下文，文末紧凑标注来源。
+
 ## 功能概览
 
-- 流式对话（SSE），切换会话时后台生成不中断  
-- 多会话：新建 / 搜索 / 归档 / 重命名 / 分叉  
-- 模型：DeepSeek V4 Flash、DeepSeek V4 Pro、Kimi K2.6（含图片）  
-- 深度思考可开关；Kimi 可切国内 / 海外节点  
-- 助手消息：复制、重跑、分叉；完整 Markdown 导出与分享  
-- 主题：白天 / 黑夜；聊天字号：小 / 中 / 大  
+- 流式对话（SSE），切换会话时后台生成不中断
+- 多会话：新建 / 搜索 / 归档 / 重命名 / 分叉
+- 模型：DeepSeek V4 Flash、DeepSeek V4 Pro、Kimi 等（可扩展可见池）
+- 深度思考可开关；Kimi 可切国内 / 海外节点
+- 助手消息：复制、重跑、分叉、多版本切换；完整 Markdown 导出与分享
+- 主题：白天 / 黑夜；聊天字号：小 / 中 / 大
 
 ## 设备与布局
 
@@ -42,9 +53,9 @@
 open Connects.xcodeproj
 ```
 
-1. **Signing & Capabilities** → 选择你的 Team  
-2. Destination → 真机 iPad 或 iOS 12+ 模拟器  
-3. Run  
+1. **Signing & Capabilities** → 选择你的 Team
+2. Destination → 真机 iPad 或 iOS 12+ 模拟器
+3. Run
 
 真机首次安装后，在「设置 → 通用 → 设备管理」信任开发者证书。
 
@@ -52,18 +63,18 @@ open Connects.xcodeproj
 
 侧边栏 **设置** 中填写 Key：
 
-| 提供商 | 模型 ID | Base URL（示例） |
-|--------|---------|------------------|
+| 提供商 | 模型 ID（示例） | Base URL（示例） |
+|--------|-----------------|------------------|
 | DeepSeek | `deepseek-v4-flash` / `deepseek-v4-pro` | `https://api.deepseek.com` |
-| Kimi | `kimi-k2.6` | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
+| Kimi | `kimi-k2.6` 等 | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
 
 Key 只存本机 Keychain，不会打进仓库或上传。
 
 ## 技术栈
 
-- UIKit（兼容 iOS 12，无 SwiftUI / Combine）  
-- `URLSession` SSE；`WKWebView` + KaTeX / marked 渲染正文  
-- 会话本地持久化；Markdown 自动落盘与导出  
+- UIKit（兼容 iOS 12，无 SwiftUI / Combine）
+- `URLSession` SSE；已完成消息：`NativeMarkdownParser` + `NativeMessageLayouter` + vendored **iosMath 0.9.x**
+- 会话本地持久化；Markdown 自动落盘与导出
 
 ## 许可与声明
 

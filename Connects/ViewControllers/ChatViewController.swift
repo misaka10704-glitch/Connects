@@ -91,7 +91,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
     private static let renderSchemaKey = "connects_render_schema"
     // v34: native layouts use actual split-view width and rebind on resize.
-    private static let renderSchemaVersion = 37
+    private static let renderSchemaVersion = 38
     private var didMigrateRenderSchema = false
     private var didPerformColdOpenRescue = false
 
@@ -318,9 +318,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let mid = note.userInfo?["messageID"] as? String,
            let messages = ConversationStore.shared.currentConversation?.messages,
            let row = messages.firstIndex(where: { $0.id == mid }) {
+            // A cached row height cannot be shared by expanded and collapsed
+            // reasoning states. Reusing the expanded height after collapse left
+            // several screens of empty space on iOS 12.
+            contentHeights.removeValue(forKey: mid)
+            pendingHeights.removeValue(forKey: mid)
+            if let cid = renderedConversationID {
+                heightCacheByConversation[cid] = contentHeights
+            }
             let path = IndexPath(row: row, section: 0)
             UIView.performWithoutAnimation {
                 tableView.reloadRows(at: [path], with: .none)
+                tableView.layoutIfNeeded()
             }
             return
         }
@@ -332,6 +341,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         PlainMarkdown.clearCache()
         NativeMessageLayouter.shared.clear()
         NativeFormulaRenderer.shared.clear()
+        contentHeights.removeAll()
+        pendingHeights.removeAll()
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = [:]
+        }
+        reloadTablePreservingViewport()
         prewarmVisibleRichReplies(for: currentRenderWidth())
     }
 
@@ -378,6 +393,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               let last = messages.last else { return }
         syncStreamingChrome()
         let path = IndexPath(row: messages.count - 1, section: 0)
+        // Streaming reasoning is expanded and can be thousands of points tall.
+        // Never seed the finished row with that transient geometry.
+        contentHeights.removeValue(forKey: last.id)
+        pendingHeights.removeValue(forKey: last.id)
         if let visibleCell = tableView.cellForRow(at: path) as? MessageCell,
            visibleCell.messageID == last.id {
             if let measured = visibleCell.transitionToFinishedPlainRendering(
@@ -475,9 +494,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             stickToBottom = true
             readingHistory = false
         }
-        // User rows must never inherit bloated web estimates.
+        // User rows and reasoning rows must never inherit transient estimates.
+        // Reasoning height depends on expanded/collapsed UI state, which is not
+        // represented by the persisted message-ID-only cache.
         if let msgs = ConversationStore.shared.currentConversation?.messages {
-            for m in msgs where m.role == .user {
+            for m in msgs where m.role == .user || m.hasReasoning {
                 contentHeights.removeValue(forKey: m.id)
             }
         }
@@ -1403,7 +1424,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             let lines = max(1, msg.content.count / 28)
             return min(CGFloat(52 + lines * 22), 220)
         }
-        if let h = contentHeights[msg.id], h > 40 {
+        if let h = contentHeights[msg.id], h > 40, !msg.hasReasoning {
             // Completed raster rows own an immutable height. Feeding the
             // exact value back to UITableView avoids A7 estimate→shrink churn.
             return h + (msg.isStreaming ? 28 : 0)

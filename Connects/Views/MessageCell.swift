@@ -280,8 +280,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         hasThinking = !think.isEmpty
         if hasThinking {
             if message.isStreaming {
+                // Keep live reasoning visible, but do not persist this automatic
+                // expansion. Once streaming finishes the reasoning should
+                // collapse unless the user explicitly opens it.
                 thinkingExpanded = true
-                MessageCell.expandedThinkingIDs.insert(message.id)
             } else {
                 thinkingExpanded = MessageCell.expandedThinkingIDs.contains(message.id)
             }
