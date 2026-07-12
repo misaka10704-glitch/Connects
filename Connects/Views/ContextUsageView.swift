@@ -44,8 +44,8 @@ final class ContextUsageView: UIView, ThemeRefreshable {
         if on {
             label.text = "正在压缩上下文…"
             compactButton.setTitle("…", for: .normal)
-            heightConstraint?.constant = 28
-            isHidden = false
+            alpha = 1
+            isUserInteractionEnabled = true
         }
     }
 
@@ -54,15 +54,18 @@ final class ContextUsageView: UIView, ThemeRefreshable {
     func update(usage: ContextBuilder.Usage, forceVisible: Bool, animated: Bool = true) {
         lastPercent = usage.percent
         let show = forceVisible || usage.shouldAutoCompact || isCompacting
-        isHidden = !show
-        heightConstraint?.constant = show ? 28 : 0
-        guard show else { return }
+        // Always reserve the composer-adjacent slot. Changing this view from
+        // 0 to 28pt resizes the table and visibly shifts a reader's viewport.
+        heightConstraint?.constant = 28
+        isHidden = false
+        isUserInteractionEnabled = show
+        let visibility: CGFloat = show ? 1 : 0
 
-        if isCompacting {
+        if show && isCompacting {
             label.text = "正在压缩上下文…"
             compactButton.setTitle("…", for: .normal)
             compactButton.isHidden = false
-        } else {
+        } else if show {
             label.text = "上下文 \(usage.percent)%"
             compactButton.setTitle(usage.shouldAutoCompact ? "压缩" : "整理", for: .normal)
             compactButton.isHidden = usage.percent < 35
@@ -79,6 +82,7 @@ final class ContextUsageView: UIView, ThemeRefreshable {
                 self.fillWidth = self.fill.widthAnchor.constraint(equalTo: self.track.widthAnchor, multiplier: ratio)
             }
             self.fillWidth?.isActive = true
+            self.alpha = visibility
             self.layoutIfNeeded()
         }
         if animated {
@@ -122,7 +126,7 @@ final class ContextUsageView: UIView, ThemeRefreshable {
         addSubview(compactButton)
 
         fillWidth = fill.widthAnchor.constraint(equalToConstant: 0)
-        heightConstraint = heightAnchor.constraint(equalToConstant: 0)
+        heightConstraint = heightAnchor.constraint(equalToConstant: 28)
 
         NSLayoutConstraint.activate([
             heightConstraint!,
@@ -146,7 +150,8 @@ final class ContextUsageView: UIView, ThemeRefreshable {
             fillWidth!
         ])
 
-        isHidden = true
+        alpha = 0
+        isUserInteractionEnabled = false
     }
 
     @objc private func compactTapped() {

@@ -124,7 +124,7 @@ enum ContextCompactor {
             existingThroughID: conv.contextSummaryThroughMessageID,
             keepRecentTurns: keepTurns
         )
-        ConversationStore.shared.updateConversation(id: conversationID) { c in
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { c in
             c.contextSummary = built.summary
             c.contextSummaryThroughMessageID = built.summaryThroughMessageID
         }
@@ -138,7 +138,7 @@ enum ContextCompactor {
     }
 
     private static func finishLocal(conversationID: String, summary: String?, throughID: String?) {
-        ConversationStore.shared.updateConversation(id: conversationID) { c in
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { c in
             c.contextSummary = summary
             c.contextSummaryThroughMessageID = throughID
         }

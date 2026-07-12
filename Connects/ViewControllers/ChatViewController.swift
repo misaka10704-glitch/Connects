@@ -33,8 +33,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var readingHistory = false
     private var streamUIWork: DispatchWorkItem?
     private var heightWork: DispatchWorkItem?
+    private var contextUsageWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
-    private var ignoreStoreReloadUntil: TimeInterval = 0
     private var chromeWork: DispatchWorkItem?
     /// Conversation currently waiting on web search before stream starts.
     private var webSearchPendingID: String?
@@ -75,7 +75,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if !didMigrateRenderSchema {
             heightCacheByConversation = RenderCacheStore.loadHeights()
         }
-        WebKitRenderWarmup.prepare()
         registerKeyboard()
         applyTheme()
         reloadChat()
@@ -91,8 +90,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
     private static let renderSchemaKey = "connects_render_schema"
-    // v30: raster-first binding removes interim text/preview presentation.
-    private static let renderSchemaVersion = 30
+    // v34: native layouts use actual split-view width and rebind on resize.
+    private static let renderSchemaVersion = 37
     private var didMigrateRenderSchema = false
     private var didPerformColdOpenRescue = false
 
@@ -120,6 +119,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         heightCacheByConversation.removeAll()
         pendingHeights.removeAll()
         PlainMarkdown.clearCache()
+        NativeMarkdownParser.shared.clear()
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clearDisk()
         ChatViewController.attrCache.removeAllObjects()
         RenderCacheStore.clearAll()
         ud.set(Self.renderSchemaVersion, forKey: Self.renderSchemaKey)
@@ -175,14 +177,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Snapshot keys include the width bucket. Rebind visible cells to their
     /// matching immutable tiles while retaining the reader's exact viewport.
     private func invalidateHeightsForWidthChange(immediate: Bool) {
-        // Keep current tiles and row geometry during the transition. Rebinding
-        // every row immediately is the main source of sidebar/rotation flashes.
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let visible = tableView.indexPathsForVisibleRows ?? []
+        let anchor = visible.first
+        let anchorDelta = anchor.map {
+            tableView.rectForRow(at: $0).minY - tableView.contentOffset.y
+        }
+        contentHeights.removeAll()
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = [:]
+        }
+        UIView.performWithoutAnimation {
+            tableView.layoutIfNeeded()
+            for path in visible where path.row < messages.count {
+                guard let cell = tableView.cellForRow(at: path) as? MessageCell else { continue }
+                cell.contentView.setNeedsLayout()
+                cell.contentView.layoutIfNeeded()
+                cell.configure(with: messages[path.row], preferredHeight: nil)
+            }
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            if stickToBottom && !readingHistory {
+                scrollToBottom(animated: false)
+            } else if let anchor = anchor, let anchorDelta = anchorDelta {
+                tableView.contentOffset.y = tableView.rectForRow(at: anchor).minY - anchorDelta
+            }
+        }
         prewarmVisibleRichReplies(for: currentRenderWidth())
         _ = immediate
     }
 
     private func currentRenderWidth() -> CGFloat {
-        min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
+        min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 120))
     }
 
     private func prewarmVisibleRichReplies(for width: CGFloat) {
@@ -194,33 +220,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 rows.insert(nearby)
             }
         }
-        let font = SettingsManager.shared.chatBodyFontSize
-        let appearance = SettingsManager.shared.appearanceMode.rawValue
         for row in rows {
             let message = messages[row]
             guard message.role == .assistant,
-                  !message.isStreaming,
-                  MarkdownHTMLRenderer.needsRichMarkdown(message.content) else { continue }
-            let key = StableRichRenderer.key(
-                messageID: message.id,
-                content: message.content,
-                font: font,
-                appearance: appearance,
-                width: width
-            )
-            StableRichRenderer.shared.request(
-                key: key,
-                markdown: message.content,
-                width: width,
-                font: font,
-                colors: DSTheme.c,
-                priority: .visible
-            ) { _ in
-                // Rendering must not rebind/reload rows. The currently visible
-                // cell swaps its fixed tile directly; off-screen cells pick up
-                // the artifact synchronously on their next normal bind.
-            }
+                  !message.isStreaming else { continue }
+            _ = NativeMarkdownParser.shared.parse(message.content)
         }
+        _ = width
     }
 
     private func reloadTablePreservingViewport() {
@@ -282,16 +288,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func themeChanged() {
         applyTheme(reloadMessages: false)
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
         prewarmVisibleRichReplies(for: currentRenderWidth())
     }
 
     @objc private func storeChanged(_ note: Notification) {
         guard !isReloadingFromStore else { return }
-        if Date().timeIntervalSince1970 < ignoreStoreReloadUntil { return }
-        if let source = note.userInfo?["source"] as? String, source == "streamFinish" {
+        if let source = note.userInfo?["source"] as? String,
+           source == "streamFinish" || source == "title" {
             updateTitleFromConversation()
             syncStreamingChrome()
-            refreshContextUsage()
+            if source == "streamFinish" {
+                refreshContextUsage(animated: false)
+            }
             return
         }
         reloadChat()
@@ -301,7 +311,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
         scheduleStreamUIRefresh()
-        refreshContextUsage()
+        scheduleContextUsageRefresh()
     }
 
     @objc private func thinkingToggled(_ note: Notification) {
@@ -314,12 +324,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             return
         }
-        tableView.reloadData()
+        reloadTablePreservingViewport()
     }
 
     @objc private func fontSizeChanged() {
         ChatViewController.attrCache.removeAllObjects()
         PlainMarkdown.clearCache()
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
         prewarmVisibleRichReplies(for: currentRenderWidth())
     }
 
@@ -358,42 +370,41 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
         streamUIWork?.cancel()
-        ignoreStoreReloadUntil = Date().timeIntervalSince1970 + 0.35
-        // Streaming uses a lightweight UILabel. Finished rich replies are
-        // rendered once offscreen and then displayed as fixed snapshot tiles.
+        streamUIWork = nil
+        contextUsageWork?.cancel()
+        // Streaming stays lightweight; completion performs one deterministic
+        // native parse/layout and swaps under the cell snapshot cover.
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last else { return }
-        contentHeights.removeValue(forKey: last.id)
         syncStreamingChrome()
         let path = IndexPath(row: messages.count - 1, section: 0)
-        if MarkdownHTMLRenderer.needsRichMarkdown(last.content) {
-            let width = min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
-            let key = StableRichRenderer.key(
-                messageID: last.id,
-                content: last.content,
-                font: SettingsManager.shared.chatBodyFontSize,
-                appearance: SettingsManager.shared.appearanceMode.rawValue,
-                width: width
-            )
-            StableRichRenderer.shared.request(
-                key: key,
-                markdown: last.content,
-                width: width,
-                font: SettingsManager.shared.chatBodyFontSize,
-                colors: DSTheme.c,
-                priority: .visible
-            ) { _ in }
-        }
-        UIView.performWithoutAnimation {
-            tableView.reloadRows(at: [path], with: .none)
+        if let visibleCell = tableView.cellForRow(at: path) as? MessageCell,
+           visibleCell.messageID == last.id {
+            if let measured = visibleCell.transitionToFinishedPlainRendering(
+                last,
+                preferredHeight: contentHeights[last.id]
+            ) {
+                contentHeights[last.id] = measured
+            }
+            UIView.performWithoutAnimation {
+                tableView.beginUpdates()
+                tableView.endUpdates()
+                if stickToBottom && !readingHistory {
+                    scrollToBottom(animated: false)
+                }
+            }
         }
         maybeAutoCompactContext()
     }
 
     private func scheduleStreamUIRefresh() {
-        streamUIWork?.cancel()
+        // Fixed-cadence throttle: continuous notifications must not keep
+        // postponing the only visible update until the stream finishes.
+        guard streamUIWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            self?.refreshStreamingRow()
+            guard let self = self else { return }
+            self.streamUIWork = nil
+            self.refreshStreamingRow()
         }
         streamUIWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
@@ -408,14 +419,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let path = IndexPath(row: messages.count - 1, section: 0)
         UIView.performWithoutAnimation {
             if let cell = tableView.cellForRow(at: path) as? MessageCell {
-                cell.configure(with: last, preferredHeight: contentHeights[last.id])
-                tableView.beginUpdates()
-                tableView.endUpdates()
-            } else {
-                tableView.reloadRows(at: [path], with: .none)
-            }
-            if stickToBottom {
-                scrollToBottom(animated: false)
+                if !cell.updateStreamingContent(last) {
+                    cell.configure(with: last, preferredHeight: contentHeights[last.id])
+                }
             }
         }
     }
@@ -476,12 +482,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
 
-        UIView.performWithoutAnimation {
-            tableView.reloadData()
-            tableView.layoutIfNeeded()
-            if conversationChanged || (stickToBottom && !readingHistory) {
+        if conversationChanged {
+            UIView.performWithoutAnimation {
+                tableView.reloadData()
+                tableView.layoutIfNeeded()
                 scrollToBottom(animated: false)
             }
+        } else {
+            reloadTablePreservingViewport()
+        }
+        if let messages = ConversationStore.shared.currentConversation?.messages {
+            MessageCell.prewarmSnapshots(
+                for: Array(messages.suffix(4)),
+                targetWidth: currentRenderWidth()
+            )
         }
         // Defer chrome so the message list paints first.
         let work = DispatchWorkItem { [weak self] in
@@ -491,7 +505,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self.updateAttachAvailability()
             self.updateTitleFromConversation()
             self.syncStreamingChrome()
-            self.refreshContextUsage()
+            self.refreshContextUsage(animated: false)
         }
         chromeWork = work
         DispatchQueue.main.async(execute: work)
@@ -641,7 +655,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         ])
     }
 
-    private func refreshContextUsage() {
+    private func refreshContextUsage(animated: Bool = false) {
         guard let conv = ConversationStore.shared.currentConversation else {
             contextUsageView.setCompacting(false)
             contextUsageView.update(
@@ -655,7 +669,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let compacting = ContextCompactor.isCompacting(conv.id)
         let visible = ContextBuilder.shouldShowUsage(for: conv)
         contextUsageView.setCompacting(compacting)
-        contextUsageView.update(usage: usage, forceVisible: visible, animated: true)
+        contextUsageView.update(usage: usage, forceVisible: visible, animated: animated)
+    }
+
+    private func scheduleContextUsageRefresh() {
+        contextUsageWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshContextUsage(animated: false)
+        }
+        contextUsageWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     private func maybeAutoCompactContext() {
@@ -665,7 +688,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         contextUsageView.update(
             usage: usage,
             forceVisible: ContextBuilder.shouldShowUsage(for: conv),
-            animated: true
+            animated: false
         )
         guard usage.shouldAutoCompact else { return }
         contextUsageView.setCompacting(true)
@@ -904,7 +927,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let text = alert.textFields?.first?.text?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else { return }
-            ConversationStore.shared.updateCurrent { c in
+            ConversationStore.shared.updateCurrentQuietly { c in
                 guard index < c.messages.count, c.messages[index].role == .user else { return }
                 c.messages[index].content = text
             }
@@ -991,7 +1014,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let convID = conv.id
 
-        ConversationStore.shared.updateCurrent { c in
+        ConversationStore.shared.updateCurrentQuietly { c in
             let assistantIndex = userIndex + 1
             if assistantIndex < c.messages.count, c.messages[assistantIndex].role == .assistant {
                 // Keep prior replies as switchable versions; drop later turns.
@@ -1067,7 +1090,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if self.navigationItem.prompt != nil {
                 self.navigationItem.prompt = nil
             }
-            ConversationStore.shared.updateConversation(id: convID) { c in
+            ConversationStore.shared.updateConversationQuietly(id: convID) { c in
                 guard var last = c.messages.last, last.isStreaming else { return }
                 last.content = ""
                 c.messages[c.messages.count - 1] = last
@@ -1094,14 +1117,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func setWebSearchStatus(convID: String, text: String) {
         navigationItem.prompt = text
-        ConversationStore.shared.updateConversation(id: convID) { c in
+        ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             guard var last = c.messages.last, last.isStreaming else { return }
             last.content = text
             c.messages[c.messages.count - 1] = last
         }
         if currentConversationID == convID {
-            tableView.reloadData()
-            scrollToBottom(animated: false)
+            guard let messages = ConversationStore.shared.currentConversation?.messages,
+                  !messages.isEmpty else { return }
+            let path = IndexPath(row: messages.count - 1, section: 0)
+            UIView.performWithoutAnimation {
+                if let cell = tableView.cellForRow(at: path) as? MessageCell {
+                    if !cell.updateStreamingContent(messages[path.row]) {
+                        cell.configure(with: messages[path.row], preferredHeight: contentHeights[messages[path.row].id])
+                    }
+                } else {
+                    tableView.reloadRows(at: [path], with: .none)
+                }
+            }
         }
     }
 
@@ -1288,8 +1321,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         )
         let convID = conv.id
         let model = conv.model
+        let firstNewRow = conv.messages.count
 
-        ConversationStore.shared.updateCurrent { c in
+        ConversationStore.shared.updateCurrentQuietly { c in
             c.messages.append(userMsg)
             c.messages.append(assistantMsg)
         }
@@ -1299,8 +1333,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         inputBar.clearText()
         updateEmptyState()
-        tableView.reloadData()
         readingHistory = false
+        UIView.performWithoutAnimation {
+            tableView.insertRows(
+                at: [
+                    IndexPath(row: firstNewRow, section: 0),
+                    IndexPath(row: firstNewRow + 1, section: 0)
+                ],
+                with: .none
+            )
+        }
         scrollToBottom(animated: true, force: true)
         stickToBottom = true
         refreshContextUsage()
@@ -1366,6 +1408,22 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             // exact value back to UITableView avoids A7 estimate→shrink churn.
             return h + (msg.isStreaming ? 28 : 0)
         }
+        if msg.role == .assistant,
+           !msg.isStreaming {
+            let document = NativeMarkdownParser.shared.parse(msg.content)
+            let style = NativeLayoutStyle(
+                width: currentRenderWidth(),
+                bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                colors: DSTheme.c
+            )
+            if let layout = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
+                var chrome: CGFloat = 48
+                if msg.hasImage { chrome += 168 }
+                if msg.hasReasoning { chrome += 44 }
+                return layout.size.height + chrome
+            }
+        }
         let chars = max(msg.content.count, msg.reasoningContent.isEmpty ? 0 : 40)
         let lines = max(1, chars / 48)
         var rough = CGFloat(36 + lines * 18)
@@ -1418,37 +1476,16 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 extension ChatViewController: UITableViewDataSourcePrefetching {
     func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
-        let font = SettingsManager.shared.chatBodyFontSize
-        let appearance = SettingsManager.shared.appearanceMode.rawValue
-        let width = min(DSTheme.bubbleMaxWidth, max(tableView.bounds.width - 48, 280))
-        let colors = DSTheme.c
         for path in indexPaths where path.section == 0 && path.row < messages.count {
             let message = messages[path.row]
             guard message.role == .assistant,
-                  !message.isStreaming,
-                  MarkdownHTMLRenderer.needsRichMarkdown(message.content) else { continue }
-            for profileWidth in StableRichRenderer.layoutProfileWidths(primary: width) {
-                let key = StableRichRenderer.key(
-                    messageID: message.id,
-                    content: message.content,
-                    font: font,
-                    appearance: appearance,
-                    width: profileWidth
-                )
-                StableRichRenderer.shared.request(
-                    key: key,
-                    markdown: message.content,
-                    width: profileWidth,
-                    font: font,
-                    colors: colors
-                ) { _ in }
-            }
+                  !message.isStreaming else { continue }
+            _ = NativeMarkdownParser.shared.parse(message.content)
         }
     }
 
     func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
-        // Do not cancel: completed reply tiles are reusable cache artifacts and
-        // are likely to be needed again in the same scroll gesture.
+        // Native layouts are immutable cache entries; no cancellation needed.
     }
 }
 
@@ -1507,16 +1544,28 @@ extension ChatViewController: MessageCellDelegate {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let row = messages.firstIndex(where: { $0.id == messageID }),
               !messages[row].isStreaming else { return }
-        let old = contentHeights[messageID] ?? 0
         contentHeights[messageID] = height
         if let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
             RenderCacheStore.saveHeights(heightCacheByConversation)
         }
-        // Do not perturb a live gesture. The cell has already atomically
-        // swapped its placeholder for tiles; its fixed height is used on the
-        // next normal layout/reuse.
-        _ = old
+        guard cell.window != nil,
+              !tableView.isDragging,
+              !tableView.isDecelerating else { return }
+        let path = IndexPath(row: row, section: 0)
+        let targetRowHeight = height + 20
+        guard abs(tableView.rectForRow(at: path).height - targetRowHeight) > 4 else { return }
+        let anchor = readingHistory ? tableView.indexPathsForVisibleRows?.first : nil
+        let anchorDelta = anchor.map { tableView.rectForRow(at: $0).minY - tableView.contentOffset.y }
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            if stickToBottom && !readingHistory {
+                scrollToBottom(animated: false)
+            } else if let anchor = anchor, let anchorDelta = anchorDelta {
+                tableView.contentOffset.y = tableView.rectForRow(at: anchor).minY - anchorDelta
+            }
+        }
     }
 
     private func flushPendingHeights(force: Bool = false) {
@@ -1581,7 +1630,7 @@ extension ChatViewController: MessageCellDelegate {
     func messageCellDidShiftVersion(_ cell: MessageCell, messageID: String, delta: Int) {
         guard let convID = ConversationStore.shared.currentConversationID else { return }
         var changed = false
-        ConversationStore.shared.updateConversation(id: convID) { c in
+        ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             guard let idx = c.messages.firstIndex(where: { $0.id == messageID }) else { return }
             changed = c.messages[idx].shiftVersion(by: delta)
         }
@@ -1592,8 +1641,11 @@ extension ChatViewController: MessageCellDelegate {
             heightCacheByConversation[cid] = contentHeights
             RenderCacheStore.saveHeights(heightCacheByConversation)
         }
-        ignoreStoreReloadUntil = 0
-        reloadChat()
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let row = messages.firstIndex(where: { $0.id == messageID }) else { return }
+        UIView.performWithoutAnimation {
+            tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
+        }
     }
 }
 

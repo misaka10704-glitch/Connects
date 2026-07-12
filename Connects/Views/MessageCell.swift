@@ -49,6 +49,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private let thinkingBox = UIView()
 
     private let assistantLabel = UILabel()
+    private let nativeRenderView = NativeMessageRenderView()
     private let renderedReplyView = UIStackView()
     private var webView: WKWebView?
     private var webSnapshotView: UIImageView?
@@ -89,6 +90,11 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var renderedTopToImage: NSLayoutConstraint!
     private var renderedTopToThink: NSLayoutConstraint!
     private var renderedBottom: NSLayoutConstraint!
+    private var nativeHeight: NSLayoutConstraint!
+    private var nativeTopToRole: NSLayoutConstraint!
+    private var nativeTopToImage: NSLayoutConstraint!
+    private var nativeTopToThink: NSLayoutConstraint!
+    private var nativeBottom: NSLayoutConstraint!
     private var columnBottom: NSLayoutConstraint!
 
     private var lastHTMLKey: String?
@@ -193,6 +199,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         setThinking(visible: false, expanded: false)
         userBubble.isHidden = true
         assistantLabel.isHidden = true
+        hideNativeRender()
         webSnapshotView?.image = nil
         webSnapshotView?.isHidden = true
         cachedImage = nil
@@ -204,34 +211,14 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         cachedImage = image
     }
 
-    /// Queue a few nearby finished replies through the shared renderer before
-    /// the sidebar selection commits. No cell WebView is created here.
-    static func prewarmSnapshots(for messages: [ChatMessage]) {
-        let font = SettingsManager.shared.chatBodyFontSize
-        let appearance = SettingsManager.shared.appearanceMode.rawValue
-        let width = min(DSTheme.bubbleMaxWidth, max(UIScreen.main.bounds.width - 48, 280))
-        let colors = DSTheme.c
+    /// Parse and lay out nearby finished replies before they enter the viewport.
+    static func prewarmSnapshots(for messages: [ChatMessage], targetWidth: CGFloat? = nil) {
         for message in messages.suffix(4)
             where message.role == .assistant &&
-                  !message.isStreaming &&
-                  MarkdownHTMLRenderer.needsRichMarkdown(message.content) {
-            for profileWidth in StableRichRenderer.layoutProfileWidths(primary: width) {
-                let key = StableRichRenderer.key(
-                    messageID: message.id,
-                    content: message.content,
-                    font: font,
-                    appearance: appearance,
-                    width: profileWidth
-                )
-                StableRichRenderer.shared.request(
-                    key: key,
-                    markdown: message.content,
-                    width: profileWidth,
-                    font: font,
-                    colors: colors
-                ) { _ in }
-            }
+                  !message.isStreaming {
+            _ = NativeMarkdownParser.shared.parse(message.content)
         }
+        _ = targetWidth
     }
 
     func configure(with message: ChatMessage, preferredHeight: CGFloat?) {
@@ -262,6 +249,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             assistantLabel.isHidden = true
             stableRenderKey = nil
             hideStableRenderedReply()
+            hideNativeRender()
             parkWeb()
             setThinking(visible: false, expanded: false)
             showActions(false)
@@ -341,6 +329,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
         if message.isStreaming || message.content.isEmpty {
             parkWeb()
+            hideNativeRender()
+            hideStableRenderedReply()
             applyAssistantLayoutWidth()
             assistantLabel.isHidden = false
             labelBottom.isActive = true
@@ -365,33 +355,186 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 assistantLabel.attributedText = nil
                 assistantLabel.text = nil
             }
-        } else if needsRich {
-            configureStableRich(
+        } else {
+            _ = needsRich
+            configureNative(
                 message: message,
-                preferredHeight: preferredHeight,
                 hasThinking: hasThinking,
                 hasImage: hasImage,
                 font: font,
                 colors: c
             )
-        } else {
-            parkWeb()
-            hideStableRenderedReply()
-            applyAssistantLayoutWidth()
-            assistantLabel.isHidden = false
-            labelBottom.isActive = true
-            labelBottomFloor.isActive = true
-            setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: false)
-            let key = "\(message.id)|\(message.content.count)|\(Int(font))"
-            assistantLabel.attributedText = PlainMarkdown.attributed(
-                message.content,
-                bodyFont: UIFont.systemFont(ofSize: font),
-                textColor: c.textPrimary,
-                secondaryColor: c.textSecondary,
-                cacheKey: key
-            )
-            schedulePlainHeightNotify()
         }
+    }
+
+    private func configureNative(message: ChatMessage,
+                                 hasThinking: Bool,
+                                 hasImage: Bool,
+                                 font: CGFloat,
+                                 colors: ThemeColors) {
+        parkWeb()
+        hideStableRenderedReply()
+        assistantLabel.isHidden = true
+        assistantLabel.attributedText = nil
+        assistantLabel.text = nil
+        labelBottom.isActive = false
+        labelBottomFloor.isActive = false
+        assistantTopToRole.isActive = false
+        assistantTopToImage.isActive = false
+        assistantTopToThink.isActive = false
+        nativeTopToRole.isActive = false
+        nativeTopToImage.isActive = false
+        nativeTopToThink.isActive = false
+        nativeBottom.isActive = true
+        if hasThinking { nativeTopToThink.isActive = true }
+        else if hasImage { nativeTopToImage.isActive = true }
+        else { nativeTopToRole.isActive = true }
+        let measuredWidth = column.bounds.width > 1
+            ? column.bounds.width
+            : max(bounds.width - 48, 120)
+        let width = min(DSTheme.bubbleMaxWidth, max(measuredWidth, 120))
+        nativeHeight.constant = nativeRenderView.configure(
+            content: message.content,
+            width: width,
+            fontSize: font,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: colors
+        )
+        nativeRenderView.isHidden = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.messageID == message.id else { return }
+            self.contentView.layoutIfNeeded()
+            let height = self.column.bounds.height
+            if height > 40 {
+                self.cellDelegate?.messageCell(self, didFinishStableRender: height, for: message.id)
+            }
+        }
+    }
+
+    private func hideNativeRender() {
+        nativeRenderView.isHidden = true
+        nativeRenderView.clear()
+        nativeHeight?.constant = 0
+        nativeTopToRole?.isActive = false
+        nativeTopToImage?.isActive = false
+        nativeTopToThink?.isActive = false
+        nativeBottom?.isActive = false
+    }
+
+    /// Updates the already-bound streaming view without resetting constraints,
+    /// renderer state, or action visibility on every token batch.
+    @discardableResult
+    func updateStreamingContent(_ message: ChatMessage) -> Bool {
+        guard messageID == message.id,
+              message.isStreaming,
+              !assistantLabel.isHidden,
+              renderedReplyView.isHidden,
+              (thinkingBox.isHidden == message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) else {
+            return false
+        }
+        let content = message.content
+        assistantLabel.attributedText = nil
+        assistantLabel.text = content.isEmpty ? (thinkingBox.isHidden ? "▍" : nil) : content
+        if !thinkingBox.isHidden {
+            thinkingBody.attributedText = nil
+            thinkingBody.text = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let chevron = thinkingExpanded ? "▾" : "▸"
+            thinkingHeader.setTitle(
+                content.isEmpty ? "\(chevron)  思考中…" : "\(chevron)  已深度思考",
+                for: .normal
+            )
+        }
+        schedulePlainHeightNotify()
+        return true
+    }
+
+    /// Ends the live state without changing the renderer currently visible in
+    /// this cell. Rich tiles are adopted only on a later normal cell binding,
+    /// after they are already available synchronously.
+    func finalizeStreamingPresentation(_ message: ChatMessage) {
+        guard messageID == message.id else { return }
+        let c = DSTheme.c
+        let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !think.isEmpty {
+            thinkingHeader.setTitle(thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考", for: .normal)
+        }
+        let pager = message.showsVersionPager
+        showActions(
+            !message.content.isEmpty || !think.isEmpty,
+            versionText: pager ? message.versionPagerText : nil,
+            canPrev: pager && message.versionIndex > 0,
+            canNext: pager && message.versionIndex < message.versions.count - 1
+        )
+        styleActionIcons(c)
+        schedulePlainHeightNotify()
+    }
+
+    /// Covers the cell with its current pixels while constraints and renderer
+    /// switch underneath, then fades the cover. The user never sees an empty
+    /// stack or a half-laid-out rich reply.
+    @discardableResult
+    func transitionToStableRendering(_ message: ChatMessage, preferredHeight: CGFloat?) -> CGFloat? {
+        guard messageID == message.id,
+              !message.isStreaming,
+              Self.needsRichRenderer(message.content) else { return nil }
+        let exactKey = StableRichRenderer.key(
+            messageID: message.id,
+            content: message.content,
+            font: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            width: stableRenderWidth()
+        )
+        if displayedStableKey == exactKey, !renderedReplyView.isHidden {
+            return column.bounds.height > 40 ? column.bounds.height : nil
+        }
+        let cover = contentView.snapshotView(afterScreenUpdates: false)
+        if let cover = cover {
+            cover.frame = contentView.bounds
+            cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            cover.isUserInteractionEnabled = false
+            contentView.addSubview(cover)
+        }
+        configure(with: message, preferredHeight: preferredHeight)
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        let measured = column.bounds.height
+        if let cover = cover {
+            UIView.animate(
+                withDuration: 0.16,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseOut, .allowUserInteraction],
+                animations: { cover.alpha = 0 },
+                completion: { _ in cover.removeFromSuperview() }
+            )
+        }
+        return measured > 40 ? measured : nil
+    }
+
+    @discardableResult
+    func transitionToFinishedPlainRendering(_ message: ChatMessage, preferredHeight: CGFloat?) -> CGFloat? {
+        guard messageID == message.id,
+              !message.isStreaming else { return nil }
+        let cover = contentView.snapshotView(afterScreenUpdates: false)
+        if let cover = cover {
+            cover.frame = contentView.bounds
+            cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            cover.isUserInteractionEnabled = false
+            contentView.addSubview(cover)
+        }
+        configure(with: message, preferredHeight: preferredHeight)
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        let measured = column.bounds.height
+        if let cover = cover {
+            UIView.animate(
+                withDuration: 0.12,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseOut, .allowUserInteraction],
+                animations: { cover.alpha = 0 },
+                completion: { _ in cover.removeFromSuperview() }
+            )
+        }
+        return measured > 40 ? measured : nil
     }
 
     /// PlainMarkdown rows don't go through web height JS — push measured height so estimates settle.
@@ -440,7 +583,6 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         )
         stableRenderKey = key
         hasExactStableRender = false
-        let id = message.id
         // The hot scroll path is strictly synchronous: never clear image tiles
         // or paint a raw Markdown intermediary when the exact artifact exists.
         if let artifact = StableRichRenderer.shared.artifact(forKey: key) {
@@ -454,15 +596,37 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             )
             return
         }
-        let placeholderHeight = StableRichRenderer.shared.metadataHeight(forKey: key)
-            ?? preferredHeight
-            ?? stablePlaceholderHeight(for: message.content)
-        showStablePlaceholder(
-            height: placeholderHeight,
-            hasThinking: hasThinking,
-            hasImage: hasImage,
-            colors: colors
+        // The cell may already be displaying the exact immutable tiles even
+        // after NSCache evicts them. Keep those pixels instead of replacing
+        // them with a placeholder just to begin a disk reload.
+        if displayedStableKey == key, !renderedReplyView.isHidden {
+            return
+        }
+        let baseKey = StableRichRenderer.baseKey(
+            messageID: message.id,
+            content: message.content,
+            font: font,
+            appearance: SettingsManager.shared.appearanceMode.rawValue
         )
+        if let preview = StableRichRenderer.shared.previewArtifact(forBaseKey: baseKey) {
+            showStableRenderedReply(
+                preview,
+                renderKey: "preview|\(baseKey)",
+                displayWidth: width,
+                hasThinking: hasThinking,
+                hasImage: hasImage
+            )
+        } else {
+            // Keep readable content until the exact artifact is decoded.
+            showStablePlainFallback(
+                content: message.content,
+                font: font,
+                hasThinking: hasThinking,
+                hasImage: hasImage,
+                colors: colors
+            )
+            StableRichRenderer.shared.requestPreview(baseKey: baseKey, targetWidth: width) { _ in }
+        }
         StableRichRenderer.shared.request(
             key: key,
             markdown: message.content,
@@ -471,18 +635,13 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             colors: colors,
             priority: .visible
         ) { [weak self] artifact in
-            guard let self = self,
-                  self.messageID == id,
-                  self.stableRenderKey == key,
-                  let artifact = artifact else { return }
-            self.hasExactStableRender = true
-            self.showStableRenderedReply(
-                artifact,
-                renderKey: key,
-                displayWidth: width,
-                hasThinking: hasThinking,
-                hasImage: hasImage
-            )
+            guard let self = self, artifact != nil else { return }
+            if self.messageID == message.id,
+               self.stableRenderKey == key,
+               self.window != nil,
+               self.cellDelegate?.messageCellShouldFreezeHeight(self) != true {
+                _ = self.transitionToStableRendering(message, preferredHeight: preferredHeight)
+            }
             self.prewarmLayoutProfiles(
                 message: message,
                 font: font,
@@ -490,6 +649,29 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 primaryWidth: width
             )
         }
+    }
+
+    private func showStablePlainFallback(content: String,
+                                         font: CGFloat,
+                                         hasThinking: Bool,
+                                         hasImage: Bool,
+                                         colors: ThemeColors) {
+        parkWeb()
+        hideStableRenderedReply()
+        applyAssistantLayoutWidth()
+        assistantLabel.isHidden = false
+        labelBottom.isActive = true
+        labelBottomFloor.isActive = true
+        setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: false)
+        let cacheKey = "stable-fallback|\(RenderCacheStore.stamp(content))|\(Int(font))"
+        assistantLabel.attributedText = PlainMarkdown.attributed(
+            content,
+            bodyFont: UIFont.systemFont(ofSize: font),
+            textColor: colors.textPrimary,
+            secondaryColor: colors.textSecondary,
+            cacheKey: cacheKey
+        )
+        schedulePlainHeightNotify()
     }
 
     private func stablePlaceholderHeight(for content: String) -> CGFloat {
@@ -511,7 +693,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantTopToThink.isActive = false
         hideStableRenderedReply()
         let placeholder = UIView()
-        placeholder.backgroundColor = colors.surfaceHover.withAlphaComponent(0.42)
+        // Reserve final geometry without exposing a gray intermediate frame.
+        placeholder.backgroundColor = .clear
         placeholder.layer.cornerRadius = 6
         renderedReplyView.addArrangedSubview(placeholder)
         placeholder.heightAnchor.constraint(equalToConstant: max(height, 44)).isActive = true
@@ -1441,6 +1624,24 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantLabel.isHidden = true
         column.addSubview(assistantLabel)
 
+        nativeRenderView.translatesAutoresizingMaskIntoConstraints = false
+        nativeRenderView.isHidden = true
+        nativeRenderView.onHeightChange = { [weak self] height in
+            guard let self = self, !self.messageID.isEmpty else { return }
+            self.nativeHeight.constant = height
+            self.contentView.setNeedsLayout()
+            self.contentView.layoutIfNeeded()
+            let rowHeight = self.column.bounds.height
+            if rowHeight > 40 {
+                self.cellDelegate?.messageCell(
+                    self,
+                    didFinishStableRender: rowHeight,
+                    for: self.messageID
+                )
+            }
+        }
+        column.addSubview(nativeRenderView)
+
         renderedReplyView.translatesAutoresizingMaskIntoConstraints = false
         renderedReplyView.axis = .vertical
         renderedReplyView.spacing = 0
@@ -1508,6 +1709,11 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         renderedTopToImage = renderedReplyView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         renderedTopToThink = renderedReplyView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
         renderedBottom = renderedReplyView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
+        nativeHeight = nativeRenderView.heightAnchor.constraint(equalToConstant: 0)
+        nativeTopToRole = nativeRenderView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
+        nativeTopToImage = nativeRenderView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
+        nativeTopToThink = nativeRenderView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
+        nativeBottom = nativeRenderView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
         userTopToRole = userBubble.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
         userTopToImage = userBubble.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         // Soft equality + hard floor: when the table briefly oversizes a row (stale
@@ -1582,6 +1788,11 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             renderedReplyView.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             renderedBottom,
 
+            nativeRenderView.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            nativeRenderView.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            nativeHeight,
+            nativeBottom,
+
             actionRow.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             actionRow.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             actionRow.bottomAnchor.constraint(equalTo: column.bottomAnchor),
@@ -1596,6 +1807,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         renderedTopToImage.isActive = false
         renderedTopToThink.isActive = false
         renderedBottom.isActive = false
+        nativeTopToRole.isActive = false
+        nativeTopToImage.isActive = false
+        nativeTopToThink.isActive = false
+        nativeBottom.isActive = false
         assistantTopToRole.isActive = false
         userTopToRole.isActive = false
     }

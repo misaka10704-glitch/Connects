@@ -88,7 +88,10 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
 
     private var task: URLSessionDataTask?
     private var session: URLSession!
-    private var lineBuffer = ""
+    /// Keep raw bytes until a complete SSE line arrives. URLSession callbacks
+    /// may split a multi-byte UTF-8 scalar; decoding each callback separately
+    /// silently dropped entire chunks of Chinese/formula output.
+    private var receiveBuffer = Data()
     private var pendingHTTPError: Int?
     private var errorBody = Data()
 
@@ -96,6 +99,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     private var contentBuf = ""
     private var flushWork: DispatchWorkItem?
     private var ended = false
+    private var lengthLimited = false
     private var startedAt: Date?
     private var reportedFirstToken = false
 
@@ -170,7 +174,10 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
 
     private func scheduleFlush() {
         markFirstTokenIfNeeded()
-        flushWork?.cancel()
+        // Throttle at a fixed cadence. Debouncing here postponed the work item
+        // every time a token arrived, so a continuous stream stayed invisible
+        // until the provider finished.
+        guard flushWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             self?.flush(force: false)
         }
@@ -237,6 +244,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     private func finishLocally(error: Error?) {
         guard !ended else { return }
         ended = true
+        if lengthLimited {
+            contentBuf += "\n\n> 本次回复达到长度上限。可发送“继续”接着生成。"
+        }
         flush(force: true)
 
         let isCancel: Bool = {
@@ -281,19 +291,31 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             errorBody.append(data)
             return
         }
-        guard let chunk = String(data: data, encoding: .utf8) else { return }
-        lineBuffer += chunk
-        while let range = lineBuffer.range(of: "\n") {
-            let line = String(lineBuffer[..<range.lowerBound])
-            lineBuffer = String(lineBuffer[range.upperBound...])
-            parseSSELine(line)
+        receiveBuffer.append(data)
+        var reasoning = ""
+        var content = ""
+        var finishReason: String?
+        while let newline = receiveBuffer.firstIndex(of: 0x0A) {
+            let lineData = receiveBuffer[..<newline]
+            let line = String(decoding: lineData, as: UTF8.self)
+            receiveBuffer.removeSubrange(...newline)
+            let delta = parseSSELine(line)
+            reasoning += delta.reasoning
+            content += delta.content
+            finishReason = delta.finishReason ?? finishReason
         }
+        enqueueDelta(reasoning: reasoning, content: content, finishReason: finishReason)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if pendingHTTPError == nil, !lineBuffer.isEmpty {
-            parseSSELine(lineBuffer)
-            lineBuffer = ""
+        if pendingHTTPError == nil, !receiveBuffer.isEmpty {
+            let delta = parseSSELine(String(decoding: receiveBuffer, as: UTF8.self))
+            enqueueDelta(
+                reasoning: delta.reasoning,
+                content: delta.content,
+                finishReason: delta.finishReason
+            )
+            receiveBuffer.removeAll(keepingCapacity: false)
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -312,24 +334,46 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         }
     }
 
-    private func parseSSELine(_ line: String) {
+    private func enqueueDelta(reasoning: String,
+                              content: String,
+                              finishReason: String?) {
+        guard !reasoning.isEmpty || !content.isEmpty || finishReason != nil else { return }
+        // Buffer mutation and flush scheduling must share the main queue.
+        // Previously the URLSession delegate appended while a main-queue flush
+        // copied and cleared the same strings, allowing newly arrived tokens to
+        // be erased between those two operations.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.ended else { return }
+            if finishReason == "length" {
+                self.lengthLimited = true
+            }
+            self.reasoningBuf += reasoning
+            self.contentBuf += content
+            if !reasoning.isEmpty || !content.isEmpty {
+                self.scheduleFlush()
+            }
+        }
+    }
+
+    private func parseSSELine(_ line: String) -> (
+        reasoning: String,
+        content: String,
+        finishReason: String?
+    ) {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("data:") else { return }
+        guard trimmed.hasPrefix("data:") else { return ("", "", nil) }
         let dataStr = trimmed.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-        if dataStr == "[DONE]" { return }
+        if dataStr == "[DONE]" { return ("", "", nil) }
         guard let jsonData = dataStr.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
-              let delta = choices.first?["delta"] as? [String: Any] else { return }
+              let choice = choices.first else { return ("", "", nil) }
 
-        if let reasoning = APIClient.deltaTextPublic(delta["reasoning_content"])
-            ?? APIClient.deltaTextPublic(delta["reasoning"]), !reasoning.isEmpty {
-            reasoningBuf += reasoning
-            scheduleFlush()
-        }
-        if let content = APIClient.deltaTextPublic(delta["content"]), !content.isEmpty {
-            contentBuf += content
-            scheduleFlush()
-        }
+        let delta = choice["delta"] as? [String: Any] ?? [:]
+        let reasoning = APIClient.deltaTextPublic(delta["reasoning_content"])
+            ?? APIClient.deltaTextPublic(delta["reasoning"])
+            ?? ""
+        let content = APIClient.deltaTextPublic(delta["content"]) ?? ""
+        return (reasoning, content, choice["finish_reason"] as? String)
     }
 }

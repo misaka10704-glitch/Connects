@@ -253,14 +253,17 @@ enum MarkdownHTMLRenderer {
         // that clearly begin with a math command, so prose is unaffected.
         let lines = s.components(separatedBy: "\n").map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let openingBraces = trimmed.filter { $0 == "{" }.count
+            let closingBraces = trimmed.filter { $0 == "}" }.count
             guard trimmed.hasPrefix("\\"),
                   !trimmed.hasPrefix("\\["),
                   !trimmed.hasPrefix("\\("),
                   !trimmed.hasPrefix("\\begin{"),
                   trimmed.range(
-                    of: #"^\\(?:frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|right|mathbf|mathbb|mathrm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|psi|omega)\b"#,
+                    of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|right|mathbf|mathbb|mathrm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|psi|omega)\b"#,
                     options: .regularExpression
-                  ) != nil else { return line }
+                  ) != nil,
+                  openingBraces == closingBraces else { return line }
             let indent = line.prefix { $0 == " " || $0 == "\t" }
             return "\(indent)$$\(trimmed)$$"
         }

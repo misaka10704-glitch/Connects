@@ -8,11 +8,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = DSTheme.c.background
+        NativeRendererSelfTest.installFixtureIfRequested()
         window.rootViewController = RootSplitViewController()
         window.makeKeyAndVisible()
         self.window = window
-        // Warm light WebKit shell ASAP (marked only). KaTeX warms later in background.
-        WebKitRenderWarmup.prepare()
+        NativeRendererSelfTest.run()
         return true
     }
 

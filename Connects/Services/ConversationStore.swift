@@ -159,7 +159,7 @@ final class ConversationStore {
         conversations[index].title = String(cleaned.prefix(20))
         conversations[index].updatedAt = Date()
         save()
-        notify()
+        notify(userInfo: ["source": "title"])
     }
 
     func applyAITitle(id: String, title: String) {
@@ -177,7 +177,7 @@ final class ConversationStore {
         conversations[index].title = String(trimmed.prefix(24))
         conversations[index].updatedAt = Date()
         save()
-        notify()
+        notify(userInfo: ["source": "title"])
     }
 
     func updateCurrent(_ mutate: (inout Conversation) -> Void) {
@@ -199,6 +199,15 @@ final class ConversationStore {
         conversations[index] = conv
         scheduleSave()
         notify()
+    }
+
+    func updateConversationQuietly(id: String, _ mutate: (inout Conversation) -> Void) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        var conv = conversations[index]
+        mutate(&conv)
+        conv.updatedAt = Date()
+        conversations[index] = conv
+        scheduleSave()
     }
 
     func setModel(_ model: AIModelOption, for conversationID: String) {

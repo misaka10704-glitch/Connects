@@ -183,9 +183,9 @@ final class APIClient: NSObject {
     /// Build chat/completions JSON body shared by stream + complete.
     static func chatPayload(messages: [ChatMessage], model: AIModelOption, stream: Bool, maxTokens: Int? = nil) -> [String: Any] {
         let thinkingOn = model.thinkingActive
-        // Default chat cap — Kimi's 32k default makes long runs feel endless; does not delay TTFT much
-        // but keeps Instant replies bounded.
-        let tokenCap = maxTokens ?? 8192
+        // Leave enough room for long mathematical derivations and providers
+        // that count hidden reasoning against the completion budget.
+        let tokenCap = maxTokens ?? 16_384
         var payload: [String: Any] = [
             "model": model.resolvedModelId,
             "messages": messages.map { serializeMessagePublic($0, model: model, includeReasoning: thinkingOn) },

@@ -179,6 +179,7 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
     /// falling back to UILabel while the exact layout tile is decoded/rendered.
     private let previewMemory = NSCache<NSString, StableRenderedReplyBox>()
     private var waiters: [String: [(StableRenderedReply?) -> Void]] = [:]
+    private var previewWaiters: [String: [(StableRenderedReply?) -> Void]] = [:]
     private var queue: [Job] = []
     private var active: Job?
     private var webView: WKWebView?
@@ -214,6 +215,13 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
     /// disk or WebKit, so a cache hit binds its finished raster in one frame.
     func artifact(forKey key: String) -> StableRenderedReply? {
         memory.object(forKey: key as NSString)?.value
+    }
+
+    /// A decoded artifact from any layout width for the same immutable reply.
+    /// Cells may scale it temporarily while the exact-width tiles load, avoiding
+    /// a visible placeholder on cache eviction or width changes.
+    func previewArtifact(forBaseKey baseKey: String) -> StableRenderedReply? {
+        previewMemory.object(forKey: baseKey as NSString)?.value
     }
 
     /// Fixed reply height available before image decoding. This lets a cell use
@@ -426,8 +434,14 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
             completion(box.value)
             return
         }
+        let requestKey = "\(baseKey)|target\(Int(targetWidth.rounded()))"
+        if previewWaiters[requestKey] != nil {
+            previewWaiters[requestKey]?.append(completion)
+            return
+        }
+        previewWaiters[requestKey] = [completion]
         guard let raw = UserDefaults.standard.dictionary(forKey: Self.metaKey) as? [String: [String: Any]] else {
-            completion(nil)
+            finishPreview(requestKey: requestKey, artifact: nil)
             return
         }
         let candidate = raw.keys
@@ -438,15 +452,20 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
                 return abs(l - targetWidth) < abs(r - targetWidth)
             }
         guard let key = candidate else {
-            completion(nil)
+            finishPreview(requestKey: requestKey, artifact: nil)
             return
         }
         loadFromDisk(key: key) { [weak self] artifact in
             if let artifact = artifact {
                 self?.cache(artifact, for: key)
             }
-            completion(artifact)
+            self?.finishPreview(requestKey: requestKey, artifact: artifact)
         }
+    }
+
+    private func finishPreview(requestKey: String, artifact: StableRenderedReply?) {
+        let callbacks = previewWaiters.removeValue(forKey: requestKey) ?? []
+        callbacks.forEach { $0(artifact) }
     }
 
     private func tileDirectory() -> URL {

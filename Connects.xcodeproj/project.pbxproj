@@ -53,6 +53,25 @@
 		A10000010000000000000041 /* icon-retry.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000041 /* icon-retry.png */; };
 		A10000010000000000000042 /* icon-fork.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000042 /* icon-fork.png */; };
 		A10000010000000000000052 /* LaunchScreen.storyboardc in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000052 /* LaunchScreen.storyboardc */; };
+		B10000010000000000000001 /* NativeMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* NativeMarkdown.swift */; };
+		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
+		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
+		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
+		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
+		B10000010000000000000010 /* MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* MTMathListIndex.m */; };
+		B10000010000000000000011 /* MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* MTMathListBuilder.m */; };
+		B10000010000000000000012 /* MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* MTMathList.m */; };
+		B10000010000000000000013 /* MTMathAtomFactory.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000013 /* MTMathAtomFactory.m */; };
+		B10000010000000000000014 /* MTUnicode.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000014 /* MTUnicode.m */; };
+		B10000010000000000000015 /* UIColor+HexString.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000015 /* UIColor+HexString.m */; };
+		B10000010000000000000016 /* MTLabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000016 /* MTLabel.m */; };
+		B10000010000000000000017 /* MTFont.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000017 /* MTFont.m */; };
+		B10000010000000000000018 /* MTMathListDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000018 /* MTMathListDisplay.m */; };
+		B10000010000000000000019 /* MTMathUILabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000019 /* MTMathUILabel.m */; };
+		B1000001000000000000001A /* MTFontManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001A /* MTFontManager.m */; };
+		B1000001000000000000001B /* MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* MTTypesetter.m */; };
+		B1000001000000000000001C /* MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* MTFontMathTable.m */; };
+		B10000010000000000000020 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000020 /* mathFonts.bundle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -104,6 +123,25 @@
 		A20000010000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000010000000000000052 /* LaunchScreen.storyboardc */ = {isa = PBXFileReference; lastKnownFileType = wrapper.storyboardc; path = LaunchScreen.storyboardc; sourceTree = "<group>"; };
 		A30000010000000000000001 /* Connects.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Connects.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000010000000000000001 /* NativeMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdown.swift; sourceTree = "<group>"; };
+		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
+		B20000010000000000000003 /* NativeFormulaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormulaRenderer.swift; sourceTree = "<group>"; };
+		B20000010000000000000004 /* NativeMessageLayouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageLayouter.swift; sourceTree = "<group>"; };
+		B20000010000000000000005 /* NativeMessageRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageRenderView.swift; sourceTree = "<group>"; };
+		B20000010000000000000010 /* MTMathListIndex.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListIndex.m; sourceTree = "<group>"; };
+		B20000010000000000000011 /* MTMathListBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListBuilder.m; sourceTree = "<group>"; };
+		B20000010000000000000012 /* MTMathList.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathList.m; sourceTree = "<group>"; };
+		B20000010000000000000013 /* MTMathAtomFactory.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathAtomFactory.m; sourceTree = "<group>"; };
+		B20000010000000000000014 /* MTUnicode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTUnicode.m; sourceTree = "<group>"; };
+		B20000010000000000000015 /* UIColor+HexString.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Vendor/iosMath/render/UIColor+HexString.m"; sourceTree = "<group>"; };
+		B20000010000000000000016 /* MTLabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTLabel.m; sourceTree = "<group>"; };
+		B20000010000000000000017 /* MTFont.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFont.m; sourceTree = "<group>"; };
+		B20000010000000000000018 /* MTMathListDisplay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathListDisplay.m; sourceTree = "<group>"; };
+		B20000010000000000000019 /* MTMathUILabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathUILabel.m; sourceTree = "<group>"; };
+		B2000001000000000000001A /* MTFontManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFontManager.m; sourceTree = "<group>"; };
+		B2000001000000000000001B /* MTTypesetter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTTypesetter.m; sourceTree = "<group>"; };
+		B2000001000000000000001C /* MTFontMathTable.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTFontMathTable.m; sourceTree = "<group>"; };
+		B20000010000000000000020 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.plug-in; path = mathFonts.bundle; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -130,6 +168,19 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000001 /* AppDelegate.swift */,
+				B20000010000000000000010 /* MTMathListIndex.m */,
+				B20000010000000000000011 /* MTMathListBuilder.m */,
+				B20000010000000000000012 /* MTMathList.m */,
+				B20000010000000000000013 /* MTMathAtomFactory.m */,
+				B20000010000000000000014 /* MTUnicode.m */,
+				B20000010000000000000015 /* UIColor+HexString.m */,
+				B20000010000000000000016 /* MTLabel.m */,
+				B20000010000000000000017 /* MTFont.m */,
+				B20000010000000000000018 /* MTMathListDisplay.m */,
+				B20000010000000000000019 /* MTMathUILabel.m */,
+				B2000001000000000000001A /* MTFontManager.m */,
+				B2000001000000000000001B /* MTTypesetter.m */,
+				B2000001000000000000001C /* MTFontMathTable.m */,
 				A50000010000000000000004 /* Models */,
 				A50000010000000000000005 /* Services */,
 				A50000010000000000000006 /* ViewControllers */,
@@ -155,6 +206,7 @@
 				A20000010000000000000002 /* AIModel.swift */,
 				A20000010000000000000003 /* ChatMessage.swift */,
 				A20000010000000000000004 /* Conversation.swift */,
+				B20000010000000000000001 /* NativeMarkdown.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -180,6 +232,9 @@
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				A2000001000000000000001A /* MarkdownHTMLRenderer.swift */,
 				A2000001000000000000001B /* PlainMarkdown.swift */,
+				B20000010000000000000002 /* NativeMarkdownParser.swift */,
+				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
+				B20000010000000000000004 /* NativeMessageLayouter.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -204,6 +259,7 @@
 				A20000010000000000000056 /* ConnectsMenu.swift */,
 				A20000010000000000000057 /* ModelVisibilityView.swift */,
 				A20000010000000000000058 /* ModelCapsuleDropdown.swift */,
+				B20000010000000000000005 /* NativeMessageRenderView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -231,6 +287,7 @@
 				A20000010000000000000030 /* katex */,
 				A20000010000000000000031 /* markdown */,
 				A20000010000000000000052 /* LaunchScreen.storyboardc */,
+				B20000010000000000000020 /* mathFonts.bundle */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -304,6 +361,7 @@
 				A10000010000000000000042 /* icon-fork.png in Resources */,
 				A10000010000000000000030 /* katex in Resources */,
 				A10000010000000000000031 /* markdown in Resources */,
+				B10000010000000000000020 /* mathFonts.bundle in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -366,6 +424,24 @@
 				A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */,
 				A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */,
 				A1000001000000000000001B /* PlainMarkdown.swift in Sources */,
+				B10000010000000000000001 /* NativeMarkdown.swift in Sources */,
+				B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */,
+				B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */,
+				B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */,
+				B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */,
+				B10000010000000000000010 /* MTMathListIndex.m in Sources */,
+				B10000010000000000000011 /* MTMathListBuilder.m in Sources */,
+				B10000010000000000000012 /* MTMathList.m in Sources */,
+				B10000010000000000000013 /* MTMathAtomFactory.m in Sources */,
+				B10000010000000000000014 /* MTUnicode.m in Sources */,
+				B10000010000000000000015 /* UIColor+HexString.m in Sources */,
+				B10000010000000000000016 /* MTLabel.m in Sources */,
+				B10000010000000000000017 /* MTFont.m in Sources */,
+				B10000010000000000000018 /* MTMathListDisplay.m in Sources */,
+				B10000010000000000000019 /* MTMathUILabel.m in Sources */,
+				B1000001000000000000001A /* MTFontManager.m in Sources */,
+				B1000001000000000000001B /* MTTypesetter.m in Sources */,
+				B1000001000000000000001C /* MTFontMathTable.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -425,6 +501,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
 				INFOPLIST_FILE = Connects/Info.plist;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -434,6 +516,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Debug;
@@ -446,6 +529,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
 				INFOPLIST_FILE = Connects/Info.plist;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -455,6 +544,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 2;
 			};
 			name = Release;
