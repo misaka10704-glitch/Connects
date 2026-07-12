@@ -22,9 +22,10 @@ enum WebSearchService {
         }
     }
 
-    private static let maxPagesToRead = 4
-    private static let maxCharsPerPage = 3500
-    private static let maxDownloadBytes = 450_000
+    private static let maxPagesToRead = 2
+    private static let maxCharsPerPage = 1800
+    private static let maxDownloadBytes = 300_000
+    private static let maxInjectedEvidenceChars = 8_000
 
     /// Search the web, open top result pages, and format evidence for the model.
     /// `onStatus` is always called on the main queue (e.g. "正在搜索…" / "正在阅读网页…").
@@ -77,7 +78,7 @@ enum WebSearchService {
         }
 
         group.notify(queue: .global(qos: .userInitiated)) {
-            let hits = mergeHits(sources: [ddgHits, bingHits, baiduHits], limit: 8)
+            let hits = rankHits(mergeHits(sources: [ddgHits, bingHits, baiduHits], limit: 8), query: q)
             guard !hits.isEmpty else {
                 DispatchQueue.main.async {
                     completion(.failure(lastError ?? SearchError.noResults))
@@ -101,30 +102,63 @@ enum WebSearchService {
         }
     }
 
-    /// Inject search/browse block into the last user message (API-only).
+    /// Inject search/browse context before the last user message (API-only).
     static func inject(into messages: [ChatMessage], searchBlock: String) -> [ChatMessage] {
-        let block = searchBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+        let block = capped(searchBlock.trimmingCharacters(in: .whitespacesAndNewlines), at: maxInjectedEvidenceChars)
         guard !block.isEmpty else { return messages }
         guard let idx = messages.lastIndex(where: { $0.role == .user }) else { return messages }
         var out = messages
-        var user = out[idx]
-        let original = user.content
-        user.content = """
-        【联网模式｜App 已代为检索并阅读网页。请严格按下列规则作答】
-        1. 优先依据「网页正文」回答；摘要仅作辅助。
-        2. 事实以资料为准；资料不足或互相矛盾时明确说明，禁止编造。
-        3. 回答面向用户问题，不要复述检索过程。
-        4. 文末最多列 5 个来源，严格使用以下紧凑格式；不要显示裸 URL，也不要把链接散落在正文：
-           ### 参考来源
-           - [简短标题](完整 URL)
+        let evidence = ChatMessage(
+            role: .system,
+            content: """
+            [Web search context]
+            The app fetched the following recent web evidence for the next user question.
+            Use it only when it is relevant. Answer the user directly; do not describe the search process.
+            If the evidence is insufficient or conflicts, say so plainly and do not invent facts.
+            When citing sources, put at most 5 links at the end under "### 参考来源" using markdown links.
 
-        \(block)
-
-        【用户问题】
-        \(original)
-        """
-        out[idx] = user
+            \(block)
+            """
+        )
+        out.insert(evidence, at: idx)
         return out
+    }
+
+    static func fitInjectedContext(_ messages: [ChatMessage], model: AIModelOption) -> [ChatMessage] {
+        let budget = ContextBuilder.charBudget(for: model)
+        guard ContextBuilder.estimatedChars(messages) > budget else { return messages }
+
+        var out = messages
+        while ContextBuilder.estimatedChars(out) > budget {
+            let lastUserIndex = out.lastIndex(where: { $0.role == .user }) ?? out.count
+            if let dropIndex = out.indices.first(where: { $0 < lastUserIndex && out[$0].role != .system }) {
+                out.remove(at: dropIndex)
+                continue
+            }
+
+            guard let evidenceIndex = out.firstIndex(where: {
+                $0.role == .system && $0.content.hasPrefix("[Web search context]")
+            }) else {
+                break
+            }
+
+            var evidence = out[evidenceIndex]
+            let overflow = ContextBuilder.estimatedChars(out) - budget
+            let keep = max(1_200, evidence.content.count - overflow - 200)
+            guard keep < evidence.content.count else { break }
+            evidence.content = String(evidence.content.prefix(keep))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                + "\n…[web evidence truncated to fit context budget]"
+            out[evidenceIndex] = evidence
+        }
+        return out
+    }
+
+    private static func capped(_ text: String, at limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let idx = text.index(text.startIndex, offsetBy: limit)
+        return String(text[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+            + "\n…[web evidence truncated]"
     }
 
     // MARK: - Format
@@ -139,8 +173,8 @@ enum WebSearchService {
         lines.append("检索词：\(query)")
         lines.append("")
 
-        lines.append("【搜索结果一览】")
-        for (i, hit) in hits.prefix(6).enumerated() {
+        lines.append("【搜索结果摘要】")
+        for (i, hit) in hits.prefix(5).enumerated() {
             lines.append("[\(i + 1)] \(hit.title)")
             if !hit.url.isEmpty { lines.append("链接：\(hit.url)") }
             if !hit.snippet.isEmpty { lines.append(hit.snippet) }
@@ -258,7 +292,7 @@ enum WebSearchService {
         req.httpMethod = "GET"
         applyBrowserHeaders(&req)
         req.setValue("text/html,application/xhtml+xml;q=0.9,*/*;q=0.5", forHTTPHeaderField: "Accept")
-        req.timeoutInterval = 14
+        req.timeoutInterval = 10
 
         URLSession.shared.dataTask(with: req) { data, response, _ in
             guard let data = data, !data.isEmpty else {
@@ -419,7 +453,7 @@ enum WebSearchService {
         req.httpBody = body
         req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         applyBrowserHeaders(&req)
-        req.timeoutInterval = 18
+        req.timeoutInterval = 12
 
         URLSession.shared.dataTask(with: req) { data, response, error in
             if let error = error {
@@ -482,7 +516,7 @@ enum WebSearchService {
         req.httpMethod = "GET"
         applyBrowserHeaders(&req)
         req.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        req.timeoutInterval = 18
+        req.timeoutInterval = 12
 
         URLSession.shared.dataTask(with: req) { data, response, error in
             if let error = error {
@@ -533,7 +567,7 @@ enum WebSearchService {
         req.httpMethod = "GET"
         applyBrowserHeaders(&req)
         req.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
-        req.timeoutInterval = 18
+        req.timeoutInterval = 12
 
         URLSession.shared.dataTask(with: req) { data, response, error in
             if let error = error {
@@ -571,11 +605,44 @@ enum WebSearchService {
 
     private static func applyBrowserHeaders(_ req: inout URLRequest) {
         req.setValue(
-            "Mozilla/5.0 (iPad; CPU OS 12_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
         req.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         req.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+    }
+
+    private static func rankHits(_ hits: [Hit], query: String) -> [Hit] {
+        let terms = query
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 }
+        let compactQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func score(_ hit: Hit) -> Int {
+            let title = hit.title.lowercased()
+            let snippet = hit.snippet.lowercased()
+            var value = 0
+            if !compactQuery.isEmpty {
+                if title.contains(compactQuery) { value += 6 }
+                if snippet.contains(compactQuery) { value += 3 }
+            }
+            for term in terms {
+                if title.contains(term) { value += 2 }
+                if snippet.contains(term) { value += 1 }
+            }
+            if !hit.snippet.isEmpty { value += 1 }
+            return value
+        }
+
+        return hits.enumerated()
+            .sorted { lhs, rhs in
+                let ls = score(lhs.element)
+                let rs = score(rhs.element)
+                if ls != rs { return ls > rs }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     private static func mergeHits(sources: [[Hit]], limit: Int) -> [Hit] {

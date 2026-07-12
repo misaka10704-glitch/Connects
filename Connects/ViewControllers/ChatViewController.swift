@@ -1120,11 +1120,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             switch result {
             case .success(let block):
                 msgs = WebSearchService.inject(into: msgs, searchBlock: block)
+                msgs = WebSearchService.fitInjectedContext(msgs, model: model)
             case .failure(let err):
-                msgs = WebSearchService.inject(
-                    into: msgs,
-                    searchBlock: "（联网搜索失败：\(err.localizedDescription)。将仅用模型知识回答。）"
-                )
+                #if DEBUG
+                print("[Connects] web search failed, falling back to regular context: \(err.localizedDescription)")
+                #endif
+                // Do not inject a "web mode" instruction when no web evidence exists; it
+                // creates conflicting guidance and hurts answer quality more than a clean fallback.
+                break
             }
             StreamManager.shared.start(
                 conversationID: convID,
