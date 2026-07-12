@@ -35,6 +35,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(storeChanged), name: .conversationStoreDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidFinish, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .webSearchDidUpdate, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidUpdate, object: nil)
         applyTheme()
         reloadData()
     }
@@ -287,7 +289,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         let cell = tableView.dequeueReusableCell(withIdentifier: "ConvCell", for: indexPath)
         let conv = sections[indexPath.section].items[indexPath.row]
         let c = DSTheme.c
-        let running = StreamManager.shared.isRunning(conv.id)
+        let running = StreamManager.shared.isRunning(conv.id) || WebSearchCoordinator.shared.isSearching(conv.id)
         cell.backgroundColor = .clear
         cell.textLabel?.text = running ? "●  \(conv.title)" : conv.title
         cell.textLabel?.font = DSTheme.bodyFont(size: 14)

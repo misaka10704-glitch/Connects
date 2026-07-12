@@ -102,6 +102,13 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     private var lengthLimited = false
     private var startedAt: Date?
     private var reportedFirstToken = false
+    /// One automatic follow-up when the model returns thinking but no visible body.
+    private var didEmptyBodyRetry = false
+    private var sawAnyContent = false
+    private var sawAnyReasoning = false
+    /// Auto-continue when output hits max_tokens (thinking + body share one budget).
+    private var lengthContinueCount = 0
+    private let maxLengthContinues = 4
 
     init(conversationID: String,
          messages: [ChatMessage],
@@ -119,6 +126,8 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         config.timeoutIntervalForResource = 600
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpShouldUsePipelining = false
+        // Allow several chats to stream against the same host concurrently.
+        config.httpMaximumConnectionsPerHost = 8
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
@@ -182,8 +191,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             self?.flush(force: false)
         }
         flushWork = work
-        // Faster UI cadence for Instant mode
-        let delay = model.thinkingActive ? 0.08 : 0.03
+        // Keep both reasoning and answer close to display refresh cadence.
+        // The view controller performs its own lightweight frame throttle.
+        let delay: TimeInterval = 0.025
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -244,9 +254,6 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     private func finishLocally(error: Error?) {
         guard !ended else { return }
         ended = true
-        if lengthLimited {
-            contentBuf += "\n\n> 本次回复达到长度上限。可发送“继续”接着生成。"
-        }
         flush(force: true)
 
         let isCancel: Bool = {
@@ -254,6 +261,86 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             if let e = error as NSError?, e.code == NSURLErrorCancelled { return true }
             return false
         }()
+
+        let last = ConversationStore.shared.conversation(id: conversationID)?.messages.last
+        let body = last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let think = last?.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let bodyEmpty = body.isEmpty
+
+        // Hit max_tokens: thinking + content share one completion budget on Kimi.
+        // Keep the same assistant bubble and ask the model to resume from the cut.
+        if error == nil, !isCancel, lengthLimited, lengthContinueCount < maxLengthContinues {
+            lengthContinueCount += 1
+            lengthLimited = false
+            ended = false
+            #if DEBUG
+            print("[Connects] length limit — auto-continue #\(lengthContinueCount)")
+            #endif
+            startContinuation(
+                assistantContent: last?.content ?? "",
+                assistantReasoning: last?.reasoningContent ?? "",
+                userNudge: """
+                上一段因长度上限被截断了。请从中断处继续写完整正文：
+                - 不要重复已经写过的内容
+                - 不要再写开场白或目录标题（若上一段已有）
+                - 直接接着写
+                """
+            )
+            return
+        }
+
+        // Reasoning-only stop: ask once for the visible body.
+        if error == nil, !isCancel, !didEmptyBodyRetry, bodyEmpty, !think.isEmpty {
+            didEmptyBodyRetry = true
+            ended = false
+            #if DEBUG
+            print("[Connects] empty body after thinking — requesting visible reply continuation")
+            #endif
+            startContinuation(
+                assistantContent: "",
+                assistantReasoning: think,
+                userNudge: "请基于你刚才的思考，直接输出给用户的完整正文回答。不要重复思考过程，不要只写提纲，直接写正文。"
+            )
+            return
+        }
+
+        // Truncated-looking short body after long thinking (e.g. stops right after a heading).
+        if error == nil, !isCancel, lengthContinueCount < maxLengthContinues,
+           looksTruncatedBody(body), think.count >= 200 {
+            lengthContinueCount += 1
+            ended = false
+            #if DEBUG
+            print("[Connects] truncated-looking body — auto-continue #\(lengthContinueCount)")
+            #endif
+            startContinuation(
+                assistantContent: last?.content ?? "",
+                assistantReasoning: last?.reasoningContent ?? "",
+                userNudge: """
+                正文似乎写到一半就停了。请从中断处继续写完整回答，不要重复已有内容，直接接着写。
+                """
+            )
+            return
+        }
+
+        if lengthLimited {
+            ConversationStore.shared.appendStreamTokens(
+                conversationID: conversationID,
+                reasoning: "",
+                content: "\n\n> 本次回复达到长度上限，已尝试自动续写仍未完成。可发送「继续」接着生成。"
+            )
+        }
+
+        // A continuation can fail after a partial first response. Previously
+        // ConversationStore hid errors whenever any body text existed, making an
+        // API rejection look exactly like silent truncation.
+        if let error = error, !isCancel,
+           lengthContinueCount > 0 || didEmptyBodyRetry {
+            ConversationStore.shared.appendStreamTokens(
+                conversationID: conversationID,
+                reasoning: "",
+                content: "\n\n> 自动续写失败：\(error.localizedDescription)"
+            )
+        }
 
         ConversationStore.shared.finishStreamingMessage(
             conversationID: conversationID,
@@ -269,6 +356,97 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
 
         session.invalidateAndCancel()
         onEnded(conversationID)
+    }
+
+    private func looksTruncatedBody(_ body: String) -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count < 1_200 else { return false }
+        if trimmed.hasSuffix("：") || trimmed.hasSuffix(":") || trimmed.hasSuffix("、") {
+            return true
+        }
+        // Ends on a markdown/Chinese section heading with little or no following prose.
+        if trimmed.range(
+            of: #"(?:^|\n)(?:#{1,3}\s+|[一二三四五六七八九十]+[、.．]|（[一二三四五六七八九十]+）|\d+[\.、])[^\n]{1,40}$"#,
+            options: .regularExpression
+        ) != nil {
+            return true
+        }
+        // Very short body relative to long thinking, and no sentence ender near the end.
+        let tail = String(trimmed.suffix(80))
+        if trimmed.count < 280, !tail.contains("。"), !tail.contains("！"), !tail.contains("？") {
+            return true
+        }
+        return false
+    }
+
+    /// Resume generation into the same streaming assistant message.
+    private func startContinuation(assistantContent: String,
+                                   assistantReasoning: String,
+                                   userNudge: String) {
+        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        guard !apiKey.isEmpty, let url = URL(string: model.chatCompletionsURL) else {
+            ended = true
+            ConversationStore.shared.finishStreamingMessage(
+                conversationID: conversationID,
+                errorText: nil
+            )
+            session.invalidateAndCancel()
+            onEnded(conversationID)
+            return
+        }
+
+        var continuationMessages = APIClient.slimMessagesForAPI(messages)
+        continuationMessages.append(ChatMessage(
+            role: .assistant,
+            content: assistantContent,
+            reasoningContent: assistantReasoning
+        ))
+        continuationMessages.append(ChatMessage(
+            role: .user,
+            content: userNudge
+        ))
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        APIClient.applyStreamRequestHeaders(&request)
+        let preserveKimiThinking = model.provider == .kimi
+            && model.thinkingActive
+            && !assistantReasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let payload = APIClient.chatPayload(
+            messages: continuationMessages,
+            model: model,
+            stream: true,
+            preserveThinking: preserveKimiThinking
+        )
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            ended = true
+            ConversationStore.shared.finishStreamingMessage(
+                conversationID: conversationID,
+                errorText: error.localizedDescription
+            )
+            session.invalidateAndCancel()
+            onEnded(conversationID)
+            return
+        }
+
+        receiveBuffer.removeAll(keepingCapacity: false)
+        pendingHTTPError = nil
+        errorBody = Data()
+        reasoningBuf = ""
+        contentBuf = ""
+        lengthLimited = false
+        task?.cancel()
+        let next = session.dataTask(with: request)
+        task = next
+        next.resume()
+        NotificationCenter.default.post(
+            name: .streamManagerDidUpdate,
+            object: nil,
+            userInfo: ["conversationID": conversationID]
+        )
     }
 
     // MARK: URLSession
@@ -309,13 +487,22 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if pendingHTTPError == nil, !receiveBuffer.isEmpty {
-            let delta = parseSSELine(String(decoding: receiveBuffer, as: UTF8.self))
-            enqueueDelta(
-                reasoning: delta.reasoning,
-                content: delta.content,
-                finishReason: delta.finishReason
-            )
+            // Drain every remaining SSE line — not just the first one.
+            receiveBuffer.append(0x0A)
+            var reasoning = ""
+            var content = ""
+            var finishReason: String?
+            while let newline = receiveBuffer.firstIndex(of: 0x0A) {
+                let lineData = receiveBuffer[..<newline]
+                let line = String(decoding: lineData, as: UTF8.self)
+                receiveBuffer.removeSubrange(...newline)
+                let delta = parseSSELine(line)
+                reasoning += delta.reasoning
+                content += delta.content
+                finishReason = delta.finishReason ?? finishReason
+            }
             receiveBuffer.removeAll(keepingCapacity: false)
+            enqueueDelta(reasoning: reasoning, content: content, finishReason: finishReason)
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -325,6 +512,10 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
                 return
             }
             if let error = error as NSError?, error.code == NSURLErrorCancelled {
+                // Replaced by auto-continuation — ignore cancel from the swapped task.
+                if !self.ended, self.task != nil, self.task !== task {
+                    return
+                }
                 self.finishLocally(error: APIClientError.cancelled)
             } else if let error = error {
                 self.finishLocally(error: error)
@@ -338,15 +529,13 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
                               content: String,
                               finishReason: String?) {
         guard !reasoning.isEmpty || !content.isEmpty || finishReason != nil else { return }
-        // Buffer mutation and flush scheduling must share the main queue.
-        // Previously the URLSession delegate appended while a main-queue flush
-        // copied and cleared the same strings, allowing newly arrived tokens to
-        // be erased between those two operations.
         DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.ended else { return }
             if finishReason == "length" {
                 self.lengthLimited = true
             }
+            if !reasoning.isEmpty { self.sawAnyReasoning = true }
+            if !content.isEmpty { self.sawAnyContent = true }
             self.reasoningBuf += reasoning
             self.contentBuf += content
             if !reasoning.isEmpty || !content.isEmpty {
@@ -370,10 +559,15 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
               let choice = choices.first else { return ("", "", nil) }
 
         let delta = choice["delta"] as? [String: Any] ?? [:]
+        let message = choice["message"] as? [String: Any] ?? [:]
         let reasoning = APIClient.deltaTextPublic(delta["reasoning_content"])
             ?? APIClient.deltaTextPublic(delta["reasoning"])
+            ?? APIClient.deltaTextPublic(message["reasoning_content"])
+            ?? APIClient.deltaTextPublic(message["reasoning"])
             ?? ""
-        let content = APIClient.deltaTextPublic(delta["content"]) ?? ""
+        let content = APIClient.deltaTextPublic(delta["content"])
+            ?? APIClient.deltaTextPublic(message["content"])
+            ?? ""
         return (reasoning, content, choice["finish_reason"] as? String)
     }
 }

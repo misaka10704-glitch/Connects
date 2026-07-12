@@ -10,6 +10,7 @@ final class SettingsManager {
 
     private let enabledModelsKey = "connects_enabled_models"
     private let knownModelsKey = "connects_known_models"
+    private let instantDefaultMigrationKey = "connects_instant_default_v1"
 
     var deepseekAPIKey: String {
         get { KeychainHelper.load(key: KeychainHelper.Keys.deepseekAPIKey) ?? "" }
@@ -65,10 +66,20 @@ final class SettingsManager {
 
     var thinkingEnabled: Bool {
         get {
-            if UserDefaults.standard.object(forKey: "connects_thinking") == nil { return true }
+            // One-time migration: prioritize a responsive chat experience.
+            // Users can still enable deep thinking for difficult questions.
+            if !UserDefaults.standard.bool(forKey: instantDefaultMigrationKey) {
+                UserDefaults.standard.set(true, forKey: instantDefaultMigrationKey)
+                UserDefaults.standard.set(false, forKey: "connects_thinking")
+                return false
+            }
+            if UserDefaults.standard.object(forKey: "connects_thinking") == nil { return false }
             return UserDefaults.standard.bool(forKey: "connects_thinking")
         }
-        set { UserDefaults.standard.set(newValue, forKey: "connects_thinking") }
+        set {
+            UserDefaults.standard.set(true, forKey: instantDefaultMigrationKey)
+            UserDefaults.standard.set(newValue, forKey: "connects_thinking")
+        }
     }
 
     var webSearchEnabled: Bool {

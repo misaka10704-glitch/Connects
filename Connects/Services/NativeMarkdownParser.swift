@@ -5,51 +5,226 @@ enum MarkdownNormalizer {
         normalizeReferenceLinks(MarkdownHTMLRenderer.normalizeForRender(raw))
     }
 
+    private struct RefItem {
+        var title: String
+        var url: String
+    }
+
     private static func normalizeReferenceLinks(_ source: String) -> String {
         let lines = source.components(separatedBy: "\n")
         var output = [String]()
         var index = 0
-        var inReferences = false
 
         while index < lines.count {
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let headingText = trimmed
-                .replacingOccurrences(of: "*", with: "")
-                .replacingOccurrences(of: "#", with: "")
-                .trimmingCharacters(in: CharacterSet.whitespaces.union(
-                    CharacterSet(charactersIn: "：:")
-                ))
-            if headingText == "参考链接" || headingText == "参考来源" || headingText == "参考资料" {
-                output.append("### 参考来源")
-                inReferences = true
+            if isReferenceHeading(trimmed) {
+                var items = [RefItem]()
                 index += 1
-                continue
-            }
-            if inReferences, trimmed.hasPrefix("#") {
-                inReferences = false
-            }
-            if inReferences, trimmed.hasPrefix("- ") {
-                let title = String(trimmed.dropFirst(2))
-                    .trimmingCharacters(in: .whitespaces)
-                if index + 1 < lines.count {
-                    let next = lines[index + 1].trimmingCharacters(in: .whitespaces)
-                    if next.hasPrefix("https://") || next.hasPrefix("http://") {
-                        output.append("- [\(title)](\(next))")
-                        index += 2
+                while index < lines.count {
+                    let raw = lines[index]
+                    let t = raw.trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty {
+                        // Allow a single blank inside the section; stop on a second blank or after items.
+                        if index + 1 < lines.count {
+                            let peek = lines[index + 1].trimmingCharacters(in: .whitespaces)
+                            if peek.isEmpty || isReferenceHeading(peek) || isMarkdownHeading(peek) {
+                                index += 1
+                                break
+                            }
+                        }
+                        index += 1
                         continue
                     }
+                    if isReferenceHeading(t) || isMarkdownHeading(t) {
+                        break
+                    }
+                    // Stop when the model continues with ordinary prose (no list/url/citation marker).
+                    if !looksLikeReferenceLine(t), !items.isEmpty {
+                        break
+                    }
+
+                    if let pair = parseReferenceLine(t) {
+                        items.append(pair)
+                        index += 1
+                        continue
+                    }
+
+                    // Title on this line, bare URL on the next.
+                    if index + 1 < lines.count {
+                        let next = lines[index + 1].trimmingCharacters(in: .whitespaces)
+                        if let url = extractURL(next), looksLikeReferenceTitle(t) {
+                            items.append(RefItem(title: cleanReferenceTitle(t, url: url), url: url))
+                            index += 2
+                            continue
+                        }
+                    }
+
+                    if let url = extractURL(t) {
+                        items.append(RefItem(title: cleanReferenceTitle("", url: url), url: url))
+                        index += 1
+                        continue
+                    }
+
+                    // Unrecognized line inside a declared references section — skip junk.
+                    index += 1
                 }
-            }
-            if inReferences, trimmed.hasPrefix("https://") || inReferences && trimmed.hasPrefix("http://") {
-                output.append("- [查看来源](\(trimmed))")
-                index += 1
+
+                let cleaned = dedupeReferences(items)
+                if !cleaned.isEmpty {
+                    if !output.isEmpty, !(output.last?.trimmingCharacters(in: .whitespaces).isEmpty ?? true) {
+                        output.append("")
+                    }
+                    output.append("### 参考来源")
+                    for (i, item) in cleaned.prefix(5).enumerated() {
+                        let title = item.title.isEmpty ? cleanReferenceTitle("", url: item.url) : item.title
+                        output.append("\(i + 1). [\(escapeLinkLabel(title))](\(item.url))")
+                    }
+                    output.append("")
+                }
                 continue
             }
+
             output.append(line)
             index += 1
         }
+
+        // Trim trailing blanks introduced by the section rewrite.
+        while output.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            output.removeLast()
+        }
         return output.joined(separator: "\n")
+    }
+
+    private static func isReferenceHeading(_ trimmed: String) -> Bool {
+        let headingText = trimmed
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "#", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(
+                CharacterSet(charactersIn: "：:")
+            ))
+        let aliases = ["参考链接", "参考来源", "参考资料", "引用来源", "Sources", "References", "Citation", "Citations"]
+        return aliases.contains(headingText)
+    }
+
+    private static func isMarkdownHeading(_ line: String) -> Bool {
+        for level in 1...6 {
+            let prefix = String(repeating: "#", count: level) + " "
+            if line.hasPrefix(prefix) { return true }
+        }
+        return false
+    }
+
+    private static func looksLikeReferenceLine(_ line: String) -> Bool {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { return true }
+        if extractURL(line) != nil { return true }
+        if line.range(of: #"^\s*\[\d+\]"#, options: .regularExpression) != nil { return true }
+        if line.range(of: #"^\s*\d+[\.、\)]\s+"#, options: .regularExpression) != nil { return true }
+        if line.contains("](") { return true }
+        return false
+    }
+
+    private static func looksLikeReferenceTitle(_ line: String) -> Bool {
+        guard extractURL(line) == nil else { return false }
+        let t = cleanReferenceTitle(line, url: "")
+        return !t.isEmpty && t.count <= 160
+    }
+
+    private static func parseReferenceLine(_ line: String) -> RefItem? {
+        var text = line.trimmingCharacters(in: .whitespaces)
+        // Strip list / citation markers: "- ", "1. ", "[3] ", "（1）"
+        if let re = try? NSRegularExpression(pattern: #"^(?:[-*+]\s+|\d+[\.、\)]\s+|\[\d+\]\s+|（\d+）\s+)"#) {
+            text = re.stringByReplacingMatches(
+                in: text,
+                options: [],
+                range: NSRange(text.startIndex..<text.endIndex, in: text),
+                withTemplate: ""
+            ).trimmingCharacters(in: .whitespaces)
+        }
+
+        // Markdown link: [title](url) possibly with trailing junk.
+        if let re = try? NSRegularExpression(pattern: #"\[([^\]]+)\]\((https?://[^)\s]+)\)"#),
+           let match = re.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)),
+           match.numberOfRanges >= 3,
+           let titleRange = Range(match.range(at: 1), in: text),
+           let urlRange = Range(match.range(at: 2), in: text) {
+            let url = String(text[urlRange])
+            let title = cleanReferenceTitle(String(text[titleRange]), url: url)
+            return RefItem(title: title, url: url)
+        }
+
+        // "title：https://..." or "title - https://..."
+        if let url = extractURL(text) {
+            var title = text
+            if let range = title.range(of: url) {
+                title.removeSubrange(range)
+            }
+            title = cleanReferenceTitle(title, url: url)
+            return RefItem(title: title, url: url)
+        }
+        return nil
+    }
+
+    private static func extractURL(_ text: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"https?://[^\s<>\)\]\"']+"#) else { return nil }
+        let ns = text as NSString
+        guard let match = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        var url = ns.substring(with: match.range)
+        while url.hasSuffix(".") || url.hasSuffix(",") || url.hasSuffix("；") || url.hasSuffix("。") || url.hasSuffix(")") {
+            url = String(url.dropLast())
+        }
+        return url.hasPrefix("http") ? url : nil
+    }
+
+    private static func cleanReferenceTitle(_ raw: String, url: String) -> String {
+        var title = raw
+            .replacingOccurrences(of: #"^\s*\[\d+\]\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*\d+[\.、\)]\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(
+                CharacterSet(charactersIn: "：:-—–|｜")
+            ))
+        if title.hasPrefix("["), title.hasSuffix("]"), title.count > 2 {
+            title = String(title.dropFirst().dropLast())
+        }
+        if title.isEmpty || title == url || title.hasPrefix("http://") || title.hasPrefix("https://") {
+            if let host = URL(string: url)?.host, !host.isEmpty {
+                return host.replacingOccurrences(of: #"^www\."#, with: "", options: .regularExpression)
+            }
+            return "查看来源"
+        }
+        // Collapse whitespace.
+        title = title.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        if title.count > 72 {
+            let idx = title.index(title.startIndex, offsetBy: 72)
+            title = String(title[..<idx]).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        return title
+    }
+
+    private static func escapeLinkLabel(_ title: String) -> String {
+        title
+            .replacingOccurrences(of: "[", with: "（")
+            .replacingOccurrences(of: "]", with: "）")
+    }
+
+    private static func dedupeReferences(_ items: [RefItem]) -> [RefItem] {
+        var out = [RefItem]()
+        var seen = Set<String>()
+        for item in items {
+            let key = normalizeURLKey(item.url)
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            out.append(item)
+        }
+        return out
+    }
+
+    private static func normalizeURLKey(_ url: String) -> String {
+        var s = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if s.hasSuffix("/") { s = String(s.dropLast()) }
+        return s
     }
 }
 
@@ -588,15 +763,38 @@ enum NativeRendererSelfTest {
         assert(listFormulaCount == 3)
         let references = NativeMarkdownParser.shared.parse("""
         **参考链接**
-        - Example reference
-          https://example.com/article
+        [1] [Example reference](https://example.com/article)
+        [5] Duplicate host
+        https://example.com/article
+        [2] [Another source](https://news.example.org/story)
         """)
+        let refList = references.blocks.compactMap { block -> [[NativeInline]]? in
+            if case .list(_, let items) = block { return items }
+            return nil
+        }.first
+        assert(refList?.count == 2)
+        let titles = (refList ?? []).map { item in
+            item.compactMap { inline -> String? in
+                if case .link(let children, _) = inline {
+                    return children.compactMap {
+                        if case .text(let t) = $0 { return t }
+                        return nil
+                    }.joined()
+                }
+                return nil
+            }.joined()
+        }
+        assert(titles.contains(where: { $0.contains("Example") }))
+        assert(titles.contains(where: { $0.contains("Another") }))
+        assert(!titles.contains(where: { $0.hasPrefix("[") }))
         assert(references.blocks.contains {
-            guard case .list(_, let items) = $0 else { return false }
-            return items.flatMap { $0 }.contains {
-                if case .link(_, let url) = $0 { return url?.host == "example.com" }
-                return false
+            if case .heading(_, let inlines) = $0 {
+                return inlines.contains {
+                    if case .text(let t) = $0 { return t.contains("参考来源") }
+                    return false
+                }
             }
+            return false
         })
         let layout = NativeMessageLayouter.shared.layout(
             document: document,

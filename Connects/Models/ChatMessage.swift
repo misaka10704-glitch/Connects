@@ -6,18 +6,56 @@ enum MessageRole: String, Codable {
     case system
 }
 
+/// Live / finished phase for the collapsible web-search panel (UI only).
+enum SearchProcessPhase: String, Codable {
+    case idle
+    case planning
+    case searching
+    case reading
+    case done
+
+    var headerTitle: String {
+        switch self {
+        case .idle: return "已联网检索"
+        case .planning: return "规划搜索中…"
+        case .searching: return "搜索中…"
+        case .reading: return "阅读网页中…"
+        case .done: return "已联网检索"
+        }
+    }
+}
+
 /// One completed (or in-progress) assistant reply attempt.
 struct MessageVersion: Codable, Equatable {
     var content: String
     var reasoningContent: String
+    var searchProcessContent: String
+    var searchProcessPhase: SearchProcessPhase
     var createdAt: Date
 
     init(content: String = "",
          reasoningContent: String = "",
+         searchProcessContent: String = "",
+         searchProcessPhase: SearchProcessPhase = .idle,
          createdAt: Date = Date()) {
         self.content = content
         self.reasoningContent = reasoningContent
+        self.searchProcessContent = searchProcessContent
+        self.searchProcessPhase = searchProcessPhase
         self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case content, reasoningContent, searchProcessContent, searchProcessPhase, createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
+        reasoningContent = try c.decodeIfPresent(String.self, forKey: .reasoningContent) ?? ""
+        searchProcessContent = try c.decodeIfPresent(String.self, forKey: .searchProcessContent) ?? ""
+        searchProcessPhase = try c.decodeIfPresent(SearchProcessPhase.self, forKey: .searchProcessPhase) ?? .idle
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
 
@@ -27,6 +65,9 @@ struct ChatMessage: Codable, Equatable {
     var content: String
     /// Kimi / thinking models stream this before the final reply.
     var reasoningContent: String
+    /// Collapsible web-search process log (planning / queries / pages). Local UI only.
+    var searchProcessContent: String
+    var searchProcessPhase: SearchProcessPhase
     let createdAt: Date
     var isStreaming: Bool
     /// JPEG base64 for Kimi multimodal & local display
@@ -40,6 +81,8 @@ struct ChatMessage: Codable, Equatable {
          role: MessageRole,
          content: String,
          reasoningContent: String = "",
+         searchProcessContent: String = "",
+         searchProcessPhase: SearchProcessPhase = .idle,
          createdAt: Date = Date(),
          isStreaming: Bool = false,
          imageJPEGBase64: String? = nil,
@@ -49,6 +92,8 @@ struct ChatMessage: Codable, Equatable {
         self.role = role
         self.content = content
         self.reasoningContent = reasoningContent
+        self.searchProcessContent = searchProcessContent
+        self.searchProcessPhase = searchProcessPhase
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.imageJPEGBase64 = imageJPEGBase64
@@ -62,6 +107,11 @@ struct ChatMessage: Codable, Equatable {
 
     var hasReasoning: Bool {
         !reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var hasSearchProcess: Bool {
+        !searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (searchProcessPhase != .idle && searchProcessPhase != .done)
     }
 
     var versionCount: Int {
@@ -81,8 +131,12 @@ struct ChatMessage: Codable, Equatable {
     /// Text suitable for clipboard.
     var copyableText: String {
         var parts: [String] = []
+        let search = searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let think = reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !search.isEmpty {
+            parts.append("【联网检索】\n\(search)")
+        }
         if !think.isEmpty {
             parts.append("【思考】\n\(think)")
         }
@@ -100,6 +154,8 @@ struct ChatMessage: Codable, Equatable {
         let snap = MessageVersion(
             content: content,
             reasoningContent: reasoningContent,
+            searchProcessContent: searchProcessContent,
+            searchProcessPhase: searchProcessPhase == .idle ? .idle : .done,
             createdAt: versions.indices.contains(versionIndex) ? versions[versionIndex].createdAt : createdAt
         )
         if versions.isEmpty {
@@ -117,19 +173,29 @@ struct ChatMessage: Codable, Equatable {
     mutating func beginNewVersion() {
         guard role == .assistant else { return }
         if versions.isEmpty {
-            if !content.isEmpty || !reasoningContent.isEmpty {
+            if !content.isEmpty || !reasoningContent.isEmpty || !searchProcessContent.isEmpty {
                 versions = [
-                    MessageVersion(content: content, reasoningContent: reasoningContent, createdAt: createdAt)
+                    MessageVersion(
+                        content: content,
+                        reasoningContent: reasoningContent,
+                        searchProcessContent: searchProcessContent,
+                        searchProcessPhase: searchProcessPhase == .idle ? .idle : .done,
+                        createdAt: createdAt
+                    )
                 ]
             }
         } else if versions.indices.contains(versionIndex) {
             versions[versionIndex].content = content
             versions[versionIndex].reasoningContent = reasoningContent
+            versions[versionIndex].searchProcessContent = searchProcessContent
+            versions[versionIndex].searchProcessPhase = searchProcessPhase == .idle ? .idle : .done
         }
         versions.append(MessageVersion(content: "", reasoningContent: "", createdAt: Date()))
         versionIndex = versions.count - 1
         content = ""
         reasoningContent = ""
+        searchProcessContent = ""
+        searchProcessPhase = .idle
         isStreaming = true
     }
 
@@ -140,10 +206,14 @@ struct ChatMessage: Codable, Equatable {
         if versions.indices.contains(versionIndex) {
             versions[versionIndex].content = content
             versions[versionIndex].reasoningContent = reasoningContent
+            versions[versionIndex].searchProcessContent = searchProcessContent
+            versions[versionIndex].searchProcessPhase = searchProcessPhase == .idle ? .idle : .done
         }
         versionIndex = index
         content = versions[index].content
         reasoningContent = versions[index].reasoningContent
+        searchProcessContent = versions[index].searchProcessContent
+        searchProcessPhase = versions[index].searchProcessPhase
         return true
     }
 
@@ -155,7 +225,8 @@ struct ChatMessage: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, role, content, reasoningContent, createdAt, isStreaming, imageJPEGBase64
+        case id, role, content, reasoningContent, searchProcessContent, searchProcessPhase
+        case createdAt, isStreaming, imageJPEGBase64
         case versions, versionIndex
     }
 
@@ -165,6 +236,8 @@ struct ChatMessage: Codable, Equatable {
         role = try c.decode(MessageRole.self, forKey: .role)
         content = try c.decode(String.self, forKey: .content)
         reasoningContent = try c.decodeIfPresent(String.self, forKey: .reasoningContent) ?? ""
+        searchProcessContent = try c.decodeIfPresent(String.self, forKey: .searchProcessContent) ?? ""
+        searchProcessPhase = try c.decodeIfPresent(SearchProcessPhase.self, forKey: .searchProcessPhase) ?? .idle
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
         imageJPEGBase64 = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64)
@@ -185,6 +258,12 @@ struct ChatMessage: Codable, Equatable {
             if reasoningContent.isEmpty, !v.reasoningContent.isEmpty {
                 reasoningContent = v.reasoningContent
             }
+            if searchProcessContent.isEmpty, !v.searchProcessContent.isEmpty {
+                searchProcessContent = v.searchProcessContent
+            }
+            if searchProcessPhase == .idle, v.searchProcessPhase != .idle {
+                searchProcessPhase = v.searchProcessPhase
+            }
         }
     }
 
@@ -194,6 +273,10 @@ struct ChatMessage: Codable, Equatable {
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
         try c.encode(reasoningContent, forKey: .reasoningContent)
+        if !searchProcessContent.isEmpty || searchProcessPhase != .idle {
+            try c.encode(searchProcessContent, forKey: .searchProcessContent)
+            try c.encode(searchProcessPhase, forKey: .searchProcessPhase)
+        }
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encodeIfPresent(imageJPEGBase64, forKey: .imageJPEGBase64)

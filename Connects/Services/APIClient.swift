@@ -181,14 +181,25 @@ final class APIClient: NSObject {
     }
 
     /// Build chat/completions JSON body shared by stream + complete.
-    static func chatPayload(messages: [ChatMessage], model: AIModelOption, stream: Bool, maxTokens: Int? = nil) -> [String: Any] {
+    static func chatPayload(messages: [ChatMessage],
+                            model: AIModelOption,
+                            stream: Bool,
+                            maxTokens: Int? = nil,
+                            preserveThinking: Bool = false) -> [String: Any] {
         let thinkingOn = model.thinkingActive
-        // Leave enough room for long mathematical derivations and providers
-        // that count hidden reasoning against the completion budget.
-        let tokenCap = maxTokens ?? 16_384
+        // Kimi docs: reasoning_content + content share max_tokens; recommend >= 16000,
+        // and their examples use 32k so long thinking does not wipe the visible reply.
+        let defaultCap = (thinkingOn || model.forcesThinking) ? 32_768 : 16_384
+        let tokenCap = maxTokens ?? defaultCap
         var payload: [String: Any] = [
             "model": model.resolvedModelId,
-            "messages": messages.map { serializeMessagePublic($0, model: model, includeReasoning: thinkingOn) },
+            "messages": messages.map {
+                serializeMessagePublic(
+                    $0,
+                    model: model,
+                    includeReasoning: preserveThinking || ((thinkingOn || model.forcesThinking) && model.provider != .kimi)
+                )
+            },
             "stream": stream,
             "max_tokens": tokenCap
         ]
@@ -201,7 +212,11 @@ final class APIClient: NSObject {
             }
         case .thinkingType:
             if model.supportsThinkingToggle {
-                payload["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
+                if preserveThinking, model.provider == .kimi, thinkingOn {
+                    payload["thinking"] = ["type": "enabled", "keep": "all"]
+                } else {
+                    payload["thinking"] = ["type": thinkingOn ? "enabled" : "disabled"]
+                }
             }
         }
         return payload
@@ -232,8 +247,13 @@ final class APIClient: NSObject {
         if includeReasoning, message.role == .assistant {
             let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !think.isEmpty {
-                // Cap to avoid pathological multi-turn bloat
-                body["reasoning_content"] = String(think.prefix(8000))
+                if model.provider == .kimi {
+                    // Used only by explicit K2.6 continuation with keep=all.
+                    body["reasoning_content"] = think
+                } else {
+                    // Other providers may not require byte-for-byte preservation.
+                    body["reasoning_content"] = String(think.prefix(8000))
+                }
             }
         }
         return body

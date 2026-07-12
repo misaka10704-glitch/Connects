@@ -60,6 +60,17 @@ enum MarkdownExporter {
                 lines.append("")
             }
 
+            let search = msg.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !search.isEmpty {
+                lines.append("<details>")
+                lines.append("<summary>联网检索</summary>")
+                lines.append("")
+                lines.append(search)
+                lines.append("")
+                lines.append("</details>")
+                lines.append("")
+            }
+
             let think = msg.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !think.isEmpty {
                 lines.append("<details>")
@@ -75,7 +86,7 @@ enum MarkdownExporter {
             if !body.isEmpty {
                 lines.append(body)
                 lines.append("")
-            } else if !msg.hasImage && think.isEmpty {
+            } else if !msg.hasImage && think.isEmpty && search.isEmpty {
                 lines.append("_（无正文）_")
                 lines.append("")
             }

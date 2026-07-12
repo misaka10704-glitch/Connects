@@ -56,7 +56,14 @@ struct Conversation: Codable, Equatable {
         contextSummaryThroughMessageID = try container.decodeIfPresent(String.self, forKey: .contextSummaryThroughMessageID)
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
-        model = AIModelOption.all.first { $0.provider == provider && $0.modelId == modelId } ?? .deepseekV4Pro
+        if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
+            model = available
+        } else if provider == .kimi {
+            // Retired Kimi variants migrate to the supported general-purpose model.
+            model = .kimi26
+        } else {
+            model = .deepseekV4Pro
+        }
     }
 
     func encode(to encoder: Encoder) throws {

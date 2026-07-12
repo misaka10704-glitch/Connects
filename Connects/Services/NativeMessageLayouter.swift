@@ -31,7 +31,7 @@ final class NativeMessageLayouter {
                 style: NativeLayoutStyle,
                 renderMissingFormulas: Bool = true) -> NativeMessageLayout {
         let phase = renderMissingFormulas ? "final" : "preview"
-        let key = "native_layout_v7|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v8|\(phase)|\(document.stamp)|\(style.keySuffix)"
         if let hit = cache.object(forKey: key as NSString) {
             return hit.layout
         }
@@ -46,7 +46,7 @@ final class NativeMessageLayouter {
     }
 
     func cachedLayout(document: NativeMarkdownDocument, style: NativeLayoutStyle) -> NativeMessageLayout? {
-        let key = "native_layout_v7|final|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v8|final|\(document.stamp)|\(style.keySuffix)"
         return cache.object(forKey: key as NSString)?.layout
     }
 
@@ -61,10 +61,12 @@ final class NativeMessageLayouter {
         var commands = [NativeDrawCommand]()
         var y: CGFloat = 0
         let width = max(style.width, 40)
+        var expectReferencesList = false
 
         for block in document.blocks {
             switch block {
             case .paragraph(let inlines):
+                expectReferencesList = false
                 let attributed = attributedString(
                     inlines,
                     style: style,
@@ -76,50 +78,94 @@ final class NativeMessageLayouter {
                 y += height + 9
 
             case .heading(let level, let inlines):
-                if y > 0 { y += 7 }
-                let size = style.bodyFontSize + CGFloat(max(1, 6 - level))
-                let font = UIFont.systemFont(ofSize: size, weight: level <= 2 ? .bold : .semibold)
-                let attributed = attributedString(
-                    inlines,
-                    style: style,
-                    font: font,
-                    renderMissingFormulas: renderMissingFormulas
-                )
-                let height = textHeight(attributed, width: width)
-                commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
-                y += height + 7
+                let headingText = plainText(inlines).trimmingCharacters(in: .whitespacesAndNewlines)
+                let isReferences = headingText == "参考来源"
+                if isReferences {
+                    if y > 0 {
+                        y += 10
+                        let ruleY = y
+                        commands.append(.line(
+                            CGPoint(x: 0, y: ruleY),
+                            CGPoint(x: width, y: ruleY),
+                            style.colors.divider.withAlphaComponent(0.7),
+                            1
+                        ))
+                        y += 10
+                    }
+                    let font = UIFont.systemFont(ofSize: max(13, style.bodyFontSize - 1), weight: .semibold)
+                    let attributed = attributedString(
+                        inlines,
+                        style: style,
+                        font: font,
+                        color: style.colors.textSecondary,
+                        renderMissingFormulas: renderMissingFormulas
+                    )
+                    let height = textHeight(attributed, width: width)
+                    commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
+                    y += height + 6
+                    expectReferencesList = true
+                } else {
+                    expectReferencesList = false
+                    if y > 0 { y += 7 }
+                    let size = style.bodyFontSize + CGFloat(max(1, 6 - level))
+                    let font = UIFont.systemFont(ofSize: size, weight: level <= 2 ? .bold : .semibold)
+                    let attributed = attributedString(
+                        inlines,
+                        style: style,
+                        font: font,
+                        renderMissingFormulas: renderMissingFormulas
+                    )
+                    let height = textHeight(attributed, width: width)
+                    commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
+                    y += height + 7
+                }
 
             case .list(let kind, let items):
+                let asReferences = expectReferencesList
+                expectReferencesList = false
                 var number = 1
                 if case .ordered(let start) = kind { number = start }
+                let itemFont: UIFont = asReferences
+                    ? UIFont.systemFont(ofSize: max(13, style.bodyFontSize - 1), weight: .regular)
+                    : bodyFont(style)
                 for item in items {
                     let prefix: String
                     switch kind {
-                    case .unordered: prefix = "•  "
-                    case .ordered: prefix = "\(number).  "; number += 1
+                    case .unordered:
+                        prefix = asReferences ? "\(number).  " : "•  "
+                        if asReferences { number += 1 }
+                    case .ordered:
+                        prefix = "\(number).  "
+                        number += 1
                     }
                     let value = NSMutableAttributedString(
                         string: prefix,
-                        attributes: baseAttributes(font: bodyFont(style), color: style.colors.textPrimary)
+                        attributes: baseAttributes(
+                            font: itemFont,
+                            color: asReferences ? style.colors.textSecondary : style.colors.textPrimary
+                        )
                     )
                     value.append(attributedString(
                         item,
                         style: style,
-                        font: bodyFont(style),
+                        font: itemFont,
+                        color: asReferences ? style.colors.textSecondary : nil,
+                        linkStyle: asReferences ? .reference : .default,
                         renderMissingFormulas: renderMissingFormulas
                     ))
                     let paragraph = NSMutableParagraphStyle()
                     paragraph.firstLineHeadIndent = 0
-                    paragraph.headIndent = 22
-                    paragraph.lineSpacing = 4
+                    paragraph.headIndent = asReferences ? 20 : 22
+                    paragraph.lineSpacing = asReferences ? 3 : 4
                     value.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: value.length))
                     let height = textHeight(value, width: width)
                     commands.append(.text(fragment(value, frame: CGRect(x: 0, y: y, width: width, height: height))))
-                    y += height + 4
+                    y += height + (asReferences ? 3 : 4)
                 }
-                y += 4
+                y += asReferences ? 2 : 4
 
             case .blockquote(let inlines):
+                expectReferencesList = false
                 let inset: CGFloat = 14
                 let attributed = attributedString(
                     inlines,
@@ -142,6 +188,7 @@ final class NativeMessageLayouter {
                 y += height + 10
 
             case .codeBlock(_, let code):
+                expectReferencesList = false
                 let padding: CGFloat = 12
                 let mono = DSTheme.monoFont(size: style.bodyFontSize * 0.88)
                 let paragraph = NSMutableParagraphStyle()
@@ -162,6 +209,7 @@ final class NativeMessageLayouter {
                 y += frame.height + 11
 
             case .displayMath(let tex):
+                expectReferencesList = false
                 if !renderMissingFormulas {
                     let structuralCommands = ["\\frac", "\\dfrac", "\\sum", "\\prod", "\\int", "\\begin"]
                         .reduce(0) { $0 + tex.components(separatedBy: $1).count - 1 }
@@ -199,6 +247,7 @@ final class NativeMessageLayouter {
                 }
 
             case .table(let table):
+                expectReferencesList = false
                 let tableResult = layoutTable(
                     table,
                     originY: y,
@@ -210,6 +259,7 @@ final class NativeMessageLayouter {
                 y += tableResult.height + 12
 
             case .horizontalRule:
+                expectReferencesList = false
                 y += 7
                 commands.append(.line(
                     CGPoint(x: 0, y: y),
@@ -297,10 +347,29 @@ final class NativeMessageLayouter {
         return (commands, y - originY)
     }
 
+    private enum LinkStyle {
+        case `default`
+        case reference
+    }
+
+    private func plainText(_ inlines: [NativeInline]) -> String {
+        inlines.map { inline -> String in
+            switch inline {
+            case .text(let text): return text
+            case .bold(let children), .italic(let children), .link(let children, _):
+                return plainText(children)
+            case .inlineCode(let code): return code
+            case .inlineMath(let tex): return tex
+            case .lineBreak: return "\n"
+            }
+        }.joined()
+    }
+
     private func attributedString(_ inlines: [NativeInline],
                                   style: NativeLayoutStyle,
                                   font: UIFont,
                                   color: UIColor? = nil,
+                                  linkStyle: LinkStyle = .default,
                                   renderMissingFormulas: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let foreground = color ?? style.colors.textPrimary
@@ -315,6 +384,7 @@ final class NativeMessageLayouter {
                     style: style,
                     font: bold,
                     color: foreground,
+                    linkStyle: linkStyle,
                     renderMissingFormulas: renderMissingFormulas
                 ))
             case .italic(let children):
@@ -324,6 +394,7 @@ final class NativeMessageLayouter {
                     style: style,
                     font: UIFont(descriptor: descriptor, size: font.pointSize),
                     color: foreground,
+                    linkStyle: linkStyle,
                     renderMissingFormulas: renderMissingFormulas
                 ))
             case .inlineCode(let code):
@@ -334,15 +405,25 @@ final class NativeMessageLayouter {
                 ]))
             case .link(let children, let url):
                 let start = result.length
+                let linkColor = linkStyle == .reference ? style.colors.accent : style.colors.accent
                 result.append(attributedString(
                     children,
                     style: style,
                     font: font,
-                    color: style.colors.accent,
+                    color: linkColor,
+                    linkStyle: linkStyle,
                     renderMissingFormulas: renderMissingFormulas
                 ))
-                if let url = url {
-                    result.addAttribute(.link, value: url, range: NSRange(location: start, length: result.length - start))
+                let range = NSRange(location: start, length: result.length - start)
+                if range.length > 0 {
+                    if linkStyle == .reference {
+                        result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+                        result.addAttribute(.underlineColor, value: linkColor.withAlphaComponent(0.35), range: range)
+                    }
+                    if let url = url {
+                        result.addAttribute(.link, value: url, range: range)
+                        result.addAttribute(.foregroundColor, value: linkColor, range: range)
+                    }
                 }
             case .inlineMath(let tex):
                 if renderMissingFormulas, let formula = NativeFormulaRenderer.shared.artifact(

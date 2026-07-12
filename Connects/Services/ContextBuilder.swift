@@ -57,7 +57,7 @@ enum ContextBuilder {
     static let midMessageCap = 4_500
     /// Soft cap for the compacted summary block.
     static let summaryCap = 2_800
-    /// Only the latest assistant may carry reasoning_content into the request.
+    /// Soft cap used only for models that do not require verbatim preserved thinking.
     static let lastReasoningCap = 4_000
 
     static func messagesForAPI(from messages: [ChatMessage],
@@ -95,7 +95,13 @@ enum ContextBuilder {
         let finished = messages.filter { !$0.isStreaming }
 
         var working = APIClient.slimMessagesForAPI(finished)
-        working = pruneReasoning(working, thinkingOn: thinkingOn)
+        working = pruneReasoning(
+            working,
+            // Kimi K2.6 ignores historical thinking unless keep=all. Omitting it
+            // from ordinary turns cuts request size and prefill latency.
+            thinkingOn: thinkingOn && model.provider != .kimi,
+            preserveAllReasoning: false
+        )
         working = capMidContextBodies(working)
 
         let systems = working.filter { $0.role == .system }
@@ -229,10 +235,10 @@ enum ContextBuilder {
             return 72_000
         case AIModelOption.deepseekV4Pro.modelId:
             return 100_000
-        case AIModelOption.kimi26.modelId,
-             AIModelOption.kimi27.modelId,
-             AIModelOption.kimi27Fast.modelId:
-            return 64_000
+        case AIModelOption.kimi26.modelId:
+            // Keep prefill small for lower time-to-first-token; older turns are
+            // summarized and recent dialogue remains verbatim.
+            return 32_000
         default:
             return 72_000
         }
@@ -240,8 +246,13 @@ enum ContextBuilder {
 
     // MARK: - Prune / cap
 
-    /// Drop historical reasoning_content entirely; only the latest assistant may keep a capped slice when thinking is on.
-    private static func pruneReasoning(_ messages: [ChatMessage], thinkingOn: Bool) -> [ChatMessage] {
+    /// Drop historical reasoning_content unless a provider explicitly requires it.
+    private static func pruneReasoning(_ messages: [ChatMessage],
+                                       thinkingOn: Bool,
+                                       preserveAllReasoning: Bool) -> [ChatMessage] {
+        if preserveAllReasoning {
+            return messages
+        }
         let lastAssistant = messages.lastIndex(where: { $0.role == .assistant })
         return messages.enumerated().map { i, msg in
             guard msg.role == .assistant, !msg.reasoningContent.isEmpty else { return msg }

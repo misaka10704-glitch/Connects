@@ -87,16 +87,6 @@ struct AIModelOption: Equatable {
         baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
-    static let kimi27 = AIModelOption(
-        provider: .kimi, modelId: "kimi-k2.7-code", displayName: "Kimi K2.7",
-        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
-        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .none
-    )
-    static let kimi27Fast = AIModelOption(
-        provider: .kimi, modelId: "kimi-k2.7-code-highspeed", displayName: "Kimi K2.7 Fast",
-        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
-        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .none
-    )
 
     static let qwen37Plus = AIModelOption(
         provider: .qwen, modelId: "qwen3.7-plus", displayName: "Qwen 3.7 Plus",
@@ -120,7 +110,7 @@ struct AIModelOption: Equatable {
 
     static let all: [AIModelOption] = [
         .deepseekV4Flash, .deepseekV4Pro,
-        .kimi26, .kimi27, .kimi27Fast,
+        .kimi26,
         .qwen37Plus,
         .glm52,
         .doubaoSeed16

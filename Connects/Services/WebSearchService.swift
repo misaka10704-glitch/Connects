@@ -8,6 +8,13 @@ enum WebSearchService {
         let snippet: String
     }
 
+    struct SearchBundle {
+        /// Injected into the model context.
+        let evidenceBlock: String
+        /// Shown in the collapsible “联网检索” panel.
+        let processLog: String
+    }
+
     enum SearchError: LocalizedError {
         case emptyQuery
         case network(String)
@@ -26,16 +33,79 @@ enum WebSearchService {
     private static let maxCharsPerPage = 1800
     private static let maxDownloadBytes = 300_000
     private static let maxInjectedEvidenceChars = 8_000
+    private static let maxPlannedQueries = 2
+
+    /// Ask the model to turn conversation context into concrete search queries.
+    /// Follow-ups like "那这个呢" should resolve against prior turns, not be searched verbatim.
+    static func planSearchQueries(
+        contextMessages: [ChatMessage],
+        model: AIModelOption,
+        fallbackQuery: String,
+        completion: @escaping ([String]) -> Void
+    ) {
+        let fallback = sanitizeQuery(fallbackQuery)
+        let transcript = compactTranscript(contextMessages, maxChars: 3_500)
+        guard !transcript.isEmpty else {
+            DispatchQueue.main.async {
+                completion(fallback.isEmpty ? [] : [fallback])
+            }
+            return
+        }
+
+        let prompt = ChatMessage(
+            role: .user,
+            content: """
+            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」写出 1–\(maxPlannedQueries) 条适合搜索引擎的检索词。
+
+            要求：
+            - 必须结合前文消解指代（如「他呢」「那这个」「为什么」），写成具体实体 / 事件 / 问题，不要原样照抄模糊追问。
+            - 用户用中文时优先写中文检索词；专有名词可保留原文。
+            - 每条检索词一行，短而可搜；不要编号、引号、解释或其它文字。
+            - 若完全不需要联网，只输出：NONE
+
+            【对话】
+            \(transcript)
+            """
+        )
+
+        APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 120) { result in
+            switch result {
+            case .success(let raw):
+                let planned = parsePlannedQueries(raw)
+                if planned.isEmpty {
+                    completion(fallback.isEmpty ? [] : [fallback])
+                } else {
+                    completion(planned)
+                }
+            case .failure:
+                completion(fallback.isEmpty ? [] : [fallback])
+            }
+        }
+    }
 
     /// Search the web, open top result pages, and format evidence for the model.
     /// `onStatus` is always called on the main queue (e.g. "正在搜索…" / "正在阅读网页…").
     static func searchAndFormat(
         query: String,
         onStatus: ((String) -> Void)? = nil,
-        completion: @escaping (Result<String, Error>) -> Void
+        completion: @escaping (Result<SearchBundle, Error>) -> Void
     ) {
-        let q = sanitizeQuery(query)
-        guard !q.isEmpty else {
+        searchAndFormat(queries: [query], onStatus: onStatus, completion: completion)
+    }
+
+    /// Search using one or more planned queries, then browse and format evidence.
+    static func searchAndFormat(
+        queries: [String],
+        onStatus: ((String) -> Void)? = nil,
+        completion: @escaping (Result<SearchBundle, Error>) -> Void
+    ) {
+        let qs = Array(
+            queries
+                .map(sanitizeQuery)
+                .filter { !$0.isEmpty }
+                .prefix(maxPlannedQueries)
+        )
+        guard !qs.isEmpty else {
             DispatchQueue.main.async { completion(.failure(SearchError.emptyQuery)) }
             return
         }
@@ -43,42 +113,24 @@ enum WebSearchService {
         DispatchQueue.main.async { onStatus?("正在搜索…") }
 
         let group = DispatchGroup()
-        var ddgHits: [Hit] = []
-        var bingHits: [Hit] = []
-        var baiduHits: [Hit] = []
+        let lock = NSLock()
+        var allSources: [[Hit]] = []
         var lastError: Error?
 
-        group.enter()
-        fetchDuckDuckGoHTML(query: q) { result in
-            switch result {
-            case .success(let hits): ddgHits = hits
-            case .failure(let err): lastError = err
+        for q in qs {
+            group.enter()
+            fetchAllEngines(query: q) { hits, error in
+                lock.lock()
+                if !hits.isEmpty { allSources.append(hits) }
+                if let error = error, lastError == nil { lastError = error }
+                lock.unlock()
+                group.leave()
             }
-            group.leave()
-        }
-
-        group.enter()
-        fetchBingHTML(query: q) { result in
-            switch result {
-            case .success(let hits): bingHits = hits
-            case .failure(let err):
-                if lastError == nil { lastError = err }
-            }
-            group.leave()
-        }
-
-        group.enter()
-        fetchBaiduHTML(query: q) { result in
-            switch result {
-            case .success(let hits): baiduHits = hits
-            case .failure(let err):
-                if lastError == nil { lastError = err }
-            }
-            group.leave()
         }
 
         group.notify(queue: .global(qos: .userInitiated)) {
-            let hits = rankHits(mergeHits(sources: [ddgHits, bingHits, baiduHits], limit: 8), query: q)
+            let rankKey = qs.joined(separator: " ")
+            let hits = rankHits(mergeHits(sources: allSources, limit: 10), query: rankKey)
             guard !hits.isEmpty else {
                 DispatchQueue.main.async {
                     completion(.failure(lastError ?? SearchError.noResults))
@@ -90,16 +142,118 @@ enum WebSearchService {
             DispatchQueue.main.async { onStatus?("正在阅读网页…") }
 
             fetchPages(toBrowse) { pages in
-                let body = formatEvidence(query: q, hits: hits, pages: pages)
+                let evidence = formatEvidence(queries: qs, hits: hits, pages: pages)
+                let process = formatProcessLog(queries: qs, hits: hits, pages: pages)
                 DispatchQueue.main.async {
-                    if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         completion(.failure(lastError ?? SearchError.noResults))
                     } else {
-                        completion(.success(body))
+                        completion(.success(SearchBundle(evidenceBlock: evidence, processLog: process)))
                     }
                 }
             }
         }
+    }
+
+    private static func fetchAllEngines(query: String, completion: @escaping ([Hit], Error?) -> Void) {
+        let group = DispatchGroup()
+        var ddgHits: [Hit] = []
+        var bingHits: [Hit] = []
+        var baiduHits: [Hit] = []
+        var lastError: Error?
+
+        group.enter()
+        fetchDuckDuckGoHTML(query: query) { result in
+            switch result {
+            case .success(let hits): ddgHits = hits
+            case .failure(let err): lastError = err
+            }
+            group.leave()
+        }
+
+        group.enter()
+        fetchBingHTML(query: query) { result in
+            switch result {
+            case .success(let hits): bingHits = hits
+            case .failure(let err):
+                if lastError == nil { lastError = err }
+            }
+            group.leave()
+        }
+
+        group.enter()
+        fetchBaiduHTML(query: query) { result in
+            switch result {
+            case .success(let hits): baiduHits = hits
+            case .failure(let err):
+                if lastError == nil { lastError = err }
+            }
+            group.leave()
+        }
+
+        group.notify(queue: .global(qos: .userInitiated)) {
+            let merged = mergeHits(sources: [ddgHits, bingHits, baiduHits], limit: 8)
+            completion(merged, lastError)
+        }
+    }
+
+    private static func parsePlannedQueries(_ raw: String) -> [String] {
+        let lines = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { line -> String in
+                var s = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Strip common list markers: "1.", "1)", "-", "*", "•"
+                if let re = try? NSRegularExpression(pattern: #"^\s*(?:\d+[\.\)、]|\-|\*|•)\s*"#) {
+                    s = re.stringByReplacingMatches(
+                        in: s,
+                        options: [],
+                        range: NSRange(s.startIndex..<s.endIndex, in: s),
+                        withTemplate: ""
+                    )
+                }
+                if (s.hasPrefix("\"") && s.hasSuffix("\"")) || (s.hasPrefix("「") && s.hasSuffix("」")) {
+                    s = String(s.dropFirst().dropLast())
+                }
+                return sanitizeQuery(s)
+            }
+            .filter { !$0.isEmpty }
+
+        if lines.contains(where: { $0.uppercased() == "NONE" }) {
+            return []
+        }
+
+        var out: [String] = []
+        var seen = Set<String>()
+        for line in lines {
+            let key = line.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            out.append(line)
+            if out.count >= maxPlannedQueries { break }
+        }
+        return out
+    }
+
+    private static func compactTranscript(_ messages: [ChatMessage], maxChars: Int) -> String {
+        var lines: [String] = []
+        for msg in messages where msg.role == .user || msg.role == .assistant {
+            let role = msg.role == .user ? "用户" : "助手"
+            let body = msg.content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { continue }
+            // Skip transient search status placeholders if any leaked in.
+            if body.hasPrefix("正在搜索") || body.hasPrefix("正在阅读") || body.hasPrefix("正在规划") {
+                continue
+            }
+            let clipped = body.count > 900 ? String(body.prefix(900)) + "…" : body
+            lines.append("\(role)：\(clipped)")
+        }
+        var text = lines.joined(separator: "\n")
+        if text.count > maxChars {
+            text = String(text.suffix(maxChars))
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Inject search/browse context before the last user message (API-only).
@@ -112,16 +266,23 @@ enum WebSearchService {
             role: .system,
             content: """
             [Web search context]
-            The app fetched the following recent web evidence for the next user question.
+            The app planned search queries from the full conversation (including prior turns), then fetched the web evidence below for the latest user question.
             Use it only when it is relevant. Answer the user directly; do not describe the search process.
             If the evidence is insufficient or conflicts, say so plainly and do not invent facts.
-            When citing sources, put at most 5 links at the end under "### 参考来源" using markdown links.
+            When citing sources, put at most 5 links at the end under "### 参考来源" as a sequential numbered list:
+            1. [短标题](https://...)
+            2. [短标题](https://...)
+            Renumber 1…n (do not keep body citation indices like [1]/[5]). Prefer short titles; never dump bare URLs alone.
 
             \(block)
             """
         )
         out.insert(evidence, at: idx)
         return out
+    }
+
+    static func inject(into messages: [ChatMessage], bundle: SearchBundle) -> [ChatMessage] {
+        inject(into: messages, searchBlock: bundle.evidenceBlock)
     }
 
     static func fitInjectedContext(_ messages: [ChatMessage], model: AIModelOption) -> [ChatMessage] {
@@ -168,9 +329,16 @@ enum WebSearchService {
         let text: String
     }
 
-    private static func formatEvidence(query: String, hits: [Hit], pages: [PageText]) -> String {
+    private static func formatEvidence(queries: [String], hits: [Hit], pages: [PageText]) -> String {
         var lines: [String] = []
-        lines.append("检索词：\(query)")
+        if queries.count <= 1 {
+            lines.append("检索词：\(queries.first ?? "")")
+        } else {
+            lines.append("检索词：")
+            for (i, q) in queries.enumerated() {
+                lines.append("  \(i + 1). \(q)")
+            }
+        }
         lines.append("")
 
         lines.append("【搜索结果摘要】")
@@ -195,6 +363,39 @@ enum WebSearchService {
             lines.append("")
         }
 
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func formatProcessLog(queries: [String], hits: [Hit], pages: [PageText]) -> String {
+        var lines: [String] = []
+        lines.append("根据对话上下文（含前文）规划检索，而不是只搜最后一句原文。")
+        lines.append("")
+        lines.append("检索词：")
+        for (i, q) in queries.enumerated() {
+            lines.append("\(i + 1). \(q)")
+        }
+        lines.append("")
+        lines.append("搜索结果：")
+        for (i, hit) in hits.prefix(5).enumerated() {
+            var row = "\(i + 1). \(hit.title)"
+            if !hit.url.isEmpty { row += "\n   \(hit.url)" }
+            lines.append(row)
+            if !hit.snippet.isEmpty {
+                let snip = hit.snippet.count > 120 ? String(hit.snippet.prefix(120)) + "…" : hit.snippet
+                lines.append("   \(snip)")
+            }
+        }
+        lines.append("")
+        if pages.isEmpty {
+            lines.append("网页正文：未能打开（仅依据摘要作答）。")
+        } else {
+            lines.append("已阅读网页：")
+            for page in pages {
+                var row = "· \(page.hit.title)"
+                if !page.hit.url.isEmpty { row += "\n  \(page.hit.url)" }
+                lines.append(row)
+            }
+        }
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

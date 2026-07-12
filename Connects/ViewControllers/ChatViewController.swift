@@ -33,11 +33,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var readingHistory = false
     private var streamUIWork: DispatchWorkItem?
     private var heightWork: DispatchWorkItem?
-    private var contextUsageWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
     private var chromeWork: DispatchWorkItem?
     /// Conversation currently waiting on web search before stream starts.
-    private var webSearchPendingID: String?
     /// Rounded chat width — heights are invalid across rotation / Slide Over.
     private var layoutWidthBucket: Int = 0
     private var widthInvalidateWork: DispatchWorkItem?
@@ -50,7 +48,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private var isCurrentStreaming: Bool {
         guard let id = currentConversationID else { return false }
-        if webSearchPendingID == id { return true }
+        if WebSearchCoordinator.shared.isSearching(id) { return true }
         return StreamManager.shared.isRunning(id)
     }
 
@@ -64,7 +62,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(storeChanged(_:)), name: .conversationStoreDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamUpdated(_:)), name: .streamManagerDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinished(_:)), name: .streamManagerDidFinish, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(webSearchUpdated(_:)), name: .webSearchDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsThinkingToggle"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsSearchToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
@@ -311,7 +311,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
         scheduleStreamUIRefresh()
-        scheduleContextUsageRefresh()
+    }
+
+    @objc private func webSearchUpdated(_ note: Notification) {
+        guard let id = note.userInfo?["conversationID"] as? String,
+              id == currentConversationID else { return }
+        syncStreamingChrome()
+        scheduleStreamUIRefresh()
     }
 
     @objc private func thinkingToggled(_ note: Notification) {
@@ -386,7 +392,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               id == currentConversationID else { return }
         streamUIWork?.cancel()
         streamUIWork = nil
-        contextUsageWork?.cancel()
         // Streaming stays lightweight; completion performs one deterministic
         // native parse/layout and swaps under the cell snapshot cover.
         guard let messages = ConversationStore.shared.currentConversation?.messages,
@@ -426,11 +431,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self.refreshStreamingRow()
         }
         streamUIWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        // 25 fps feels continuous on iPad Air 1 while leaving headroom for
+        // UILabel layout and touch handling.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04, execute: work)
     }
 
     private func refreshStreamingRow() {
-        syncStreamingChrome()
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last, last.isStreaming else {
             return
@@ -693,15 +699,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         contextUsageView.update(usage: usage, forceVisible: visible, animated: animated)
     }
 
-    private func scheduleContextUsageRefresh() {
-        contextUsageWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.refreshContextUsage(animated: false)
-        }
-        contextUsageWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
-    }
-
     private func maybeAutoCompactContext() {
         guard let id = ConversationStore.shared.currentConversationID else { return }
         guard let conv = ConversationStore.shared.currentConversation else { return }
@@ -932,7 +929,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let conv = ConversationStore.shared.currentConversation,
               index >= 0, index < conv.messages.count,
               conv.messages[index].role == .user else { return }
-        if StreamManager.shared.isRunning(conv.id) || webSearchPendingID == conv.id {
+        if StreamManager.shared.isRunning(conv.id) || WebSearchCoordinator.shared.isSearching(conv.id) {
             showAlert(title: "正在生成", message: "请先停止或等待当前回复完成。")
             return
         }
@@ -963,15 +960,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         showAlert(title: "已复制", message: "全部对话已复制到剪贴板。")
     }
 
-    private func apiContext(for model: AIModelOption) -> [ChatMessage] {
-        let conv = ConversationStore.shared.currentConversation
-        let raw = conv?.messages ?? []
+    /// Build API messages for a specific conversation — never the "currently visible" one by accident.
+    private func apiContext(for model: AIModelOption, conversationID: String) -> [ChatMessage] {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
+        let raw = conv.messages
         var keep = ContextBuilder.keepRecentTurns
         var built = ContextBuilder.build(
             from: raw,
             model: model,
-            existingSummary: conv?.contextSummary,
-            existingThroughID: conv?.contextSummaryThroughMessageID,
+            existingSummary: conv.contextSummary,
+            existingThroughID: conv.contextSummaryThroughMessageID,
             keepRecentTurns: keep
         )
         if built.usage.shouldAutoCompact {
@@ -979,20 +977,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             built = ContextBuilder.build(
                 from: raw,
                 model: model,
-                existingSummary: conv?.contextSummary,
-                existingThroughID: conv?.contextSummaryThroughMessageID,
+                existingSummary: conv.contextSummary,
+                existingThroughID: conv.contextSummaryThroughMessageID,
                 keepRecentTurns: keep
             )
         }
-        if built.summary != conv?.contextSummary
-            || built.summaryThroughMessageID != conv?.contextSummaryThroughMessageID {
-            ConversationStore.shared.updateCurrentQuietly { c in
+        if built.summary != conv.contextSummary
+            || built.summaryThroughMessageID != conv.contextSummaryThroughMessageID {
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { c in
                 c.contextSummary = built.summary
                 c.contextSummaryThroughMessageID = built.summaryThroughMessageID
             }
         }
-        DispatchQueue.main.async { [weak self] in
-            self?.refreshContextUsage()
+        if conversationID == currentConversationID {
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshContextUsage()
+            }
         }
         return built.messages
     }
@@ -1011,6 +1011,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               index >= 0, index < conv.messages.count else { return }
         if StreamManager.shared.isRunning(conv.id) {
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先停止或等待完成。")
+            return
+        }
+        if WebSearchCoordinator.shared.isSearching(conv.id) {
+            showAlert(title: "正在联网搜索", message: "当前对话仍在检索网页，请先停止或等待完成。")
             return
         }
 
@@ -1080,84 +1084,148 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         } else {
             StreamManager.shared.start(
                 conversationID: convID,
-                messages: apiContext(for: model),
+                messages: apiContext(for: model, conversationID: convID),
                 model: model,
                 needsAITitle: needsAITitle
             )
         }
     }
 
-    /// Search → read pages → stream. Shared by send + retry.
+    /// Plan queries from conversation → search → read pages → stream. Shared by send + retry.
+    /// Each conversation has its own search generation so parallel chats never cancel or cross-wire.
     private func beginWebSearchThenStream(
         convID: String,
         model: AIModelOption,
         needsAITitle: Bool,
         query: String
     ) {
-        webSearchPendingID = convID
+        let generation = WebSearchCoordinator.shared.begin(convID)
         syncStreamingChrome()
-        setWebSearchStatus(convID: convID, text: "正在搜索…")
+        updateSearchProcess(
+            convID: convID,
+            phase: .planning,
+            body: "正在结合对话上下文规划检索词…\n（会消解「那这个呢」「为什么」等指代，而不是只搜最后一句。）"
+        )
 
-        WebSearchService.searchAndFormat(
-            query: query,
-            onStatus: { [weak self] status in
-                guard let self = self, self.webSearchPendingID == convID else { return }
-                self.setWebSearchStatus(convID: convID, text: status)
-            }
-        ) { [weak self] result in
+        let contextMsgs = apiContext(for: model, conversationID: convID)
+        WebSearchService.planSearchQueries(
+            contextMessages: contextMsgs,
+            model: model,
+            fallbackQuery: query
+        ) { [weak self] planned in
             guard let self = self else { return }
-            guard self.webSearchPendingID == convID else { return }
-            self.webSearchPendingID = nil
-            if self.navigationItem.prompt != nil {
-                self.navigationItem.prompt = nil
+            guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
+
+            let queries = planned.isEmpty ? [query] : planned
+            #if DEBUG
+            print("[Connects] web search queries [\(convID.prefix(6))]: \(queries)")
+            #endif
+
+            var planLog = "根据对话上下文规划出的检索词：\n"
+            for (i, q) in queries.enumerated() {
+                planLog += "\(i + 1). \(q)\n"
             }
-            ConversationStore.shared.updateConversationQuietly(id: convID) { c in
-                guard var last = c.messages.last, last.isStreaming else { return }
-                last.content = ""
-                c.messages[c.messages.count - 1] = last
+            self.updateSearchProcess(convID: convID, phase: .searching, body: planLog)
+
+            WebSearchService.searchAndFormat(
+                queries: queries,
+                onStatus: { [weak self] status in
+                    guard let self = self else { return }
+                    guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
+                    if status.contains("阅读") {
+                        self.updateSearchProcess(convID: convID, phase: .reading)
+                    } else {
+                        self.updateSearchProcess(convID: convID, phase: .searching)
+                    }
+                }
+            ) { [weak self] result in
+                guard let self = self else { return }
+                guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
+                WebSearchCoordinator.shared.finish(convID, generation: generation)
+                if self.currentConversationID == convID, self.navigationItem.prompt != nil {
+                    self.navigationItem.prompt = nil
+                }
+                ConversationStore.shared.updateConversationQuietly(id: convID) { c in
+                    guard var last = c.messages.last, last.isStreaming else { return }
+                    last.content = ""
+                    c.messages[c.messages.count - 1] = last
+                }
+                // Always rebuild from THIS conversation — never the currently visible chat.
+                var msgs = self.apiContext(for: model, conversationID: convID)
+                switch result {
+                case .success(let bundle):
+                    self.updateSearchProcess(
+                        convID: convID,
+                        phase: .done,
+                        body: bundle.processLog
+                    )
+                    msgs = WebSearchService.inject(into: msgs, bundle: bundle)
+                    msgs = WebSearchService.fitInjectedContext(msgs, model: model)
+                case .failure(let err):
+                    #if DEBUG
+                    print("[Connects] web search failed [\(convID.prefix(6))]: \(err.localizedDescription)")
+                    #endif
+                    self.updateSearchProcess(
+                        convID: convID,
+                        phase: .done,
+                        append: "\n\n检索未成功：\(err.localizedDescription)\n将改为不依赖网页证据直接作答。"
+                    )
+                }
+                StreamManager.shared.start(
+                    conversationID: convID,
+                    messages: msgs,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
+                self.syncStreamingChrome()
             }
-            var msgs = self.apiContext(for: model)
-            switch result {
-            case .success(let block):
-                msgs = WebSearchService.inject(into: msgs, searchBlock: block)
-                msgs = WebSearchService.fitInjectedContext(msgs, model: model)
-            case .failure(let err):
-                #if DEBUG
-                print("[Connects] web search failed, falling back to regular context: \(err.localizedDescription)")
-                #endif
-                // Do not inject a "web mode" instruction when no web evidence exists; it
-                // creates conflicting guidance and hurts answer quality more than a clean fallback.
-                break
-            }
-            StreamManager.shared.start(
-                conversationID: convID,
-                messages: msgs,
-                model: model,
-                needsAITitle: needsAITitle
-            )
-            self.syncStreamingChrome()
         }
     }
 
-    private func setWebSearchStatus(convID: String, text: String) {
-        navigationItem.prompt = text
+    private func updateSearchProcess(
+        convID: String,
+        phase: SearchProcessPhase,
+        body: String? = nil,
+        append: String? = nil
+    ) {
+        if currentConversationID == convID {
+            navigationItem.prompt = phase == .done ? nil : phase.headerTitle
+        }
         ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             guard var last = c.messages.last, last.isStreaming else { return }
-            last.content = text
+            last.searchProcessPhase = phase
+            if let body = body {
+                last.searchProcessContent = body
+            } else if let append = append, !append.isEmpty {
+                if last.searchProcessContent.isEmpty {
+                    last.searchProcessContent = append.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if !last.searchProcessContent.contains(append.trimmingCharacters(in: CharacterSet.newlines)) {
+                    last.searchProcessContent += append
+                }
+            }
+            // Keep the main bubble free of status text — process lives in the collapsible panel.
+            if last.content.hasPrefix("正在规划")
+                || last.content.hasPrefix("正在搜索")
+                || last.content.hasPrefix("正在阅读") {
+                last.content = ""
+            }
             c.messages[c.messages.count - 1] = last
         }
         if currentConversationID == convID {
             guard let messages = ConversationStore.shared.currentConversation?.messages,
                   !messages.isEmpty else { return }
             let path = IndexPath(row: messages.count - 1, section: 0)
+            contentHeights.removeValue(forKey: messages[path.row].id)
             UIView.performWithoutAnimation {
                 if let cell = tableView.cellForRow(at: path) as? MessageCell {
                     if !cell.updateStreamingContent(messages[path.row]) {
-                        cell.configure(with: messages[path.row], preferredHeight: contentHeights[messages[path.row].id])
+                        cell.configure(with: messages[path.row], preferredHeight: nil)
                     }
                 } else {
                     tableView.reloadRows(at: [path], with: .none)
                 }
+                tableView.beginUpdates()
+                tableView.endUpdates()
             }
         }
     }
@@ -1301,6 +1369,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先点停止或等待完成。")
             return
         }
+        if WebSearchCoordinator.shared.isSearching(conv.id) {
+            showAlert(title: "正在联网搜索", message: "当前对话仍在检索网页，请先点停止或等待完成。")
+            return
+        }
         if ContextCompactor.isCompacting(conv.id) {
             showAlert(title: "正在压缩", message: "上下文压缩完成后即可发送。")
             return
@@ -1339,8 +1411,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
         let assistantMsg = ChatMessage(
             role: .assistant,
-            content: searchOn ? "正在搜索…" : "",
+            content: "",
             reasoningContent: "",
+            searchProcessContent: searchOn ? "正在结合对话上下文规划检索词…" : "",
+            searchProcessPhase: searchOn ? .planning : .idle,
             isStreaming: true
         )
         let convID = conv.id
@@ -1382,7 +1456,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             syncStreamingChrome()
             StreamManager.shared.start(
                 conversationID: convID,
-                messages: apiContext(for: model),
+                messages: apiContext(for: model, conversationID: convID),
                 model: model,
                 needsAITitle: needsAITitle
             )
@@ -1680,8 +1754,8 @@ extension ChatViewController: InputBarViewDelegate {
 
     func inputBarDidTapStop() {
         guard let id = currentConversationID else { return }
-        if webSearchPendingID == id {
-            webSearchPendingID = nil
+        if WebSearchCoordinator.shared.isSearching(id) {
+            WebSearchCoordinator.shared.cancel(id)
             if navigationItem.prompt != nil {
                 navigationItem.prompt = nil
             }

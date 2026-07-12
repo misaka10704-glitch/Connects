@@ -22,6 +22,7 @@ extension MessageCellDelegate {
 final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDelegate {
     static let reuseID = "MessageCell"
     private static var expandedThinkingIDs = Set<String>()
+    private static var expandedSearchIDs = Set<String>()
     /// Briefly shown while a recycled WKWebView restores an already-seen reply.
     /// This avoids blank/old-content flashes during table-cell reuse.
     private static let webSnapshots: NSCache<NSString, UIImage> = {
@@ -48,6 +49,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private let thinkingBody = UILabel()
     private let thinkingBox = UIView()
 
+    private let searchHeader = UIButton(type: .system)
+    private let searchBody = UILabel()
+    private let searchBox = UIView()
+
     private let assistantLabel = UILabel()
     private let nativeRenderView = NativeMessageRenderView()
     private let renderedReplyView = UIStackView()
@@ -55,7 +60,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var webSnapshotView: UIImageView?
     private var webHeight: NSLayoutConstraint?
 
-    private let actionRow = UIStackView()
+    private let actionRow = UIView()
     private let versionCluster = UIStackView()
     private let versionPrevButton = UIButton(type: .system)
     private let versionNextButton = UIButton(type: .system)
@@ -68,10 +73,17 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var columnWidthMax: NSLayoutConstraint!
     private var imageHeight: NSLayoutConstraint!
     private var actionHeight: NSLayoutConstraint!
+    private var copyLeadingToRow: NSLayoutConstraint!
+    private var copyLeadingToPager: NSLayoutConstraint!
     private var thinkingHeaderH: NSLayoutConstraint!
     private var thinkingBoxH: NSLayoutConstraint!
     private var thinkingToHeader: NSLayoutConstraint!
     private var thinkingToBody: NSLayoutConstraint!
+    private var searchHeaderH: NSLayoutConstraint!
+    private var searchBoxH: NSLayoutConstraint!
+    private var searchToHeader: NSLayoutConstraint!
+    private var searchToBody: NSLayoutConstraint!
+    private var searchTop: NSLayoutConstraint!
     private var assistantTopToRole: NSLayoutConstraint!
     private var assistantTopToImage: NSLayoutConstraint!
     private var assistantTopToThink: NSLayoutConstraint!
@@ -101,6 +113,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var usesWeb = false
     private var hasThinking = false
     private var thinkingExpanded = false
+    private var hasSearch = false
+    private var searchExpanded = false
     /// Shell document loaded (katex/marked ready).
     private var webShellReady = false
     private var injectRetryWork: DispatchWorkItem?
@@ -172,6 +186,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         // Cancel in-flight JS callbacks for the previous identity.
         renderGeneration &+= 1
         heightNotifyWork?.cancel()
+        heightNotifyWork = nil
         widthRemeasureWork?.cancel()
         pendingMarkdown = nil
         pendingHTMLKey = nil
@@ -192,11 +207,14 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
         thinkingBody.attributedText = nil
         thinkingBody.text = nil
+        searchBody.attributedText = nil
+        searchBody.text = nil
         imageViewMsg.image = nil
         imageViewMsg.isHidden = true
         imageHeight.constant = 0
         showActions(false)
         setThinking(visible: false, expanded: false)
+        setSearch(visible: false, expanded: false)
         userBubble.isHidden = true
         assistantLabel.isHidden = true
         hideNativeRender()
@@ -252,6 +270,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             hideNativeRender()
             parkWeb()
             setThinking(visible: false, expanded: false)
+            setSearch(visible: false, expanded: false)
             showActions(false)
             userLabel.textColor = c.textPrimary
             userLabel.font = UIFont.systemFont(ofSize: font)
@@ -275,6 +294,32 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         userTopToImage.isActive = false
         userBubbleBottom.isActive = false
         userBubbleBottomFloor.isActive = false
+
+        let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        hasSearch = message.hasSearchProcess
+        if hasSearch {
+            if message.isStreaming, message.searchProcessPhase != .done {
+                searchExpanded = true
+            } else {
+                searchExpanded = MessageCell.expandedSearchIDs.contains(message.id)
+            }
+            setSearch(visible: true, expanded: searchExpanded)
+            let live = message.isStreaming && message.searchProcessPhase != .done
+            let titleCore = live ? message.searchProcessPhase.headerTitle : SearchProcessPhase.done.headerTitle
+            let chevron = searchExpanded ? "▾" : "▸"
+            searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
+            searchHeader.setTitleColor(c.textSecondary, for: .normal)
+            searchBox.backgroundColor = c.surface.withAlphaComponent(0.65)
+            searchBox.layer.borderWidth = 0
+            if searchExpanded {
+                searchBody.attributedText = nil
+                searchBody.textColor = c.textSecondary
+                searchBody.font = UIFont.systemFont(ofSize: thinkFont)
+                searchBody.text = search.isEmpty ? titleCore : search
+            }
+        } else {
+            setSearch(visible: false, expanded: false)
+        }
 
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         hasThinking = !think.isEmpty
@@ -314,7 +359,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             setThinking(visible: false, expanded: false)
         }
 
-        let showAct = !message.isStreaming && (!message.content.isEmpty || hasThinking)
+        let showAct = !message.isStreaming && (!message.content.isEmpty || hasThinking || hasSearch)
         let pager = message.showsVersionPager
         showActions(
             showAct,
@@ -337,22 +382,24 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             assistantLabel.isHidden = false
             labelBottom.isActive = true
             labelBottomFloor.isActive = true
-            setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: false)
-            if message.content.isEmpty && !hasThinking {
+            setContentTops(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage, useWeb: false)
+            if message.content.isEmpty && !hasThinking && !hasSearch {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textPrimary
                 assistantLabel.font = UIFont.systemFont(ofSize: font)
-                assistantLabel.text = "▍"
+                assistantLabel.text = "正在生成…"
             } else if message.isStreaming {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textPrimary
                 assistantLabel.font = UIFont.systemFont(ofSize: font)
                 assistantLabel.text = message.content.isEmpty ? nil : message.content
-            } else if message.content.isEmpty, hasThinking {
+            } else if message.content.isEmpty, hasThinking || hasSearch {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textSecondary
                 assistantLabel.font = UIFont.systemFont(ofSize: font)
-                assistantLabel.text = "（思考完成，无正文。可点「重跑」。）"
+                assistantLabel.text = hasThinking
+                    ? "（思考完成，无正文。可点「重跑」。）"
+                    : nil
             } else {
                 assistantLabel.attributedText = nil
                 assistantLabel.text = nil
@@ -362,6 +409,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             configureNative(
                 message: message,
                 hasThinking: hasThinking,
+                hasSearch: hasSearch,
                 hasImage: hasImage,
                 font: font,
                 colors: c
@@ -371,6 +419,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     private func configureNative(message: ChatMessage,
                                  hasThinking: Bool,
+                                 hasSearch: Bool = false,
                                  hasImage: Bool,
                                  font: CGFloat,
                                  colors: ThemeColors) {
@@ -388,7 +437,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
         nativeBottom.isActive = true
-        if hasThinking { nativeTopToThink.isActive = true }
+        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
         else if hasImage { nativeTopToImage.isActive = true }
         else { nativeTopToRole.isActive = true }
         let measuredWidth = column.bounds.width > 1
@@ -427,19 +476,39 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     /// renderer state, or action visibility on every token batch.
     @discardableResult
     func updateStreamingContent(_ message: ChatMessage) -> Bool {
+        let searchEmpty = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !message.hasSearchProcess
+        let thinkEmpty = message.reasoningContent.isEmpty
         guard messageID == message.id,
               message.isStreaming,
               !assistantLabel.isHidden,
               renderedReplyView.isHidden,
-              (thinkingBox.isHidden == message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) else {
+              (thinkingBox.isHidden == thinkEmpty),
+              (searchBox.isHidden == searchEmpty) else {
             return false
         }
         let content = message.content
         assistantLabel.attributedText = nil
-        assistantLabel.text = content.isEmpty ? (thinkingBox.isHidden ? "▍" : nil) : content
+        assistantLabel.text = content.isEmpty ? ((thinkingBox.isHidden && searchBox.isHidden) ? "正在生成…" : nil) : content
+        if !searchBox.isHidden {
+            let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            searchBody.attributedText = nil
+            searchBody.text = search
+            let live = message.searchProcessPhase != .done
+            let titleCore = live ? message.searchProcessPhase.headerTitle : SearchProcessPhase.done.headerTitle
+            let chevron = searchExpanded ? "▾" : "▸"
+            searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
+        }
         if !thinkingBox.isHidden {
             thinkingBody.attributedText = nil
-            thinkingBody.text = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Laying out an ever-growing 10k+ character UILabel on every frame
+            // overwhelms first-generation iPad Air. During generation show a
+            // rolling window; the complete reasoning remains stored and is
+            // available after the stream finishes.
+            let reasoning = message.reasoningContent
+            let liveLimit = 2_400
+            thinkingBody.text = reasoning.count > liveLimit
+                ? "…\n" + String(reasoning.suffix(liveLimit))
+                : reasoning
             let chevron = thinkingExpanded ? "▾" : "▸"
             thinkingHeader.setTitle(
                 content.isEmpty ? "\(chevron)  思考中…" : "\(chevron)  已深度思考",
@@ -456,13 +525,18 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     func finalizeStreamingPresentation(_ message: ChatMessage) {
         guard messageID == message.id else { return }
         let c = DSTheme.c
+        let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !search.isEmpty {
+            let chevron = searchExpanded ? "▾" : "▸"
+            searchHeader.setTitle("\(chevron)  \(SearchProcessPhase.done.headerTitle)", for: .normal)
+        }
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !think.isEmpty {
             thinkingHeader.setTitle(thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考", for: .normal)
         }
         let pager = message.showsVersionPager
         showActions(
-            !message.content.isEmpty || !think.isEmpty,
+            !message.content.isEmpty || !think.isEmpty || !search.isEmpty,
             versionText: pager ? message.versionPagerText : nil,
             canPrev: pager && message.versionIndex > 0,
             canNext: pager && message.versionIndex < message.versions.count - 1
@@ -541,17 +615,21 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     /// PlainMarkdown rows don't go through web height JS — push measured height so estimates settle.
     private func schedulePlainHeightNotify() {
-        heightNotifyWork?.cancel()
+        // Fixed-cadence height updates. A debounce is starved by a continuous
+        // token stream; updating on every frame makes UITableView relayout jank.
+        guard heightNotifyWork == nil else { return }
         let id = messageID
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.messageID == id, !self.usesWeb else { return }
+            guard let self = self else { return }
+            self.heightNotifyWork = nil
+            guard self.messageID == id, !self.usesWeb else { return }
             self.contentView.layoutIfNeeded()
             let h = self.column.bounds.height
             guard h > 40 else { return }
             self.cellDelegate?.messageCell(self, didUpdateHeight: h, for: id)
         }
         heightNotifyWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
     private func applyAssistantLayoutWidth() {
@@ -563,6 +641,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
         if abs(thinkingBody.preferredMaxLayoutWidth - max(w - 24, 1)) > 0.5 {
             thinkingBody.preferredMaxLayoutWidth = max(w - 24, 1)
+        }
+        if abs(searchBody.preferredMaxLayoutWidth - max(w - 24, 1)) > 0.5 {
+            searchBody.preferredMaxLayoutWidth = max(w - 24, 1)
         }
     }
 
@@ -664,7 +745,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantLabel.isHidden = false
         labelBottom.isActive = true
         labelBottomFloor.isActive = true
-        setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: false)
+        setContentTops(hasThinking: hasThinking, hasSearch: hasSearch || !searchBox.isHidden, hasImage: hasImage, useWeb: false)
         let cacheKey = "stable-fallback|\(RenderCacheStore.stamp(content))|\(Int(font))"
         assistantLabel.attributedText = PlainMarkdown.attributed(
             content,
@@ -701,7 +782,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         renderedReplyView.addArrangedSubview(placeholder)
         placeholder.heightAnchor.constraint(equalToConstant: max(height, 44)).isActive = true
         renderedReplyView.isHidden = false
-        if hasThinking { renderedTopToThink.isActive = true }
+        if hasThinking || hasSearch { renderedTopToThink.isActive = true }
         else if hasImage { renderedTopToImage.isActive = true }
         else { renderedTopToRole.isActive = true }
         renderedBottom.isActive = true
@@ -781,7 +862,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             tile.heightAnchor.constraint(equalToConstant: height * scale).isActive = true
         }
         renderedReplyView.isHidden = false
-        if hasThinking { renderedTopToThink.isActive = true }
+        if hasThinking || hasSearch { renderedTopToThink.isActive = true }
         else if hasImage { renderedTopToImage.isActive = true }
         else { renderedTopToRole.isActive = true }
         renderedBottom.isActive = true
@@ -907,7 +988,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantLabel.alpha = 1
         let hasThink = !thinkingBox.isHidden
         let hasImg = !imageViewMsg.isHidden
-        setContentTops(hasThinking: hasThink, hasImage: hasImg, useWeb: false)
+        setContentTops(hasThinking: hasThink, hasSearch: !searchBox.isHidden, hasImage: hasImg, useWeb: false)
         applyAssistantLayoutWidth()
         let key = "interim|\(RenderCacheStore.stamp(content))|\(Int(font))"
         assistantLabel.attributedText = PlainMarkdown.attributed(
@@ -1001,7 +1082,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         // flashes while the table cell scrolls into view.
         webView?.alpha = showContent ? 1 : 0
         showingWebContent = showContent
-        setContentTops(hasThinking: hasThinking, hasImage: hasImage, useWeb: true)
+        setContentTops(hasThinking: hasThinking, hasSearch: hasSearch || !searchBox.isHidden, hasImage: hasImage, useWeb: true)
 
         let estimate = Self.estimateWebHeight(for: content)
         provisionalWebHeight = estimate
@@ -1116,7 +1197,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         showingWebContent = true
         let hasThink = !thinkingBox.isHidden
         let hasImg = !imageViewMsg.isHidden
-        setContentTops(hasThinking: hasThink, hasImage: hasImg, useWeb: true)
+        setContentTops(hasThinking: hasThink, hasSearch: !searchBox.isHidden, hasImage: hasImg, useWeb: true)
     }
 
     @discardableResult
@@ -1296,6 +1377,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         if abs(thinkingBody.preferredMaxLayoutWidth - max(w - 24, 1)) > 0.5 {
             thinkingBody.preferredMaxLayoutWidth = max(w - 24, 1)
         }
+        if abs(searchBody.preferredMaxLayoutWidth - max(w - 24, 1)) > 0.5 {
+            searchBody.preferredMaxLayoutWidth = max(w - 24, 1)
+        }
         if abs(userLabel.preferredMaxLayoutWidth - max(w - 108, 1)) > 0.5 {
             userLabel.preferredMaxLayoutWidth = max(w - 108, 1)
         }
@@ -1343,6 +1427,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         versionNextButton.isEnabled = showPager && canNext
         versionPrevButton.alpha = versionPrevButton.isEnabled ? 1 : 0.35
         versionNextButton.alpha = versionNextButton.isEnabled ? 1 : 0.35
+        copyLeadingToRow.isActive = !showPager
+        copyLeadingToPager.isActive = showPager
     }
 
     private func setThinking(visible: Bool, expanded: Bool) {
@@ -1365,7 +1451,27 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
     }
 
-    private func setContentTops(hasThinking: Bool, hasImage: Bool, useWeb: Bool) {
+    private func setSearch(visible: Bool, expanded: Bool) {
+        searchBox.isHidden = !visible
+        searchHeader.isHidden = !visible
+        searchHeaderH.constant = visible ? 32 : 0
+        searchBody.isHidden = !visible || !expanded
+        searchTop.constant = visible ? 8 : 0
+        if visible {
+            searchBoxH.isActive = false
+            searchToHeader.isActive = !expanded
+            searchToBody.isActive = expanded
+        } else {
+            searchToHeader.isActive = false
+            searchToBody.isActive = false
+            searchBoxH.constant = 0
+            searchBoxH.isActive = true
+            searchBody.attributedText = nil
+            searchBody.text = nil
+        }
+    }
+
+    private func setContentTops(hasThinking: Bool, hasSearch: Bool = false, hasImage: Bool, useWeb: Bool) {
         assistantTopToRole.isActive = false
         assistantTopToImage.isActive = false
         assistantTopToThink.isActive = false
@@ -1373,12 +1479,13 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         webTopToImage?.isActive = false
         webTopToThink?.isActive = false
 
+        let pinToStack = hasThinking || hasSearch
         if useWeb {
-            if hasThinking { webTopToThink?.isActive = true }
+            if pinToStack { webTopToThink?.isActive = true }
             else if hasImage { webTopToImage?.isActive = true }
             else { webTopToRole?.isActive = true }
         } else {
-            if hasThinking { assistantTopToThink.isActive = true }
+            if pinToStack { assistantTopToThink.isActive = true }
             else if hasImage { assistantTopToImage.isActive = true }
             else { assistantTopToRole.isActive = true }
         }
@@ -1433,6 +1540,18 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         else { MessageCell.expandedThinkingIDs.remove(messageID) }
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsThinkingToggle"),
+            object: nil,
+            userInfo: ["messageID": messageID]
+        )
+    }
+
+    @objc private func toggleSearch() {
+        guard hasSearch else { return }
+        searchExpanded.toggle()
+        if searchExpanded { MessageCell.expandedSearchIDs.insert(messageID) }
+        else { MessageCell.expandedSearchIDs.remove(messageID) }
+        NotificationCenter.default.post(
+            name: Notification.Name("ConnectsSearchToggle"),
             object: nil,
             userInfo: ["messageID": messageID]
         )
@@ -1594,6 +1713,24 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         imageViewMsg.isHidden = true
         column.addSubview(imageViewMsg)
 
+        searchBox.translatesAutoresizingMaskIntoConstraints = false
+        searchBox.layer.cornerRadius = 10
+        searchBox.layer.borderWidth = 0
+        searchBox.isHidden = true
+        column.addSubview(searchBox)
+
+        searchHeader.translatesAutoresizingMaskIntoConstraints = false
+        searchHeader.contentHorizontalAlignment = .left
+        searchHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        searchHeader.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        searchHeader.addTarget(self, action: #selector(toggleSearch), for: .touchUpInside)
+        searchBox.addSubview(searchHeader)
+
+        searchBody.translatesAutoresizingMaskIntoConstraints = false
+        searchBody.numberOfLines = 0
+        searchBody.isHidden = true
+        searchBox.addSubview(searchBody)
+
         thinkingBox.translatesAutoresizingMaskIntoConstraints = false
         thinkingBox.layer.cornerRadius = 10
         thinkingBox.layer.borderWidth = 0
@@ -1653,12 +1790,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         column.addSubview(renderedReplyView)
 
         actionRow.translatesAutoresizingMaskIntoConstraints = false
-        actionRow.axis = .horizontal
-        actionRow.spacing = 4
-        actionRow.alignment = .center
         actionRow.isHidden = true
         column.addSubview(actionRow)
 
+        versionCluster.translatesAutoresizingMaskIntoConstraints = false
         versionCluster.axis = .horizontal
         versionCluster.spacing = 2
         versionCluster.alignment = .center
@@ -1679,18 +1814,29 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         versionCluster.addArrangedSubview(versionPrevButton)
         versionCluster.addArrangedSubview(versionLabel)
         versionCluster.addArrangedSubview(versionNextButton)
-        actionRow.addArrangedSubview(versionCluster)
+        actionRow.addSubview(versionCluster)
         for b in [copyButton, retryButton, forkButton] {
-            actionRow.addArrangedSubview(b)
+            actionRow.addSubview(b)
         }
         copyButton.addTarget(self, action: #selector(copyTapped), for: .touchUpInside)
         retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
         forkButton.addTarget(self, action: #selector(forkTapped), for: .touchUpInside)
         versionPrevButton.addTarget(self, action: #selector(versionPrevTapped), for: .touchUpInside)
         versionNextButton.addTarget(self, action: #selector(versionNextTapped), for: .touchUpInside)
-        let spacer = UIView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        actionRow.addArrangedSubview(spacer)
+
+        copyLeadingToRow = copyButton.leadingAnchor.constraint(equalTo: actionRow.leadingAnchor)
+        copyLeadingToPager = copyButton.leadingAnchor.constraint(equalTo: versionCluster.trailingAnchor, constant: 4)
+        copyLeadingToRow.isActive = true
+        NSLayoutConstraint.activate([
+            versionCluster.leadingAnchor.constraint(equalTo: actionRow.leadingAnchor),
+            versionCluster.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
+            copyButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
+            retryButton.leadingAnchor.constraint(equalTo: copyButton.trailingAnchor, constant: 4),
+            retryButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
+            forkButton.leadingAnchor.constraint(equalTo: retryButton.trailingAnchor, constant: 4),
+            forkButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
+            forkButton.trailingAnchor.constraint(lessThanOrEqualTo: actionRow.trailingAnchor)
+        ])
 
         // Fill available width up to max — avoids UILabel intrinsic-width collapse
         columnWidthFill = column.widthAnchor.constraint(equalTo: contentView.widthAnchor, constant: -48)
@@ -1698,9 +1844,15 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         columnWidthMax = column.widthAnchor.constraint(lessThanOrEqualToConstant: DSTheme.bubbleMaxWidth)
         imageHeight = imageViewMsg.heightAnchor.constraint(equalToConstant: 0)
         actionHeight = actionRow.heightAnchor.constraint(equalToConstant: 0)
+        searchHeaderH = searchHeader.heightAnchor.constraint(equalToConstant: 0)
+        searchBoxH = searchBox.heightAnchor.constraint(equalToConstant: 0)
+        searchTop = searchBox.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 0)
+        searchToHeader = searchBox.bottomAnchor.constraint(equalTo: searchHeader.bottomAnchor)
+        searchToBody = searchBox.bottomAnchor.constraint(equalTo: searchBody.bottomAnchor, constant: 10)
+
         thinkingHeaderH = thinkingHeader.heightAnchor.constraint(equalToConstant: 0)
         thinkingBoxH = thinkingBox.heightAnchor.constraint(equalToConstant: 0)
-        thinkingTop = thinkingBox.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 0)
+        thinkingTop = thinkingBox.topAnchor.constraint(equalTo: searchBox.bottomAnchor, constant: 0)
         thinkingToHeader = thinkingBox.bottomAnchor.constraint(equalTo: thinkingHeader.bottomAnchor)
         thinkingToBody = thinkingBox.bottomAnchor.constraint(equalTo: thinkingBody.bottomAnchor, constant: 10)
 
@@ -1731,6 +1883,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         userBubble.setContentCompressionResistancePriority(.required, for: .vertical)
         userLabel.setContentHuggingPriority(.required, for: .vertical)
         assistantLabel.setContentHuggingPriority(.required, for: .vertical)
+        searchBox.setContentHuggingPriority(.required, for: .vertical)
         thinkingBox.setContentHuggingPriority(.required, for: .vertical)
 
         columnBottom = column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10)
@@ -1754,6 +1907,20 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             imageViewMsg.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             imageHeight,
+
+            searchTop,
+            searchBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            searchBox.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            searchBoxH,
+
+            searchHeader.topAnchor.constraint(equalTo: searchBox.topAnchor),
+            searchHeader.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor),
+            searchHeader.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor),
+            searchHeaderH,
+
+            searchBody.topAnchor.constraint(equalTo: searchHeader.bottomAnchor, constant: 4),
+            searchBody.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor, constant: 12),
+            searchBody.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor, constant: -12),
 
             thinkingTop,
             thinkingBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),

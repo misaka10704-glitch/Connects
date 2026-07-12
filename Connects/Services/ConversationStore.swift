@@ -21,6 +21,10 @@ final class ConversationStore {
         return conversations.first { $0.id == id }
     }
 
+    func conversation(id: String) -> Conversation? {
+        conversations.first { $0.id == id }
+    }
+
     var visibleConversations: [Conversation] {
         conversations
             .filter { showArchived ? $0.isArchived : !$0.isArchived }
@@ -122,6 +126,8 @@ final class ConversationStore {
                     role: $0.role,
                     content: $0.content,
                     reasoningContent: $0.reasoningContent,
+                    searchProcessContent: $0.searchProcessContent,
+                    searchProcessPhase: $0.searchProcessPhase == .idle ? .idle : .done,
                     createdAt: $0.createdAt,
                     imageJPEGBase64: $0.imageJPEGBase64
                 )
@@ -238,11 +244,16 @@ final class ConversationStore {
         last.isStreaming = false
         if let errorText = errorText,
            last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !last.hasReasoning {
+           !last.hasReasoning,
+           !last.hasSearchProcess {
             last.content = errorText
         } else if last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !last.hasReasoning {
+                  !last.hasReasoning,
+                  !last.hasSearchProcess {
             last.content = "模型未返回内容。可点「重跑」再试。"
+        }
+        if last.searchProcessPhase != .idle {
+            last.searchProcessPhase = .done
         }
         last.commitActiveVersion()
         conv.messages[conv.messages.count - 1] = last

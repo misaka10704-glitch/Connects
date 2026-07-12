@@ -177,7 +177,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let thinkTip = UILabel()
         thinkTip.numberOfLines = 0
         thinkTip.font = DSTheme.bodyFont(size: 13)
-        thinkTip.text = "DeepSeek / Kimi K2.6 / Qwen / GLM / 豆包 默认会先思考再写正文。关掉即 Instant。Kimi K2.7 强制思考不可关。"
+        thinkTip.text = "默认关闭以更快显示正文。复杂问题可临时开启；开启后模型必须先完成思考，正文出现会明显变慢。"
         footerLabels.append(thinkTip)
         contentStack.addArrangedSubview(thinkTip)
         contentStack.setCustomSpacing(22, after: thinkTip)
