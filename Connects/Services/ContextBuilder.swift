@@ -6,6 +6,16 @@ import Foundation
 /// Sources: Anthropic context engineering (compaction + attention budget),
 /// OpenAI session memory (summary + keep last N), production sliding-window + budget allocation.
 enum ContextBuilder {
+    private static let baseSystemPrompt = """
+    You are a precise, context-aware assistant. Answer the latest user message directly and use earlier turns only to resolve intent and references.
+
+    - Match the user's language and requested level of detail.
+    - Treat earlier assistant answers as fallible; correct them when the user challenges them.
+    - Do not replace the requested explanation with generic disclaimers, slogans, moral judgments, or political boilerplate.
+    - For historical, political, or sensitive topics, give a neutral factual explanation of causes, ideas, institutions, chronology, and consequences. Briefly distinguish established facts from interpretation.
+    - If a term is genuinely ambiguous, state the likely interpretation or ask one concise clarification instead of answering a different question.
+    """
+
     struct BuildResult {
         let messages: [ChatMessage]
         /// Compact notes for turns that slid out of the verbatim window.
@@ -104,7 +114,10 @@ enum ContextBuilder {
         )
         working = capMidContextBodies(working)
 
-        let systems = working.filter { $0.role == .system }
+        // A stable instruction pin prevents sparse/ambiguous contexts from
+        // drifting into generic template answers (especially on sensitive history).
+        let instructionPin = ChatMessage(role: .system, content: baseSystemPrompt)
+        let systems = [instructionPin] + working.filter { $0.role == .system }
         let dialogue = working.filter { $0.role != .system }
 
         // Invalidate stale summary if the covered message disappeared (retry / fork / delete).
@@ -150,12 +163,7 @@ enum ContextBuilder {
         if let s = summary, !s.isEmpty {
             assembled.append(ChatMessage(
                 role: .system,
-                content: """
-                [Earlier conversation summary — compressed for context]
-                Keep these facts/constraints in mind; recent turns below are verbatim.
-
-                \(s)
-                """
+                content: wrappedSummary(s)
             ))
         }
         assembled.append(contentsOf: tail)
@@ -179,16 +187,19 @@ enum ContextBuilder {
         }
 
         // If still over budget, shrink summary first, then truncate oldest remaining body.
-        if estimatedChars(assembled) > budget, summary != nil {
+        if estimatedChars(assembled) > budget, let rawSummary = summary {
             let overflow = estimatedChars(assembled) - budget
             let idx = systems.count
             if idx < assembled.count, assembled[idx].role == .system {
                 var sys = assembled[idx]
-                let keep = max(400, sys.content.count - overflow - 80)
-                if keep < sys.content.count {
-                    sys.content = String(sys.content.prefix(keep)) + "\n…"
+                let keep = max(400, rawSummary.count - overflow - 80)
+                if keep < rawSummary.count {
+                    let shortened = "…\n" + String(rawSummary.suffix(keep))
+                    sys.content = wrappedSummary(shortened)
                     assembled[idx] = sys
-                    summary = sys.content
+                    // Persist only the raw summary, never its system-message
+                    // wrapper. Persisting the wrapper nested it on every build.
+                    summary = shortened
                 }
             }
         }
@@ -331,6 +342,15 @@ enum ContextBuilder {
         let merged = p + "\n" + n
         if merged.count <= summaryCap { return merged }
         return String(merged.suffix(summaryCap))
+    }
+
+    private static func wrappedSummary(_ summary: String) -> String {
+        """
+        [Earlier conversation summary — compressed for context]
+        Keep these facts/constraints in mind; recent turns below are verbatim.
+
+        \(summary)
+        """
     }
 
     // MARK: - Helpers

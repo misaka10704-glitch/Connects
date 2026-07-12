@@ -266,13 +266,8 @@ enum WebSearchService {
             role: .system,
             content: """
             [Web search context]
-            The app planned search queries from the full conversation (including prior turns), then fetched the web evidence below for the latest user question.
-            Use it only when it is relevant. Answer the user directly; do not describe the search process.
-            If the evidence is insufficient or conflicts, say so plainly and do not invent facts.
-            When citing sources, put at most 5 links at the end under "### 参考来源" as a sequential numbered list:
-            1. [短标题](https://...)
-            2. [短标题](https://...)
-            Renumber 1…n (do not keep body citation indices like [1]/[5]). Prefer short titles; never dump bare URLs alone.
+            以下是为最新用户问题抓取的网页证据。只使用与问题直接相关的内容；若证据跑题、薄弱或互相冲突，忽略它并按已有知识直接回答，不要为了套模板而改变问题。
+            不要描述检索过程。确实引用网页时，最多列 5 条，并在末尾用“### 参考来源”下的连续编号 Markdown 链接呈现；没有有效引用时不要强行添加来源区。
 
             \(block)
             """

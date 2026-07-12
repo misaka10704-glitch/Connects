@@ -291,8 +291,29 @@ final class ConversationStore {
             return
         }
         conversations = decoded
+        var repairedInterruptedStream = false
+        // No network engine survives an app process restart. Persisted live
+        // flags otherwise leave a permanent spinner/stop button on cold launch.
+        for i in conversations.indices {
+            guard var last = conversations[i].messages.last, last.isStreaming else { continue }
+            last.isStreaming = false
+            if last.searchProcessPhase != .idle {
+                last.searchProcessPhase = .done
+            }
+            if last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !last.hasReasoning,
+               !last.hasSearchProcess {
+                last.content = "上次生成因应用退出而中断，可点「重跑」重新生成。"
+            }
+            last.commitActiveVersion()
+            conversations[i].messages[conversations[i].messages.count - 1] = last
+            repairedInterruptedStream = true
+        }
         currentConversationID = UserDefaults.standard.string(forKey: storageKey + "_current")
             ?? UserDefaults.standard.string(forKey: legacyKey + "_current")
+        if repairedInterruptedStream {
+            save()
+        }
     }
 
     private func save() {

@@ -33,9 +33,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var readingHistory = false
     private var streamUIWork: DispatchWorkItem?
     private var streamUITimer: Timer?
-    private var lastStreamContent = ""
-    private var lastStreamReasoning = ""
-    private var lastStreamSearch = ""
+    private var lastStreamMessageID = ""
+    private var lastStreamContentBytes = -1
+    private var lastStreamReasoningBytes = -1
+    private var lastStreamSearchBytes = -1
     private var lastStreamPhase: SearchProcessPhase = .idle
     private var lastStreamProgressAt = Date()
     private var lastStreamLayoutAt = Date.distantPast
@@ -57,7 +58,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var isCurrentStreaming: Bool {
         guard let id = currentConversationID else { return false }
         if WebSearchCoordinator.shared.isSearching(id) { return true }
-        return StreamManager.shared.isRunning(id)
+        if StreamManager.shared.isRunning(id) { return true }
+        // Keep chrome/timer alive across the synchronous search → stream
+        // handoff. Cold-launch orphan flags are repaired by ConversationStore.
+        return ConversationStore.shared.currentConversation?.messages.last?.isStreaming == true
     }
 
     override func viewDidLoad() {
@@ -307,13 +311,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func storeChanged(_ note: Notification) {
         guard !isReloadingFromStore else { return }
-        if let source = note.userInfo?["source"] as? String,
-           source == "streamFinish" || source == "title" {
+        if let source = note.userInfo?["source"] as? String, source == "title" {
+            updateTitleFromConversation()
+            return
+        }
+        if let source = note.userInfo?["source"] as? String, source == "streamFinish" {
             updateTitleFromConversation()
             syncStreamingChrome()
-            if source == "streamFinish" {
-                refreshContextUsage(animated: false)
-            }
+            refreshContextUsage(animated: false)
             return
         }
         reloadChat()
@@ -430,15 +435,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     scrollToBottom(animated: false)
                 }
             }
+        } else if path.row < tableView.numberOfRows(inSection: 0) {
+            UIView.performWithoutAnimation {
+                tableView.reloadRows(at: [path], with: .none)
+                tableView.layoutIfNeeded()
+                if stickToBottom && !readingHistory {
+                    scrollToBottom(animated: false, force: true)
+                }
+            }
         }
         maybeAutoCompactContext()
     }
 
     private func ensureStreamUITimer() {
         guard streamUITimer == nil, isCurrentStreaming else { return }
-        lastStreamContent = ""
-        lastStreamReasoning = ""
-        lastStreamSearch = ""
+        lastStreamMessageID = ""
+        lastStreamContentBytes = -1
+        lastStreamReasoningBytes = -1
+        lastStreamSearchBytes = -1
         lastStreamPhase = .idle
         lastStreamProgressAt = Date()
         lastStreamLayoutAt = .distantPast
@@ -465,19 +479,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             stopStreamUITimer()
             return
         }
-        let changed = last.content != lastStreamContent
-            || last.reasoningContent != lastStreamReasoning
-            || last.searchProcessContent != lastStreamSearch
+        // Streams only append text. Comparing whole growing Strings at 25 fps
+        // becomes quadratic on long replies and can itself freeze an A7 iPad.
+        let contentBytes = last.content.utf8.count
+        let reasoningBytes = last.reasoningContent.utf8.count
+        let searchBytes = last.searchProcessContent.utf8.count
+        let changed = last.id != lastStreamMessageID
+            || contentBytes != lastStreamContentBytes
+            || reasoningBytes != lastStreamReasoningBytes
+            || searchBytes != lastStreamSearchBytes
             || last.searchProcessPhase != lastStreamPhase
         if changed {
-            lastStreamContent = last.content
-            lastStreamReasoning = last.reasoningContent
-            lastStreamSearch = last.searchProcessContent
+            lastStreamMessageID = last.id
+            lastStreamContentBytes = contentBytes
+            lastStreamReasoningBytes = reasoningBytes
+            lastStreamSearchBytes = searchBytes
             lastStreamPhase = last.searchProcessPhase
             lastStreamProgressAt = Date()
             let now = Date()
-            let shouldRelayout = !readingHistory
-                && now.timeIntervalSince(lastStreamLayoutAt) >= 0.14
+            // Geometry must keep up even while the user reads history; only
+            // auto-scrolling is suppressed in that mode.
+            let shouldRelayout = now.timeIntervalSince(lastStreamLayoutAt) >= 0.14
             if shouldRelayout {
                 lastStreamLayoutAt = now
             }
@@ -503,10 +525,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let path = IndexPath(row: messages.count - 1, section: 0)
         UIView.performWithoutAnimation {
-            if let cell = tableView.cellForRow(at: path) as? MessageCell {
+            var cell = tableView.cellForRow(at: path) as? MessageCell
+            if cell == nil, !readingHistory {
+                tableView.layoutIfNeeded()
+                cell = tableView.cellForRow(at: path) as? MessageCell
+            }
+            if let cell = cell {
                 if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
                     cell.configure(with: last, preferredHeight: contentHeights[last.id])
                 }
+            } else if !readingHistory,
+                      path.row < tableView.numberOfRows(inSection: 0) {
+                // iOS 12 may not materialize a just-inserted self-sizing row.
+                // Reconcile the whole table: reloadRows can throw if the store
+                // already has new rows but UITableView's old snapshot does not.
+                tableView.reloadData()
+                tableView.layoutIfNeeded()
             }
             // UILabel content can grow beyond the existing self-sized row. Merely
             // changing its text leaves the new tail clipped until a conversation
@@ -1083,13 +1117,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 keepRecentTurns: keep
             )
         }
-        if built.summary != conv.contextSummary
-            || built.summaryThroughMessageID != conv.contextSummaryThroughMessageID {
-            ConversationStore.shared.updateConversationQuietly(id: conversationID) { c in
-                c.contextSummary = built.summary
-                c.contextSummaryThroughMessageID = built.summaryThroughMessageID
-            }
-        }
+        // Request construction must be side-effect free. Only the explicit
+        // ContextCompactor may persist summaries; otherwise a quick API build
+        // can lock a low-quality extractive summary into future turns.
         if conversationID == currentConversationID {
             DispatchQueue.main.async { [weak self] in
                 self?.refreshContextUsage()
@@ -1140,7 +1170,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let convID = conv.id
 
-        ConversationStore.shared.updateCurrentQuietly { c in
+        ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             let assistantIndex = userIndex + 1
             if assistantIndex < c.messages.count, c.messages[assistantIndex].role == .assistant {
                 // Keep prior replies as switchable versions; drop later turns.
@@ -1169,8 +1199,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         scrollToBottom(animated: true, force: true)
         syncStreamingChrome()
 
-        let model = ConversationStore.shared.currentConversation?.model ?? conv.model
-        let userText = ConversationStore.shared.currentConversation?.messages[userIndex].content ?? ""
+        let target = ConversationStore.shared.conversation(id: convID)
+        let model = target?.model ?? conv.model
+        let userText = target?.messages[userIndex].content ?? ""
         let searchOn = SettingsManager.shared.webSearchEnabled
             && !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && userText != "[图片]"
@@ -1495,20 +1526,34 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         let usage = ContextBuilder.usage(for: conv)
+        let intendedConversationID = conv.id
         if usage.shouldAutoCompact {
             contextUsageView.setCompacting(true)
-            ContextCompactor.compactIfNeeded(conversationID: conv.id, force: true) { [weak self] _ in
-                self?.contextUsageView.setCompacting(false)
-                self?.refreshContextUsage()
-                self?.performSend(text, imageBase64: imageBase64)
+            // Capture and clear now. If the user switches chats while compacting,
+            // the callback must neither erase the new chat's draft nor redirect
+            // this send to whichever conversation happens to be visible.
+            inputBar.clearText()
+            ContextCompactor.compactIfNeeded(conversationID: intendedConversationID, force: true) { [weak self] _ in
+                guard let self = self else { return }
+                self.contextUsageView.setCompacting(false)
+                if self.currentConversationID == intendedConversationID {
+                    self.refreshContextUsage()
+                }
+                self.performSend(
+                    text,
+                    imageBase64: imageBase64,
+                    conversationID: intendedConversationID
+                )
             }
             return
         }
-        performSend(text, imageBase64: imageBase64)
+        performSend(text, imageBase64: imageBase64, conversationID: intendedConversationID)
     }
 
-    private func performSend(_ text: String, imageBase64: String?) {
-        guard let conv = ConversationStore.shared.currentConversation else { return }
+    private func performSend(_ text: String,
+                             imageBase64: String?,
+                             conversationID: String) {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
 
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let displayText = text.isEmpty && imageBase64 != nil ? "[图片]" : text
@@ -1526,29 +1571,35 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let model = conv.model
         let firstNewRow = conv.messages.count
 
-        ConversationStore.shared.updateCurrentQuietly { c in
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { c in
             c.messages.append(userMsg)
             c.messages.append(assistantMsg)
         }
+
+        if currentConversationID == convID {
+            inputBar.clearText()
+            updateEmptyState()
+            readingHistory = false
+            UIView.performWithoutAnimation {
+                tableView.insertRows(
+                    at: [
+                        IndexPath(row: firstNewRow, section: 0),
+                        IndexPath(row: firstNewRow + 1, section: 0)
+                    ],
+                    with: .none
+                )
+                tableView.layoutIfNeeded()
+            }
+            scrollToBottom(animated: true, force: true)
+            stickToBottom = true
+            refreshContextUsage()
+        }
+        // This posts a title notification. Do it only after UITableView has
+        // consumed the two inserted rows; otherwise syncStreamingChrome can
+        // start the stream timer against the table's old zero-row snapshot.
         if needsAITitle {
             ConversationStore.shared.applyProvisionalTitle(id: convID, fromUserText: displayText)
         }
-
-        inputBar.clearText()
-        updateEmptyState()
-        readingHistory = false
-        UIView.performWithoutAnimation {
-            tableView.insertRows(
-                at: [
-                    IndexPath(row: firstNewRow, section: 0),
-                    IndexPath(row: firstNewRow + 1, section: 0)
-                ],
-                with: .none
-            )
-        }
-        scrollToBottom(animated: true, force: true)
-        stickToBottom = true
-        refreshContextUsage()
 
         if searchOn {
             beginWebSearchThenStream(
@@ -1558,7 +1609,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 query: displayText
             )
         } else {
-            syncStreamingChrome()
+            if currentConversationID == convID {
+                syncStreamingChrome()
+            }
             StreamManager.shared.start(
                 conversationID: convID,
                 messages: apiContext(for: model, conversationID: convID),

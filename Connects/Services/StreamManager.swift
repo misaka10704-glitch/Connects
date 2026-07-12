@@ -395,7 +395,17 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             return
         }
 
-        var continuationMessages = APIClient.slimMessagesForAPI(messages)
+        var continuationMessages: [ChatMessage]
+        if let live = ConversationStore.shared.conversation(id: conversationID) {
+            continuationMessages = ContextBuilder.messagesForAPI(
+                from: live.messages,
+                model: model,
+                existingSummary: live.contextSummary,
+                existingThroughID: live.contextSummaryThroughMessageID
+            )
+        } else {
+            continuationMessages = APIClient.slimMessagesForAPI(messages)
+        }
         continuationMessages.append(ChatMessage(
             role: .assistant,
             content: assistantContent,
@@ -455,6 +465,10 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
                     dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard dataTask === task else {
+            completionHandler(.cancel)
+            return
+        }
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             pendingHTTPError = http.statusCode
             errorBody = Data()
@@ -465,6 +479,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // Auto-continuation replaces the URLSessionDataTask. Late callbacks
+        // from the cancelled task must never enter the new task's SSE buffer.
+        guard dataTask === task else { return }
         if pendingHTTPError != nil {
             errorBody.append(data)
             return
@@ -486,6 +503,11 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // A superseded task can complete successfully as well as with
+        // NSURLErrorCancelled. Ignore either form while its replacement runs.
+        if let current = self.task, current !== task {
+            return
+        }
         if pendingHTTPError == nil, !receiveBuffer.isEmpty {
             // Drain every remaining SSE line — not just the first one.
             receiveBuffer.append(0x0A)
@@ -506,6 +528,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            if let current = self.task, current !== task {
+                return
+            }
             if let code = self.pendingHTTPError {
                 let detail = APIClient.parseAPIErrorBody(self.errorBody)
                 self.finishLocally(error: APIClientError.httpError(code, detail))
