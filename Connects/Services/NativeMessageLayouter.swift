@@ -31,7 +31,7 @@ final class NativeMessageLayouter {
                 style: NativeLayoutStyle,
                 renderMissingFormulas: Bool = true) -> NativeMessageLayout {
         let phase = renderMissingFormulas ? "final" : "preview"
-        let key = "native_layout_v8|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v9|\(phase)|\(document.stamp)|\(style.keySuffix)"
         if let hit = cache.object(forKey: key as NSString) {
             return hit.layout
         }
@@ -41,17 +41,62 @@ final class NativeMessageLayouter {
             key: key,
             renderMissingFormulas: renderMissingFormulas
         )
-        cache.setObject(Box(built), forKey: key as NSString, cost: Int(built.size.height * style.width))
+        // A failed iosMath span falls back to readable TeX. Do not cache that
+        // fallback as a final layout: command recovery or a later renderer
+        // update must be able to replace it without restarting the app.
+        if !renderMissingFormulas || allFormulaSyntaxRenderable(document, style: style) {
+            cache.setObject(Box(built), forKey: key as NSString, cost: Int(built.size.height * style.width))
+        }
         return built
     }
 
     func cachedLayout(document: NativeMarkdownDocument, style: NativeLayoutStyle) -> NativeMessageLayout? {
-        let key = "native_layout_v8|final|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v9|final|\(document.stamp)|\(style.keySuffix)"
         return cache.object(forKey: key as NSString)?.layout
     }
 
     func clear() {
         cache.removeAllObjects()
+    }
+
+    private func allFormulaSyntaxRenderable(_ document: NativeMarkdownDocument,
+                                            style: NativeLayoutStyle) -> Bool {
+        var formulas = [(String, Bool)]()
+        func scan(_ inlines: [NativeInline]) {
+            for inline in inlines {
+                switch inline {
+                case .inlineMath(let tex):
+                    formulas.append((tex, false))
+                case .bold(let children), .italic(let children), .link(let children, _):
+                    scan(children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in document.blocks {
+            switch block {
+            case .displayMath(let tex):
+                formulas.append((tex, true))
+            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
+                scan(inlines)
+            case .list(_, let items):
+                items.forEach(scan)
+            case .table(let table):
+                table.header.forEach(scan)
+                table.rows.flatMap { $0 }.forEach(scan)
+            default:
+                break
+            }
+        }
+        return formulas.allSatisfy { tex, display in
+            NativeFormulaRenderer.shared.artifact(
+                tex: tex,
+                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: display
+            ) != nil
+        }
     }
 
     private func build(document: NativeMarkdownDocument,

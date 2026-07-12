@@ -234,19 +234,57 @@ enum MarkdownHTMLRenderer {
         var s = raw
         s = s.replacingOccurrences(of: "［", with: "[")
         s = s.replacingOccurrences(of: "］", with: "]")
+        s = s.replacingOccurrences(of: "＄", with: "$")
+        s = s.replacingOccurrences(of: "\\（", with: "\\(")
+        s = s.replacingOccurrences(of: "\\）", with: "\\)")
         if let re = try? NSRegularExpression(
-            pattern: "```(?:math|latex|tex)\\s*\\n([\\s\\S]*?)```",
+            pattern: "```(?:math|latex|tex|katex|formula|equation)(?:[ \\t]*\\n|[ \\t]+)([\\s\\S]*?)```",
             options: [.caseInsensitive]
         ) {
             let range = NSRange(s.startIndex..<s.endIndex, in: s)
-            s = re.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "$$$$1$$")
+            s = re.stringByReplacingMatches(
+                in: s,
+                options: [],
+                range: range,
+                withTemplate: #"\$\$$1\$\$"#
+            )
+        }
+        // Other chat providers use BBCode/XML-style math wrappers.
+        let wrapperPatterns = [
+            #"(?is)\[(?:math|latex|tex)\](.*?)\[/(?:math|latex|tex)\]"#,
+            #"(?is)<math(?:\s[^>]*)?>(.*?)</math>"#
+        ]
+        for pattern in wrapperPatterns {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            s = re.stringByReplacingMatches(
+                in: s,
+                options: [],
+                range: range,
+                withTemplate: #"\$\$$1\$\$"#
+            )
         }
         // Some providers double-escape delimiters while serialising JSON.
         // Keep ordinary backslashes untouched; only normalize actual delimiters.
-        s = s.replacingOccurrences(of: "\\\\[", with: "\\[")
-        s = s.replacingOccurrences(of: "\\\\]", with: "\\]")
-        s = s.replacingOccurrences(of: "\\\\(", with: "\\(")
-        s = s.replacingOccurrences(of: "\\\\)", with: "\\)")
+        let escapedDelimiters = [
+            (#"\\{2,}\("#, #"\\("#),
+            (#"\\{2,}\)"#, #"\\)"#),
+            (#"\\{2,}\["#, #"\\["#),
+            (#"\\{2,}\]"#, #"\\]"#),
+            (#"\\{2,}begin\{"#, #"\\begin{"#),
+            (#"\\{2,}end\{"#, #"\\end{"#)
+        ]
+        for (pattern, template) in escapedDelimiters {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            s = re.stringByReplacingMatches(
+                in: s,
+                options: [],
+                range: range,
+                withTemplate: template
+            )
+        }
+        s = decodeDoubleEscapedCommandsInsideMath(s)
 
         // A few model responses emit a display formula as a bare TeX line
         // (for example "\frac{a}{b}") without any delimiter. Wrap only lines
@@ -260,7 +298,7 @@ enum MarkdownHTMLRenderer {
                   !trimmed.hasPrefix("\\("),
                   !trimmed.hasPrefix("\\begin{"),
                   trimmed.range(
-                    of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|right|mathbf|mathbb|mathrm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|psi|omega)\b"#,
+                    of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left)\b"#,
                     options: .regularExpression
                   ) != nil,
                   openingBraces == closingBraces else { return line }
@@ -269,6 +307,47 @@ enum MarkdownHTMLRenderer {
         }
         s = lines.joined(separator: "\n")
         return s
+    }
+
+    /// A few OpenAI-compatible gateways return already JSON-decoded text that
+    /// still contains JSON-level escaping, for example:
+    /// `\\(y=\\int x\\,dt\\)`. Decode one escaping layer only inside a known
+    /// math span. The command check preserves legitimate `\\` row separators
+    /// in matrices whose other TeX commands are already normally escaped.
+    private static func decodeDoubleEscapedCommandsInsideMath(_ source: String) -> String {
+        var result = source
+        let spanPatterns = [
+            #"(?s)\\\((.*?)\\\)"#,
+            #"(?s)\\\[(.*?)\\\]"#,
+            #"(?s)\$\$(.*?)\$\$"#,
+            #"(?s)\\begin\{([A-Za-z*]+)\}(.*?)\\end\{\1\}"#,
+            #"(?s)(?<!\\)(?<!\$)\$(?!\$)(.+?)(?<!\\)\$(?!\$)"#
+        ]
+        for pattern in spanPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let fullRange = NSRange(location: 0, length: (result as NSString).length)
+            let matches = regex.matches(in: result, options: [], range: fullRange)
+            for match in matches.reversed() {
+                let bodyIndex = pattern.contains(#"begin\{"#) ? 2 : 1
+                guard match.numberOfRanges > bodyIndex,
+                      match.range(at: bodyIndex).location != NSNotFound else { continue }
+                let ns = result as NSString
+                let bodyRange = match.range(at: bodyIndex)
+                let body = ns.substring(with: bodyRange)
+                guard containsDoubleEscapedCommand(body) else { continue }
+                let decoded = body.replacingOccurrences(of: "\\\\", with: "\\")
+                result = ns.replacingCharacters(in: bodyRange, with: decoded)
+            }
+        }
+        return result
+    }
+
+    private static func containsDoubleEscapedCommand(_ source: String) -> Bool {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"\\\\(?:[A-Za-z]+|[,;:!])"#
+        ) else { return false }
+        let range = NSRange(location: 0, length: (source as NSString).length)
+        return regex.firstMatch(in: source, options: [], range: range) != nil
     }
 
     /// Legacy full document (unused by MessageCell shell path; kept for tooling).

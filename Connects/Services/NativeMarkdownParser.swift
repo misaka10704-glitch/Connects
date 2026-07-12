@@ -412,23 +412,15 @@ final class NativeMarkdownParser {
                 cursor = end.upperBound
                 continue
             }
-            if tail.hasPrefix("$"), !tail.hasPrefix("$$"),
-               let end = source[source.index(after: cursor)...].firstIndex(of: "$") {
-                flush()
-                result.append(.inlineMath(String(source[source.index(after: cursor)..<end])))
-                cursor = source.index(after: end)
-                continue
-            }
-            if tail.hasPrefix("\\(") || tail.hasPrefix("\\[") || tail.hasPrefix("$$") {
-                flush()
-                let bodyStart = source.index(cursor, offsetBy: 2)
-                let body = String(source[bodyStart...])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !body.isEmpty {
+            if tail.hasPrefix("$"), !tail.hasPrefix("$$"), !isEscaped(cursor, in: source),
+               let end = nextUnescapedDollar(after: cursor, in: source) {
+                let body = String(source[source.index(after: cursor)..<end])
+                if shouldParseDollarMath(body) {
+                    flush()
                     result.append(.inlineMath(body))
+                    cursor = source.index(after: end)
+                    continue
                 }
-                cursor = source.endIndex
-                continue
             }
             if let bareMath = bareInlineMathPrefix(tail) {
                 flush()
@@ -487,7 +479,9 @@ final class NativeMarkdownParser {
         let value = String(tail)
         let patterns = [
             #"^\\(?:dot|ddot|bar|vec|hat|tilde|overline|underline)\{[^{}\n]+\}(?:_(?:\{[^}\n]+\}|[A-Za-z0-9]+))?(?:\^(?:\{[^}\n]+\}|[A-Za-z0-9]+))?"#,
-            #"^[A-Za-z](?:_(?:\{[^}\n]+\}|[A-Za-z0-9]+))(?:\^(?:\{[^}\n]+\}|[A-Za-z0-9]+))?"#
+            // Keep useful bare forms such as x_n and x_10, but do not turn
+            // ordinary identifiers (`t_filter`) or URL fragments into math.
+            #"^[A-Za-z](?:_(?:\{[^}\n]+\}|[A-Za-z0-9]{1,3}))(?:\^(?:\{[^}\n]+\}|[A-Za-z0-9]{1,3}))?(?![A-Za-z0-9_])"#
         ]
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern),
@@ -502,15 +496,66 @@ final class NativeMarkdownParser {
         return nil
     }
 
+    private func isEscaped(_ index: String.Index, in source: String) -> Bool {
+        guard index > source.startIndex else { return false }
+        var cursor = source.index(before: index)
+        var slashCount = 0
+        while source[cursor] == "\\" {
+            slashCount += 1
+            guard cursor > source.startIndex else { break }
+            cursor = source.index(before: cursor)
+        }
+        return slashCount % 2 == 1
+    }
+
+    private func nextUnescapedDollar(after opener: String.Index,
+                                     in source: String) -> String.Index? {
+        var cursor = source.index(after: opener)
+        while cursor < source.endIndex {
+            if source[cursor] == "$", !isEscaped(cursor, in: source) {
+                return cursor
+            }
+            cursor = source.index(after: cursor)
+        }
+        return nil
+    }
+
+    private func shouldParseDollarMath(_ body: String) -> Bool {
+        let value = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("\n") else { return false }
+        // `$5-$10` and similar prices are prose, not two formulas.
+        if value.first?.isNumber == true,
+           value.range(of: #"[A-Za-z\\_^{}]"#, options: .regularExpression) == nil {
+            return false
+        }
+        return true
+    }
+
     private func displayMathStarting(at index: Int, lines: [String]) -> (source: String, next: Int)? {
         let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-        let pairs: [(String, String)] = [("$$", "$$"), ("\\[", "\\]")]
+        // Models frequently put `\(...\)` on its own line even though the
+        // delimiter is conventionally inline. Treat that line as display math
+        // here; otherwise a plain-render fallback can expose the delimiters.
+        let pairs: [(String, String)] = [
+            ("$$", "$$"),
+            ("\\[", "\\]"),
+            ("\\(", "\\)")
+        ]
         for (open, close) in pairs where trimmed.hasPrefix(open) {
             var body = String(trimmed.dropFirst(open.count))
-            if body.hasSuffix(close) {
-                body.removeLast(close.count)
-                return (body, index + 1)
+            if let sameLineClose = body.range(of: close) {
+                let remainder = body[sameLineClose.upperBound...]
+                    .trimmingCharacters(in: .whitespaces)
+                // A line-leading inline formula may continue with prose.
+                // Leave that line to parseInlines instead of swallowing later
+                // lines while looking for another closing delimiter.
+                guard remainder.isEmpty else { return nil }
+                return (String(body[..<sameLineClose.lowerBound]), index + 1)
             }
+            // Parenthesis delimiters are inline by definition. If their close
+            // is absent on this line, preserve the text literally rather than
+            // consuming unrelated following paragraphs.
+            if open == "\\(" { return nil }
             var next = index + 1
             while next < lines.count {
                 if let range = lines[next].range(of: close) {
@@ -579,7 +624,16 @@ final class NativeMarkdownParser {
         let commandCount = line.components(separatedBy: "\\").count - 1
         let structural = line.contains("=") || line.contains("_") || line.contains("^")
             || line.contains("\\left") || line.contains("\\frac")
-        return commandCount >= 2 || (commandCount >= 1 && structural)
+        let withoutCommands = line.replacingOccurrences(
+            of: #"\\[A-Za-z]+"#,
+            with: "",
+            options: .regularExpression
+        )
+        let hasProseWords = withoutCommands.range(
+            of: #"\b[A-Za-z]{2,}\b"#,
+            options: .regularExpression
+        ) != nil
+        return !hasProseWords && (commandCount >= 2 || (commandCount >= 1 && structural))
     }
 
     private func looksLikeBareMathContinuation(_ line: String) -> Bool {
@@ -761,6 +815,86 @@ enum NativeRendererSelfTest {
             }
         }
         assert(listFormulaCount == 3)
+        let gatewayEscaped = #"""
+        连续形式：
+        \\((f * g)(t) = \\int_{-\\infty}^{\\infty} f(\\tau)\\,g(t-\\tau)\\,\\mathrm{d}\\tau\\)
+
+        \\[y(t) = \\int x(\\tau)\\,h(t-\\tau)\\,\\mathrm{d}\\tau = (x*h)(t)\\]
+        """#
+        let normalizedGatewayMath = MarkdownNormalizer.normalize(gatewayEscaped)
+        assert(normalizedGatewayMath.contains(#"\((f * g)(t) = \int"#))
+        assert(normalizedGatewayMath.contains(#"\[y(t) = \int"#))
+        assert(!normalizedGatewayMath.contains(#"\\int"#))
+        let gatewayDocument = NativeMarkdownParser.shared.parse(gatewayEscaped)
+        let gatewayFormulaCount = gatewayDocument.blocks.reduce(0) { count, block in
+            switch block {
+            case .displayMath:
+                return count + 1
+            case .paragraph(let inlines):
+                return count + inlines.reduce(0) {
+                    if case .inlineMath = $1 { return $0 + 1 }
+                    return $0
+                }
+            default:
+                return count
+            }
+        }
+        assert(gatewayFormulaCount == 2)
+        let matrixRows = MarkdownNormalizer.normalize(
+            #"$$\begin{matrix}a&b\\c&d\end{matrix}$$"#
+        )
+        assert(matrixRows.contains(#"b\\c"#))
+        assert(MarkdownNormalizer.normalize("""
+        ```latex
+        \\frac{a}{b}
+        ```
+        """).hasPrefix("$$\\frac{a}{b}"))
+        assert(MarkdownNormalizer.normalize("[math]x^2+y^2[/math]") == "$$x^2+y^2$$")
+        let leadingInlineWithProse = NativeMarkdownParser.shared.parse("""
+        \\(x(t)=1\\) 因此结论成立。
+        下一行仍保留 \\(z=2\\)。
+        """)
+        let leadingInlineCount = leadingInlineWithProse.blocks.reduce(0) { total, block in
+            guard case .paragraph(let inlines) = block else { return total }
+            return total + inlines.reduce(0) {
+                if case .inlineMath = $1 { return $0 + 1 }
+                return $0
+            }
+        }
+        assert(leadingInlineCount == 2)
+        assert(!leadingInlineWithProse.blocks.contains {
+            if case .displayMath = $0 { return true }
+            return false
+        })
+        let malformed = NativeMarkdownParser.shared.parse(
+            "未闭合：\\( 以及 \\[ 都必须保留；价格 $5-$10 也不是公式。"
+        )
+        let malformedText = malformed.blocks.compactMap { block -> String? in
+            guard case .paragraph(let inlines) = block else { return nil }
+            return inlines.compactMap {
+                if case .text(let text) = $0 { return text }
+                return nil
+            }.joined()
+        }.joined()
+        assert(malformedText.contains("\\("))
+        assert(malformedText.contains("\\["))
+        assert(malformedText.contains("$5-$10"))
+        let identifierControl = NativeMarkdownParser.shared.parse(
+            "t_filter 与 https://example.invalid/e_Altruism 保持普通文本，x_n 可作为短数学下标。"
+        )
+        let identifierMathCount = identifierControl.blocks.reduce(0) { total, block in
+            guard case .paragraph(let inlines) = block else { return total }
+            return total + inlines.reduce(0) {
+                if case .inlineMath = $1 { return $0 + 1 }
+                return $0
+            }
+        }
+        assert(identifierMathCount == 1)
+        assert(MarkdownNormalizer.normalize("""
+        ```katex
+        x^2
+        ```
+        """) == "$$x^2\n$$")
         let references = NativeMarkdownParser.shared.parse("""
         **参考链接**
         [1] [Example reference](https://example.com/article)
@@ -832,6 +966,12 @@ enum NativeRendererSelfTest {
             fontSize: 17,
             color: DSTheme.c.textPrimary,
             display: false
+        ) != nil)
+        assert(NativeFormulaRenderer.shared.artifact(
+            tex: "a=b\\tag{1}",
+            fontSize: 17,
+            color: DSTheme.c.textPrimary,
+            display: true
         ) != nil)
         let compact = NativeMessageLayouter.shared.layout(
             document: document,

@@ -121,7 +121,10 @@ final class NativeFormulaRenderer {
         var result = tex
         let replacements: [(String, String)] = [
             (#"\\operatorname\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
-            (#"\\xrightarrow\{([^{}]*)\}"#, #"\\longrightarrow^{$1}"#)
+            (#"\\xrightarrow\{([^{}]*)\}"#, #"\\longrightarrow^{$1}"#),
+            // iosMath has no equation-tag layout. Preserve the number as a
+            // readable parenthesized suffix instead of rendering "tag".
+            (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#)
         ]
         for (pattern, template) in replacements {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
