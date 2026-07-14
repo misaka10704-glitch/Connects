@@ -53,6 +53,13 @@ final class APIClient: NSObject {
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
+    private lazy var completionSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config)
+    }()
+
     func cancelStream() {
         streamTask?.cancel()
         streamTask = nil
@@ -110,6 +117,7 @@ final class APIClient: NSObject {
     func complete(messages: [ChatMessage],
                   model: AIModelOption,
                   maxTokens: Int = 32,
+                  timeout: TimeInterval? = nil,
                   completion: @escaping (Result<String, Error>) -> Void) {
         let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
         guard !apiKey.isEmpty else {
@@ -122,6 +130,7 @@ final class APIClient: NSObject {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        if let timeout = timeout { request.timeoutInterval = timeout }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         // Title / compaction helpers: always Instant + no reasoning history.
@@ -138,7 +147,7 @@ final class APIClient: NSObject {
             completion(.failure(error))
             return
         }
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        completionSession.dataTask(with: request) { data, response, error in
             if let error = error {
                 DispatchQueue.main.async { completion(.failure(error)) }
                 return
@@ -262,16 +271,33 @@ final class APIClient: NSObject {
     /// Drop image payloads from all but the last user message that has one.
     static func slimMessagesForAPI(_ messages: [ChatMessage]) -> [ChatMessage] {
         var lastImageIndex: Int?
-        for (i, m) in messages.enumerated() where m.hasImage {
+        for (i, m) in messages.enumerated() where m.role == .user && m.hasImage {
             lastImageIndex = i
         }
-        guard let keep = lastImageIndex else { return messages }
         return messages.enumerated().map { i, m in
-            guard m.hasImage, i != keep else { return m }
             var copy = m
-            copy.imageJPEGBase64 = nil
-            return copy
+            if copy.hasImage, i != lastImageIndex {
+                copy.imageJPEGBase64 = nil
+            }
+            return injectingImageDescription(into: copy)
         }
+    }
+
+    /// Converts a completed visual extraction into ordinary text for every
+    /// provider. The original payload is deliberately not needed on later turns.
+    static func injectingImageDescription(into message: ChatMessage) -> ChatMessage {
+        let description = message.imageDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !description.isEmpty,
+              !message.content.contains("【图片文字描述】") else { return message }
+        var copy = message
+        let block = "【图片文字描述】\n\(description)"
+        if copy.content == "[图片]" || copy.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.content = block
+        } else {
+            copy.content += "\n\n" + block
+        }
+        return copy
     }
 
     static func applyStreamRequestHeaders(_ request: inout URLRequest) {

@@ -129,7 +129,10 @@ final class ConversationStore {
                     searchProcessContent: $0.searchProcessContent,
                     searchProcessPhase: $0.searchProcessPhase == .idle ? .idle : .done,
                     createdAt: $0.createdAt,
-                    imageJPEGBase64: $0.imageJPEGBase64
+                    imageJPEGBase64: $0.imageJPEGBase64,
+                    imageDescription: $0.imageDescription,
+                    imageTranscriptionContent: $0.imageTranscriptionContent,
+                    imageTranscriptionPhase: $0.imageTranscriptionPhase == .transcribing ? .failed : $0.imageTranscriptionPhase
                 )
             },
             forkedFromID: source.id,

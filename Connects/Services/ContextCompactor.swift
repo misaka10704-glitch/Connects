@@ -81,7 +81,13 @@ enum ContextCompactor {
             let role = msg.role == .user ? "User" : "Assistant"
             var text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.count > 900 { text = String(text.prefix(900)) + "…" }
-            if text.isEmpty && msg.hasImage { text = "[image]" }
+            if text.isEmpty,
+               let description = msg.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                text = "[image description] " + description
+            } else if text.isEmpty && msg.hasImage {
+                text = "[image]"
+            }
             return "\(role): \(text)"
         }.joined(separator: "\n")
 

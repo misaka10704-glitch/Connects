@@ -25,6 +25,23 @@ enum SearchProcessPhase: String, Codable {
     }
 }
 
+/// Local status for the background semantic extraction of an attached image.
+enum ImageTranscriptionPhase: String, Codable {
+    case idle
+    case transcribing
+    case done
+    case failed
+
+    var headerTitle: String {
+        switch self {
+        case .idle: return "图片文字描述"
+        case .transcribing: return "正在转写图片…"
+        case .done: return "图片文字描述"
+        case .failed: return "图片转写失败，可重试"
+        }
+    }
+}
+
 /// One completed (or in-progress) assistant reply attempt.
 struct MessageVersion: Codable, Equatable {
     var content: String
@@ -72,6 +89,11 @@ struct ChatMessage: Codable, Equatable {
     var isStreaming: Bool
     /// JPEG base64 for Kimi multimodal & local display
     var imageJPEGBase64: String?
+    /// Durable semantic replacement used after the original image leaves API context.
+    var imageDescription: String?
+    /// Companion assistant status for the non-blocking image transcription job.
+    var imageTranscriptionContent: String
+    var imageTranscriptionPhase: ImageTranscriptionPhase
     /// Assistant regenerations. Empty for legacy / single-shot messages.
     var versions: [MessageVersion]
     /// Index into `versions` when non-empty; mirrors `content` / `reasoningContent`.
@@ -86,6 +108,9 @@ struct ChatMessage: Codable, Equatable {
          createdAt: Date = Date(),
          isStreaming: Bool = false,
          imageJPEGBase64: String? = nil,
+         imageDescription: String? = nil,
+         imageTranscriptionContent: String = "",
+         imageTranscriptionPhase: ImageTranscriptionPhase = .idle,
          versions: [MessageVersion] = [],
          versionIndex: Int = 0) {
         self.id = id
@@ -97,6 +122,9 @@ struct ChatMessage: Codable, Equatable {
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.imageJPEGBase64 = imageJPEGBase64
+        self.imageDescription = imageDescription
+        self.imageTranscriptionContent = imageTranscriptionContent
+        self.imageTranscriptionPhase = imageTranscriptionPhase
         self.versions = versions
         self.versionIndex = versionIndex
     }
@@ -112,6 +140,11 @@ struct ChatMessage: Codable, Equatable {
     var hasSearchProcess: Bool {
         !searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || (searchProcessPhase != .idle && searchProcessPhase != .done)
+    }
+
+    var hasImageTranscription: Bool {
+        !imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || imageTranscriptionPhase != .idle
     }
 
     var versionCount: Int {
@@ -226,7 +259,8 @@ struct ChatMessage: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, reasoningContent, searchProcessContent, searchProcessPhase
-        case createdAt, isStreaming, imageJPEGBase64
+        case createdAt, isStreaming, imageJPEGBase64, imageDescription
+        case imageTranscriptionContent, imageTranscriptionPhase
         case versions, versionIndex
     }
 
@@ -241,6 +275,9 @@ struct ChatMessage: Codable, Equatable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
         imageJPEGBase64 = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64)
+        imageDescription = try c.decodeIfPresent(String.self, forKey: .imageDescription)
+        imageTranscriptionContent = try c.decodeIfPresent(String.self, forKey: .imageTranscriptionContent) ?? ""
+        imageTranscriptionPhase = try c.decodeIfPresent(ImageTranscriptionPhase.self, forKey: .imageTranscriptionPhase) ?? .idle
         versions = try c.decodeIfPresent([MessageVersion].self, forKey: .versions) ?? []
         versionIndex = try c.decodeIfPresent(Int.self, forKey: .versionIndex) ?? 0
         if !versions.isEmpty {
@@ -280,6 +317,11 @@ struct ChatMessage: Codable, Equatable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encodeIfPresent(imageJPEGBase64, forKey: .imageJPEGBase64)
+        try c.encodeIfPresent(imageDescription, forKey: .imageDescription)
+        if !imageTranscriptionContent.isEmpty || imageTranscriptionPhase != .idle {
+            try c.encode(imageTranscriptionContent, forKey: .imageTranscriptionContent)
+            try c.encode(imageTranscriptionPhase, forKey: .imageTranscriptionPhase)
+        }
         if !versions.isEmpty {
             try c.encode(versions, forKey: .versions)
             try c.encode(versionIndex, forKey: .versionIndex)

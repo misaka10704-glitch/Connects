@@ -59,6 +59,16 @@ enum MarkdownExporter {
                 lines.append("> 📎 本条含图片附件（导出为 Markdown 文本时不内嵌二进制）")
                 lines.append("")
             }
+            let imageDescription = msg.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !imageDescription.isEmpty {
+                lines.append("<details>")
+                lines.append("<summary>图片文字描述</summary>")
+                lines.append("")
+                lines.append(imageDescription)
+                lines.append("")
+                lines.append("</details>")
+                lines.append("")
+            }
 
             let search = msg.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !search.isEmpty {

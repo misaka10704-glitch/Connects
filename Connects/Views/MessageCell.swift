@@ -115,6 +115,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var thinkingExpanded = false
     private var hasSearch = false
     private var searchExpanded = false
+    private var imageTranscriptionFailed = false
     private var streamingPresentation = false
     /// Shell document loaded (katex/marked ready).
     private var webShellReady = false
@@ -223,6 +224,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         webSnapshotView?.image = nil
         webSnapshotView?.isHidden = true
         cachedImage = nil
+        imageTranscriptionFailed = false
     }
 
     private var cachedImage: UIImage?
@@ -298,17 +300,34 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         userBubbleBottom.isActive = false
         userBubbleBottomFloor.isActive = false
 
-        let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        hasSearch = message.hasSearchProcess
+        // The existing compact activity panel is shared by web search and the
+        // independent image-transcription job. Keeping one layout primitive
+        // prevents the two concurrent background tasks from shifting replies.
+        let imageActivity = message.hasImageTranscription
+        imageTranscriptionFailed = imageActivity && message.imageTranscriptionPhase == .failed
+        let search = (imageActivity
+            ? message.imageTranscriptionContent
+            : message.searchProcessContent
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        hasSearch = message.hasSearchProcess || imageActivity
         if hasSearch {
-            if message.isStreaming, message.searchProcessPhase != .done {
+            let liveImageActivity = imageActivity && message.imageTranscriptionPhase == .transcribing
+            let liveSearchActivity = !imageActivity && message.isStreaming && message.searchProcessPhase != .done
+            let liveActivity = liveImageActivity || liveSearchActivity
+            if liveActivity {
                 searchExpanded = true
             } else {
                 searchExpanded = MessageCell.expandedSearchIDs.contains(message.id)
             }
             setSearch(visible: true, expanded: searchExpanded)
-            let live = message.isStreaming && message.searchProcessPhase != .done
-            let titleCore = live ? message.searchProcessPhase.headerTitle : SearchProcessPhase.done.headerTitle
+            let titleCore: String
+            if imageActivity {
+                titleCore = message.imageTranscriptionPhase.headerTitle
+            } else {
+                titleCore = liveSearchActivity
+                    ? message.searchProcessPhase.headerTitle
+                    : SearchProcessPhase.done.headerTitle
+            }
             let chevron = searchExpanded ? "▾" : "▸"
             searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
             searchHeader.setTitleColor(c.textSecondary, for: .normal)
@@ -479,7 +498,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     /// renderer state, or action visibility on every token batch.
     @discardableResult
     func updateStreamingContent(_ message: ChatMessage, waitingGlyph: String? = nil) -> Bool {
-        let searchEmpty = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !message.hasSearchProcess
+        let searchEmpty = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !message.hasSearchProcess
+            && message.imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !message.hasImageTranscription
         let thinkEmpty = message.reasoningContent.isEmpty
         guard messageID == message.id,
               message.isStreaming,
@@ -496,11 +518,18 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             ? nil
             : content
         if !searchBox.isHidden {
-            let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let imageActivity = message.hasImageTranscription
+            let search = (imageActivity
+                ? message.imageTranscriptionContent
+                : message.searchProcessContent
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
             searchBody.attributedText = nil
             searchBody.text = search
-            let live = message.searchProcessPhase != .done
-            let titleCore = live ? message.searchProcessPhase.headerTitle : SearchProcessPhase.done.headerTitle
+            let titleCore = imageActivity
+                ? message.imageTranscriptionPhase.headerTitle
+                : (message.searchProcessPhase != .done
+                    ? message.searchProcessPhase.headerTitle
+                    : SearchProcessPhase.done.headerTitle)
             let chevron = searchExpanded ? "▾" : "▸"
             searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
         }
@@ -543,10 +572,17 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         guard messageID == message.id else { return }
         streamingPresentation = false
         let c = DSTheme.c
-        let search = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageActivity = message.hasImageTranscription
+        let search = (imageActivity
+            ? message.imageTranscriptionContent
+            : message.searchProcessContent
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         if !search.isEmpty {
             let chevron = searchExpanded ? "▾" : "▸"
-            searchHeader.setTitle("\(chevron)  \(SearchProcessPhase.done.headerTitle)", for: .normal)
+            let title = imageActivity
+                ? message.imageTranscriptionPhase.headerTitle
+                : SearchProcessPhase.done.headerTitle
+            searchHeader.setTitle("\(chevron)  \(title)", for: .normal)
         }
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !think.isEmpty {
@@ -1570,6 +1606,14 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     @objc private func toggleSearch() {
         guard hasSearch else { return }
+        if imageTranscriptionFailed {
+            NotificationCenter.default.post(
+                name: Notification.Name("ConnectsImageTranscriptionRetry"),
+                object: nil,
+                userInfo: ["messageID": messageID]
+            )
+            return
+        }
         searchExpanded.toggle()
         if searchExpanded { MessageCell.expandedSearchIDs.insert(messageID) }
         else { MessageCell.expandedSearchIDs.remove(messageID) }

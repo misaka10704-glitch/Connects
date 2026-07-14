@@ -77,6 +77,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(streamUpdated(_:)), name: .streamManagerDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinished(_:)), name: .streamManagerDidFinish, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(webSearchUpdated(_:)), name: .webSearchDidUpdate, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(imageTranscriptionUpdated(_:)), name: .imageTranscriptionDidUpdate, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(retryImageTranscription(_:)), name: Notification.Name("ConnectsImageTranscriptionRetry"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsThinkingToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsSearchToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
@@ -406,6 +408,36 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
+    @objc private func imageTranscriptionUpdated(_ note: Notification) {
+        guard let id = note.userInfo?["conversationID"] as? String,
+              id == currentConversationID else { return }
+        contentHeights.removeAll()
+        tableView.reloadData()
+        refreshContextUsage()
+    }
+
+    @objc private func retryImageTranscription(_ note: Notification) {
+        guard let assistantID = note.userInfo?["messageID"] as? String,
+              let conversation = ConversationStore.shared.currentConversation,
+              let assistantIndex = conversation.messages.firstIndex(where: { $0.id == assistantID }),
+              assistantIndex > 0 else { return }
+        let user = conversation.messages[assistantIndex - 1]
+        guard user.role == .user,
+              let base64 = user.imageJPEGBase64,
+              !base64.isEmpty else {
+            showAlert(title: "无法重试", message: "原始图片已不存在，无法重新转写。")
+            return
+        }
+        let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
+        ImageTranscriptionCoordinator.shared.start(
+            conversationID: conversation.id,
+            userMessageID: user.id,
+            assistantMessageID: assistantID,
+            base64: base64,
+            model: model
+        )
+    }
+
     @objc private func streamFinished(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
@@ -640,6 +672,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // streaming cell composited under a clear empty overlay.
         updateEmptyState()
         syncStreamingChrome()
+        queueLegacyImageTranscriptionIfNeeded()
         if let messages = ConversationStore.shared.currentConversation?.messages {
             MessageCell.prewarmSnapshots(
                 for: Array(messages.suffix(4)),
@@ -659,6 +692,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         chromeWork = work
         DispatchQueue.main.async(execute: work)
         isReloadingFromStore = false
+    }
+
+    /// Older conversations can still contain an image-only turn. Migrate one
+    /// at a time after opening the chat, never in the send path.
+    private func queueLegacyImageTranscriptionIfNeeded() {
+        guard let conversation = ConversationStore.shared.currentConversation,
+              !ImageTranscriptionCoordinator.shared.isTranscribing(conversation.id) else { return }
+        for (index, message) in conversation.messages.enumerated()
+            where message.role == .user
+                && message.hasImage
+                && (message.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            guard let base64 = message.imageJPEGBase64,
+                  index + 1 < conversation.messages.count,
+                  conversation.messages[index + 1].role == .assistant else { continue }
+            let assistant = conversation.messages[index + 1]
+            guard assistant.imageTranscriptionPhase != .failed else { return }
+            let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
+            ImageTranscriptionCoordinator.shared.start(
+                conversationID: conversation.id,
+                userMessageID: message.id,
+                assistantMessageID: assistant.id,
+                base64: base64,
+                model: model
+            )
+            return
+        }
     }
 
     private func clearNavigationPrompt() {
@@ -1621,10 +1680,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func sendMessage(_ text: String, imageBase64: String?) {
         guard var conv = ConversationStore.shared.currentConversation else { return }
 
-        if isTranscribingImages {
-            showAlert(title: "正在识别图片", message: "请等待图片转写完成后再发送。")
-            return
-        }
         if StreamManager.shared.isRunning(conv.id) {
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先点停止或等待完成。")
             return
@@ -1641,11 +1696,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if imageBase64 != nil && !conv.model.supportsVision {
             guard ensureVisionModelIfNeeded() else { return }
             conv = ConversationStore.shared.currentConversation ?? conv
-        }
-
-        if imageBase64 != nil || conv.messages.contains(where: { $0.hasImage }) {
-            transcribeImagesThenSend(text, pendingImageBase64: imageBase64, conversationID: conv.id)
-            return
         }
 
         let provider = conv.model.provider
@@ -1746,6 +1796,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 messages: apiContext(for: model, conversationID: convID),
                 model: model,
                 needsAITitle: needsAITitle
+            )
+        }
+
+        // Do not make a reply wait for OCR/vision extraction. The first request
+        // has already captured the image (or will use its finished description);
+        // this independent job prepares the compact durable context for later
+        // turns and drives the small status label on the companion reply.
+        if let imageBase64 = imageBase64, !imageBase64.isEmpty {
+            let captionModel = model.supportsVision ? model : AIModelOption.preferredVision
+            ImageTranscriptionCoordinator.shared.start(
+                conversationID: convID,
+                userMessageID: userMsg.id,
+                assistantMessageID: assistantMsg.id,
+                base64: imageBase64,
+                model: captionModel
             )
         }
     }
