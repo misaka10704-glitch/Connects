@@ -15,6 +15,24 @@ enum WebSearchService {
         let processLog: String
     }
 
+    struct WeightedTerm {
+        let term: String
+        let weight: Int
+    }
+
+    struct SearchPlan {
+        let queries: [String]
+        let weightedTerms: [WeightedTerm]
+
+        static func fallback(_ query: String) -> SearchPlan {
+            let cleaned = WebSearchService.sanitizeQuery(query)
+            return SearchPlan(
+                queries: cleaned.isEmpty ? [] : [cleaned],
+                weightedTerms: cleaned.isEmpty ? [] : [WeightedTerm(term: cleaned, weight: 5)]
+            )
+        }
+    }
+
     enum SearchError: LocalizedError {
         case emptyQuery
         case network(String)
@@ -36,12 +54,8 @@ enum WebSearchService {
     private static let maxCharsPerPage = 1800
     private static let maxDownloadBytes = 300_000
     private static let maxInjectedEvidenceChars = 8_000
-    private static let maxPlannedQueries = 2
-    private static let unavailableHostsDefaultsKey = "webSearchUnavailableHosts.v1"
-    private static let unavailableHostsLock = NSLock()
-    private static var unavailableHosts: Set<String> = Set(
-        UserDefaults.standard.stringArray(forKey: unavailableHostsDefaultsKey) ?? []
-    )
+    private static let maxPlannedQueries = 5
+    private static let maxWeightedTerms = 6
 
     /// Ask the model to turn conversation context into concrete search queries.
     /// Follow-ups like "那这个呢" should resolve against prior turns, not be searched verbatim.
@@ -49,13 +63,13 @@ enum WebSearchService {
         contextMessages: [ChatMessage],
         model: AIModelOption,
         fallbackQuery: String,
-        completion: @escaping ([String]) -> Void
+        completion: @escaping (SearchPlan) -> Void
     ) {
         let fallback = sanitizeQuery(fallbackQuery)
         let transcript = compactTranscript(contextMessages, maxChars: 3_500)
         guard !transcript.isEmpty else {
             DispatchQueue.main.async {
-                completion(fallback.isEmpty ? [] : [fallback])
+                completion(SearchPlan.fallback(fallback))
             }
             return
         }
@@ -63,32 +77,31 @@ enum WebSearchService {
         let prompt = ChatMessage(
             role: .user,
             content: """
-            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」写出 1–\(maxPlannedQueries) 条适合搜索引擎的检索词。
+            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」生成检索词，并给出用来挑选文章的核心概念权重。
 
             要求：
             - 必须结合前文消解指代（如「他呢」「那这个」「为什么」），写成具体实体 / 事件 / 问题，不要原样照抄模糊追问。
             - 用户用中文时优先写中文检索词；专有名词可保留原文。
-            - 每条检索词一行，短而可搜；不要编号、引号、解释或其它文字。
+            - 只要需要联网，输出 3–\(maxPlannedQueries) 条互补检索词，分别覆盖用户问题的定义/背景、起源/历史、发展/影响、研究/争议等实际相关维度；不要只是同一句话的机械改写。
             - 检索的是用户要解决的事实、事件、产品、人物或问题；禁止把问题误写成「某词笔顺 / 汉字释义 / 拼音 / 读音 / 字形 / 语法解释」等语言学习关键词，除非最新消息明确要求查询这些内容。
             - 不要搜索聊天措辞、单个虚词或泛化的元问题；必须保留具体主体与用户真正要了解的关系、原因或结论。
-            - 若完全不需要联网，只输出：NONE
+            - 对概念、文化、历史、社会现象类问题，检索定义、起源、发展、研究或报道；不要生成用于找动画、番剧、视频、在线播放或播放平台的词。
+            - 权重词必须是区分资料相关性的具体实体、概念或关系；不要使用「文化」「社会」「新闻」等过泛词。权重 1–5，5 表示最核心。
+            - 只输出合法 JSON，不要 Markdown、解释或其它文字：
+              {"queries":["检索词 1"],"weights":[{"term":"核心概念","weight":5},{"term":"起源","weight":3}]}
+            - 若完全不需要联网，只输出：{"queries":[],"weights":[]}
 
             【对话】
             \(transcript)
             """
         )
 
-        APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 120) { result in
+        APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 220) { result in
             switch result {
             case .success(let raw):
-                let planned = parsePlannedQueries(raw, fallback: fallback)
-                if planned.isEmpty {
-                    completion(fallback.isEmpty ? [] : [fallback])
-                } else {
-                    completion(planned)
-                }
+                completion(parseSearchPlan(raw, fallback: fallback))
             case .failure:
-                completion(fallback.isEmpty ? [] : [fallback])
+                completion(SearchPlan.fallback(fallback))
             }
         }
     }
@@ -100,12 +113,13 @@ enum WebSearchService {
         onStatus: ((String) -> Void)? = nil,
         completion: @escaping (Result<SearchBundle, Error>) -> Void
     ) {
-        searchAndFormat(queries: [query], onStatus: onStatus, completion: completion)
+        searchAndFormat(queries: [query], weightedTerms: [], onStatus: onStatus, completion: completion)
     }
 
     /// Search using one or more planned queries, then browse and format evidence.
     static func searchAndFormat(
         queries: [String],
+        weightedTerms: [WeightedTerm] = [],
         onStatus: ((String) -> Void)? = nil,
         completion: @escaping (Result<SearchBundle, Error>) -> Void
     ) {
@@ -140,7 +154,23 @@ enum WebSearchService {
 
         group.notify(queue: .global(qos: .userInitiated)) {
             let rankKey = qs.joined(separator: " ")
-            let hits = rankHits(mergeHits(sources: allSources, limit: 10), query: rankKey)
+            let rankedHits = rankHits(
+                mergeHits(sources: allSources, limit: 40),
+                query: rankKey,
+                weightedTerms: weightedTerms
+            )
+            // Weights are not merely a tie-breaker. A page that does not
+            // match the AI-selected core concepts must not reach browsing
+            // just because it happened to be returned near the end of Bing's
+            // result feed.
+            let weightQualifiedHits = rankedHits.filter {
+                passesWeightFilter($0, weightedTerms: weightedTerms)
+            }
+            let candidates = weightedTerms.isEmpty ? rankedHits : weightQualifiedHits
+            // Watching/streaming platforms rarely provide an explanatory
+            // source even when their titles happen to contain the topic.
+            let informativeHits = candidates.filter { !isPlaybackPlatform($0.url) }
+            let hits = informativeHits.isEmpty ? candidates : informativeHits
             guard !hits.isEmpty else {
                 DispatchQueue.main.async {
                     completion(.failure(lastError ?? SearchError.noResults))
@@ -151,10 +181,7 @@ enum WebSearchService {
             let toBrowse = pickBrowseTargets(from: hits, limit: maxPageCandidates)
             DispatchQueue.main.async { onStatus?("正在阅读网页…") }
 
-            fetchPages(toBrowse) { pages, failedHosts in
-                for host in failedHosts {
-                    banUnavailableHost(host)
-                }
+            fetchPages(toBrowse) { pages, _ in
                 let usableHits = hits.filter { !isExcludedResultHost($0.url) }
                 guard !usableHits.isEmpty else {
                     DispatchQueue.main.async {
@@ -176,69 +203,87 @@ enum WebSearchService {
     }
 
     private static func fetchAllEngines(query: String, completion: @escaping ([Hit], Error?) -> Void) {
-        let group = DispatchGroup()
-        var ddgHits: [Hit] = []
-        var bingHits: [Hit] = []
-        var baiduHits: [Hit] = []
-        var lastError: Error?
-        let stateLock = NSLock()
-
-        group.enter()
-        fetchDuckDuckGoHTML(query: query) { result in
-            stateLock.lock()
-            defer {
-                stateLock.unlock()
-                group.leave()
-            }
-            switch result {
-            case .success(let hits): ddgHits = hits
-            case .failure(let err): lastError = err
-            }
-        }
-
-        group.enter()
         fetchBingHTML(query: query) { result in
-            stateLock.lock()
-            defer {
-                stateLock.unlock()
-                group.leave()
-            }
             switch result {
-            case .success(let hits): bingHits = hits
-            case .failure(let err):
-                if lastError == nil { lastError = err }
+            case .success(let hits):
+                // Bing has already ranked the RSS feed. A second strict
+                // substring filter can incorrectly discard every valid
+                // Chinese result when titles paraphrase the query.
+                let usable = hits.filter { !isExcludedResultHost($0.url) }
+                completion(Array(usable.prefix(8)), nil)
+            case .failure(let error):
+                completion([], error)
+            }
+        }
+    }
+
+    private struct SearchPlanPayload: Decodable {
+        struct Weight: Decodable {
+            let term: String
+            let weight: Int
+        }
+
+        let queries: [String]
+        let weights: [Weight]
+    }
+
+    private static func parseSearchPlan(_ raw: String, fallback: String) -> SearchPlan {
+        let trimmed = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let data = trimmed.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(SearchPlanPayload.self, from: data) {
+            let queries = normalizedQueries(payload.queries, fallback: fallback)
+            let weights = normalizedWeights(payload.weights)
+            if !queries.isEmpty {
+                return SearchPlan(
+                    queries: queries,
+                    weightedTerms: weights.isEmpty
+                        ? [WeightedTerm(term: queries[0], weight: 5)]
+                        : weights
+                )
             }
         }
 
-        group.enter()
-        fetchBaiduHTML(query: query) { result in
-            stateLock.lock()
-            defer {
-                stateLock.unlock()
-                group.leave()
-            }
-            switch result {
-            case .success(let hits): baiduHits = hits
-            case .failure(let err):
-                if lastError == nil { lastError = err }
-            }
-        }
-
-        group.notify(queue: .global(qos: .userInitiated)) {
-            stateLock.lock()
-            let ddg = ddgHits
-            let bing = bingHits
-            let baidu = baiduHits
-            let error = lastError
-            stateLock.unlock()
-
-            let merged = relevantHits(
-                mergeHits(sources: [bing, ddg, baidu], limit: 24),
-                for: query
+        let queries = parsePlannedQueries(raw, fallback: fallback)
+        return queries.isEmpty
+            ? SearchPlan.fallback(fallback)
+            : SearchPlan(
+                queries: queries,
+                weightedTerms: [WeightedTerm(term: queries[0], weight: 5)]
             )
-            .filter { !isExcludedResultHost($0.url) }
-            completion(Array(merged.prefix(8)), error)
+    }
+
+    private static func normalizedQueries(_ raw: [String], fallback: String) -> [String] {
+        var seen = Set<String>()
+        return raw.compactMap { value -> String? in
+            let query = sanitizeQuery(value)
+            guard !query.isEmpty,
+                  !looksLikeLanguageMetaQuery(query, fallback: fallback),
+                  seen.insert(query.lowercased()).inserted else {
+                return nil
+            }
+            return query
         }
+        .prefix(maxPlannedQueries)
+        .map { $0 }
+    }
+
+    private static func normalizedWeights(_ raw: [SearchPlanPayload.Weight]) -> [WeightedTerm] {
+        var seen = Set<String>()
+        return raw.compactMap { item -> WeightedTerm? in
+            let term = sanitizeQuery(item.term)
+            guard term.count >= 2,
+                  seen.insert(term.lowercased()).inserted else {
+                return nil
+            }
+            return WeightedTerm(term: term, weight: max(1, min(5, item.weight)))
+        }
+        .prefix(maxWeightedTerms)
+        .map { $0 }
     }
 
     private static func parsePlannedQueries(_ raw: String, fallback: String) -> [String] {
@@ -499,22 +544,7 @@ enum WebSearchService {
     /// summaries and choosing articles, so it cannot occupy the useful slots.
     private static func isExcludedResultHost(_ urlString: String) -> Bool {
         guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
-        if host == "baidu.com" || host.hasSuffix(".baidu.com") {
-            return true
-        }
-        unavailableHostsLock.lock()
-        defer { unavailableHostsLock.unlock() }
-        return unavailableHosts.contains(host)
-    }
-
-    private static func banUnavailableHost(_ host: String) {
-        unavailableHostsLock.lock()
-        defer { unavailableHostsLock.unlock() }
-        guard unavailableHosts.insert(host).inserted else { return }
-        UserDefaults.standard.set(
-            Array(unavailableHosts).sorted(),
-            forKey: unavailableHostsDefaultsKey
-        )
+        return host == "baidu.com" || host.hasSuffix(".baidu.com")
     }
 
     // MARK: - Page fetch
@@ -847,8 +877,12 @@ enum WebSearchService {
 
     private static func fetchBingHTML(query: String, completion: @escaping (Result<[Hit], Error>) -> Void) {
         guard let url = makeGETURL(
-            base: "https://cn.bing.com/search",
-            parameters: ["q": query, "setlang": "zh-Hans", "mkt": "zh-CN"]
+            // `cn.bing.com` redirects to a request with `mkt=zh-CN`. Bing's
+            // CN-market SERP can incorrectly reduce Chinese multi-character
+            // topics (such as “二次元” / “亚文化”) to their first character.
+            // The global endpoint preserves the complete query.
+            base: "https://www.bing.com/search",
+            parameters: ["q": query, "format": "rss"]
         ) else {
             completion(.failure(SearchError.network("无效 Bing URL")))
             return
@@ -856,6 +890,7 @@ enum WebSearchService {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         applyBrowserHeaders(&req)
+        req.setValue("application/rss+xml, application/xml;q=0.9, text/xml;q=0.8", forHTTPHeaderField: "Accept")
         req.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
         req.timeoutInterval = 12
 
@@ -869,8 +904,45 @@ enum WebSearchService {
                 completion(.failure(SearchError.network("Bing 请求失败 (\(code))")))
                 return
             }
-            completion(.success(parseBingHTML(html)))
+            let rssHits = parseBingRSS(html)
+            // Some regional/CDN responses ignore `format=rss` and return the
+            // rendered search page instead. Accept both representations.
+            completion(.success(rssHits.isEmpty ? parseBingHTML(html) : rssHits))
         }.resume()
+    }
+
+    /// Bing's rendered HTML differs by client, experiment, and locale. Its
+    /// RSS response is a stable result feed and avoids relying on `b_algo`
+    /// classes that can be absent in the iPad response.
+    private static func parseBingRSS(_ xml: String) -> [Hit] {
+        let itemBlocks = regexMatches(xml, pattern: #"<item[^>]*>([\s\S]*?)</item>"#)
+        func element(_ name: String, in block: String) -> String {
+            guard let match = regexMatches(
+                block,
+                pattern: "<\(name)[^>]*>([\\s\\S]*?)</\(name)>"
+            ).first,
+            match.count >= 2 else {
+                return ""
+            }
+            return match[1]
+                .replacingOccurrences(of: "<![CDATA[", with: "")
+                .replacingOccurrences(of: "]]>", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var hits: [Hit] = []
+        for item in itemBlocks {
+            guard item.count >= 2 else { continue }
+            let block = item[1]
+            let title = normalizeWhitespace(stripTags(decodeHTML(element("title", in: block))))
+            let url = decodeHTML(element("link", in: block))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet = normalizeWhitespace(stripTags(decodeHTML(element("description", in: block))))
+            guard url.hasPrefix("http"), !title.isEmpty else { continue }
+            hits.append(Hit(title: title, url: url, snippet: snippet))
+            if hits.count >= 8 { break }
+        }
+        return hits
     }
 
     private static func parseBingHTML(_ html: String) -> [Hit] {
@@ -953,7 +1025,11 @@ enum WebSearchService {
         req.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
     }
 
-    private static func rankHits(_ hits: [Hit], query: String) -> [Hit] {
+    private static func rankHits(
+        _ hits: [Hit],
+        query: String,
+        weightedTerms: [WeightedTerm]
+    ) -> [Hit] {
         let terms = query
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -963,6 +1039,7 @@ enum WebSearchService {
         func score(_ hit: Hit) -> Int {
             let title = hit.title.lowercased()
             let snippet = hit.snippet.lowercased()
+            let sourceText = title + " " + snippet
             var value = 0
             if !compactQuery.isEmpty {
                 if title.contains(compactQuery) { value += 6 }
@@ -973,6 +1050,27 @@ enum WebSearchService {
                 if snippet.contains(term) { value += 1 }
             }
             if !hit.snippet.isEmpty { value += 1 }
+            for weighted in weightedTerms {
+                let term = weighted.term.lowercased()
+                if title.contains(term) { value += weighted.weight * 8 }
+                if snippet.contains(term) { value += weighted.weight * 4 }
+            }
+            let explanatoryMarkers = [
+                "定义", "起源", "发展", "历史", "研究", "论文", "报告",
+                "解释", "分析", "背景", "影响"
+            ]
+            if explanatoryMarkers.contains(where: { sourceText.contains($0) }) {
+                value += 4
+            }
+            let playbackMarkers = [
+                "在线观看", "在线播放", "播放", "番剧", "全集", "高清视频免费"
+            ]
+            if playbackMarkers.contains(where: { sourceText.contains($0) }) {
+                value -= 10
+            }
+            if isPlaybackPlatform(hit.url) {
+                value -= 12
+            }
             return value
         }
 
@@ -984,6 +1082,28 @@ enum WebSearchService {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    private static func passesWeightFilter(_ hit: Hit, weightedTerms: [WeightedTerm]) -> Bool {
+        guard !weightedTerms.isEmpty else { return true }
+        let text = (hit.title + " " + hit.snippet).lowercased()
+        let highWeightTerms = weightedTerms.filter { $0.weight >= 4 }
+        if highWeightTerms.contains(where: { text.contains($0.term.lowercased()) }) {
+            return true
+        }
+        let matchedWeight = weightedTerms.reduce(0) { total, weighted in
+            text.contains(weighted.term.lowercased()) ? total + weighted.weight : total
+        }
+        return matchedWeight >= 5
+    }
+
+    private static func isPlaybackPlatform(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
+        let platforms = [
+            "bilibili.com", "acfun.cn", "iqiyi.com", "youku.com", "mgtv.com",
+            "v.qq.com", "tencentvideo.com", "douyin.com", "kuaishou.com"
+        ]
+        return platforms.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
     /// Reject SERP rows that are clearly for a truncated or unrelated query.

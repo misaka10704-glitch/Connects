@@ -1346,23 +1346,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             contextMessages: contextMsgs,
             model: model,
             fallbackQuery: query
-        ) { [weak self] planned in
+        ) { [weak self] plan in
             guard let self = self else { return }
             guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
 
-            let queries = planned.isEmpty ? [query] : planned
+            let queries = plan.queries.isEmpty ? [query] : plan.queries
             #if DEBUG
-            print("[Connects] web search queries [\(convID.prefix(6))]: \(queries)")
+            print("[Connects] web search plan [\(convID.prefix(6))]: \(queries), weights: \(plan.weightedTerms)")
             #endif
 
             var planLog = "根据对话上下文规划出的检索词：\n"
             for (i, q) in queries.enumerated() {
                 planLog += "\(i + 1). \(q)\n"
             }
+            if !plan.weightedTerms.isEmpty {
+                planLog += "\n文章排序权重：\n"
+                for weighted in plan.weightedTerms {
+                    planLog += "· \(weighted.term) ×\(weighted.weight)\n"
+                }
+            }
             self.updateSearchProcess(convID: convID, phase: .searching, body: planLog)
 
             WebSearchService.searchAndFormat(
                 queries: queries,
+                weightedTerms: plan.weightedTerms,
                 onStatus: { [weak self] status in
                     guard let self = self else { return }
                     guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
