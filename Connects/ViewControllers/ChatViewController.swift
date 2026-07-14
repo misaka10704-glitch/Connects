@@ -83,6 +83,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsSearchToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(agentsChanged), name: .agentsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextUsageChanged(_:)), name: .contextUsageDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextCompactionFinished(_:)), name: .contextCompactionDidFinish, object: nil)
@@ -358,6 +359,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 tableView.reloadRows(at: [path], with: .none)
                 tableView.layoutIfNeeded()
             }
+            // A collapsed/expanded reasoning label changes its intrinsic height
+            // one run-loop after the row is rebound on iOS 12. Re-measure then
+            // so the table never retains the short pre-toggle estimate.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self,
+                      self.tableView.numberOfRows(inSection: 0) > row else { return }
+                UIView.performWithoutAnimation {
+                    self.tableView.beginUpdates()
+                    self.tableView.endUpdates()
+                }
+            }
             return
         }
         reloadTablePreservingViewport()
@@ -390,6 +402,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConversationStore.shared.setModel(first, for: id)
         }
         updateModelButton()
+    }
+
+    @objc private func agentsChanged() {
+        guard let conversation = ConversationStore.shared.currentConversation,
+              let selected = conversation.agentID,
+              AgentStore.shared.agent(id: selected) == nil else {
+            updateAgentButton()
+            return
+        }
+        ConversationStore.shared.setAgent(nil, for: conversation.id)
     }
 
     @objc private func streamTTFT(_ note: Notification) {
@@ -654,7 +676,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // Reasoning height depends on expanded/collapsed UI state, which is not
         // represented by the persisted message-ID-only cache.
         if let msgs = ConversationStore.shared.currentConversation?.messages {
-            for m in msgs where m.role == .user || m.hasReasoning {
+            for m in msgs where m.role == .user || m.hasReasoning || m.hasSearchProcess {
                 contentHeights.removeValue(forKey: m.id)
             }
         }
@@ -683,6 +705,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.updateModelButton()
+            self.updateAgentButton()
             self.updateEmptyState()
             self.updateAttachAvailability()
             self.updateTitleFromConversation()
@@ -811,6 +834,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         navigationController?.navigationBar.shadowImage = UIImage()
         navigationController?.navigationBar.isUserInteractionEnabled = true
         updateModelButton()
+        updateAgentButton()
     }
 
     private func setupTable() {
@@ -1048,6 +1072,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         navigationItem.titleView = modelButton
     }
 
+    private func updateAgentButton() {
+        inputBar.setAgent(AgentStore.shared.agent(id: ConversationStore.shared.currentConversation?.agentID))
+    }
+
     private func updateAttachAvailability() {
         // Always allow picking; send path validates vision support
         inputBar.attachEnabled = true
@@ -1160,12 +1188,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func apiContext(for model: AIModelOption, conversationID: String) -> [ChatMessage] {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
         let raw = conv.messages
+        let agentPrompt = AgentStore.shared.agent(id: conv.agentID)?.trimmedPrompt
+        let memoryBackground = MemoryStore.shared.injectedBackground()
         var keep = ContextBuilder.keepRecentTurns
         var built = ContextBuilder.build(
             from: raw,
             model: model,
             existingSummary: conv.contextSummary,
             existingThroughID: conv.contextSummaryThroughMessageID,
+            agentPrompt: agentPrompt,
+            memoryBackground: memoryBackground,
             keepRecentTurns: keep
         )
         if built.usage.shouldAutoCompact {
@@ -1175,12 +1207,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 model: model,
                 existingSummary: conv.contextSummary,
                 existingThroughID: conv.contextSummaryThroughMessageID,
+                agentPrompt: agentPrompt,
+                memoryBackground: memoryBackground,
                 keepRecentTurns: keep
             )
         }
-        // Request construction must be side-effect free. Only the explicit
-        // ContextCompactor may persist summaries; otherwise a quick API build
-        // can lock a low-quality extractive summary into future turns.
+        // Keep the extractive rolling summary so the next request never has to
+        // rebuild (and accidentally truncate) its older context from scratch.
+        // The dedicated compactor can still replace this with a richer LLM
+        // summary once the soft budget is reached.
+        if built.summary != conv.contextSummary || built.summaryThroughMessageID != conv.contextSummaryThroughMessageID {
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+                draft.contextSummary = built.summary
+                draft.contextSummaryThroughMessageID = built.summaryThroughMessageID
+            }
+        }
         if conversationID == currentConversationID {
             DispatchQueue.main.async { [weak self] in
                 self?.refreshContextUsage()
@@ -1460,6 +1501,25 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self?.updateModelButton()
             }
         )
+    }
+
+    private func agentTapped() {
+        guard let conversationID = ConversationStore.shared.currentConversationID else { return }
+        let currentID = ConversationStore.shared.currentConversation?.agentID
+        var items = [ConnectsMenuItem(title: "不使用智能体", icon: .tshirt, isSelected: currentID == nil) {
+            ConversationStore.shared.setAgent(nil, for: conversationID)
+        }]
+        items += AgentStore.shared.enabledAgents.map { agent in
+            ConnectsMenuItem(title: agent.name, customImage: AgentAppearancePreset.avatar(for: agent),
+                             isSelected: agent.id == currentID) {
+                ConversationStore.shared.setAgent(agent.id, for: conversationID)
+            }
+        }
+        items.append(ConnectsMenuItem(title: "管理智能体", icon: .settings) { [weak self] in
+            self?.navigationController?.pushViewController(AgentListViewController(), animated: true)
+        })
+        ConnectsMenu.present(from: self, title: "本对话智能体", items: items,
+                             sourceView: inputBar.agentAnchorView, preferAbove: true)
     }
 
     private func presentImagePicker() {
@@ -1754,6 +1814,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             c.messages.append(userMsg)
             c.messages.append(assistantMsg)
         }
+        var memoryConversation = conv
+        memoryConversation.messages.append(userMsg)
+        MemoryStore.shared.append(userText: displayText, conversation: memoryConversation)
 
         if currentConversationID == convID {
             inputBar.clearText()
@@ -1880,7 +1943,10 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if msg.hasImage { rough += 168 }
         if msg.hasReasoning { rough += 36 }
         if msg.role == .assistant && !msg.isStreaming { rough += 28 }
-        return min(max(rough, 64), 420)
+        // Do not cap a completed answer at a small estimate. iOS 12 can retain
+        // that estimate during a cross-chat transition, visibly compressing
+        // long replies until a later layout pass happens.
+        return min(max(rough, 64), 4_000)
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -1996,6 +2062,11 @@ extension ChatViewController: MessageCellDelegate {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let row = messages.firstIndex(where: { $0.id == messageID }),
               !messages[row].isStreaming else { return }
+        let hasVariableChrome = !messages[row].reasoningContent.isEmpty || messages[row].hasSearchProcess
+        if hasVariableChrome {
+            contentHeights.removeValue(forKey: messageID)
+            return
+        }
         contentHeights[messageID] = height
         if let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
@@ -2107,6 +2178,10 @@ extension ChatViewController: MessageCellDelegate {
 }
 
 extension ChatViewController: InputBarViewDelegate {
+    func inputBarDidTapAgent() {
+        agentTapped()
+    }
+
     func inputBarDidTapSend(text: String, imageBase64: String?) {
         sendMessage(text, imageBase64: imageBase64)
     }

@@ -11,6 +11,7 @@ enum ActionIconFactory {
         case archive, settings, search
         case globe
         case think
+        case brain, memory, vinyl, tshirt
         case newChat
         case rename, trash
         case edit
@@ -25,7 +26,7 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = 18, color: UIColor = .black) -> UIImage {
-        let key = "\(kind)-\(Int(pointSize * 10))" as NSString
+        let key = "\(kind)-\(Int(pointSize * 10))-\(color.description)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
         let canvas = ceil(pointSize + 8)
@@ -260,6 +261,49 @@ enum ActionIconFactory {
             filament.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.42))
             filament.lineWidth = 1.2
             filament.stroke()
+
+        case .brain:
+            let left = UIBezierPath(ovalIn: CGRect(x: r.minX + 1.5, y: r.minY + 3, width: pointSize * 0.48, height: pointSize * 0.58))
+            let right = UIBezierPath(ovalIn: CGRect(x: r.midX - pointSize * 0.02, y: r.minY + 3, width: pointSize * 0.48, height: pointSize * 0.58))
+            left.lineWidth = 1.45; right.lineWidth = 1.45; left.stroke(); right.stroke()
+            let stem = UIBezierPath()
+            stem.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.55))
+            stem.addLine(to: CGPoint(x: r.midX, y: r.maxY - 2))
+            stem.lineWidth = 1.45; stem.stroke()
+
+        case .memory:
+            let back = UIBezierPath(roundedRect: CGRect(x: r.minX + 4, y: r.minY + 2, width: pointSize - 6, height: pointSize - 5), cornerRadius: 2)
+            back.lineWidth = 1.35; back.stroke()
+            let front = UIBezierPath(roundedRect: CGRect(x: r.minX + 1.5, y: r.minY + 4.5, width: pointSize - 6, height: pointSize - 5), cornerRadius: 2)
+            front.lineWidth = 1.55; front.stroke()
+            let mark = UIBezierPath()
+            mark.move(to: CGPoint(x: r.midX, y: r.minY + 8))
+            mark.addLine(to: CGPoint(x: r.midX, y: r.maxY - 4))
+            mark.addLine(to: CGPoint(x: r.midX + 2.4, y: r.maxY - 6.1))
+            mark.addLine(to: CGPoint(x: r.midX + 4.8, y: r.maxY - 4))
+            mark.addLine(to: CGPoint(x: r.midX + 4.8, y: r.minY + 8))
+            mark.lineWidth = 1.3; mark.stroke()
+
+        case .vinyl:
+            let disc = UIBezierPath(ovalIn: r.insetBy(dx: 1.4, dy: 1.4))
+            disc.lineWidth = 1.55; disc.stroke()
+            let groove = UIBezierPath(ovalIn: r.insetBy(dx: pointSize * 0.25, dy: pointSize * 0.25))
+            groove.lineWidth = 1.15; groove.stroke()
+            UIBezierPath(ovalIn: CGRect(x: r.midX - 1.6, y: r.midY - 1.6, width: 3.2, height: 3.2)).fill()
+
+        case .tshirt:
+            let p = UIBezierPath()
+            p.move(to: CGPoint(x: r.minX + pointSize * 0.32, y: r.minY + 3))
+            p.addLine(to: CGPoint(x: r.midX, y: r.minY + 5))
+            p.addLine(to: CGPoint(x: r.maxX - pointSize * 0.32, y: r.minY + 3))
+            p.addLine(to: CGPoint(x: r.maxX - 2, y: r.minY + pointSize * 0.30))
+            p.addLine(to: CGPoint(x: r.maxX - pointSize * 0.28, y: r.minY + pointSize * 0.42))
+            p.addLine(to: CGPoint(x: r.maxX - pointSize * 0.28, y: r.maxY - 2))
+            p.addLine(to: CGPoint(x: r.minX + pointSize * 0.28, y: r.maxY - 2))
+            p.addLine(to: CGPoint(x: r.minX + pointSize * 0.28, y: r.minY + pointSize * 0.42))
+            p.addLine(to: CGPoint(x: r.minX + 2, y: r.minY + pointSize * 0.30))
+            p.close()
+            p.lineWidth = 1.45; p.stroke()
 
         case .rename:
             // Pencil

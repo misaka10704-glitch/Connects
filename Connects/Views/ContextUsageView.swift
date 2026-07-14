@@ -66,7 +66,7 @@ final class ContextUsageView: UIView, ThemeRefreshable {
             compactButton.setTitle("…", for: .normal)
             compactButton.isHidden = false
         } else if show {
-            label.text = "上下文 \(usage.percent)%"
+            label.text = "上下文 \(usage.percentText)"
             compactButton.setTitle(usage.shouldAutoCompact ? "压缩" : "整理", for: .normal)
             compactButton.isHidden = usage.percent < 35
         }

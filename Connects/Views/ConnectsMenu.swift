@@ -3,6 +3,7 @@ import UIKit
 struct ConnectsMenuItem {
     let title: String
     var icon: ActionIconFactory.Kind? = nil
+    var customImage: UIImage? = nil
     var isDestructive: Bool = false
     var isSelected: Bool = false
     let handler: () -> Void
@@ -327,8 +328,10 @@ private final class MenuRowView: UIView {
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.contentMode = .scaleAspectFit
-        iconView.isHidden = item.icon == nil
-        if let kind = item.icon {
+        iconView.isHidden = item.icon == nil && item.customImage == nil
+        if let image = item.customImage {
+            iconView.image = image
+        } else if let kind = item.icon {
             iconView.image = ActionIconFactory.image(kind, pointSize: 15)
         }
         addSubview(iconView)
@@ -364,8 +367,9 @@ private final class MenuRowView: UIView {
         hit.addTarget(self, action: #selector(up), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         addSubview(hit)
 
-        let iconW: CGFloat = item.icon == nil ? 0 : 18
-        let leadingTitle: CGFloat = item.icon == nil ? 14 : 10
+        let hasIcon = item.icon != nil || item.customImage != nil
+        let iconW: CGFloat = hasIcon ? 22 : 0
+        let leadingTitle: CGFloat = hasIcon ? 10 : 14
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 40),
 

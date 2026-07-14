@@ -2,6 +2,8 @@ import UIKit
 
 final class NativeMessageRenderView: UIView {
     var onHeightChange: ((CGFloat) -> Void)?
+    /// Return true when a host view controller handled the link internally.
+    var onLinkTap: ((URL) -> Bool)?
     private(set) var layout: NativeMessageLayout?
     private var layoutKey: String?
     private var requestKey: String?
@@ -239,6 +241,8 @@ final class NativeMessageRenderView: UIView {
             super.touchesEnded(touches, with: event)
             return
         }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        if onLinkTap?(url) != true {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        }
     }
 }

@@ -29,11 +29,19 @@ enum WebSearchService {
         }
     }
 
+    /// Keep web context focused: two successfully opened sources are enough
+    /// for a normal answer, while several SERP candidates provide retries.
     private static let maxPagesToRead = 2
+    private static let maxPageCandidates = 5
     private static let maxCharsPerPage = 1800
     private static let maxDownloadBytes = 300_000
     private static let maxInjectedEvidenceChars = 8_000
     private static let maxPlannedQueries = 2
+    private static let unavailableHostsDefaultsKey = "webSearchUnavailableHosts.v1"
+    private static let unavailableHostsLock = NSLock()
+    private static var unavailableHosts: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: unavailableHostsDefaultsKey) ?? []
+    )
 
     /// Ask the model to turn conversation context into concrete search queries.
     /// Follow-ups like "那这个呢" should resolve against prior turns, not be searched verbatim.
@@ -61,6 +69,8 @@ enum WebSearchService {
             - 必须结合前文消解指代（如「他呢」「那这个」「为什么」），写成具体实体 / 事件 / 问题，不要原样照抄模糊追问。
             - 用户用中文时优先写中文检索词；专有名词可保留原文。
             - 每条检索词一行，短而可搜；不要编号、引号、解释或其它文字。
+            - 检索的是用户要解决的事实、事件、产品、人物或问题；禁止把问题误写成「某词笔顺 / 汉字释义 / 拼音 / 读音 / 字形 / 语法解释」等语言学习关键词，除非最新消息明确要求查询这些内容。
+            - 不要搜索聊天措辞、单个虚词或泛化的元问题；必须保留具体主体与用户真正要了解的关系、原因或结论。
             - 若完全不需要联网，只输出：NONE
 
             【对话】
@@ -71,7 +81,7 @@ enum WebSearchService {
         APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 120) { result in
             switch result {
             case .success(let raw):
-                let planned = parsePlannedQueries(raw)
+                let planned = parsePlannedQueries(raw, fallback: fallback)
                 if planned.isEmpty {
                     completion(fallback.isEmpty ? [] : [fallback])
                 } else {
@@ -138,12 +148,22 @@ enum WebSearchService {
                 return
             }
 
-            let toBrowse = pickBrowseTargets(from: hits, limit: maxPagesToRead)
+            let toBrowse = pickBrowseTargets(from: hits, limit: maxPageCandidates)
             DispatchQueue.main.async { onStatus?("正在阅读网页…") }
 
-            fetchPages(toBrowse) { pages in
-                let evidence = formatEvidence(queries: qs, hits: hits, pages: pages)
-                let process = formatProcessLog(queries: qs, hits: hits, pages: pages)
+            fetchPages(toBrowse) { pages, failedHosts in
+                for host in failedHosts {
+                    banUnavailableHost(host)
+                }
+                let usableHits = hits.filter { !isExcludedResultHost($0.url) }
+                guard !usableHits.isEmpty else {
+                    DispatchQueue.main.async {
+                        completion(.failure(SearchError.noResults))
+                    }
+                    return
+                }
+                let evidence = formatEvidence(queries: qs, hits: usableHits, pages: pages)
+                let process = formatProcessLog(queries: qs, hits: usableHits, pages: pages)
                 DispatchQueue.main.async {
                     if evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         completion(.failure(lastError ?? SearchError.noResults))
@@ -161,43 +181,67 @@ enum WebSearchService {
         var bingHits: [Hit] = []
         var baiduHits: [Hit] = []
         var lastError: Error?
+        let stateLock = NSLock()
 
         group.enter()
         fetchDuckDuckGoHTML(query: query) { result in
+            stateLock.lock()
+            defer {
+                stateLock.unlock()
+                group.leave()
+            }
             switch result {
             case .success(let hits): ddgHits = hits
             case .failure(let err): lastError = err
             }
-            group.leave()
         }
 
         group.enter()
         fetchBingHTML(query: query) { result in
+            stateLock.lock()
+            defer {
+                stateLock.unlock()
+                group.leave()
+            }
             switch result {
             case .success(let hits): bingHits = hits
             case .failure(let err):
                 if lastError == nil { lastError = err }
             }
-            group.leave()
         }
 
         group.enter()
         fetchBaiduHTML(query: query) { result in
+            stateLock.lock()
+            defer {
+                stateLock.unlock()
+                group.leave()
+            }
             switch result {
             case .success(let hits): baiduHits = hits
             case .failure(let err):
                 if lastError == nil { lastError = err }
             }
-            group.leave()
         }
 
         group.notify(queue: .global(qos: .userInitiated)) {
-            let merged = mergeHits(sources: [ddgHits, bingHits, baiduHits], limit: 8)
-            completion(merged, lastError)
+            stateLock.lock()
+            let ddg = ddgHits
+            let bing = bingHits
+            let baidu = baiduHits
+            let error = lastError
+            stateLock.unlock()
+
+            let merged = relevantHits(
+                mergeHits(sources: [bing, ddg, baidu], limit: 24),
+                for: query
+            )
+            .filter { !isExcludedResultHost($0.url) }
+            completion(Array(merged.prefix(8)), error)
         }
     }
 
-    private static func parsePlannedQueries(_ raw: String) -> [String] {
+    private static func parsePlannedQueries(_ raw: String, fallback: String) -> [String] {
         let lines = raw
             .replacingOccurrences(of: "\r\n", with: "\n")
             .components(separatedBy: .newlines)
@@ -217,7 +261,7 @@ enum WebSearchService {
                 }
                 return sanitizeQuery(s)
             }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !looksLikeLanguageMetaQuery($0, fallback: fallback) }
 
         if lines.contains(where: { $0.uppercased() == "NONE" }) {
             return []
@@ -233,6 +277,14 @@ enum WebSearchService {
             if out.count >= maxPlannedQueries { break }
         }
         return out
+    }
+
+    private static func looksLikeLanguageMetaQuery(_ query: String, fallback: String) -> Bool {
+        let markers = ["笔顺", "汉字", "拼音", "读音", "字形", "字义", "部首", "怎么写", "发音"]
+        guard markers.contains(where: { query.contains($0) }) else { return false }
+        // Preserve legitimate language-learning searches explicitly requested
+        // by the user, but reject planner hallucinations for ordinary topics.
+        return !markers.contains(where: { fallback.contains($0) })
     }
 
     private static func compactTranscript(_ messages: [ChatMessage], maxChars: Int) -> String {
@@ -360,7 +412,7 @@ enum WebSearchService {
             }
         } else {
             lines.append("【网页正文】")
-            lines.append("（未能打开网页正文，请仅依据上方摘要谨慎作答，并说明资料有限。）")
+            lines.append("（本次未提取到可用正文。）")
             lines.append("")
         }
 
@@ -388,7 +440,7 @@ enum WebSearchService {
         }
         lines.append("")
         if pages.isEmpty {
-            lines.append("网页正文：未能打开（仅依据摘要作答）。")
+            lines.append("网页正文：本次未提取到可用正文。")
         } else {
             lines.append("已阅读网页：")
             for page in pages {
@@ -441,33 +493,68 @@ enum WebSearchService {
         return false
     }
 
+    /// Baidu's public result pages are often available while its destination
+    /// sites (Baike, Wenku, Zhidao, etc.) serve verification walls to a
+    /// programmatic reader. Exclude the whole domain before both displaying
+    /// summaries and choosing articles, so it cannot occupy the useful slots.
+    private static func isExcludedResultHost(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
+        if host == "baidu.com" || host.hasSuffix(".baidu.com") {
+            return true
+        }
+        unavailableHostsLock.lock()
+        defer { unavailableHostsLock.unlock() }
+        return unavailableHosts.contains(host)
+    }
+
+    private static func banUnavailableHost(_ host: String) {
+        unavailableHostsLock.lock()
+        defer { unavailableHostsLock.unlock() }
+        guard unavailableHosts.insert(host).inserted else { return }
+        UserDefaults.standard.set(
+            Array(unavailableHosts).sorted(),
+            forKey: unavailableHostsDefaultsKey
+        )
+    }
+
     // MARK: - Page fetch
 
-    private static func fetchPages(_ hits: [Hit], completion: @escaping ([PageText]) -> Void) {
+    private static func fetchPages(
+        _ hits: [Hit],
+        completion: @escaping ([PageText], Set<String>) -> Void
+    ) {
         guard !hits.isEmpty else {
-            completion([])
+            completion([], [])
             return
         }
+        // Fetch candidates concurrently. Sequential per-site timeouts made a
+        // single web search take far too long.
         let group = DispatchGroup()
         let lock = NSLock()
         var pages: [PageText] = []
+        var failedHosts = Set<String>()
 
         for hit in hits {
             group.enter()
             fetchPageText(urlString: hit.url) { text in
+                lock.lock()
                 if let text = text, text.count >= 80 {
-                    lock.lock()
                     pages.append(PageText(hit: hit, text: text))
-                    lock.unlock()
+                } else if let host = URL(string: hit.url)?.host?.lowercased() {
+                    failedHosts.insert(host)
                 }
+                lock.unlock()
                 group.leave()
             }
         }
-
         group.notify(queue: .global(qos: .userInitiated)) {
-            // Keep original SERP order.
-            let ordered = hits.compactMap { hit in pages.first(where: { $0.hit.url == hit.url }) }
-            completion(ordered)
+            lock.lock()
+            let ordered = hits.compactMap { hit in
+                pages.first(where: { $0.hit.url == hit.url })
+            }
+            let failed = failedHosts
+            lock.unlock()
+            completion(Array(ordered.prefix(maxPagesToRead)), failed)
         }
     }
 
@@ -483,6 +570,18 @@ enum WebSearchService {
             completion(nil)
             return
         }
+        // Use the reader first. It reliably handles dynamic and anti-bot
+        // public pages that frequently reject the app's direct request.
+        fetchReaderText(url: url) { text in
+            if let text = text, !isReaderAccessWall(text) {
+                completion(text)
+            } else {
+                fetchPageTextDirect(url: url, completion: completion)
+            }
+        }
+    }
+
+    private static func fetchPageTextDirect(url: URL, completion: @escaping (String?) -> Void) {
         let path = url.path.lowercased()
         let blockedExt = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".zip", ".rar", ".dmg"]
         if blockedExt.contains(where: { path.hasSuffix($0) }) {
@@ -514,8 +613,47 @@ enum WebSearchService {
             let capped = data.count > maxDownloadBytes ? Data(data.prefix(maxDownloadBytes)) : data
             let html = decodeHTMLData(capped, response: response as? HTTPURLResponse)
             let text = extractReadableText(from: html, maxChars: maxCharsPerPage)
-            completion(text.count >= 80 ? text : nil)
+            if text.count >= 80 {
+                completion(text)
+            } else {
+                completion(nil)
+            }
         }.resume()
+    }
+
+    /// Some public pages reject a non-JavaScript mobile client with 403 or
+    /// render no article HTML. Jina's text reader returns a server-rendered
+    /// plain-text representation of the same public page.
+    private static func fetchReaderText(url: URL, completion: @escaping (String?) -> Void) {
+        guard let readerURL = URL(string: "https://r.jina.ai/http://\(url.absoluteString)") else {
+            completion(nil)
+            return
+        }
+        var req = URLRequest(url: readerURL)
+        req.httpMethod = "GET"
+        req.setValue("text/plain, text/markdown;q=0.9, */*;q=0.5", forHTTPHeaderField: "Accept")
+        req.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 15
+
+        URLSession.shared.dataTask(with: req) { data, response, _ in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard let data = data, (200..<400).contains(code) else {
+                completion(nil)
+                return
+            }
+            let downloaded = data.count > maxDownloadBytes ? Data(data.prefix(maxDownloadBytes)) : data
+            let text = String(data: downloaded, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            completion(text.count >= 80 ? capped(text, at: maxCharsPerPage) : nil)
+        }.resume()
+    }
+
+    private static func isReaderAccessWall(_ text: String) -> Bool {
+        let prefix = text.prefix(1_000).lowercased()
+        return prefix.contains("安全验证")
+            || prefix.contains("访问验证")
+            || prefix.contains("captcha")
+            || prefix.contains("verify you are human")
     }
 
     private static func decodeHTMLData(_ data: Data, response: HTTPURLResponse?) -> String {
@@ -613,8 +751,9 @@ enum WebSearchService {
     }
 
     private static func percentEncodeQueryValue(_ value: String) -> String? {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
+        // Query/form values must use RFC 3986's unreserved ASCII characters.
+        // `CharacterSet.alphanumerics` is broader on Apple platforms.
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         return value.addingPercentEncoding(withAllowedCharacters: allowed)
     }
 
@@ -845,6 +984,46 @@ enum WebSearchService {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    /// Reject SERP rows that are clearly for a truncated or unrelated query.
+    /// This matters especially for Chinese: a result for just "二" must not
+    /// be accepted for "二次元文化起源与发展历程".
+    private static func relevantHits(_ hits: [Hit], for query: String) -> [Hit] {
+        let compactQuery = searchableCharacters(in: query)
+        guard compactQuery.count >= 3 else { return hits }
+
+        let requiredRun = compactQuery.count >= 8 ? 3 : 2
+        return hits.filter { hit in
+            let candidate = searchableCharacters(in: hit.title + " " + hit.snippet)
+            guard !candidate.isEmpty else { return false }
+            if candidate.contains(compactQuery) { return true }
+            return longestCommonRun(compactQuery, candidate) >= requiredRun
+        }
+    }
+
+    private static func searchableCharacters(in text: String) -> String {
+        text.lowercased().unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
+    private static func longestCommonRun(_ lhs: String, _ rhs: String) -> Int {
+        let a = Array(lhs)
+        let b = Array(rhs)
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        var previous = Array(repeating: 0, count: b.count + 1)
+        var best = 0
+        for x in a {
+            var current = Array(repeating: 0, count: b.count + 1)
+            for (j, y) in b.enumerated() where x == y {
+                current[j + 1] = previous[j] + 1
+                best = max(best, current[j + 1])
+            }
+            previous = current
+        }
+        return best
     }
 
     private static func mergeHits(sources: [[Hit]], limit: Int) -> [Hit] {

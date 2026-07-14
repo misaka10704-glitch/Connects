@@ -4,6 +4,7 @@ protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarDidSelectConversation(id: String)
     func sidebarDidRequestNewChat()
     func sidebarDidRequestSettings()
+    func sidebarDidRequestMemory()
     func sidebarDidDeleteConversation(id: String)
     func sidebarDidRenameConversation(id: String)
     func sidebarDidForkConversation(id: String)
@@ -19,6 +20,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     private let brandLabel = UILabel()
     private let newChatButton = UIButton(type: .system)
     private let searchField = UITextField()
+    private let memoryButton = UIButton(type: .system)
     private let archiveFilterButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private let footerBar = UIView()
@@ -37,6 +39,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidFinish, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .webSearchDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidUpdate, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(memoryChanged), name: .memoryStoreDidUpdate, object: nil)
         applyTheme()
         reloadData()
     }
@@ -69,15 +72,20 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             attributes: [.foregroundColor: c.textTertiary]
         )
         searchField.layer.borderColor = c.border.cgColor
+        memoryButton.setTitleColor(c.textPrimary, for: .normal)
+        memoryButton.backgroundColor = c.surface
+        memoryButton.layer.borderColor = c.border.cgColor
         tableView.reloadData()
         refreshArchiveIcon()
     }
 
     @objc private func themeChanged() { applyTheme() }
     @objc private func storeChanged() { reloadData() }
+    @objc private func memoryChanged() { refreshMemoryButton() }
 
     func reloadData() {
         refreshArchiveIcon()
+        refreshMemoryButton()
         rebuildSections()
         tableView.reloadData()
         if let id = ConversationStore.shared.currentConversationID {
@@ -96,6 +104,11 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         archiveFilterButton.setTitle(nil, for: .normal)
         archiveFilterButton.accessibilityLabel = showingArchive ? "返回对话列表" : "归档"
         archiveFilterButton.alpha = showingArchive ? 1.0 : 0.85
+    }
+
+    private func refreshMemoryButton() {
+        let count = MemoryStore.shared.pendingChanges().count
+        memoryButton.setTitle(count > 0 ? "  Memory  · \(count) 项待确认" : "  Memory", for: .normal)
     }
 
     private func rebuildSections() {
@@ -181,6 +194,15 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         searchField.returnKeyType = .search
         headerBar.addSubview(searchField)
 
+        memoryButton.translatesAutoresizingMaskIntoConstraints = false
+        memoryButton.setTitle("  Memory", for: .normal)
+        memoryButton.contentHorizontalAlignment = .left
+        memoryButton.titleLabel?.font = DSTheme.bodyFont(size: 14)
+        memoryButton.layer.cornerRadius = 10
+        memoryButton.layer.borderWidth = 1 / UIScreen.main.scale
+        memoryButton.addTarget(self, action: #selector(memoryTapped), for: .touchUpInside)
+        view.addSubview(memoryButton)
+
         tableView.separatorStyle = .none
         tableView.rowHeight = DSTheme.rowHeight
         tableView.sectionHeaderHeight = 28
@@ -228,7 +250,12 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             searchField.heightAnchor.constraint(equalToConstant: 34),
             searchField.bottomAnchor.constraint(equalTo: headerBar.bottomAnchor, constant: -12),
 
-            topDivider.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            memoryButton.topAnchor.constraint(equalTo: headerBar.bottomAnchor, constant: 8),
+            memoryButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            memoryButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            memoryButton.heightAnchor.constraint(equalToConstant: 34),
+
+            topDivider.topAnchor.constraint(equalTo: memoryButton.bottomAnchor, constant: 8),
             topDivider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topDivider.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topDivider.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
@@ -257,6 +284,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
     @objc private func newChatTapped() { delegate?.sidebarDidRequestNewChat() }
     @objc private func settingsTapped() { delegate?.sidebarDidRequestSettings() }
+    @objc private func memoryTapped() { delegate?.sidebarDidRequestMemory() }
     @objc private func archiveFilterTapped() { delegate?.sidebarDidToggleArchiveFilter() }
     @objc private func searchChanged() {
         filterText = searchField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

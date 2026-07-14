@@ -138,7 +138,8 @@ final class ConversationStore {
             forkedFromID: source.id,
             titleLocked: false,
             contextSummary: source.contextSummary,
-            contextSummaryThroughMessageID: source.contextSummaryThroughMessageID
+            contextSummaryThroughMessageID: source.contextSummaryThroughMessageID,
+            agentID: source.agentID
         )
         // If forked mid-thread, drop summary unless the covered message is still present.
         if let tid = copy.contextSummaryThroughMessageID,
@@ -222,6 +223,14 @@ final class ConversationStore {
     func setModel(_ model: AIModelOption, for conversationID: String) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[index].model = model
+        conversations[index].updatedAt = Date()
+        save()
+        notify()
+    }
+
+    func setAgent(_ agentID: String?, for conversationID: String) {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        conversations[index].agentID = agentID
         conversations[index].updatedAt = Date()
         save()
         notify()

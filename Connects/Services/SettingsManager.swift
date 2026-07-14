@@ -87,6 +87,36 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
     }
 
+    /// Opt-in device-wide cross-session memory. Disabled means no read or write.
+    var memoryEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "connects_memory_enabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "connects_memory_enabled") }
+    }
+
+    /// Experimental: prepend custom rules to outgoing user turns for the API only.
+    var userRulesEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "connects_user_rules_enabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "connects_user_rules_enabled") }
+    }
+
+    var userRules: String {
+        get { UserDefaults.standard.string(forKey: "connects_user_rules") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "connects_user_rules") }
+    }
+
+    var trimmedUserRules: String {
+        guard userRulesEnabled else { return "" }
+        return userRules.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Prefix rules onto user text when building API requests. UI history stays unchanged.
+    func userRulesPrefixedContent(_ text: String) -> String {
+        let rules = trimmedUserRules
+        guard !rules.isEmpty else { return text }
+        if text.isEmpty { return rules }
+        return rules + "\n\n" + text
+    }
+
     var appearanceMode: AppearanceMode {
         get { ThemeManager.shared.mode }
         set { ThemeManager.shared.mode = newValue }

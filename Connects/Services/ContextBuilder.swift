@@ -40,6 +40,7 @@ enum ContextBuilder {
         }
 
         var percent: Int { Int((ratio * 100).rounded()) }
+        var percentText: String { String(format: "%.1f%%", ratio * 100) }
 
         /// Soft visibility floor (0 = rely on `shouldShowUsage` for presence).
         static let visibleThreshold: Double = 0.0
@@ -74,11 +75,15 @@ enum ContextBuilder {
                                model: AIModelOption,
                                existingSummary: String? = nil,
                                existingThroughID: String? = nil,
+                               agentPrompt: String? = nil,
+                               memoryBackground: String? = nil,
                                keepRecentTurns: Int = ContextBuilder.keepRecentTurns) -> [ChatMessage] {
         build(from: messages,
               model: model,
               existingSummary: existingSummary,
               existingThroughID: existingThroughID,
+              agentPrompt: agentPrompt,
+              memoryBackground: memoryBackground,
               keepRecentTurns: keepRecentTurns).messages
     }
 
@@ -87,7 +92,9 @@ enum ContextBuilder {
         build(from: conversation.messages,
               model: conversation.model,
               existingSummary: conversation.contextSummary,
-              existingThroughID: conversation.contextSummaryThroughMessageID).usage
+              existingThroughID: conversation.contextSummaryThroughMessageID,
+              agentPrompt: AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt,
+              memoryBackground: MemoryStore.shared.injectedBackground()).usage
     }
 
     /// Whether the meter should be visible for this conversation.
@@ -99,6 +106,8 @@ enum ContextBuilder {
                       model: AIModelOption,
                       existingSummary: String? = nil,
                       existingThroughID: String? = nil,
+                      agentPrompt: String? = nil,
+                      memoryBackground: String? = nil,
                       keepRecentTurns: Int = ContextBuilder.keepRecentTurns) -> BuildResult {
         let budget = charBudget(for: model)
         let thinkingOn = model.thinkingActive
@@ -117,7 +126,19 @@ enum ContextBuilder {
         // A stable instruction pin prevents sparse/ambiguous contexts from
         // drifting into generic template answers (especially on sensitive history).
         let instructionPin = ChatMessage(role: .system, content: baseSystemPrompt)
-        let systems = [instructionPin] + working.filter { $0.role == .system }
+        var systems = [instructionPin]
+        if let background = memoryBackground?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !background.isEmpty {
+            systems.append(ChatMessage(
+                role: .system,
+                content: "[Cross-session user memory]\n\(MemoryStore.shared.prompt(for: .injection))\n\n\(String(background.prefix(3_200)))"
+            ))
+        }
+        if let prompt = agentPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty {
+            systems.append(ChatMessage(role: .system, content: "[Selected user agent]\n\(String(prompt.prefix(2_400)))"))
+        }
+        systems += working.filter { $0.role == .system }
         let dialogue = working.filter { $0.role != .system }
 
         // Invalidate stale summary if the covered message disappeared (retry / fork / delete).

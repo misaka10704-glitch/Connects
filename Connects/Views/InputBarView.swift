@@ -4,6 +4,7 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapSend(text: String, imageBase64: String?)
     func inputBarDidTapStop()
     func inputBarDidTapAttach()
+    func inputBarDidTapAgent()
 }
 
 /// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
@@ -14,6 +15,8 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let attachButton = UIButton(type: .system)
     private let webSearchButton = UIButton(type: .system)
     private let thinkingButton = UIButton(type: .system)
+    private let memoryButton = UIButton(type: .system)
+    private let agentButton = UIButton(type: .system)
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
@@ -50,6 +53,18 @@ final class InputBarView: UIView, ThemeRefreshable {
     func attachAnchorRect() -> CGRect { attachButton.bounds }
 
     var hasAttachment: Bool { pendingImageBase64 != nil }
+    var agentAnchorView: UIView { agentButton }
+
+    func setAgent(_ agent: CustomAgent?) {
+        agentButton.setTitle(nil, for: .normal)
+        agentButton.setImage(agent == nil
+            ? ActionIconFactory.image(.tshirt, pointSize: 16)
+            : AgentAppearancePreset.avatar(for: agent, size: 20).withRenderingMode(.alwaysOriginal), for: .normal)
+        agentButton.tintColor = agent == nil ? DSTheme.c.textSecondary : .clear
+        agentButton.backgroundColor = .clear
+        agentButton.layer.cornerRadius = 0
+        agentButton.accessibilityLabel = agent == nil ? "选择智能体" : "当前智能体：\(agent!.name)"
+    }
 
     var webSearchEnabled: Bool {
         get { SettingsManager.shared.webSearchEnabled }
@@ -64,6 +79,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         set {
             SettingsManager.shared.thinkingEnabled = newValue
             updateThinkingAppearance()
+        }
+    }
+
+    var memoryEnabled: Bool {
+        get { SettingsManager.shared.memoryEnabled }
+        set {
+            SettingsManager.shared.memoryEnabled = newValue
+            updateMemoryAppearance()
         }
     }
 
@@ -99,6 +122,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateSendEnabled()
         updateWebSearchAppearance()
         updateThinkingAppearance()
+        updateMemoryAppearance()
     }
 
     private func updateFocusBorder() {
@@ -197,6 +221,18 @@ final class InputBarView: UIView, ThemeRefreshable {
         thinkingButton.addTarget(self, action: #selector(thinkingTapped), for: .touchUpInside)
         containerView.addSubview(thinkingButton)
 
+        memoryButton.translatesAutoresizingMaskIntoConstraints = false
+        memoryButton.setImage(ActionIconFactory.image(.vinyl, pointSize: 16), for: .normal)
+        memoryButton.accessibilityLabel = "跨会话记忆"
+        memoryButton.addTarget(self, action: #selector(memoryTapped), for: .touchUpInside)
+        containerView.addSubview(memoryButton)
+
+        agentButton.translatesAutoresizingMaskIntoConstraints = false
+        agentButton.setImage(ActionIconFactory.image(.tshirt, pointSize: 16), for: .normal)
+        agentButton.accessibilityLabel = "选择智能体"
+        agentButton.addTarget(self, action: #selector(agentTapped), for: .touchUpInside)
+        containerView.addSubview(agentButton)
+
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = DSTheme.bodyFont(size: 16)
@@ -232,7 +268,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 36)
         chipHeightConstraint = chip.heightAnchor.constraint(equalToConstant: 0)
         textTopToChip = textView.topAnchor.constraint(equalTo: chip.bottomAnchor, constant: 4)
-        textTopToContainer = textView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 7)
+        textTopToContainer = textView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 39)
         textTopToContainer?.isActive = true
 
         NSLayoutConstraint.activate([
@@ -242,7 +278,7 @@ final class InputBarView: UIView, ThemeRefreshable {
             containerView.bottomAnchor.constraint(equalTo: bottomAnchor),
             containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
-            chip.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 10),
+            chip.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 40),
             chip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
             chip.trailingAnchor.constraint(lessThanOrEqualTo: sendButton.leadingAnchor, constant: -8),
             chipWidthConstraint(),
@@ -262,19 +298,30 @@ final class InputBarView: UIView, ThemeRefreshable {
             chipRemove.widthAnchor.constraint(equalToConstant: 22),
             chipRemove.heightAnchor.constraint(equalToConstant: 22),
 
-            // Icons share the text row’s vertical center (fixes top-heavy text vs bottom-pinned buttons).
-            attachButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
-            attachButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
+            // Composer tools live in a compact row above the editor, leaving the
+            // input line its full width while keeping send in its usual place.
+            agentButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
+            agentButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4),
+            agentButton.widthAnchor.constraint(equalToConstant: btnSize),
+            agentButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            memoryButton.leadingAnchor.constraint(equalTo: agentButton.trailingAnchor, constant: 2),
+            memoryButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            memoryButton.widthAnchor.constraint(equalToConstant: btnSize),
+            memoryButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            attachButton.leadingAnchor.constraint(equalTo: memoryButton.trailingAnchor, constant: 2),
+            attachButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             webSearchButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
-            webSearchButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
+            webSearchButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
             webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             thinkingButton.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 2),
-            thinkingButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
+            thinkingButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
 
@@ -288,7 +335,7 @@ final class InputBarView: UIView, ThemeRefreshable {
             stopButton.widthAnchor.constraint(equalToConstant: btnSize),
             stopButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            textView.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 4),
+            textView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
             textView.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -6),
             textView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor, constant: -7),
             textViewHeightConstraint!,
@@ -315,6 +362,10 @@ final class InputBarView: UIView, ThemeRefreshable {
         webSearchButton.alpha = isStreaming ? 0.35 : 1
         thinkingButton.isEnabled = !isStreaming
         thinkingButton.alpha = isStreaming ? 0.35 : 1
+        memoryButton.isEnabled = !isStreaming
+        memoryButton.alpha = isStreaming ? 0.35 : 1
+        agentButton.isEnabled = !isStreaming
+        agentButton.alpha = isStreaming ? 0.35 : 1
         chipRemove.isEnabled = !isStreaming
         updateSendEnabled()
     }
@@ -333,6 +384,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func updateThinkingAppearance() {
         updateToggleAppearance(thinkingButton, on: thinkingEnabled)
+    }
+
+    private func updateMemoryAppearance() {
+        updateToggleAppearance(memoryButton, on: memoryEnabled)
     }
 
     private func updateSendEnabled() {
@@ -379,6 +434,14 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    @objc private func memoryTapped() {
+        memoryEnabled.toggle()
+    }
+
+    @objc private func agentTapped() {
+        delegate?.inputBarDidTapAgent()
     }
 
     @objc private func removePreview() {

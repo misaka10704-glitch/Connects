@@ -1,7 +1,7 @@
 import UIKit
 
 /// Clean form-style settings — no nested colored blocks, no reload-embedding bugs.
-final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFieldDelegate {
+final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFieldDelegate, UITextViewDelegate {
     private let scrollView = UIScrollView()
     private let contentStack = UIStackView()
 
@@ -18,6 +18,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let qwenCNSwitch = UISwitch()
     private let qwenCNLabel = UILabel()
     private let modelVisibility = ModelVisibilityView()
+    private let agentsButton = UIButton(type: .system)
 
     private var sectionLabels: [UILabel] = []
     private var cards: [UIView] = []
@@ -103,6 +104,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         qwenCNLabel.textColor = c.textPrimary
         qwenCNSwitch.onTintColor = c.accent
         modelVisibility.applyTheme()
+        agentsButton.setTitleColor(c.accent, for: .normal)
 
         appearanceControl.tintColor = c.accent
         fontSizeControl.tintColor = c.accent
@@ -160,6 +162,20 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
         contentStack.setCustomSpacing(22, after: fontTip)
+
+        contentStack.addArrangedSubview(makeSectionTitle("智能体"))
+        agentsButton.setTitle("管理智能体", for: .normal)
+        agentsButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        agentsButton.contentHorizontalAlignment = .left
+        agentsButton.addTarget(self, action: #selector(openAgents), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: agentsButton, height: 42, inset: 0))
+        let agentsTip = UILabel()
+        agentsTip.numberOfLines = 0
+        agentsTip.font = DSTheme.bodyFont(size: 13)
+        agentsTip.text = "创建或修改会话级智能体；查看、编辑和恢复 Memory 的记录、合并与注入 prompt。Memory 默认关闭，须在对话栏点「记」后才记录和使用。"
+        footerLabels.append(agentsTip)
+        contentStack.addArrangedSubview(agentsTip)
+        contentStack.setCustomSpacing(22, after: agentsTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
         contentStack.addArrangedSubview(modelVisibility)
@@ -341,6 +357,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func qwenCNChanged() {
         SettingsManager.shared.qwenUseChinaEndpoint = qwenCNSwitch.isOn
+    }
+
+    @objc private func openAgents() {
+        navigationController?.pushViewController(AgentListViewController(), animated: true)
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {

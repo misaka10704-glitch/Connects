@@ -73,6 +73,20 @@
 		B1000001000000000000001B /* MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* MTTypesetter.m */; };
 		B1000001000000000000001C /* MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* MTFontMathTable.m */; };
 		B10000010000000000000020 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000020 /* mathFonts.bundle */; };
+		C10000010000000000000001 /* CustomAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000001 /* CustomAgent.swift */; };
+		C10000010000000000000002 /* AgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000002 /* AgentStore.swift */; };
+		C10000010000000000000003 /* MemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000003 /* MemoryStore.swift */; };
+		C10000010000000000000004 /* MemoryCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000004 /* MemoryCompactor.swift */; };
+		C10000010000000000000005 /* AgentPromptPolisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000005 /* AgentPromptPolisher.swift */; };
+		C10000010000000000000006 /* PromptStudioViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000006 /* PromptStudioViewController.swift */; };
+		C10000010000000000000007 /* MemoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000007 /* MemoryModels.swift */; };
+		C10000010000000000000008 /* DiffPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000008 /* DiffPreviewViewController.swift */; };
+		C10000010000000000000009 /* MemoryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000009 /* MemoryViewController.swift */; };
+		C1000001000000000000000A /* AgentListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000A /* AgentListViewController.swift */; };
+		C1000001000000000000000B /* MemorySettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000B /* MemorySettingsViewController.swift */; };
+		C1000001000000000000000C /* AgentAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000C /* AgentAppearance.swift */; };
+		D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000001 /* MemoryAgentLogicTests.swift */; };
+		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -144,6 +158,21 @@
 		B2000001000000000000001B /* MTTypesetter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTTypesetter.m; sourceTree = "<group>"; };
 		B2000001000000000000001C /* MTFontMathTable.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTFontMathTable.m; sourceTree = "<group>"; };
 		B20000010000000000000020 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.plug-in; path = mathFonts.bundle; sourceTree = "<group>"; };
+		C20000010000000000000001 /* CustomAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomAgent.swift; sourceTree = "<group>"; };
+		C20000010000000000000002 /* AgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStore.swift; sourceTree = "<group>"; };
+		C20000010000000000000003 /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStore.swift; sourceTree = "<group>"; };
+		C20000010000000000000004 /* MemoryCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryCompactor.swift; sourceTree = "<group>"; };
+		C20000010000000000000005 /* AgentPromptPolisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentPromptPolisher.swift; sourceTree = "<group>"; };
+		C20000010000000000000006 /* PromptStudioViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptStudioViewController.swift; sourceTree = "<group>"; };
+		C20000010000000000000007 /* MemoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryModels.swift; sourceTree = "<group>"; };
+		C20000010000000000000008 /* DiffPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPreviewViewController.swift; sourceTree = "<group>"; };
+		C20000010000000000000009 /* MemoryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewController.swift; sourceTree = "<group>"; };
+		C2000001000000000000000A /* AgentListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListViewController.swift; sourceTree = "<group>"; };
+		C2000001000000000000000B /* MemorySettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemorySettingsViewController.swift; sourceTree = "<group>"; };
+		C2000001000000000000000C /* AgentAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAppearance.swift; sourceTree = "<group>"; };
+		D20000010000000000000001 /* MemoryAgentLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryAgentLogicTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -155,6 +184,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D40000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000010000000000000002 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -162,6 +199,7 @@
 			isa = PBXGroup;
 			children = (
 				A50000010000000000000002 /* Connects */,
+				D50000010000000000000001 /* ConnectsTests */,
 				A50000010000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -198,6 +236,7 @@
 			isa = PBXGroup;
 			children = (
 				A30000010000000000000001 /* Connects.app */,
+				D30000010000000000000001 /* ConnectsTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -208,9 +247,18 @@
 				A20000010000000000000002 /* AIModel.swift */,
 				A20000010000000000000003 /* ChatMessage.swift */,
 				A20000010000000000000004 /* Conversation.swift */,
+				C20000010000000000000001 /* CustomAgent.swift */,
 				B20000010000000000000001 /* NativeMarkdown.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		D50000010000000000000001 /* ConnectsTests */ = {
+			isa = PBXGroup;
+			children = (
+				D20000010000000000000001 /* MemoryAgentLogicTests.swift */,
+			);
+			path = ConnectsTests;
 			sourceTree = "<group>";
 		};
 		A50000010000000000000005 /* Services */ = {
@@ -235,6 +283,12 @@
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				A2000001000000000000001A /* MarkdownHTMLRenderer.swift */,
 				A2000001000000000000001B /* PlainMarkdown.swift */,
+				C20000010000000000000002 /* AgentStore.swift */,
+				C20000010000000000000003 /* MemoryStore.swift */,
+				C20000010000000000000004 /* MemoryCompactor.swift */,
+				C20000010000000000000005 /* AgentPromptPolisher.swift */,
+				C20000010000000000000007 /* MemoryModels.swift */,
+				C2000001000000000000000C /* AgentAppearance.swift */,
 				B20000010000000000000002 /* NativeMarkdownParser.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
@@ -248,6 +302,11 @@
 				A20000010000000000000009 /* ChatViewController.swift */,
 				A2000001000000000000000A /* RootSplitViewController.swift */,
 				A2000001000000000000000B /* SettingsViewController.swift */,
+				C20000010000000000000006 /* PromptStudioViewController.swift */,
+				C20000010000000000000008 /* DiffPreviewViewController.swift */,
+				C20000010000000000000009 /* MemoryViewController.swift */,
+				C2000001000000000000000A /* AgentListViewController.swift */,
+				C2000001000000000000000B /* MemorySettingsViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
 			);
 			path = ViewControllers;
@@ -316,6 +375,23 @@
 			productReference = A30000010000000000000001 /* Connects.app */;
 			productType = "com.apple.product-type.application";
 		};
+		D60000010000000000000001 /* ConnectsTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D80000010000000000000001 /* Build configuration list for PBXNativeTarget "ConnectsTests" */;
+			buildPhases = (
+				D70000010000000000000001 /* Sources */,
+				D40000010000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D91000010000000000000001 /* PBXTargetDependency */,
+			);
+			name = ConnectsTests;
+			productName = ConnectsTests;
+			productReference = D30000010000000000000001 /* ConnectsTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -344,6 +420,7 @@
 			projectRoot = "";
 			targets = (
 				A60000010000000000000001 /* Connects */,
+				D60000010000000000000001 /* ConnectsTests */,
 			);
 		};
 /* End PBXProject section */
@@ -369,6 +446,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		D90000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A60000010000000000000001;
+			remoteInfo = Connects;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		D91000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A60000010000000000000001 /* Connects */;
+			targetProxy = D90000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		A70000010000000000000003 /* Copy LaunchScreen.storyboardc */ = {
@@ -446,6 +541,25 @@
 				B1000001000000000000001A /* MTFontManager.m in Sources */,
 				B1000001000000000000001B /* MTTypesetter.m in Sources */,
 				B1000001000000000000001C /* MTFontMathTable.m in Sources */,
+				C10000010000000000000001 /* CustomAgent.swift in Sources */,
+				C10000010000000000000002 /* AgentStore.swift in Sources */,
+				C10000010000000000000003 /* MemoryStore.swift in Sources */,
+				C10000010000000000000004 /* MemoryCompactor.swift in Sources */,
+				C10000010000000000000005 /* AgentPromptPolisher.swift in Sources */,
+				C10000010000000000000007 /* MemoryModels.swift in Sources */,
+				C10000010000000000000008 /* DiffPreviewViewController.swift in Sources */,
+				C10000010000000000000009 /* MemoryViewController.swift in Sources */,
+				C1000001000000000000000A /* AgentListViewController.swift in Sources */,
+				C1000001000000000000000B /* MemorySettingsViewController.swift in Sources */,
+				C1000001000000000000000C /* AgentAppearance.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D70000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -504,6 +618,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -553,6 +668,46 @@
 			};
 			name = Release;
 		};
+		D70000010000000000000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Connects.app/Connects";
+			};
+			name = Debug;
+		};
+		D70000010000000000000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Connects.app/Connects";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -570,6 +725,15 @@
 			buildConfigurations = (
 				AA0000010000000000000003 /* Debug */,
 				AA0000010000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D80000010000000000000001 /* Build configuration list for PBXNativeTarget "ConnectsTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D70000010000000000000002 /* Debug */,
+				D70000010000000000000003 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

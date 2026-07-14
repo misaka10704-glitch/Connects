@@ -328,6 +328,13 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }) {
             MessageCell.prewarmSnapshots(for: target.messages)
         }
+        // The sidebar stays visible while Memory/settings are pushed inside the
+        // chat navigation stack. Selecting a conversation must therefore also
+        // return to the chat root; otherwise selection changes behind Memory
+        // and the user appears to remain stuck on the same page.
+        if chatNav.topViewController !== chatVC {
+            chatNav.popToRootViewController(animated: true)
+        }
         ConversationStore.shared.selectConversation(id: id)
         closeDrawer()
     }
@@ -346,6 +353,11 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         nav.preferredContentSize = CGSize(width: 460, height: 620)
         nav.navigationBar.isTranslucent = false
         present(nav, animated: true)
+    }
+
+    func sidebarDidRequestMemory() {
+        closeDrawer()
+        chatNav.pushViewController(MemoryViewController(), animated: true)
     }
 
     func sidebarDidDeleteConversation(id: String) {

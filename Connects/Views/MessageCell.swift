@@ -138,6 +138,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var stableRenderKey: String?
     private var hasExactStableRender = false
     private var displayedStableKey: String?
+    /// Native markdown can be configured before UITableView assigns its final
+    /// width when switching chats. Keep the source for one deferred remeasure.
+    private var nativeMessageForRemeasure: ChatMessage?
+    private var lastNativeLayoutWidth: CGFloat = 0
 
     /// True when rich mode is active but content is still blank (cold-open race).
     var needsColdOpenRescue: Bool {
@@ -197,6 +201,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         stableRenderKey = nil
         hasExactStableRender = false
         displayedStableKey = nil
+        nativeMessageForRemeasure = nil
+        lastNativeLayoutWidth = 0
         resetWebScrollPosition()
         // Do NOT parkWeb / hide WKWebView here — that blanks cells during scroll recycle
         // and causes the flash. configure() parks when the new row is not rich web.
@@ -333,11 +339,15 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             searchHeader.setTitleColor(c.textSecondary, for: .normal)
             searchBox.backgroundColor = c.surface.withAlphaComponent(0.65)
             searchBox.layer.borderWidth = 0
+            // Populate while collapsed too. Otherwise the first tap can show
+            // the body before the table has rebound the cell, leaving a blank
+            // panel until the user collapses and opens it again.
+            searchBody.attributedText = nil
+            searchBody.textColor = c.textSecondary
+            searchBody.font = UIFont.systemFont(ofSize: thinkFont)
+            searchBody.text = search.isEmpty ? titleCore : search
             if searchExpanded {
-                searchBody.attributedText = nil
-                searchBody.textColor = c.textSecondary
-                searchBody.font = UIFont.systemFont(ofSize: thinkFont)
-                searchBody.text = search.isEmpty ? titleCore : search
+                searchBody.isHidden = false
             }
         } else {
             setSearch(visible: false, expanded: false)
@@ -462,10 +472,13 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         if hasThinking || hasSearch { nativeTopToThink.isActive = true }
         else if hasImage { nativeTopToImage.isActive = true }
         else { nativeTopToRole.isActive = true }
-        let measuredWidth = column.bounds.width > 1
-            ? column.bounds.width
-            : max(bounds.width - 48, 120)
-        let width = min(DSTheme.bubbleMaxWidth, max(measuredWidth, 120))
+        // `column.bounds` is frequently the previous cell's intrinsic width
+        // during cross-chat reuse. Use the cell's actual table width instead;
+        // otherwise a response gets permanently laid out as a narrow column.
+        let available = bounds.width > 1 ? bounds.width - 48 : column.bounds.width
+        let width = min(DSTheme.bubbleMaxWidth, max(available, 120))
+        nativeMessageForRemeasure = message
+        lastNativeLayoutWidth = width
         nativeHeight.constant = nativeRenderView.configure(
             content: message.content,
             width: width,
@@ -1442,6 +1455,26 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         if abs(userLabel.preferredMaxLayoutWidth - max(w - 108, 1)) > 0.5 {
             userLabel.preferredMaxLayoutWidth = max(w - 108, 1)
         }
+        let desiredNativeWidth = min(DSTheme.bubbleMaxWidth, max(bounds.width - 48, 120))
+        if !nativeRenderView.isHidden,
+           !usesWeb,
+           let message = nativeMessageForRemeasure,
+           abs(desiredNativeWidth - lastNativeLayoutWidth) > 12,
+           cellDelegate?.messageCellShouldFreezeHeight(self) != true {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self,
+                      self.messageID == message.id,
+                      !self.nativeRenderView.isHidden else { return }
+                self.configureNative(
+                    message: message,
+                    hasThinking: self.hasThinking,
+                    hasSearch: self.hasSearch,
+                    hasImage: !self.imageViewMsg.isHidden,
+                    font: SettingsManager.shared.chatBodyFontSize,
+                    colors: DSTheme.c
+                )
+            }
+        }
         // Width remasure is owned by ChatVC (rotation / Slide Over) — not here.
         // layoutSubviews fires constantly while scrolling and was causing height thrash.
     }
@@ -1617,6 +1650,10 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         searchExpanded.toggle()
         if searchExpanded { MessageCell.expandedSearchIDs.insert(messageID) }
         else { MessageCell.expandedSearchIDs.remove(messageID) }
+        // Apply the expansion immediately; the table reload posted below is
+        // still needed to recompute the row height, but must not be the first
+        // time the body becomes visible.
+        setSearch(visible: true, expanded: searchExpanded)
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsSearchToggle"),
             object: nil,

@@ -13,6 +13,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window.makeKeyAndVisible()
         self.window = window
         NativeRendererSelfTest.run()
+        // iOS does not guarantee background execution; catch up retention when
+        // the user next opens the app.
+        MemoryStore.shared.processRetention()
         return true
     }
 

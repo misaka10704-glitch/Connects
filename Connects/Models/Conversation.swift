@@ -14,6 +14,8 @@ struct Conversation: Codable, Equatable {
     var contextSummary: String?
     /// Last original message id covered by `contextSummary`.
     var contextSummaryThroughMessageID: String?
+    /// Optional per-conversation custom agent.
+    var agentID: String?
 
     init(id: String = UUID().uuidString,
          title: String = "新对话",
@@ -24,7 +26,8 @@ struct Conversation: Codable, Equatable {
          forkedFromID: String? = nil,
          titleLocked: Bool = false,
          contextSummary: String? = nil,
-         contextSummaryThroughMessageID: String? = nil) {
+         contextSummaryThroughMessageID: String? = nil,
+         agentID: String? = nil) {
         self.id = id
         self.title = title
         self.model = model
@@ -35,11 +38,13 @@ struct Conversation: Codable, Equatable {
         self.titleLocked = titleLocked
         self.contextSummary = contextSummary
         self.contextSummaryThroughMessageID = contextSummaryThroughMessageID
+        self.agentID = agentID
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, messages, updatedAt, isArchived, forkedFromID, titleLocked
         case contextSummary, contextSummaryThroughMessageID
+        case agentID
         case provider, modelId
     }
 
@@ -54,6 +59,7 @@ struct Conversation: Codable, Equatable {
         titleLocked = try container.decodeIfPresent(Bool.self, forKey: .titleLocked) ?? false
         contextSummary = try container.decodeIfPresent(String.self, forKey: .contextSummary)
         contextSummaryThroughMessageID = try container.decodeIfPresent(String.self, forKey: .contextSummaryThroughMessageID)
+        agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
         if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
@@ -77,6 +83,7 @@ struct Conversation: Codable, Equatable {
         try container.encode(titleLocked, forKey: .titleLocked)
         try container.encodeIfPresent(contextSummary, forKey: .contextSummary)
         try container.encodeIfPresent(contextSummaryThroughMessageID, forKey: .contextSummaryThroughMessageID)
+        try container.encodeIfPresent(agentID, forKey: .agentID)
         try container.encode(model.provider, forKey: .provider)
         try container.encode(model.modelId, forKey: .modelId)
     }
