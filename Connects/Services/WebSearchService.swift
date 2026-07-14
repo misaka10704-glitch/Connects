@@ -285,28 +285,34 @@ enum WebSearchService {
         guard ContextBuilder.estimatedChars(messages) > budget else { return messages }
 
         var out = messages
-        while ContextBuilder.estimatedChars(out) > budget {
-            let lastUserIndex = out.lastIndex(where: { $0.role == .user }) ?? out.count
-            if let dropIndex = out.indices.first(where: { $0 < lastUserIndex && out[$0].role != .system }) {
-                out.remove(at: dropIndex)
-                continue
-            }
-
-            guard let evidenceIndex = out.firstIndex(where: {
-                $0.role == .system && $0.content.hasPrefix("[Web search context]")
-            }) else {
-                break
-            }
-
-            var evidence = out[evidenceIndex]
-            let overflow = ContextBuilder.estimatedChars(out) - budget
-            let keep = max(1_200, evidence.content.count - overflow - 200)
-            guard keep < evidence.content.count else { break }
-            evidence.content = String(evidence.content.prefix(keep))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                + "\n…[web evidence truncated to fit context budget]"
-            out[evidenceIndex] = evidence
+        guard let evidenceIndex = out.firstIndex(where: {
+            $0.role == .system && $0.content.hasPrefix("[Web search context]")
+        }) else {
+            return out
         }
+
+        // The chat history was already compacted by ContextBuilder before web
+        // evidence was injected. Dropping dialogue here can therefore turn a
+        // continuation into an apparent brand-new chat. Search evidence is
+        // supplementary, so it must yield before any conversation turn does.
+        let evidence = out[evidenceIndex]
+        out.remove(at: evidenceIndex)
+        let roomForEvidence = budget - ContextBuilder.estimatedChars(out) - 24
+        guard roomForEvidence > 0 else { return out }
+
+        var fittedEvidence = evidence
+        if fittedEvidence.content.count > roomForEvidence {
+            let marker = "\n…[web evidence truncated to preserve conversation context]"
+            if roomForEvidence <= marker.count {
+                fittedEvidence.content = String(fittedEvidence.content.prefix(roomForEvidence))
+            } else {
+                let bodyLimit = roomForEvidence - marker.count
+                fittedEvidence.content = String(fittedEvidence.content.prefix(bodyLimit))
+                    .trimmingCharacters(in: .whitespacesAndNewlines) + marker
+            }
+        }
+        guard !fittedEvidence.content.isEmpty else { return out }
+        out.insert(fittedEvidence, at: evidenceIndex)
         return out
     }
 

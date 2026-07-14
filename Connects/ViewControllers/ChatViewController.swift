@@ -44,6 +44,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var heightWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
     private var chromeWork: DispatchWorkItem?
+    /// A vision pass turns attachments into durable text before they enter a conversation.
+    private var isTranscribingImages = false
     /// Conversation currently waiting on web search before stream starts.
     /// Rounded chat width — heights are invalid across rotation / Slide Over.
     private var layoutWidthBucket: Int = 0
@@ -1498,9 +1500,131 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         tableView.scrollToRow(at: path, at: .bottom, animated: animated)
     }
 
+    private static let imageTranscriptionPrompt = """
+    把图片转换为可供后续对话长期引用的准确中文文字描述。不要说“图中有公式/乐谱”，要把信息本身写出来。
+
+    - 数学式、物理式、化学式：逐项转写为 LaTex；说明上下标、分式、积分上下限、矩阵、条件与定义。
+    - 乐谱：转写标题、调号、拍号、速度、谱表、音高、节奏、临时记号、连线、指法、表情、力度、踏板与反复/段落标记；无法可靠辨识的部分明确标“无法辨识”，不要猜。
+    - 图表、代码、表格、笔记：转写所有可辨文字、符号、结构、数据关系与标注。
+
+    只输出“图片文字描述”正文，不要解释你的处理过程。
+    """
+
+    /// Convert all persisted image turns (and the pending attachment) into text
+    /// before a continuation request. This keeps visual details useful after the
+    /// base64 payload has been removed from both storage and later API contexts.
+    private func transcribeImagesThenSend(_ text: String,
+                                          pendingImageBase64: String?,
+                                          conversationID: String) {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
+        guard !isTranscribingImages else {
+            showAlert(title: "正在识别图片", message: "请等待图片转写完成后再发送。")
+            return
+        }
+
+        let captionModel = conv.model.supportsVision ? conv.model : AIModelOption.preferredVision
+        guard SettingsManager.shared.hasAPIKey(for: captionModel.provider) else {
+            showAlert(
+                title: "缺少视觉模型 Key",
+                message: "图片需要先转写为文字。请在设置中填写 \(captionModel.provider.displayName) 的 API Key。"
+            )
+            return
+        }
+
+        var pending = conv.messages.compactMap { message -> (String, String)? in
+            guard let base64 = message.imageJPEGBase64, !base64.isEmpty else { return nil }
+            return (message.id, base64)
+        }
+        let pendingAttachmentID = "__pending_image__"
+        if let base64 = pendingImageBase64, !base64.isEmpty {
+            pending.append((pendingAttachmentID, base64))
+        }
+        guard !pending.isEmpty else {
+            performSend(text, imageBase64: nil, conversationID: conversationID)
+            return
+        }
+
+        isTranscribingImages = true
+        if currentConversationID == conversationID {
+            navigationItem.prompt = "正在将图片转写为文字…"
+        }
+        var descriptions: [String: String] = [:]
+
+        func finish(_ error: Error? = nil) {
+            self.isTranscribingImages = false
+            if self.currentConversationID == conversationID,
+               self.navigationItem.prompt == "正在将图片转写为文字…" {
+                self.navigationItem.prompt = nil
+            }
+            if let error = error {
+                self.showAlert(title: "图片转写失败", message: "\(error.localizedDescription)\n图片未发送，请重试。")
+                return
+            }
+
+            ConversationStore.shared.updateConversation(id: conversationID) { value in
+                for i in value.messages.indices {
+                    let id = value.messages[i].id
+                    guard let description = descriptions[id] else { continue }
+                    let block = "【图片文字描述】\n\(description)"
+                    if value.messages[i].content == "[图片]" {
+                        value.messages[i].content = block
+                    } else {
+                        value.messages[i].content += "\n\n\(block)"
+                    }
+                    value.messages[i].imageJPEGBase64 = nil
+                }
+            }
+
+            let attachmentDescription = descriptions[pendingAttachmentID]
+                .map { "【图片文字描述】\n\($0)" } ?? ""
+            let combinedText: String
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                combinedText = attachmentDescription
+            } else if attachmentDescription.isEmpty {
+                combinedText = text
+            } else {
+                combinedText = text + "\n\n" + attachmentDescription
+            }
+            self.performSend(combinedText, imageBase64: nil, conversationID: conversationID)
+        }
+
+        func transcribe(at index: Int) {
+            guard index < pending.count else {
+                finish()
+                return
+            }
+            let item = pending[index]
+            let prompt = ChatMessage(
+                role: .user,
+                content: Self.imageTranscriptionPrompt,
+                imageJPEGBase64: item.1
+            )
+            APIClient.shared.complete(messages: [prompt], model: captionModel, maxTokens: 2_000) { result in
+                switch result {
+                case .success(let text):
+                    let description = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !description.isEmpty else {
+                        finish(APIClientError.decodeError)
+                        return
+                    }
+                    descriptions[item.0] = description
+                    transcribe(at: index + 1)
+                case .failure(let error):
+                    finish(error)
+                }
+            }
+        }
+
+        transcribe(at: 0)
+    }
+
     private func sendMessage(_ text: String, imageBase64: String?) {
         guard var conv = ConversationStore.shared.currentConversation else { return }
 
+        if isTranscribingImages {
+            showAlert(title: "正在识别图片", message: "请等待图片转写完成后再发送。")
+            return
+        }
         if StreamManager.shared.isRunning(conv.id) {
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先点停止或等待完成。")
             return
@@ -1517,6 +1641,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if imageBase64 != nil && !conv.model.supportsVision {
             guard ensureVisionModelIfNeeded() else { return }
             conv = ConversationStore.shared.currentConversation ?? conv
+        }
+
+        if imageBase64 != nil || conv.messages.contains(where: { $0.hasImage }) {
+            transcribeImagesThenSend(text, pendingImageBase64: imageBase64, conversationID: conv.id)
+            return
         }
 
         let provider = conv.model.provider

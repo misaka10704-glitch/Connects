@@ -769,6 +769,10 @@ enum NativeRendererSelfTest {
 
     static func run() {
         #if DEBUG
+        // This corpus is a developer-only test harness. Running it on every
+        // Debug launch can trip an assertion on older iOS rendering stacks and
+        // prevents the actual app from opening.
+        guard ProcessInfo.processInfo.arguments.contains("-RunNativeRendererSelfTest") else { return }
         runDeviceCorpusIfRequested()
         let sample = """
         # Native renderer

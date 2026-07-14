@@ -169,20 +169,49 @@ enum ContextBuilder {
         assembled.append(contentsOf: tail)
 
         var dropped = head.count
+        // A previous vision turn can consume the entire Kimi budget by itself.
+        // It is optional context for a later text follow-up, while the text
+        // dialogue is essential for resolving references. Remove old image
+        // payloads before considering removal of any conversation turns.
+        let latestUserID = dialogue.last(where: { $0.role == .user })?.id
+        if estimatedChars(assembled) > budget {
+            for i in assembled.indices {
+                guard assembled[i].role == .user,
+                      assembled[i].id != latestUserID,
+                      assembled[i].hasImage else { continue }
+                assembled[i].imageJPEGBase64 = nil
+            }
+        }
+
         // Pair-aware budget trim: drop oldest dialogue turns (never the last user turn).
+        // Every removed turn is folded into the summary first. The UI retains
+        // raw history, but the model must never receive a silent fresh-chat
+        // request merely because a short thread contains a large image/reply.
         while estimatedChars(assembled) > budget, assembled.count > systems.count + (summary == nil ? 0 : 1) + 2 {
             let start = systems.count + (summary == nil ? 0 : 1)
             guard start < assembled.count - 1 else { break }
+            var removed: [ChatMessage] = []
             // Prefer dropping a user+assistant pair
             if assembled[start].role == .user,
                start + 1 < assembled.count - 1,
                assembled[start + 1].role == .assistant {
-                assembled.remove(at: start)
-                assembled.remove(at: start)
+                removed.append(assembled.remove(at: start))
+                removed.append(assembled.remove(at: start))
                 dropped += 2
             } else {
-                assembled.remove(at: start)
+                removed.append(assembled.remove(at: start))
                 dropped += 1
+            }
+
+            let folded = extractiveSummary(from: removed)
+            if !folded.isEmpty {
+                summary = mergeSummaries(summary, folded)
+                let summaryMessage = ChatMessage(role: .system, content: wrappedSummary(summary!))
+                if assembled.indices.contains(systems.count), assembled[systems.count].role == .system {
+                    assembled[systems.count] = summaryMessage
+                } else {
+                    assembled.insert(summaryMessage, at: systems.count)
+                }
             }
         }
 
