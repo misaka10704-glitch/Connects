@@ -18,7 +18,9 @@ enum ConnectsMenu {
                         sourceRect: CGRect? = nil,
                         barButtonItem: UIBarButtonItem? = nil,
                         preferAbove: Bool = false,
-                        preferVertical: Bool = false) {
+                        preferVertical: Bool = false,
+                        maxHeight: CGFloat? = nil,
+                        menuWidth: CGFloat? = nil) {
         guard !items.isEmpty else { return }
 
         // Capture in window space *before* the modal covers the hierarchy.
@@ -37,6 +39,8 @@ enum ConnectsMenu {
         menu.anchorWindowRect = windowRect
         menu.preferAbove = preferAbove
         menu.preferVertical = preferVertical
+        menu.maxMenuHeight = maxHeight
+        menu.preferredMenuWidth = menuWidth
         host.present(menu, animated: false)
     }
 }
@@ -48,6 +52,8 @@ private final class ConnectsMenuController: UIViewController {
     var preferAbove = false
     /// List / full-width rows: always place above/below the touch, never into the sibling pane.
     var preferVertical = false
+    var maxMenuHeight: CGFloat?
+    var preferredMenuWidth: CGFloat?
 
     private let dimView = UIControl()
     private let card = UIView()
@@ -56,6 +62,8 @@ private final class ConnectsMenuController: UIViewController {
     private var cardWidth: NSLayoutConstraint!
     private var cardLeading: NSLayoutConstraint!
     private var cardTop: NSLayoutConstraint!
+    private var clipBottomToCard: NSLayoutConstraint!
+    private var scrollView: UIScrollView?
     private var rows: [MenuRowView] = []
     private var titleLabel: UILabel?
     private var sectionLines: [UIView] = []
@@ -91,9 +99,10 @@ private final class ConnectsMenuController: UIViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         clip.addSubview(stack)
 
-        cardWidth = card.widthAnchor.constraint(equalToConstant: 244)
+        cardWidth = card.widthAnchor.constraint(equalToConstant: preferredMenuWidth ?? 244)
         cardLeading = card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24)
         cardTop = card.topAnchor.constraint(equalTo: view.topAnchor, constant: 80)
+        clipBottomToCard = clip.bottomAnchor.constraint(equalTo: card.bottomAnchor)
 
         NSLayoutConstraint.activate([
             dimView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -102,7 +111,7 @@ private final class ConnectsMenuController: UIViewController {
             dimView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
             clip.topAnchor.constraint(equalTo: card.topAnchor),
-            clip.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            clipBottomToCard,
             clip.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             clip.trailingAnchor.constraint(equalTo: card.trailingAnchor),
 
@@ -115,6 +124,7 @@ private final class ConnectsMenuController: UIViewController {
         ])
 
         buildRows()
+        installScrollIfNeeded()
         applyTheme()
         card.alpha = 0
         card.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
@@ -136,6 +146,44 @@ private final class ConnectsMenuController: UIViewController {
             self.card.alpha = 1
             self.card.transform = .identity
         }
+    }
+
+    private func installScrollIfNeeded() {
+        guard let maxH = maxMenuHeight, maxH > 80 else { return }
+        view.layoutIfNeeded()
+        let width = cardWidth.constant
+        let contentH = stack.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        ).height + 10
+        guard contentH > maxH + 1 else { return }
+
+        clipBottomToCard.isActive = false
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsVerticalScrollIndicator = true
+        scroll.alwaysBounceVertical = true
+        card.addSubview(scroll)
+
+        clip.removeFromSuperview()
+        scroll.addSubview(clip)
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: card.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: maxH),
+
+            clip.topAnchor.constraint(equalTo: scroll.topAnchor),
+            clip.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            clip.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            clip.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            clip.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            clip.heightAnchor.constraint(equalToConstant: contentH)
+        ])
+        scrollView = scroll
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
@@ -254,14 +302,19 @@ private final class ConnectsMenuController: UIViewController {
 
     private func positionCard() {
         let margin: CGFloat = 14
-        let width: CGFloat = 244
+        let width = cardWidth.constant
         cardWidth.constant = width
         view.layoutIfNeeded()
-        let cardH = max(44, card.systemLayoutSizeFitting(
-            CGSize(width: width, height: 0),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        ).height)
+        let cardH: CGFloat
+        if let scroll = scrollView {
+            cardH = scroll.bounds.height
+        } else {
+            cardH = max(44, card.systemLayoutSizeFitting(
+                CGSize(width: width, height: 0),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel
+            ).height)
+        }
 
         var x: CGFloat
         var y: CGFloat

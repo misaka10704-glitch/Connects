@@ -239,17 +239,24 @@ final class NativeMarkdownParser {
     private let cache = NSCache<NSString, Box>()
 
     private init() {
-        cache.countLimit = 96
+        cache.countLimit = 160
     }
 
     func parse(_ raw: String) -> NativeMarkdownDocument {
+        let rawKey = RenderCacheStore.stamp(raw) as NSString
+        if let hit = cache.object(forKey: rawKey) {
+            return hit.document
+        }
         let normalized = MarkdownNormalizer.normalize(raw)
         let stamp = RenderCacheStore.stamp(normalized)
         if let hit = cache.object(forKey: stamp as NSString) {
+            cache.setObject(hit, forKey: rawKey)
             return hit.document
         }
         let document = NativeMarkdownDocument(stamp: stamp, blocks: parseBlocks(normalized))
-        cache.setObject(Box(document), forKey: stamp as NSString)
+        let box = Box(document)
+        cache.setObject(box, forKey: stamp as NSString)
+        cache.setObject(box, forKey: rawKey)
         return document
     }
 

@@ -4,6 +4,7 @@ extension Notification.Name {
     static let chatFontSizeDidChange = Notification.Name("ConnectsChatFontSizeDidChange")
     static let visibleModelsDidChange = Notification.Name("ConnectsVisibleModelsDidChange")
     static let renderDebugDidChange = Notification.Name("ConnectsRenderDebugDidChange")
+    static let turnContextBarDidChange = Notification.Name("ConnectsTurnContextBarDidChange")
 }
 
 final class SettingsManager {
@@ -144,6 +145,18 @@ final class SettingsManager {
 
     var chatThinkingFontSize: CGFloat {
         chatBodyFontSize - 1.5
+    }
+
+    /// Top bar showing the user question for the reply currently in view.
+    var turnContextBarEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "connects_turn_context_bar") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "connects_turn_context_bar")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "connects_turn_context_bar")
+            NotificationCenter.default.post(name: .turnContextBarDidChange, object: nil)
+        }
     }
 
     /// Chat row layout debug borders (column / native / user bubble).

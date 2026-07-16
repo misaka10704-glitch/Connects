@@ -25,15 +25,25 @@ enum RenderCacheStore {
         return out
     }
 
-    static func saveHeights(_ cache: [String: [String: CGFloat]], debounce: TimeInterval = 0.6) {
+    static func saveHeights(_ cache: [String: [String: CGFloat]],
+                            messageOrder: [String: [String]] = [:],
+                            debounce: TimeInterval = 0.6) {
         saveHeightsWork?.cancel()
         let work = DispatchWorkItem {
             var raw: [String: [String: Double]] = [:]
             for (cid, map) in cache {
                 var inner: [String: Double] = [:]
-                // Cap per conversation to keep UserDefaults small.
-                for (mid, h) in map.prefix(80) where h > 40 && h < 8000 {
-                    inner[mid] = Double(h)
+                if let order = messageOrder[cid], !order.isEmpty {
+                    // Keep the tail of long threads — readers open at the latest turn.
+                    for mid in order.suffix(240) {
+                        guard let h = map[mid], h > 40 && h < 8000 else { continue }
+                        inner[mid] = Double(h)
+                    }
+                } else {
+                    for (mid, h) in map where h > 40 && h < 8000 {
+                        inner[mid] = Double(h)
+                        if inner.count >= 200 { break }
+                    }
                 }
                 if !inner.isEmpty { raw[cid] = inner }
             }
@@ -280,6 +290,11 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
         previewMemory.removeAllObjects()
         UserDefaults.standard.removeObject(forKey: Self.metaKey)
         try? FileManager.default.removeItem(at: tileDirectory())
+    }
+
+    /// Drop stale prefetch jobs when the reader switches conversations.
+    func cancelPendingJobs() {
+        queue.removeAll()
     }
 
     private func startNextIfNeeded() {

@@ -23,7 +23,7 @@ final class NativeMessageLayouter {
     private let cache = NSCache<NSString, Box>()
 
     private init() {
-        cache.countLimit = 72
+        cache.countLimit = 140
         cache.totalCostLimit = 32 * 1024 * 1024
     }
 

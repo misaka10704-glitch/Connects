@@ -9,6 +9,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let fontSizeControl = UISegmentedControl(items: ["小", "中", "大"])
     private let renderDebugSwitch = UISwitch()
     private let renderDebugLabel = UILabel()
+    private let turnContextBarSwitch = UISwitch()
+    private let turnContextBarLabel = UILabel()
     private let deepseekField = UITextField()
     private let kimiField = UITextField()
     private let dashscopeField = UITextField()
@@ -112,6 +114,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         fontSizeControl.tintColor = c.accent
         renderDebugLabel.textColor = c.textPrimary
         renderDebugSwitch.onTintColor = c.accent
+        turnContextBarLabel.textColor = c.textPrimary
+        turnContextBarSwitch.onTintColor = c.accent
         if #available(iOS 13.0, *) {
             appearanceControl.selectedSegmentTintColor = c.accent
             appearanceControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
@@ -165,7 +169,23 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         fontTip.text = "调整对话正文与思考区字号。侧栏可用聊天页左上角「关闭 / 侧栏」切换。"
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
-        contentStack.setCustomSpacing(22, after: fontTip)
+        contentStack.setCustomSpacing(12, after: fontTip)
+
+        let turnContextRow = makeSwitchRow(
+            label: turnContextBarLabel,
+            text: "显示「问题」跳转条",
+            sw: turnContextBarSwitch,
+            isOn: SettingsManager.shared.turnContextBarEnabled,
+            action: #selector(turnContextBarChanged)
+        )
+        contentStack.addArrangedSubview(makeCard(embedding: turnContextRow, height: 44, inset: 12))
+        let turnContextTip = UILabel()
+        turnContextTip.numberOfLines = 0
+        turnContextTip.font = DSTheme.bodyFont(size: 13)
+        turnContextTip.text = "聊天页顶部显示当前可见回复对应的问题；点按可从本对话全部问题中选择并跳转。"
+        footerLabels.append(turnContextTip)
+        contentStack.addArrangedSubview(turnContextTip)
+        contentStack.setCustomSpacing(22, after: turnContextTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("开发者"))
         let debugRow = makeSwitchRow(
@@ -374,6 +394,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func renderDebugChanged() {
         SettingsManager.shared.renderDebugOverlayEnabled = renderDebugSwitch.isOn
+    }
+
+    @objc private func turnContextBarChanged() {
+        SettingsManager.shared.turnContextBarEnabled = turnContextBarSwitch.isOn
     }
 
     @objc private func kimiCNChanged() {

@@ -325,8 +325,12 @@ extension Notification.Name {
 
 extension RootSplitViewController: SidebarViewControllerDelegate {
     func sidebarDidSelectConversation(id: String) {
-        if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }) {
-            MessageCell.prewarmSnapshots(for: target.messages)
+        if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }),
+           target.messages.count <= 48 {
+            MessageCell.prewarmSnapshots(
+                for: Array(target.messages.suffix(32)),
+                parseLimit: 8
+            )
         }
         // The sidebar stays visible while Memory/settings are pushed inside the
         // chat navigation stack. Selecting a conversation must therefore also

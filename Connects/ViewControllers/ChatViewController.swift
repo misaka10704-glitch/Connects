@@ -10,6 +10,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     var onToggleSidebar: (() -> Void)?
 
     private let tableView = UITableView(frame: .zero, style: .plain)
+    private let turnContextBar = TurnContextBarView()
     private let inputBar = InputBarView()
     private let contextUsageView = ContextUsageView()
     private let modelButton = UIButton(type: .custom)
@@ -24,6 +25,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var isCompactChrome = false
     private var keyboardVisible = false
     private var isReloadingFromStore = false
+    /// True while a conversation switch is painting its first frame (defer heavy native render).
+    private var isSwitchingConversation = false
+    private var suppressHeightRemeasure = false
     private var contentHeights: [String: CGFloat] = [:]
     private var heightCacheByConversation: [String: [String: CGFloat]] = [:]
     private var renderedConversationID: String?
@@ -31,6 +35,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Set by a user drag away from the latest turn. Unlike `stickToBottom`,
     /// this cannot be changed by WebKit/table layout callbacks.
     private var readingHistory = false
+    /// After switching conversations, keep scrolling to the latest turn until layout settles.
+    private var pendingOpenAtBottom = false
+    private var contextUserIndex: Int?
+    private var contextBarWork: DispatchWorkItem?
     private var streamUIWork: DispatchWorkItem?
     private var streamUITimer: Timer?
     private var lastStreamMessageID = ""
@@ -44,6 +52,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var heightWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
     private var chromeWork: DispatchWorkItem?
+    private var prewarmWork: DispatchWorkItem?
     /// A vision pass turns attachments into durable text before they enter a conversation.
     private var isTranscribingImages = false
     /// Conversation currently waiting on web search before stream starts.
@@ -52,6 +61,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var widthInvalidateWork: DispatchWorkItem?
     private static let imageCache = NSCache<NSString, UIImage>()
     private static let attrCache = NSCache<NSString, NSAttributedString>()
+    private static let switchPrewarmMessageWindow = 32
+    private static let switchPrewarmParseCount = 8
+    private static let switchPrewarmLayoutBatch = 4
+    private static let switchPrewarmLayoutTotal = 28
+    /// Last assistant row includes copy/retry/fork action chrome.
+    private static let assistantActionRowSlack: CGFloat = 36
 
     private var currentConversationID: String? {
         ConversationStore.shared.currentConversationID
@@ -69,6 +84,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     override func viewDidLoad() {
         super.viewDidLoad()
         setupNavBar()
+        setupTurnContextBar()
         setupTable()
         setupInputBar()
         setupEmptyState()
@@ -83,6 +99,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsSearchToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(renderDebugChanged), name: .renderDebugDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(turnContextBarChanged), name: .turnContextBarDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(agentsChanged), name: .agentsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
@@ -276,6 +293,404 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
+    private func cheapEstimatedHeight(for msg: ChatMessage) -> CGFloat {
+        if msg.role == .user {
+            let lines = max(1, msg.content.count / 28)
+            return min(CGFloat(52 + lines * 22), 220)
+        }
+        let reasoningExpanded = msg.hasReasoning && MessageCell.isThinkingExpanded(messageID: msg.id)
+        let reasoningChars = reasoningExpanded
+            ? msg.reasoningContent.count
+            : (msg.reasoningContent.isEmpty ? 0 : 40)
+        let chars = max(msg.content.count, reasoningChars)
+        let lines = max(1, chars / 48)
+        var rough = CGFloat(36 + lines * 18)
+        if msg.hasImage { rough += 168 }
+        if msg.hasReasoning {
+            rough += reasoningExpanded
+                ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 18) : 36
+        }
+        if msg.hasSearchProcess || msg.hasImageTranscription { rough += 36 }
+        if msg.role == .assistant && !msg.isStreaming { rough += 28 }
+        if msg.hasReasoning || msg.hasSearchProcess || msg.hasImageTranscription {
+            return min(max(rough, 64), 720)
+        }
+        return min(max(rough, 64), 4_000)
+    }
+
+    private func rowHeightIncrement(for msg: ChatMessage, isLastRow: Bool) -> CGFloat {
+        if let h = contentHeights[msg.id], h > 40 {
+            var total = h + 20
+            if isLastRow, msg.role == .assistant, !msg.isStreaming {
+                total += Self.assistantActionRowSlack
+            }
+            return total
+        }
+        return cheapEstimatedHeight(for: msg)
+    }
+
+    /// Pin the table to the real content bottom so action buttons on the last reply stay visible.
+    private func snapToTrueBottom(animated: Bool = false) {
+        guard let conv = ConversationStore.shared.currentConversation, !conv.messages.isEmpty else { return }
+        let rowCount = tableView.numberOfRows(inSection: 0)
+        guard rowCount > 0 else { return }
+
+        let lastRow = min(conv.messages.count - 1, rowCount - 1)
+        let lastPath = IndexPath(row: lastRow, section: 0)
+
+        let apply = {
+            self.tableView.layoutIfNeeded()
+            self.tableView.scrollToRow(at: lastPath, at: .bottom, animated: false)
+            self.tableView.layoutIfNeeded()
+            let minY = -self.tableView.adjustedContentInset.top
+            let maxY = max(
+                minY,
+                self.tableView.contentSize.height
+                    - self.tableView.bounds.height
+                    + self.tableView.adjustedContentInset.bottom
+            )
+            self.tableView.contentOffset.y = maxY
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.2, animations: apply)
+        } else {
+            UIView.performWithoutAnimation(apply)
+        }
+        scheduleUpdateTurnContextBar()
+    }
+
+    private func settleOpenAtBottom() {
+        guard stickToBottom, !readingHistory else { return }
+        snapToTrueBottom(animated: false)
+    }
+
+    private func hydrateDeferredNativeRenders(priorityBottomCount: Int? = nil) {
+        var pending: [(row: Int, cell: MessageCell)] = []
+        for case let cell as MessageCell in tableView.visibleCells {
+            guard cell.hasPendingDeferredNativeRender,
+                  let path = tableView.indexPath(for: cell) else { continue }
+            pending.append((path.row, cell))
+        }
+        guard !pending.isEmpty else { return }
+
+        pending.sort { $0.row > $1.row }
+        if let limit = priorityBottomCount, limit > 0, pending.count > limit {
+            pending = Array(pending.prefix(limit))
+        }
+
+        for item in pending {
+            item.cell.applyDeferredNativeRenderIfNeeded()
+        }
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        }
+    }
+
+    private func scrollToBottomFast() {
+        guard let conv = ConversationStore.shared.currentConversation, !conv.messages.isEmpty else { return }
+        let msgs = conv.messages
+        let lastIndex = msgs.count - 1
+        var offset: CGFloat = 0
+        for (i, msg) in msgs.enumerated() {
+            offset += rowHeightIncrement(for: msg, isLastRow: i == lastIndex)
+        }
+        let minOffset = -tableView.adjustedContentInset.top
+        let maxOffset = max(
+            minOffset,
+            offset - tableView.bounds.height + tableView.adjustedContentInset.bottom
+        )
+        tableView.contentOffset.y = maxOffset
+        snapToTrueBottom(animated: false)
+    }
+
+    private func persistenceMessageOrder() -> [String: [String]] {
+        var order: [String: [String]] = [:]
+        if let id = currentConversationID,
+           let conv = ConversationStore.shared.currentConversation {
+            order[id] = conv.messages.map { $0.id }
+        }
+        for cid in heightCacheByConversation.keys {
+            guard order[cid] == nil,
+                  let conv = ConversationStore.shared.conversation(id: cid) else { continue }
+            order[cid] = conv.messages.map { $0.id }
+        }
+        return order
+    }
+
+    private func saveHeightCaches() {
+        RenderCacheStore.saveHeights(
+            heightCacheByConversation,
+            messageOrder: persistenceMessageOrder()
+        )
+    }
+
+    private func invalidateExpandedChromeHeights() {
+        for messageID in MessageCell.expandedChromeMessageIDs() {
+            contentHeights.removeValue(forKey: messageID)
+        }
+    }
+
+    private func finishConversationSwitchChrome(layoutWidth: CGFloat) {
+        guard let selfID = renderedConversationID,
+              selfID == currentConversationID,
+              let messages = ConversationStore.shared.currentConversation?.messages else {
+            isSwitchingConversation = false
+            return
+        }
+        updateModelButton()
+        updateAgentButton()
+        updateEmptyState()
+        updateAttachAvailability()
+        updateTitleFromConversation()
+        syncStreamingChrome()
+        suppressHeightRemeasure = false
+        // Hydrate the latest rows first so the bottom action buttons paint quickly.
+        hydrateDeferredNativeRenders(priorityBottomCount: 4)
+        snapToTrueBottom(animated: false)
+        pendingOpenAtBottom = false
+        isSwitchingConversation = false
+
+        let msgCount = messages.count
+        let layoutWidthCopy = layoutWidth
+        let conversationID = selfID
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  conversationID == self.currentConversationID else { return }
+            self.hydrateDeferredNativeRenders()
+            UIView.performWithoutAnimation {
+                self.tableView.beginUpdates()
+                self.tableView.endUpdates()
+            }
+            self.settleOpenAtBottom()
+            if msgCount <= 48 {
+                MessageCell.prewarmSnapshots(
+                    for: Array(messages.suffix(Self.switchPrewarmMessageWindow)),
+                    targetWidth: layoutWidthCopy,
+                    parseLimit: Self.switchPrewarmParseCount
+                )
+            }
+            self.scheduleTailLayoutPrewarm(
+                messages: messages,
+                layoutWidth: layoutWidthCopy,
+                conversationID: conversationID
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.settleOpenAtBottom()
+        }
+        scheduleUpdateTurnContextBar()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.refreshContextUsage(animated: false)
+        }
+    }
+
+    private func scheduleTailLayoutPrewarm(messages: [ChatMessage],
+                                           layoutWidth: CGFloat,
+                                           conversationID: String) {
+        prewarmWork?.cancel()
+        let tail = Array(messages.suffix(Self.switchPrewarmMessageWindow))
+        let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
+        guard !assistants.isEmpty else { return }
+
+        var cursor = 0
+        let layoutCap = messages.count > 48 ? 12 : Self.switchPrewarmLayoutTotal
+        let limit = min(assistants.count, layoutCap)
+        func pump() {
+            guard conversationID == self.renderedConversationID,
+                  conversationID == self.currentConversationID else { return }
+            let end = min(cursor + Self.switchPrewarmLayoutBatch, limit)
+            guard cursor < end else { return }
+            MessageCell.prewarmLayouts(
+                for: Array(assistants[cursor..<end]),
+                targetWidth: layoutWidth
+            )
+            cursor = end
+            if cursor < limit {
+                let work = DispatchWorkItem { pump() }
+                prewarmWork = work
+                DispatchQueue.main.async(execute: work)
+            }
+        }
+        pump()
+    }
+
+    private func scheduleUpdateTurnContextBar() {
+        contextBarWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.updateTurnContextBar()
+        }
+        contextBarWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func updateTurnContextBar() {
+        guard SettingsManager.shared.turnContextBarEnabled else {
+            contextUserIndex = nil
+            turnContextBar.update(question: nil, visible: false)
+            return
+        }
+
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              !messages.isEmpty else {
+            contextUserIndex = nil
+            turnContextBar.update(question: nil, visible: false)
+            return
+        }
+
+        let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top + 2
+        let visible = (tableView.indexPathsForVisibleRows ?? []).sorted { $0.row < $1.row }
+        var anchorIndex = visible.first?.row ?? (messages.count - 1)
+        for path in visible {
+            let rect = tableView.rectForRow(at: path)
+            if rect.maxY > viewportTop {
+                anchorIndex = path.row
+                break
+            }
+        }
+
+        guard let userIndex = userIndex(forMessageAt: anchorIndex, in: messages) else {
+            contextUserIndex = nil
+            turnContextBar.update(question: nil, visible: false)
+            return
+        }
+
+        contextUserIndex = userIndex
+        turnContextBar.update(
+            question: userQuestionPreview(messages[userIndex]),
+            visible: true
+        )
+    }
+
+    private func userIndex(forMessageAt index: Int, in messages: [ChatMessage]) -> Int? {
+        guard index >= 0, index < messages.count else { return nil }
+        if messages[index].role == .user { return index }
+        for i in stride(from: index, through: 0, by: -1) where messages[i].role == .user {
+            return i
+        }
+        return nil
+    }
+
+    private func userQuestionPreview(_ message: ChatMessage) -> String {
+        let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty, text != "[图片]" {
+            let singleLine = text
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+            return String(singleLine.prefix(240))
+        }
+        if message.hasImage { return "📷 图片" }
+        return "（空消息）"
+    }
+
+    private func jumpToUserQuestion(at index: Int) {
+        guard index >= 0, index < tableView.numberOfRows(inSection: 0) else { return }
+        contextUserIndex = index
+        readingHistory = true
+        stickToBottom = false
+
+        let path = IndexPath(row: index, section: 0)
+        UIView.performWithoutAnimation {
+            tableView.scrollToRow(at: path, at: .top, animated: false)
+            tableView.layoutIfNeeded()
+            applyUserBubbleScrollAnchor(at: index, animated: false)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.applyUserBubbleScrollAnchor(at: index, animated: true)
+            self?.scheduleUpdateTurnContextBar()
+        }
+    }
+
+    /// Scroll so the user input bubble sits just under the context bar.
+    private func applyUserBubbleScrollAnchor(at row: Int, animated: Bool) {
+        guard row >= 0, row < tableView.numberOfRows(inSection: 0) else { return }
+        tableView.layoutIfNeeded()
+        let path = IndexPath(row: row, section: 0)
+        let gap = tableView.adjustedContentInset.top + 6
+        let minY = -tableView.adjustedContentInset.top
+        let maxY = max(
+            minY,
+            tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+        )
+
+        var targetY: CGFloat
+        if let cell = tableView.cellForRow(at: path) as? MessageCell,
+           let bubbleY = cell.userBubbleTop(in: tableView) {
+            targetY = bubbleY - gap
+        } else {
+            targetY = contentOffsetForRowTop(row) - gap
+        }
+        targetY = min(max(targetY, minY), maxY)
+
+        if animated {
+            tableView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+        } else {
+            tableView.contentOffset.y = targetY
+        }
+    }
+
+    /// Sum cached/estimated row heights — reliable for far jumps before the cell exists.
+    private func contentOffsetForRowTop(_ row: Int) -> CGFloat {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              row > 0 else { return -tableView.adjustedContentInset.top }
+        var offset: CGFloat = 0
+        let end = min(row, messages.count)
+        for i in 0..<end {
+            offset += rowHeightIncrement(for: messages[i], isLastRow: false)
+        }
+        return offset
+    }
+
+    private func presentTurnContextPicker() {
+        guard SettingsManager.shared.turnContextBarEnabled,
+              let messages = ConversationStore.shared.currentConversation?.messages else { return }
+
+        struct UserTurn {
+            let index: Int
+            let number: Int
+            let preview: String
+        }
+
+        var turns: [UserTurn] = []
+        var turnNumber = 0
+        for (index, message) in messages.enumerated() where message.role == .user {
+            turnNumber += 1
+            turns.append(UserTurn(
+                index: index,
+                number: turnNumber,
+                preview: userQuestionPreview(message)
+            ))
+        }
+        guard !turns.isEmpty else { return }
+
+        let menuItems = turns.reversed().map { turn in
+            let title = "\(turn.number). \(turnMenuTitle(turn.preview))"
+            return ConnectsMenuItem(
+                title: title,
+                isSelected: turn.index == contextUserIndex,
+                handler: { [weak self] in
+                    self?.jumpToUserQuestion(at: turn.index)
+                }
+            )
+        }
+
+        let menuWidth = min(340, max(260, view.bounds.width - DSTheme.contentHorizontalPadding * 2))
+        ConnectsMenu.present(
+            from: self,
+            title: "跳转到问题",
+            items: menuItems,
+            sourceView: turnContextBar,
+            preferVertical: true,
+            maxHeight: view.bounds.height * 0.55,
+            menuWidth: menuWidth
+        )
+    }
+
+    private func turnMenuTitle(_ preview: String) -> String {
+        String(preview.prefix(64))
+    }
+
     private func reloadTablePreservingViewport() {
         let anchor = tableView.indexPathsForVisibleRows?.first
         let oldOffset = tableView.contentOffset
@@ -319,6 +734,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         navigationController?.navigationBar.barStyle = c.navBarStyle
         navigationController?.navigationBar.barTintColor = c.background
+        turnContextBar.applyTheme()
         navigationController?.navigationBar.tintColor = c.textPrimary
         navigationController?.navigationBar.shadowImage = UIImage()
         navigationController?.navigationBar.setBackgroundImage(UIImage(), for: .default)
@@ -387,18 +803,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
             UIView.performWithoutAnimation {
                 if let cell = tableView.cellForRow(at: path) as? MessageCell {
-                    if isSearch {
-                        cell.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
-                    } else {
-                        cell.syncThinkingPresentation(with: message, layoutWidth: layoutWidth)
-                    }
+                    cell.finishChromeToggleLayout()
                 } else {
+                    if isSearch {
+                        (tableView.cellForRow(at: path) as? MessageCell)?.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
+                    }
                     tableView.reloadRows(at: [path], with: .none)
                 }
-                tableView.layoutIfNeeded()
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.remeasureRowsPreservingViewport(anchorPath: path)
+                remeasureRowsPreservingViewport(anchorPath: path)
             }
             return
         }
@@ -423,6 +835,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         for case let cell as MessageCell in tableView.visibleCells {
             cell.refreshRenderDebugOverlay()
         }
+    }
+
+    @objc private func turnContextBarChanged() {
+        scheduleUpdateTurnContextBar()
     }
 
     @objc private func visibleModelsChanged() {
@@ -685,21 +1101,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     func reloadChat() {
         isReloadingFromStore = true
         chromeWork?.cancel()
+        prewarmWork?.cancel()
 
-        // Persist heights for the conversation we are leaving.
+        // Persist heights for the conversation we are leaving (debounced, off hot path).
         if let old = renderedConversationID {
             heightCacheByConversation[old] = contentHeights
+            DispatchQueue.main.async { [weak self] in
+                self?.saveHeightCaches()
+            }
         }
         let newID = ConversationStore.shared.currentConversationID
         let conversationChanged = newID != renderedConversationID
         if conversationChanged {
+            StableRichRenderer.shared.cancelPendingJobs()
             contentHeights = heightCacheByConversation[newID ?? ""] ?? [:]
             pendingHeights.removeAll()
             renderedConversationID = newID
+            isSwitchingConversation = true
             // A newly selected conversation opens at its latest turn. Subsequent
             // reloads must preserve the reader's manual scroll position.
             stickToBottom = true
             readingHistory = false
+            pendingOpenAtBottom = true
             // Drop in-flight stream paint and nav prompt from the previous chat
             // before the empty/list chrome updates — otherwise iOS 12 leaves
             // "思考中… / 正在生成…" cell ghosts and a gray prompt capsule.
@@ -708,20 +1131,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             stopStreamUITimer()
             clearNavigationPrompt()
         }
-        // User rows and reasoning rows must never inherit transient estimates.
-        // Reasoning height depends on expanded/collapsed UI state, which is not
-        // represented by the persisted message-ID-only cache.
-        if let msgs = ConversationStore.shared.currentConversation?.messages {
-            for m in msgs where m.role == .user || m.hasReasoning || m.hasSearchProcess {
-                contentHeights.removeValue(forKey: m.id)
-            }
-        }
+        invalidateExpandedChromeHeights()
+
+        let layoutWidth = currentRenderWidth()
 
         if conversationChanged {
+            suppressHeightRemeasure = true
             UIView.performWithoutAnimation {
                 tableView.reloadData()
-                tableView.layoutIfNeeded()
-                scrollToBottom(animated: false)
+                scrollToBottomFast()
             }
         } else {
             reloadTablePreservingViewport()
@@ -730,27 +1148,36 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // streaming cell composited under a clear empty overlay.
         updateEmptyState()
         syncStreamingChrome()
-        queueLegacyImageTranscriptionIfNeeded()
-        if let messages = ConversationStore.shared.currentConversation?.messages {
-            MessageCell.prewarmSnapshots(
-                for: Array(messages.suffix(4)),
-                targetWidth: currentRenderWidth()
-            )
+        DispatchQueue.main.async { [weak self] in
+            self?.queueLegacyImageTranscriptionIfNeeded()
         }
-        // Defer the rest of chrome so the message list paints first.
+        let switchID = newID
+        let didChangeConversation = conversationChanged
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            self.updateModelButton()
-            self.updateAgentButton()
-            self.updateEmptyState()
-            self.updateAttachAvailability()
-            self.updateTitleFromConversation()
-            self.syncStreamingChrome()
-            self.refreshContextUsage(animated: false)
+            guard switchID == self.currentConversationID else { return }
+            if didChangeConversation {
+                self.finishConversationSwitchChrome(layoutWidth: layoutWidth)
+            } else {
+                self.updateModelButton()
+                self.updateAgentButton()
+                self.updateEmptyState()
+                self.updateAttachAvailability()
+                self.updateTitleFromConversation()
+                self.syncStreamingChrome()
+                self.refreshContextUsage(animated: false)
+                self.suppressHeightRemeasure = false
+                self.hydrateDeferredNativeRenders()
+                UIView.performWithoutAnimation {
+                    self.tableView.beginUpdates()
+                    self.tableView.endUpdates()
+                }
+            }
         }
         chromeWork = work
         DispatchQueue.main.async(execute: work)
         isReloadingFromStore = false
+        scheduleUpdateTurnContextBar()
     }
 
     /// Older conversations can still contain an image-only turn. Migrate one
@@ -873,6 +1300,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateAgentButton()
     }
 
+    private func setupTurnContextBar() {
+        turnContextBar.translatesAutoresizingMaskIntoConstraints = false
+        turnContextBar.onTap = { [weak self] in
+            self?.presentTurnContextPicker()
+        }
+        view.addSubview(turnContextBar)
+        NSLayoutConstraint.activate([
+            turnContextBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            turnContextBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            turnContextBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+    }
+
     private func setupTable() {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.separatorStyle = .none
@@ -914,7 +1354,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         usageWidthFill.priority = UILayoutPriority(999)
 
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableView.topAnchor.constraint(equalTo: turnContextBar.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: contextUsageView.topAnchor),
@@ -1069,6 +1509,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyContainer.isHidden = !empty
         tableView.isHidden = empty
         if empty {
+            contextUserIndex = nil
+            turnContextBar.update(question: nil, visible: false)
             // Cancel any pending stream paint that could reconfigure a recycled cell.
             streamUIWork?.cancel()
             streamUIWork = nil
@@ -1657,9 +2099,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func scrollToBottom(animated: Bool, force: Bool = false) {
         guard force || !readingHistory else { return }
-        guard let conv = ConversationStore.shared.currentConversation, !conv.messages.isEmpty else { return }
-        let path = IndexPath(row: conv.messages.count - 1, section: 0)
-        tableView.scrollToRow(at: path, at: .bottom, animated: animated)
+        guard ConversationStore.shared.currentConversation?.messages.isEmpty == false else { return }
+        if animated {
+            snapToTrueBottom(animated: true)
+        } else {
+            snapToTrueBottom(animated: false)
+        }
     }
 
     private static let imageTranscriptionPrompt = """
@@ -1941,9 +2386,16 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 let key = msg.id as NSString
                 if let cached = ChatViewController.imageCache.object(forKey: key) {
                     cell.setCachedImage(cached)
-                } else if let img = ImageAttachmentHelper.image(from: b64) {
-                    ChatViewController.imageCache.setObject(img, forKey: key)
-                    cell.setCachedImage(img)
+                } else {
+                    let msgID = msg.id
+                    DispatchQueue.global(qos: .utility).async {
+                        guard let img = ImageAttachmentHelper.image(from: b64) else { return }
+                        ChatViewController.imageCache.setObject(img, forKey: key)
+                        DispatchQueue.main.async { [weak cell] in
+                            guard let cell = cell, cell.messageID == msgID else { return }
+                            cell.setCachedImage(img)
+                        }
+                    }
                 }
             }
             cell.configure(with: msg, preferredHeight: contentHeights[msg.id], layoutWidth: currentRenderWidth())
@@ -1951,71 +2403,40 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         return cell
     }
 
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else {
+            return tableView.estimatedRowHeight
+        }
+        if msg.isStreaming { return UITableView.automaticDimension }
+        if let h = contentHeights[msg.id], h > 40 { return h + 20 }
+        // Never pin uncached rows to a cheap estimate — that clips/overlaps content.
+        return UITableView.automaticDimension
+    }
+
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else { return 72 }
-        // Prefer underestimate — iOS 12 self-sizing with oversized estimates stretches
-        // bubbles (user gray empty / assistant gap above thinking) until remasure.
-        if msg.role == .user {
-            let lines = max(1, msg.content.count / 28)
-            return min(CGFloat(52 + lines * 22), 220)
+        if let h = contentHeights[msg.id], h > 40 {
+            return h + 20 + (msg.isStreaming ? 28 : 0)
         }
-        if let h = contentHeights[msg.id], h > 40, !msg.hasReasoning {
-            // Completed raster rows own an immutable height. Feeding the
-            // exact value back to UITableView avoids A7 estimate→shrink churn.
-            return h + (msg.isStreaming ? 28 : 0)
-        }
-        if msg.role == .assistant,
-           !msg.isStreaming {
-            let document = NativeMarkdownParser.shared.parse(msg.content)
-            let style = NativeLayoutStyle(
-                width: currentRenderWidth(),
-                bodyFontSize: SettingsManager.shared.chatBodyFontSize,
-                appearance: SettingsManager.shared.appearanceMode.rawValue,
-                colors: DSTheme.c
-            )
-            if let layout = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
-                var chrome: CGFloat = 48
-                if msg.hasImage { chrome += 168 }
-                if msg.hasReasoning { chrome += 44 }
-                if msg.hasSearchProcess { chrome += 44 }
-                return layout.size.height + chrome
-            }
-        }
-        let reasoningExpanded = msg.hasReasoning && MessageCell.isThinkingExpanded(messageID: msg.id)
-        let reasoningChars = reasoningExpanded
-            ? msg.reasoningContent.count
-            : (msg.reasoningContent.isEmpty ? 0 : 40)
-        let chars = max(msg.content.count, reasoningChars)
-        let lines = max(1, chars / 48)
-        var rough = CGFloat(36 + lines * 18)
-        if msg.hasImage { rough += 168 }
-        if msg.hasReasoning {
-            rough += reasoningExpanded ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 18) : 36
-        }
-        if msg.hasSearchProcess { rough += 36 }
-        if msg.role == .assistant && !msg.isStreaming { rough += 28 }
-        if msg.hasReasoning || msg.hasSearchProcess {
-            // Oversized estimates leave permanent blank bands above thinking
-            // headers until a later remeasure on iOS 12.
-            return min(max(rough, 64), 720)
-        }
-        // Do not cap a completed answer at a small estimate. iOS 12 can retain
-        // that estimate during a cross-chat transition, visibly compressing
-        // long replies until a later layout pass happens.
-        return min(max(rough, 64), 4_000)
+        return cheapEstimatedHeight(for: msg)
     }
 
     func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        scheduleUpdateTurnContextBar()
         guard let cell = cell as? MessageCell,
               let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row],
               !msg.isStreaming else { return }
+        if SettingsManager.shared.renderDebugOverlayEnabled {
+            cell.refreshRenderDebugOverlay()
+        }
+        guard !tableView.isDragging, !tableView.isDecelerating, !isSwitchingConversation else { return }
         let layoutWidth = currentRenderWidth()
         if msg.role == .assistant {
+            cell.applyDeferredNativeRenderIfNeeded()
             cell.ensureNativeLayoutWidth(layoutWidth)
         } else if msg.role == .user {
             cell.syncUserPresentation(with: msg, layoutWidth: layoutWidth)
         }
-        cell.refreshRenderDebugOverlay()
         guard msg.role == .user || msg.hasReasoning || msg.hasSearchProcess else { return }
         DispatchQueue.main.async { [weak self, weak cell] in
             guard let self = self,
@@ -2037,6 +2458,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        scheduleUpdateTurnContextBar()
         // Content-size changes from KaTeX/WebKit also trigger this callback.
         // They must not turn sticky mode back on after the user scrolls up.
         guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
@@ -2059,9 +2481,9 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     private func finishScrollHeightSettling() {
-        // A settled history scroll must be a no-op for completed replies.
-        // Any table height transaction here is visible as the shared
-        // “reaches bottom / stops upward scroll” flash on iOS 12.
+        for case let cell as MessageCell in tableView.visibleCells {
+            cell.applyDeferredNativeRenderIfNeeded()
+        }
         guard isCurrentStreaming else { return }
         for case let cell as MessageCell in tableView.visibleCells {
             cell.applyDeferredHeightIfNeeded()
@@ -2073,11 +2495,20 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 extension ChatViewController: UITableViewDataSourcePrefetching {
     func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let style = NativeLayoutStyle(
+            width: currentRenderWidth(),
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
         for path in indexPaths where path.section == 0 && path.row < messages.count {
             let message = messages[path.row]
             guard message.role == .assistant,
                   !message.isStreaming else { continue }
-            _ = NativeMarkdownParser.shared.parse(message.content)
+            let document = NativeMarkdownParser.shared.parse(message.content)
+            if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
+                _ = NativeMessageLayouter.shared.layout(document: document, style: style)
+            }
         }
     }
 
@@ -2091,6 +2522,10 @@ extension ChatViewController: MessageCellDelegate {
         tableView.isDragging || tableView.isDecelerating
     }
 
+    func messageCellShouldDeferHeavyRender(_ cell: MessageCell) -> Bool {
+        isSwitchingConversation || tableView.isDragging || tableView.isDecelerating
+    }
+
     func messageCell(_ cell: MessageCell, didUpdateHeight height: CGFloat, for messageID: String) {
         // Preserve the viewport while browsing history. Fixed snapshot height
         // metadata can still be recorded, but it must not trigger a table pass.
@@ -2099,7 +2534,7 @@ extension ChatViewController: MessageCellDelegate {
                 contentHeights[messageID] = height
                 if let cid = renderedConversationID {
                     heightCacheByConversation[cid] = contentHeights
-                    RenderCacheStore.saveHeights(heightCacheByConversation)
+                    saveHeightCaches()
                 }
             }
             return
@@ -2151,9 +2586,10 @@ extension ChatViewController: MessageCellDelegate {
             contentHeights[messageID] = height
             if let cid = renderedConversationID {
                 heightCacheByConversation[cid] = contentHeights
-                RenderCacheStore.saveHeights(heightCacheByConversation)
+                saveHeightCaches()
             }
         }
+        if suppressHeightRemeasure { return }
         guard cell.window != nil,
               !tableView.isDragging,
               !tableView.isDecelerating else { return }
@@ -2207,7 +2643,7 @@ extension ChatViewController: MessageCellDelegate {
         // them in memory only; persist the final stable height after completion.
         if changed, !includesStreamingMessage, let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
-            RenderCacheStore.saveHeights(heightCacheByConversation)
+            saveHeightCaches()
         }
         guard changed else { return }
         UIView.performWithoutAnimation {
@@ -2253,7 +2689,7 @@ extension ChatViewController: MessageCellDelegate {
         contentHeights.removeValue(forKey: messageID)
         if let cid = renderedConversationID {
             heightCacheByConversation[cid] = contentHeights
-            RenderCacheStore.saveHeights(heightCacheByConversation)
+            saveHeightCaches()
         }
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let row = messages.firstIndex(where: { $0.id == messageID }) else { return }
