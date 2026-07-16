@@ -1220,9 +1220,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
     }
 
-    private func hideNativeRender() {
+    private func hideNativeRender(clearLayout: Bool = true) {
+        let hadLayout = nativeRenderView.layout != nil
         nativeRenderView.isHidden = true
-        nativeRenderView.clear()
+        if clearLayout, hadLayout {
+            nativeRenderView.clear()
+        }
         nativeHeight?.constant = 0
         nativeTopToRole?.isActive = false
         nativeTopToImage?.isActive = false

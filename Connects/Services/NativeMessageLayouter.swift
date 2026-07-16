@@ -61,11 +61,26 @@ final class NativeMessageLayouter {
         return cache.object(forKey: key as NSString) != nil
     }
 
+    func cachedLayout(contentStamp: String, style: NativeLayoutStyle) -> NativeMessageLayout? {
+        let key = "native_layout_v10|final|\(contentStamp)|\(style.keySuffix)"
+        return cache.object(forKey: key as NSString)?.layout
+    }
+
     func hasCachedLayout(forContent content: String, style: NativeLayoutStyle) -> Bool {
         hasCachedLayout(
             contentStamp: NativeMarkdownParser.shared.layoutStamp(for: content),
             style: style
         )
+    }
+
+    /// Cached final layout height without parsing markdown into blocks.
+    func cachedLayoutHeight(forContent content: String, style: NativeLayoutStyle) -> CGFloat? {
+        let stamp = NativeMarkdownParser.shared.layoutStamp(for: content)
+        let key = "native_layout_v10|final|\(stamp)|\(style.keySuffix)"
+        guard let height = cache.object(forKey: key as NSString)?.layout.size.height, height > 0 else {
+            return nil
+        }
+        return height
     }
 
     func clear() {

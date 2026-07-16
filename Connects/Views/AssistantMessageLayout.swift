@@ -50,6 +50,19 @@ enum AssistantMessageLayout {
         _ = style
     }
 
+    static func nativeLayoutWidth(for layoutWidth: CGFloat) -> CGFloat {
+        min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
+    }
+
+    static func layoutStyle(for layoutWidth: CGFloat) -> NativeLayoutStyle {
+        NativeLayoutStyle(
+            width: nativeLayoutWidth(for: max(layoutWidth, 120)),
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+    }
+
     static func prewarmLayouts(for messages: [ChatMessage],
                                targetWidth: CGFloat? = nil,
                                layoutLimit: Int = 12) {
@@ -63,11 +76,13 @@ enum AssistantMessageLayout {
         let limit = max(1, layoutLimit)
         for message in messages.suffix(limit)
             where message.role == .assistant &&
-                  !message.isStreaming {
-            let document = NativeMarkdownParser.shared.parse(message.content)
-            if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
-                _ = NativeMessageLayouter.shared.layout(document: document, style: style)
+                  !message.isStreaming &&
+                  !message.content.isEmpty {
+            if NativeMessageLayouter.shared.hasCachedLayout(forContent: message.content, style: style) {
+                continue
             }
+            let document = NativeMarkdownParser.shared.parse(message.content)
+            _ = NativeMessageLayouter.shared.layout(document: document, style: style)
         }
     }
 
@@ -93,24 +108,14 @@ enum AssistantMessageLayout {
         prewarmLayouts(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
     }
 
-    /// `layoutWidth` from ChatVC is already bubble/content width (`currentRenderWidth`).
-    /// Clamp only — do not subtract horizontal chrome again.
-    static func nativeLayoutWidth(for layoutWidth: CGFloat) -> CGFloat {
-        min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
-    }
-
     static func hasCachedNativeLayout(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {
         guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
             return false
         }
-        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
-        let style = NativeLayoutStyle(
-            width: width,
-            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
-            appearance: SettingsManager.shared.appearanceMode.rawValue,
-            colors: DSTheme.c
+        return NativeMessageLayouter.shared.hasCachedLayout(
+            forContent: message.content,
+            style: layoutStyle(for: layoutWidth)
         )
-        return NativeMessageLayouter.shared.hasCachedLayout(forContent: message.content, style: style)
     }
 
     static func prewarmTurnWindow(messages: [ChatMessage],
@@ -134,26 +139,24 @@ enum AssistantMessageLayout {
                                       allowSyncLayout: Bool) -> CGFloat? {
         guard message.role == .assistant, !message.isStreaming else { return nil }
 
-        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
-        let font = SettingsManager.shared.chatBodyFontSize
-        let colors = DSTheme.c
-        let style = NativeLayoutStyle(
-            width: width,
-            bodyFontSize: font,
-            appearance: SettingsManager.shared.appearanceMode.rawValue,
-            colors: colors
-        )
+        let style = layoutStyle(for: layoutWidth)
 
         var bodyHeight: CGFloat = 0
         if message.content.isEmpty {
             return nil
         }
-        let document = NativeMarkdownParser.shared.parse(message.content)
-        if let cached = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
-            bodyHeight = cached.size.height
+        if let cached = NativeMessageLayouter.shared.cachedLayoutHeight(
+            forContent: message.content,
+            style: style
+        ) {
+            bodyHeight = cached
         } else if allowSyncLayout {
-            let layout = NativeMessageLayouter.shared.layout(document: document, style: style)
-            bodyHeight = layout.size.height
+            let document = NativeMarkdownParser.shared.parse(message.content)
+            if let layout = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
+                bodyHeight = layout.size.height
+            } else {
+                bodyHeight = NativeMessageLayouter.shared.layout(document: document, style: style).size.height
+            }
         } else {
             return nil
         }

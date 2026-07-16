@@ -115,6 +115,16 @@ enum RenderCacheStore {
         clearSnapshots()
     }
 
+    /// Legacy WebKit tile cache from StableRichRenderer — safe to drop after native-only render.
+    static func cleanupLegacyStableRichArtifacts() {
+        UserDefaults.standard.removeObject(forKey: "connects_stable_rich_meta_v1")
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        try? FileManager.default.removeItem(
+            at: base.appendingPathComponent("connects_stable_rich", isDirectory: true)
+        )
+    }
+
     /// Stable fingerprint — Swift's `hashValue` is not stable across launches.
     static func stamp(_ text: String) -> String {
         var h: UInt64 = 5381
