@@ -28,7 +28,6 @@
 		A1000001000000000000000F /* DSTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000F /* DSTheme.swift */; };
 		A10000010000000000000012 /* ImageAttachmentHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* ImageAttachmentHelper.swift */; };
 		A10000010000000000000014 /* MarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* MarkdownExporter.swift */; };
-		A10000010000000000000015 /* MathContentDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000015 /* MathContentDetector.swift */; };
 		A10000010000000000000018 /* StreamManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000018 /* StreamManager.swift */; };
 		A10000010000000000000019 /* AITitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* AITitleGenerator.swift */; };
 		A1000001000000000000001C /* ActionIconFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001C /* ActionIconFactory.swift */; };
@@ -38,7 +37,6 @@
 		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
 		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
 		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
-		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
 		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
 		E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000005 /* ChatRowHeightResolver.swift */; };
 		E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000006 /* AssistantBodySnapshotCache.swift */; };
@@ -49,7 +47,6 @@
 		A1000001000000000000001B /* PlainMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* PlainMarkdown.swift */; };
 		A10000010000000000000030 /* katex in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* katex */; };
 		A10000010000000000000031 /* markdown in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000031 /* markdown */; };
-		A10000010000000000000016 /* WeakScriptMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000016 /* WeakScriptMessageHandler.swift */; };
 		A10000010000000000000017 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000010000000000000017 /* WebKit.framework */; };
 		A10000010000000000000020 /* Icon-76.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000020 /* Icon-76.png */; };
 		A10000010000000000000021 /* Icon-76@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000021 /* Icon-76@2x.png */; };
@@ -121,8 +118,6 @@
 		A2000001000000000000000F /* DSTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSTheme.swift; sourceTree = "<group>"; };
 		A20000010000000000000013 /* ImageAttachmentHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAttachmentHelper.swift; sourceTree = "<group>"; };
 		A20000010000000000000014 /* MarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExporter.swift; sourceTree = "<group>"; };
-		A20000010000000000000015 /* MathContentDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathContentDetector.swift; sourceTree = "<group>"; };
-		A20000010000000000000016 /* WeakScriptMessageHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeakScriptMessageHandler.swift; sourceTree = "<group>"; };
 		A20000010000000000000018 /* StreamManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamManager.swift; sourceTree = "<group>"; };
 		A20000010000000000000019 /* AITitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AITitleGenerator.swift; sourceTree = "<group>"; };
 		A2000001000000000000001C /* ActionIconFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionIconFactory.swift; sourceTree = "<group>"; };
@@ -132,7 +127,6 @@
 		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
 		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
 		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
-		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
 		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
 		E20000010000000000000005 /* ChatRowHeightResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowHeightResolver.swift; sourceTree = "<group>"; };
 		E20000010000000000000006 /* AssistantBodySnapshotCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantBodySnapshotCache.swift; sourceTree = "<group>"; };
@@ -291,8 +285,6 @@
 				A20000010000000000000008 /* SettingsManager.swift */,
 				A20000010000000000000013 /* ImageAttachmentHelper.swift */,
 				A20000010000000000000014 /* MarkdownExporter.swift */,
-				A20000010000000000000015 /* MathContentDetector.swift */,
-				A20000010000000000000016 /* WeakScriptMessageHandler.swift */,
 				A20000010000000000000018 /* StreamManager.swift */,
 				A20000010000000000000019 /* AITitleGenerator.swift */,
 				A2000001000000000000001C /* ActionIconFactory.swift */,
@@ -300,7 +292,6 @@
 				A2000001000000000000001E /* ContextCompactor.swift */,
 				A20000010000000000000053 /* WebSearchService.swift */,
 				A20000010000000000000060 /* WebSearchCoordinator.swift */,
-				A20000010000000000000054 /* WebKitRenderWarmup.swift */,
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				E20000010000000000000005 /* ChatRowHeightResolver.swift */,
 				E20000010000000000000006 /* AssistantBodySnapshotCache.swift */,
@@ -540,8 +531,6 @@
 				A1000001000000000000000F /* DSTheme.swift in Sources */,
 				A10000010000000000000012 /* ImageAttachmentHelper.swift in Sources */,
 				A10000010000000000000014 /* MarkdownExporter.swift in Sources */,
-				A10000010000000000000015 /* MathContentDetector.swift in Sources */,
-				A10000010000000000000016 /* WeakScriptMessageHandler.swift in Sources */,
 				A10000010000000000000018 /* StreamManager.swift in Sources */,
 				A10000010000000000000019 /* AITitleGenerator.swift in Sources */,
 				A1000001000000000000001C /* ActionIconFactory.swift in Sources */,
@@ -551,7 +540,6 @@
 				A10000010000000000000061 /* TurnContextBarView.swift in Sources */,
 				A10000010000000000000053 /* WebSearchService.swift in Sources */,
 				A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */,
-				A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */,
 				A10000010000000000000055 /* RenderCacheStore.swift in Sources */,
 				E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */,
 				E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */,

@@ -98,6 +98,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let layoutWidth: CGFloat
     }
     private var lastNativeLayoutWidth: CGFloat = 0
+    private var lastThinkingVisible = false
+    private var lastThinkingExpanded = false
+    private var lastSearchVisible = false
+    private var lastSearchExpanded = false
+    private var lastNativeBodyAnchor: (thinking: Bool, search: Bool, image: Bool)?
 
     var hasPendingDeferredNativeRender: Bool {
         deferredNativeBind != nil
@@ -255,6 +260,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedImageActivity = false
         cachedThemeColors = nil
         preferredLayoutWidth = 0
+        lastThinkingVisible = false
+        lastThinkingExpanded = false
+        lastSearchVisible = false
+        lastSearchExpanded = false
+        lastNativeBodyAnchor = nil
     }
 
     private var cachedImage: UIImage?
@@ -343,6 +353,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                         allowDisk: true
                     )
                 }
+                return
+            }
+            if !nativeRenderView.isHidden,
+               abs(nativeLayoutWidth(for: layoutWidth) - lastNativeLayoutWidth) <= 1 {
+                ensureActionButtonsVisible(for: message)
                 return
             }
         }
@@ -822,13 +837,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantTopToRole.isActive = false
         assistantTopToImage.isActive = false
         assistantTopToThink.isActive = false
-        nativeTopToRole.isActive = false
-        nativeTopToImage.isActive = false
-        nativeTopToThink.isActive = false
-        nativeBottom.isActive = true
-        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
-        else if hasImage { nativeTopToImage.isActive = true }
-        else { nativeTopToRole.isActive = true }
+        applyNativeBodyConstraints(
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage
+        )
         nativeMessageForRemeasure = message
         lastNativeLayoutWidth = width
         let renderResult = nativeRenderView.configure(
@@ -854,14 +867,28 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         // Always key off host layoutWidth — recycled column.bounds lags one pass and
         // caused portrait open to miss → plain flash → later snap.
         let width = snapshotTargetWidth(for: layoutWidth)
+        let allowDiskLookup = allowDisk
+            && (cellDelegate?.messageCellShouldDecodeSnapshotFromDisk(self) ?? true)
         guard let image = AssistantBodySnapshotCache.shared.image(
             messageID: message.id,
             content: message.content,
             fontSize: font,
             appearance: appearance,
             layoutWidth: width,
-            allowDisk: allowDisk
+            allowDisk: allowDiskLookup
         ) else {
+            // Open critical path: disk has a snap but decode is deferred — reserve, not plain/native.
+            if !allowDiskLookup,
+               AssistantBodySnapshotCache.shared.hasDiskOrMemoryImage(
+                   messageID: message.id,
+                   content: message.content,
+                   fontSize: font,
+                   appearance: appearance,
+                   layoutWidth: width
+               ) {
+                reserveSnapshotSlot(preferredColumnHeight: configuredPreferredHeight)
+                return true
+            }
             return false
         }
         let imgW = image.size.width
@@ -1065,14 +1092,30 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                       width: CGFloat,
                                       font: CGFloat,
                                       colors: ThemeColors) -> Bool {
-        let document = NativeMarkdownParser.shared.parse(message.content)
         let style = NativeLayoutStyle(
             width: width,
             bodyFontSize: font,
             appearance: SettingsManager.shared.appearanceMode.rawValue,
             colors: colors
         )
-        return NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil
+        return NativeMessageLayouter.shared.hasCachedLayout(forContent: message.content, style: style)
+    }
+
+    private func applyNativeBodyConstraints(hasThinking: Bool,
+                                            hasSearch: Bool,
+                                            hasImage: Bool) {
+        let anchor = (thinking: hasThinking, search: hasSearch, image: hasImage)
+        if lastNativeBodyAnchor == anchor, nativeBottom.isActive {
+            return
+        }
+        lastNativeBodyAnchor = anchor
+        nativeTopToRole.isActive = false
+        nativeTopToImage.isActive = false
+        nativeTopToThink.isActive = false
+        nativeBottom.isActive = true
+        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
+        else if hasImage { nativeTopToImage.isActive = true }
+        else { nativeTopToRole.isActive = true }
     }
 
     private func hasVisibleAssistantBody() -> Bool {
@@ -1177,14 +1220,18 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
     }
 
-    private func hideNativeRender() {
+    private func hideNativeRender(clearLayout: Bool = true) {
+        let hadLayout = nativeRenderView.layout != nil
         nativeRenderView.isHidden = true
-        nativeRenderView.clear()
+        if clearLayout, hadLayout {
+            nativeRenderView.clear()
+        }
         nativeHeight?.constant = 0
         nativeTopToRole?.isActive = false
         nativeTopToImage?.isActive = false
         nativeTopToThink?.isActive = false
         nativeBottom?.isActive = false
+        lastNativeBodyAnchor = nil
     }
 
     /// Updates the already-bound streaming view without resetting constraints,
@@ -1450,6 +1497,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private func setThinking(visible: Bool, expanded: Bool) {
+        if lastThinkingVisible == visible,
+           lastThinkingExpanded == expanded,
+           thinkingBox.isHidden == !visible {
+            return
+        }
+        lastThinkingVisible = visible
+        lastThinkingExpanded = expanded
         thinkingBox.isHidden = !visible
         thinkingHeader.isHidden = !visible
         thinkingHeaderH.constant = visible ? 32 : 0
@@ -1477,6 +1531,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private func setSearch(visible: Bool, expanded: Bool) {
+        if lastSearchVisible == visible,
+           lastSearchExpanded == expanded,
+           searchBox.isHidden == !visible {
+            return
+        }
+        lastSearchVisible = visible
+        lastSearchExpanded = expanded
         searchBox.isHidden = !visible
         searchHeader.isHidden = !visible
         searchHeaderH.constant = visible ? 32 : 0

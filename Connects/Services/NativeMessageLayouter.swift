@@ -55,6 +55,34 @@ final class NativeMessageLayouter {
         return cache.object(forKey: key as NSString)?.layout
     }
 
+    /// Probe layout cache without parsing markdown into blocks.
+    func hasCachedLayout(contentStamp: String, style: NativeLayoutStyle) -> Bool {
+        let key = "native_layout_v10|final|\(contentStamp)|\(style.keySuffix)"
+        return cache.object(forKey: key as NSString) != nil
+    }
+
+    func cachedLayout(contentStamp: String, style: NativeLayoutStyle) -> NativeMessageLayout? {
+        let key = "native_layout_v10|final|\(contentStamp)|\(style.keySuffix)"
+        return cache.object(forKey: key as NSString)?.layout
+    }
+
+    func hasCachedLayout(forContent content: String, style: NativeLayoutStyle) -> Bool {
+        hasCachedLayout(
+            contentStamp: NativeMarkdownParser.shared.layoutStamp(for: content),
+            style: style
+        )
+    }
+
+    /// Cached final layout height without parsing markdown into blocks.
+    func cachedLayoutHeight(forContent content: String, style: NativeLayoutStyle) -> CGFloat? {
+        let stamp = NativeMarkdownParser.shared.layoutStamp(for: content)
+        let key = "native_layout_v10|final|\(stamp)|\(style.keySuffix)"
+        guard let height = cache.object(forKey: key as NSString)?.layout.size.height, height > 0 else {
+            return nil
+        }
+        return height
+    }
+
     func clear() {
         cache.removeAllObjects()
     }
@@ -535,23 +563,32 @@ final class NativeMessageLayouter {
     private func fragment(_ text: NSAttributedString, frame: CGRect) -> NativeTextFragment {
         var linkRects = [(CGRect, URL)]()
         if text.length > 0 {
-            let storage = NSTextStorage(attributedString: text)
-            let manager = NSLayoutManager()
-            let container = NSTextContainer(size: frame.size)
-            container.lineFragmentPadding = 0
-            container.maximumNumberOfLines = 0
-            manager.addTextContainer(container)
-            storage.addLayoutManager(manager)
-            manager.ensureLayout(for: container)
-            text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, range, _ in
-                guard let url = value as? URL else { return }
-                let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
-                manager.enumerateEnclosingRects(
-                    forGlyphRange: glyphs,
-                    withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
-                    in: container
-                ) { rect, _ in
-                    linkRects.append((rect.offsetBy(dx: frame.minX, dy: frame.minY), url))
+            var hasLink = false
+            text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, _, stop in
+                if value != nil {
+                    hasLink = true
+                    stop.pointee = true
+                }
+            }
+            if hasLink {
+                let storage = NSTextStorage(attributedString: text)
+                let manager = NSLayoutManager()
+                let container = NSTextContainer(size: frame.size)
+                container.lineFragmentPadding = 0
+                container.maximumNumberOfLines = 0
+                manager.addTextContainer(container)
+                storage.addLayoutManager(manager)
+                manager.ensureLayout(for: container)
+                text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+                    guard let url = value as? URL else { return }
+                    let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                    manager.enumerateEnclosingRects(
+                        forGlyphRange: glyphs,
+                        withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                        in: container
+                    ) { rect, _ in
+                        linkRects.append((rect.offsetBy(dx: frame.minX, dy: frame.minY), url))
+                    }
                 }
             }
         }

@@ -40,14 +40,14 @@ final class NativeMessageRenderView: UIView {
                    fontSize: CGFloat,
                    appearance: String,
                    colors: ThemeColors) -> NativeConfigureResult {
-        let document = NativeMarkdownParser.shared.parse(content)
         let style = NativeLayoutStyle(
             width: max(width, 40),
             bodyFontSize: fontSize,
             appearance: appearance,
             colors: colors
         )
-        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)"
+        let contentStamp = NativeMarkdownParser.shared.layoutStamp(for: content)
+        let nextRequestKey = "\(contentStamp)|\(style.keySuffix)"
         if requestKey == nextRequestKey, let current = layout {
             return NativeConfigureResult(
                 height: current.size.height,
@@ -58,10 +58,15 @@ final class NativeMessageRenderView: UIView {
         renderGeneration += 1
         let generation = renderGeneration
 
-        if let final = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
+        if let final = NativeMessageLayouter.shared.cachedLayout(
+            contentStamp: contentStamp,
+            style: style
+        ) {
             apply(final)
             return NativeConfigureResult(height: final.size.height, isProvisional: false)
         }
+
+        let document = NativeMarkdownParser.shared.parse(content)
 
         let formulas = formulaRequests(document)
         hydrateCachedFormulas(formulas, style: style)
