@@ -3,6 +3,7 @@ import Foundation
 extension Notification.Name {
     static let chatFontSizeDidChange = Notification.Name("ConnectsChatFontSizeDidChange")
     static let visibleModelsDidChange = Notification.Name("ConnectsVisibleModelsDidChange")
+    static let renderDebugDidChange = Notification.Name("ConnectsRenderDebugDidChange")
 }
 
 final class SettingsManager {
@@ -143,6 +144,15 @@ final class SettingsManager {
 
     var chatThinkingFontSize: CGFloat {
         chatBodyFontSize - 1.5
+    }
+
+    /// Chat row layout debug borders (column / native / user bubble).
+    var renderDebugOverlayEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "connects_render_debug") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "connects_render_debug")
+            NotificationCenter.default.post(name: .renderDebugDidChange, object: nil)
+        }
     }
 
     var enabledModelIDs: Set<String> {

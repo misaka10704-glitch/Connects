@@ -82,6 +82,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsThinkingToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(thinkingToggled(_:)), name: Notification.Name("ConnectsSearchToggle"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(renderDebugChanged), name: .renderDebugDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(agentsChanged), name: .agentsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
@@ -107,8 +108,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
     private static let renderSchemaKey = "connects_render_schema"
-    // v34: native layouts use actual split-view width and rebind on resize.
-    private static let renderSchemaVersion = 38
+    // v39: native math preview uses TeX fallback instead of blank placeholders.
+    private static let renderSchemaVersion = 41
     private var didMigrateRenderSchema = false
     private var didPerformColdOpenRescue = false
 
@@ -213,7 +214,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 guard let cell = tableView.cellForRow(at: path) as? MessageCell else { continue }
                 cell.contentView.setNeedsLayout()
                 cell.contentView.layoutIfNeeded()
-                cell.configure(with: messages[path.row], preferredHeight: nil)
+                cell.configure(with: messages[path.row], preferredHeight: nil, layoutWidth: currentRenderWidth())
             }
             tableView.beginUpdates()
             tableView.endUpdates()
@@ -247,6 +248,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             _ = NativeMarkdownParser.shared.parse(message.content)
         }
         _ = width
+    }
+
+    private func remeasureRowsPreservingViewport(anchorPath: IndexPath? = nil) {
+        let anchor = anchorPath ?? tableView.indexPathsForVisibleRows?.first
+        guard anchor?.section == 0,
+              let anchor = anchor,
+              anchor.row < tableView.numberOfRows(inSection: 0) else {
+            UIView.performWithoutAnimation {
+                tableView.beginUpdates()
+                tableView.endUpdates()
+            }
+            return
+        }
+        let anchorDelta = tableView.rectForRow(at: anchor).minY - tableView.contentOffset.y
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            tableView.layoutIfNeeded()
+            let target = tableView.rectForRow(at: anchor).minY - anchorDelta
+            let minOffset = -tableView.adjustedContentInset.top
+            let maxOffset = max(
+                minOffset,
+                tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            )
+            tableView.contentOffset.y = min(max(target, minOffset), maxOffset)
+        }
     }
 
     private func reloadTablePreservingViewport() {
@@ -355,20 +382,23 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 heightCacheByConversation[cid] = contentHeights
             }
             let path = IndexPath(row: row, section: 0)
+            let message = messages[row]
+            let layoutWidth = currentRenderWidth()
+            let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
             UIView.performWithoutAnimation {
-                tableView.reloadRows(at: [path], with: .none)
+                if let cell = tableView.cellForRow(at: path) as? MessageCell {
+                    if isSearch {
+                        cell.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
+                    } else {
+                        cell.syncThinkingPresentation(with: message, layoutWidth: layoutWidth)
+                    }
+                } else {
+                    tableView.reloadRows(at: [path], with: .none)
+                }
                 tableView.layoutIfNeeded()
             }
-            // A collapsed/expanded reasoning label changes its intrinsic height
-            // one run-loop after the row is rebound on iOS 12. Re-measure then
-            // so the table never retains the short pre-toggle estimate.
             DispatchQueue.main.async { [weak self] in
-                guard let self = self,
-                      self.tableView.numberOfRows(inSection: 0) > row else { return }
-                UIView.performWithoutAnimation {
-                    self.tableView.beginUpdates()
-                    self.tableView.endUpdates()
-                }
+                self?.remeasureRowsPreservingViewport(anchorPath: path)
             }
             return
         }
@@ -387,6 +417,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         reloadTablePreservingViewport()
         prewarmVisibleRichReplies(for: currentRenderWidth())
+    }
+
+    @objc private func renderDebugChanged() {
+        for case let cell as MessageCell in tableView.visibleCells {
+            cell.refreshRenderDebugOverlay()
+        }
     }
 
     @objc private func visibleModelsChanged() {
@@ -588,7 +624,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             if let cell = cell {
                 if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
-                    cell.configure(with: last, preferredHeight: contentHeights[last.id])
+                    cell.configure(with: last, preferredHeight: contentHeights[last.id], layoutWidth: currentRenderWidth())
                 }
             } else if !readingHistory,
                       path.row < tableView.numberOfRows(inSection: 0) {
@@ -1464,7 +1500,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             UIView.performWithoutAnimation {
                 if let cell = tableView.cellForRow(at: path) as? MessageCell {
                     if !cell.updateStreamingContent(messages[path.row]) {
-                        cell.configure(with: messages[path.row], preferredHeight: nil)
+                        cell.configure(with: messages[path.row], preferredHeight: nil, layoutWidth: currentRenderWidth())
                     }
                 } else {
                     tableView.reloadRows(at: [path], with: .none)
@@ -1910,7 +1946,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                     cell.setCachedImage(img)
                 }
             }
-            cell.configure(with: msg, preferredHeight: contentHeights[msg.id])
+            cell.configure(with: msg, preferredHeight: contentHeights[msg.id], layoutWidth: currentRenderWidth())
         }
         return cell
     }
@@ -1941,19 +1977,57 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 var chrome: CGFloat = 48
                 if msg.hasImage { chrome += 168 }
                 if msg.hasReasoning { chrome += 44 }
+                if msg.hasSearchProcess { chrome += 44 }
                 return layout.size.height + chrome
             }
         }
-        let chars = max(msg.content.count, msg.reasoningContent.isEmpty ? 0 : 40)
+        let reasoningExpanded = msg.hasReasoning && MessageCell.isThinkingExpanded(messageID: msg.id)
+        let reasoningChars = reasoningExpanded
+            ? msg.reasoningContent.count
+            : (msg.reasoningContent.isEmpty ? 0 : 40)
+        let chars = max(msg.content.count, reasoningChars)
         let lines = max(1, chars / 48)
         var rough = CGFloat(36 + lines * 18)
         if msg.hasImage { rough += 168 }
-        if msg.hasReasoning { rough += 36 }
+        if msg.hasReasoning {
+            rough += reasoningExpanded ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 18) : 36
+        }
+        if msg.hasSearchProcess { rough += 36 }
         if msg.role == .assistant && !msg.isStreaming { rough += 28 }
+        if msg.hasReasoning || msg.hasSearchProcess {
+            // Oversized estimates leave permanent blank bands above thinking
+            // headers until a later remeasure on iOS 12.
+            return min(max(rough, 64), 720)
+        }
         // Do not cap a completed answer at a small estimate. iOS 12 can retain
         // that estimate during a cross-chat transition, visibly compressing
         // long replies until a later layout pass happens.
         return min(max(rough, 64), 4_000)
+    }
+
+    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        guard let cell = cell as? MessageCell,
+              let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row],
+              !msg.isStreaming else { return }
+        let layoutWidth = currentRenderWidth()
+        if msg.role == .assistant {
+            cell.ensureNativeLayoutWidth(layoutWidth)
+        } else if msg.role == .user {
+            cell.syncUserPresentation(with: msg, layoutWidth: layoutWidth)
+        }
+        cell.refreshRenderDebugOverlay()
+        guard msg.role == .user || msg.hasReasoning || msg.hasSearchProcess else { return }
+        DispatchQueue.main.async { [weak self, weak cell] in
+            guard let self = self,
+                  let cell = cell,
+                  cell.messageID == msg.id,
+                  cell.window != nil,
+                  !self.tableView.isDragging,
+                  !self.tableView.isDecelerating else { return }
+            let height = cell.measuredContentHeight()
+            guard height > 40 else { return }
+            self.messageCell(cell, didFinishStableRender: height, for: msg.id)
+        }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -2069,15 +2143,16 @@ extension ChatViewController: MessageCellDelegate {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let row = messages.firstIndex(where: { $0.id == messageID }),
               !messages[row].isStreaming else { return }
-        let hasVariableChrome = !messages[row].reasoningContent.isEmpty || messages[row].hasSearchProcess
-        if hasVariableChrome {
+        let message = messages[row]
+        let hasVariableChrome = !message.reasoningContent.isEmpty || message.hasSearchProcess
+        if message.role == .user || hasVariableChrome {
             contentHeights.removeValue(forKey: messageID)
-            return
-        }
-        contentHeights[messageID] = height
-        if let cid = renderedConversationID {
-            heightCacheByConversation[cid] = contentHeights
-            RenderCacheStore.saveHeights(heightCacheByConversation)
+        } else {
+            contentHeights[messageID] = height
+            if let cid = renderedConversationID {
+                heightCacheByConversation[cid] = contentHeights
+                RenderCacheStore.saveHeights(heightCacheByConversation)
+            }
         }
         guard cell.window != nil,
               !tableView.isDragging,
@@ -2085,6 +2160,10 @@ extension ChatViewController: MessageCellDelegate {
         let path = IndexPath(row: row, section: 0)
         let targetRowHeight = height + 20
         guard abs(tableView.rectForRow(at: path).height - targetRowHeight) > 4 else { return }
+        if hasVariableChrome || message.role == .user {
+            remeasureRowsPreservingViewport(anchorPath: path)
+            return
+        }
         let anchor = readingHistory ? tableView.indexPathsForVisibleRows?.first : nil
         let anchorDelta = anchor.map { tableView.rectForRow(at: $0).minY - tableView.contentOffset.y }
         UIView.performWithoutAnimation {

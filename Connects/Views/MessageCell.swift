@@ -107,7 +107,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var nativeTopToImage: NSLayoutConstraint!
     private var nativeTopToThink: NSLayoutConstraint!
     private var nativeBottom: NSLayoutConstraint!
-    private var columnBottom: NSLayoutConstraint!
+    private var columnBottomPin: NSLayoutConstraint!
 
     private var lastHTMLKey: String?
     private var usesWeb = false
@@ -140,8 +140,111 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var displayedStableKey: String?
     /// Native markdown can be configured before UITableView assigns its final
     /// width when switching chats. Keep the source for one deferred remeasure.
+    private var cachedReasoningText = ""
+    private var cachedSearchText = ""
+    private var cachedSearchTitleCore = ""
+    private var cachedImageActivity = false
+    private var cachedThinkingFontSize: CGFloat = 14
+    private var cachedThemeColors: ThemeColors?
+    private var preferredLayoutWidth: CGFloat = 0
     private var nativeMessageForRemeasure: ChatMessage?
     private var lastNativeLayoutWidth: CGFloat = 0
+
+    static func isThinkingExpanded(messageID: String) -> Bool {
+        expandedThinkingIDs.contains(messageID)
+    }
+
+    static func isSearchExpanded(messageID: String) -> Bool {
+        expandedSearchIDs.contains(messageID)
+    }
+
+    func syncThinkingPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
+        guard messageID == message.id else { return }
+        preferredLayoutWidth = layoutWidth
+        let c = DSTheme.c
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        cachedThinkingFontSize = thinkFont
+        cachedThemeColors = c
+        let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedReasoningText = think
+        hasThinking = !think.isEmpty
+        guard hasThinking else { return }
+        thinkingExpanded = MessageCell.expandedThinkingIDs.contains(message.id)
+        populateThinkingBody(
+            expanded: thinkingExpanded,
+            streaming: message.isStreaming,
+            colors: c,
+            thinkFont: thinkFont
+        )
+        setThinking(visible: true, expanded: thinkingExpanded)
+        let title = thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考"
+        thinkingHeader.setTitle(title, for: .normal)
+    }
+
+    func syncSearchPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
+        guard messageID == message.id else { return }
+        preferredLayoutWidth = layoutWidth
+        let c = DSTheme.c
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        cachedThinkingFontSize = thinkFont
+        cachedThemeColors = c
+        let imageActivity = message.hasImageTranscription
+        let search = (imageActivity
+            ? message.imageTranscriptionContent
+            : message.searchProcessContent
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedSearchText = search
+        cachedImageActivity = imageActivity
+        hasSearch = message.hasSearchProcess || imageActivity
+        guard hasSearch else { return }
+        searchExpanded = MessageCell.expandedSearchIDs.contains(message.id)
+        if imageActivity {
+            cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
+        } else {
+            cachedSearchTitleCore = SearchProcessPhase.done.headerTitle
+        }
+        populateSearchBody(expanded: searchExpanded, colors: c, thinkFont: thinkFont)
+        setSearch(visible: true, expanded: searchExpanded)
+        let chevron = searchExpanded ? "▾" : "▸"
+        searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
+    }
+
+    func syncUserPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
+        guard messageID == message.id, message.role == .user else { return }
+        preferredLayoutWidth = layoutWidth
+        let c = DSTheme.c
+        let font = SettingsManager.shared.chatBodyFontSize
+        userLabel.attributedText = nil
+        userLabel.textColor = c.textPrimary
+        userLabel.font = UIFont.systemFont(ofSize: font)
+        let text = message.content.isEmpty && message.hasImage ? nil : message.content
+        if userLabel.text != text {
+            userLabel.text = text
+        }
+        applyUserLayoutWidth()
+        userLabel.setNeedsLayout()
+        userLabel.invalidateIntrinsicContentSize()
+        scheduleMeasuredHeightNotify(for: message.id)
+    }
+
+    func refreshRenderDebugOverlay() {
+        updateRenderDebugOverlay()
+    }
+
+    func ensureNativeLayoutWidth(_ layoutWidth: CGFloat) {
+        guard !nativeRenderView.isHidden,
+              let message = nativeMessageForRemeasure,
+              abs(nativeLayoutWidth(for: layoutWidth) - lastNativeLayoutWidth) > 1 else { return }
+        configureNative(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: !imageViewMsg.isHidden,
+            font: SettingsManager.shared.chatBodyFontSize,
+            colors: DSTheme.c,
+            layoutWidth: layoutWidth
+        )
+    }
 
     /// True when rich mode is active but content is still blank (cold-open race).
     var needsColdOpenRescue: Bool {
@@ -231,6 +334,12 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         webSnapshotView?.isHidden = true
         cachedImage = nil
         imageTranscriptionFailed = false
+        cachedReasoningText = ""
+        cachedSearchText = ""
+        cachedSearchTitleCore = ""
+        cachedImageActivity = false
+        cachedThemeColors = nil
+        preferredLayoutWidth = 0
     }
 
     private var cachedImage: UIImage?
@@ -249,8 +358,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         _ = targetWidth
     }
 
-    func configure(with message: ChatMessage, preferredHeight: CGFloat?) {
+    func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat) {
         messageID = message.id
+        preferredLayoutWidth = layoutWidth
         streamingPresentation = message.isStreaming
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
@@ -283,9 +393,13 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             setThinking(visible: false, expanded: false)
             setSearch(visible: false, expanded: false)
             showActions(false)
+            userLabel.attributedText = nil
             userLabel.textColor = c.textPrimary
             userLabel.font = UIFont.systemFont(ofSize: font)
             userLabel.text = message.content.isEmpty && message.hasImage ? nil : message.content
+            applyUserLayoutWidth()
+            userLabel.setNeedsLayout()
+            userLabel.invalidateIntrinsicContentSize()
 
             assistantTopToRole.isActive = false
             assistantTopToImage.isActive = false
@@ -296,6 +410,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             userBubbleBottomFloor.isActive = true
             userTopToRole.isActive = imageViewMsg.isHidden
             userTopToImage.isActive = !imageViewMsg.isHidden
+            scheduleMeasuredHeightNotify(for: message.id)
             return
         }
 
@@ -315,6 +430,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             ? message.imageTranscriptionContent
             : message.searchProcessContent
         ).trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedSearchText = search
+        cachedImageActivity = imageActivity
         hasSearch = message.hasSearchProcess || imageActivity
         if hasSearch {
             let liveImageActivity = imageActivity && message.imageTranscriptionPhase == .transcribing
@@ -325,45 +442,41 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             } else {
                 searchExpanded = MessageCell.expandedSearchIDs.contains(message.id)
             }
-            setSearch(visible: true, expanded: searchExpanded)
-            let titleCore: String
             if imageActivity {
-                titleCore = message.imageTranscriptionPhase.headerTitle
+                cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
             } else {
-                titleCore = liveSearchActivity
+                cachedSearchTitleCore = liveSearchActivity
                     ? message.searchProcessPhase.headerTitle
                     : SearchProcessPhase.done.headerTitle
             }
+            populateSearchBody(expanded: searchExpanded, colors: c, thinkFont: thinkFont)
+            setSearch(visible: true, expanded: searchExpanded)
             let chevron = searchExpanded ? "▾" : "▸"
-            searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
+            searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
             searchHeader.setTitleColor(c.textSecondary, for: .normal)
             searchBox.backgroundColor = c.surface.withAlphaComponent(0.65)
             searchBox.layer.borderWidth = 0
-            // Populate while collapsed too. Otherwise the first tap can show
-            // the body before the table has rebound the cell, leaving a blank
-            // panel until the user collapses and opens it again.
-            searchBody.attributedText = nil
-            searchBody.textColor = c.textSecondary
-            searchBody.font = UIFont.systemFont(ofSize: thinkFont)
-            searchBody.text = search.isEmpty ? titleCore : search
-            if searchExpanded {
-                searchBody.isHidden = false
-            }
         } else {
             setSearch(visible: false, expanded: false)
         }
 
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedReasoningText = think
+        cachedThinkingFontSize = thinkFont
+        cachedThemeColors = c
         hasThinking = !think.isEmpty
         if hasThinking {
             if message.isStreaming {
-                // Keep live reasoning visible, but do not persist this automatic
-                // expansion. Once streaming finishes the reasoning should
-                // collapse unless the user explicitly opens it.
                 thinkingExpanded = true
             } else {
                 thinkingExpanded = MessageCell.expandedThinkingIDs.contains(message.id)
             }
+            populateThinkingBody(
+                expanded: thinkingExpanded,
+                streaming: message.isStreaming,
+                colors: c,
+                thinkFont: thinkFont
+            )
             setThinking(visible: true, expanded: thinkingExpanded)
             let title = message.isStreaming && message.content.isEmpty
                 ? (thinkingExpanded ? "▾  思考中…" : "▸  思考中…")
@@ -372,21 +485,6 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             thinkingHeader.setTitleColor(c.textSecondary, for: .normal)
             thinkingBox.backgroundColor = c.surface.withAlphaComponent(0.65)
             thinkingBox.layer.borderWidth = 0
-            if thinkingExpanded {
-                if message.isStreaming {
-                    thinkingBody.attributedText = nil
-                    thinkingBody.textColor = c.textSecondary
-                    thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
-                    thinkingBody.text = think
-                } else {
-                    thinkingBody.attributedText = PlainMarkdown.attributed(
-                        think,
-                        bodyFont: UIFont.systemFont(ofSize: thinkFont),
-                        textColor: c.textSecondary,
-                        secondaryColor: c.textTertiary
-                    )
-                }
-            }
         } else {
             setThinking(visible: false, expanded: false)
         }
@@ -444,9 +542,68 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 hasSearch: hasSearch,
                 hasImage: hasImage,
                 font: font,
-                colors: c
+                colors: c,
+                layoutWidth: layoutWidth
             )
         }
+    }
+
+    private func populateSearchBody(expanded: Bool,
+                                    colors: ThemeColors,
+                                    thinkFont: CGFloat) {
+        applySearchLayoutWidth()
+        searchBody.attributedText = nil
+        searchBody.textColor = colors.textSecondary
+        searchBody.font = UIFont.systemFont(ofSize: thinkFont)
+        searchBody.text = cachedSearchText.isEmpty ? cachedSearchTitleCore : cachedSearchText
+        if expanded {
+            searchBody.isHidden = false
+        }
+    }
+
+    private func applySearchLayoutWidth() {
+        let width = max(column.bounds.width - 24, 80)
+        if abs(searchBody.preferredMaxLayoutWidth - width) > 0.5 {
+            searchBody.preferredMaxLayoutWidth = width
+        }
+    }
+
+    private func populateThinkingBody(expanded: Bool,
+                                      streaming: Bool,
+                                      colors: ThemeColors,
+                                      thinkFont: CGFloat) {
+        applyThinkingLayoutWidth()
+        guard expanded else {
+            thinkingBody.attributedText = nil
+            thinkingBody.text = nil
+            return
+        }
+        if streaming {
+            thinkingBody.attributedText = nil
+            thinkingBody.textColor = colors.textSecondary
+            thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
+            thinkingBody.text = cachedReasoningText
+        } else {
+            thinkingBody.attributedText = PlainMarkdown.attributed(
+                cachedReasoningText,
+                bodyFont: UIFont.systemFont(ofSize: thinkFont),
+                textColor: colors.textSecondary,
+                secondaryColor: colors.textTertiary
+            )
+        }
+    }
+
+    private func applyThinkingLayoutWidth() {
+        let width = nativeLayoutWidth()
+        if abs(thinkingBody.preferredMaxLayoutWidth - max(width - 24, 1)) > 0.5 {
+            thinkingBody.preferredMaxLayoutWidth = max(width - 24, 1)
+        }
+    }
+
+    private func nativeLayoutWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
+        let reference = layoutWidth ?? preferredLayoutWidth
+        let cellWidth = max(contentView.bounds.width, bounds.width, reference, 120)
+        return min(DSTheme.bubbleMaxWidth, max(cellWidth - 48, 120))
     }
 
     private func configureNative(message: ChatMessage,
@@ -454,7 +611,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                                  hasSearch: Bool = false,
                                  hasImage: Bool,
                                  font: CGFloat,
-                                 colors: ThemeColors) {
+                                 colors: ThemeColors,
+                                 layoutWidth: CGFloat) {
         parkWeb()
         hideStableRenderedReply()
         assistantLabel.isHidden = true
@@ -472,29 +630,68 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         if hasThinking || hasSearch { nativeTopToThink.isActive = true }
         else if hasImage { nativeTopToImage.isActive = true }
         else { nativeTopToRole.isActive = true }
-        // `column.bounds` is frequently the previous cell's intrinsic width
-        // during cross-chat reuse. Use the cell's actual table width instead;
-        // otherwise a response gets permanently laid out as a narrow column.
-        let available = bounds.width > 1 ? bounds.width - 48 : column.bounds.width
-        let width = min(DSTheme.bubbleMaxWidth, max(available, 120))
+        let width = nativeLayoutWidth(for: layoutWidth)
         nativeMessageForRemeasure = message
         lastNativeLayoutWidth = width
-        nativeHeight.constant = nativeRenderView.configure(
+        let renderResult = nativeRenderView.configure(
             content: message.content,
             width: width,
             fontSize: font,
             appearance: SettingsManager.shared.appearanceMode.rawValue,
             colors: colors
         )
+        nativeHeight.constant = renderResult.height
         nativeRenderView.isHidden = false
+        scheduleMeasuredHeightNotify(for: message.id, allowWhileProvisional: !renderResult.isProvisional)
+    }
+
+    /// Push the column's intrinsic height back to the table. iOS 12 can keep an
+    /// oversized estimated row and stretch this cell unless we remeasure after
+    /// configure — especially for reasoning/search chrome and user bubbles.
+    /// Column content height used for UITableView self-sizing.
+    func measuredContentHeight() -> CGFloat {
+        contentView.layoutIfNeeded()
+        return column.bounds.height
+    }
+
+    private func scheduleMeasuredHeightNotify(for messageID: String,
+                                              allowWhileProvisional: Bool = true) {
+        guard allowWhileProvisional else { return }
+        let id = messageID
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.messageID == message.id else { return }
+            guard let self = self, self.messageID == id else { return }
+            self.contentView.setNeedsLayout()
             self.contentView.layoutIfNeeded()
             let height = self.column.bounds.height
-            if height > 40 {
-                self.cellDelegate?.messageCell(self, didFinishStableRender: height, for: message.id)
-            }
+            guard height > 40 else { return }
+            self.cellDelegate?.messageCell(self, didFinishStableRender: height, for: id)
         }
+    }
+
+    private func userLabelMaxWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
+        let reference = layoutWidth ?? preferredLayoutWidth
+        let cellWidth = max(contentView.bounds.width, bounds.width, reference, 120)
+        let columnWidth = min(DSTheme.bubbleMaxWidth, max(cellWidth - 48, 120))
+        // Bubble keeps >=96pt left margin and 14pt label insets on both sides.
+        return max(columnWidth - 124, 80)
+    }
+
+    private func applyUserLayoutWidth() {
+        let width = userLabelMaxWidth()
+        if abs(userLabel.preferredMaxLayoutWidth - width) > 0.5 {
+            userLabel.preferredMaxLayoutWidth = width
+            userLabel.invalidateIntrinsicContentSize()
+        }
+    }
+
+    private func updateRenderDebugOverlay() {
+        let on = SettingsManager.shared.renderDebugOverlayEnabled
+        column.layer.borderWidth = on ? 1 / UIScreen.main.scale : 0
+        column.layer.borderColor = UIColor.systemRed.withAlphaComponent(0.45).cgColor
+        nativeRenderView.layer.borderWidth = on && !nativeRenderView.isHidden ? 1 / UIScreen.main.scale : 0
+        nativeRenderView.layer.borderColor = UIColor.systemGreen.withAlphaComponent(0.45).cgColor
+        userBubble.layer.borderWidth = on && !userBubble.isHidden ? 1 / UIScreen.main.scale : 0
+        userBubble.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.45).cgColor
     }
 
     private func hideNativeRender() {
@@ -637,7 +834,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             cover.isUserInteractionEnabled = false
             contentView.addSubview(cover)
         }
-        configure(with: message, preferredHeight: preferredHeight)
+        configure(with: message, preferredHeight: preferredHeight, layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth())
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
         let measured = column.bounds.height
@@ -664,7 +861,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             cover.isUserInteractionEnabled = false
             contentView.addSubview(cover)
         }
-        configure(with: message, preferredHeight: preferredHeight)
+        configure(with: message, preferredHeight: preferredHeight, layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth())
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
         let measured = column.bounds.height
@@ -1452,14 +1649,18 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         if abs(searchBody.preferredMaxLayoutWidth - max(w - 24, 1)) > 0.5 {
             searchBody.preferredMaxLayoutWidth = max(w - 24, 1)
         }
-        if abs(userLabel.preferredMaxLayoutWidth - max(w - 108, 1)) > 0.5 {
-            userLabel.preferredMaxLayoutWidth = max(w - 108, 1)
+        let desiredUserLabelWidth = userLabelMaxWidth()
+        if !userBubble.isHidden,
+           abs(userLabel.preferredMaxLayoutWidth - desiredUserLabelWidth) > 0.5 {
+            userLabel.preferredMaxLayoutWidth = desiredUserLabelWidth
+            userLabel.invalidateIntrinsicContentSize()
+            userLabel.setNeedsLayout()
         }
-        let desiredNativeWidth = min(DSTheme.bubbleMaxWidth, max(bounds.width - 48, 120))
+        let desiredNativeWidth = nativeLayoutWidth()
         if !nativeRenderView.isHidden,
            !usesWeb,
            let message = nativeMessageForRemeasure,
-           abs(desiredNativeWidth - lastNativeLayoutWidth) > 12,
+           abs(desiredNativeWidth - lastNativeLayoutWidth) > 1,
            cellDelegate?.messageCellShouldFreezeHeight(self) != true {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self,
@@ -1471,10 +1672,12 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                     hasSearch: self.hasSearch,
                     hasImage: !self.imageViewMsg.isHidden,
                     font: SettingsManager.shared.chatBodyFontSize,
-                    colors: DSTheme.c
+                    colors: DSTheme.c,
+                    layoutWidth: self.preferredLayoutWidth
                 )
             }
         }
+        updateRenderDebugOverlay()
         // Width remasure is owned by ChatVC (rotation / Slide Over) — not here.
         // layoutSubviews fires constantly while scrolling and was causing height thrash.
     }
@@ -1630,6 +1833,16 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         thinkingExpanded.toggle()
         if thinkingExpanded { MessageCell.expandedThinkingIDs.insert(messageID) }
         else { MessageCell.expandedThinkingIDs.remove(messageID) }
+        let c = cachedThemeColors ?? DSTheme.c
+        populateThinkingBody(
+            expanded: thinkingExpanded,
+            streaming: false,
+            colors: c,
+            thinkFont: cachedThinkingFontSize
+        )
+        setThinking(visible: true, expanded: thinkingExpanded)
+        let title = thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考"
+        thinkingHeader.setTitle(title, for: .normal)
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsThinkingToggle"),
             object: nil,
@@ -1650,10 +1863,14 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         searchExpanded.toggle()
         if searchExpanded { MessageCell.expandedSearchIDs.insert(messageID) }
         else { MessageCell.expandedSearchIDs.remove(messageID) }
-        // Apply the expansion immediately; the table reload posted below is
-        // still needed to recompute the row height, but must not be the first
-        // time the body becomes visible.
+        let c = cachedThemeColors ?? DSTheme.c
+        let thinkFont = cachedThinkingFontSize > 0
+            ? cachedThinkingFontSize
+            : SettingsManager.shared.chatThinkingFontSize
+        populateSearchBody(expanded: searchExpanded, colors: c, thinkFont: thinkFont)
         setSearch(visible: true, expanded: searchExpanded)
+        let chevron = searchExpanded ? "▾" : "▸"
+        searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsSearchToggle"),
             object: nil,
@@ -1860,6 +2077,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
         userLabel.translatesAutoresizingMaskIntoConstraints = false
         userLabel.numberOfLines = 0
+        userLabel.lineBreakMode = .byWordWrapping
         userBubble.addSubview(userLabel)
 
         assistantLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1872,16 +2090,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         nativeRenderView.onHeightChange = { [weak self] height in
             guard let self = self, !self.messageID.isEmpty else { return }
             self.nativeHeight.constant = height
-            self.contentView.setNeedsLayout()
-            self.contentView.layoutIfNeeded()
-            let rowHeight = self.column.bounds.height
-            if rowHeight > 40 {
-                self.cellDelegate?.messageCell(
-                    self,
-                    didFinishStableRender: rowHeight,
-                    for: self.messageID
-                )
-            }
+            self.scheduleMeasuredHeightNotify(for: self.messageID)
         }
         column.addSubview(nativeRenderView)
 
@@ -1989,15 +2198,20 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantLabel.setContentHuggingPriority(.required, for: .vertical)
         searchBox.setContentHuggingPriority(.required, for: .vertical)
         thinkingBox.setContentHuggingPriority(.required, for: .vertical)
+        column.setContentHuggingPriority(.required, for: .vertical)
+        column.setContentCompressionResistancePriority(.required, for: .vertical)
+        contentView.setContentHuggingPriority(.required, for: .vertical)
 
-        columnBottom = column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10)
-        columnBottom.priority = UILayoutPriority(750)
-        let columnBottomFloor = contentView.bottomAnchor.constraint(greaterThanOrEqualTo: column.bottomAnchor, constant: 10)
+        // Never stretch the column to fill an oversized UITableView estimate.
+        // That pins action rows to the bottom and leaves blank space above
+        // thinking headers or user bubbles on iOS 12.
+        let columnBottomPin = contentView.bottomAnchor.constraint(equalTo: column.bottomAnchor, constant: 10)
+        columnBottomPin.priority = UILayoutPriority(999)
+        self.columnBottomPin = columnBottomPin
 
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            columnBottom,
-            columnBottomFloor,
+            columnBottomPin,
             column.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             columnWidthFill,
             columnWidthMax,

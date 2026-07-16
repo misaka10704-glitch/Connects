@@ -7,6 +7,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private let appearanceControl = UISegmentedControl(items: AppearanceMode.allCases.map { $0.displayName })
     private let fontSizeControl = UISegmentedControl(items: ["小", "中", "大"])
+    private let renderDebugSwitch = UISwitch()
+    private let renderDebugLabel = UILabel()
     private let deepseekField = UITextField()
     private let kimiField = UITextField()
     private let dashscopeField = UITextField()
@@ -108,6 +110,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
         appearanceControl.tintColor = c.accent
         fontSizeControl.tintColor = c.accent
+        renderDebugLabel.textColor = c.textPrimary
+        renderDebugSwitch.onTintColor = c.accent
         if #available(iOS 13.0, *) {
             appearanceControl.selectedSegmentTintColor = c.accent
             appearanceControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
@@ -162,6 +166,23 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
         contentStack.setCustomSpacing(22, after: fontTip)
+
+        contentStack.addArrangedSubview(makeSectionTitle("开发者"))
+        let debugRow = makeSwitchRow(
+            label: renderDebugLabel,
+            text: "聊天布局调试框（红=列，绿=原生回复，蓝=用户气泡）",
+            sw: renderDebugSwitch,
+            isOn: SettingsManager.shared.renderDebugOverlayEnabled,
+            action: #selector(renderDebugChanged)
+        )
+        contentStack.addArrangedSubview(debugRow)
+        let debugTip = UILabel()
+        debugTip.numberOfLines = 0
+        debugTip.font = DSTheme.bodyFont(size: 13)
+        debugTip.text = "用于排查气泡空白、高度异常等问题。开启后返回聊天页即可看到描边。"
+        footerLabels.append(debugTip)
+        contentStack.addArrangedSubview(debugTip)
+        contentStack.setCustomSpacing(22, after: debugTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("智能体"))
         agentsButton.setTitle("管理智能体", for: .normal)
@@ -349,6 +370,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func fontSizeChanged() {
         SettingsManager.shared.chatFontSizeIndex = fontSizeControl.selectedSegmentIndex
+    }
+
+    @objc private func renderDebugChanged() {
+        SettingsManager.shared.renderDebugOverlayEnabled = renderDebugSwitch.isOn
     }
 
     @objc private func kimiCNChanged() {

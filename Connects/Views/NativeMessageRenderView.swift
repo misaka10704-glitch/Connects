@@ -1,5 +1,11 @@
 import UIKit
 
+struct NativeConfigureResult {
+    let height: CGFloat
+    /// True while iosMath is still warming; row height must not be cached yet.
+    let isProvisional: Bool
+}
+
 final class NativeMessageRenderView: UIView {
     var onHeightChange: ((CGFloat) -> Void)?
     /// Return true when a host view controller handled the link internally.
@@ -8,10 +14,6 @@ final class NativeMessageRenderView: UIView {
     private var layoutKey: String?
     private var requestKey: String?
     private var renderGeneration = 0
-
-    override class var layerClass: AnyClass {
-        CATiledLayer.self
-    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -28,11 +30,6 @@ final class NativeMessageRenderView: UIView {
         backgroundColor = .clear
         contentMode = .redraw
         isUserInteractionEnabled = true
-        if let tiled = layer as? CATiledLayer {
-            tiled.tileSize = CGSize(width: 768, height: 1024)
-            tiled.levelsOfDetail = 1
-            tiled.levelsOfDetailBias = 0
-        }
     }
 
     @discardableResult
@@ -40,7 +37,7 @@ final class NativeMessageRenderView: UIView {
                    width: CGFloat,
                    fontSize: CGFloat,
                    appearance: String,
-                   colors: ThemeColors) -> CGFloat {
+                   colors: ThemeColors) -> NativeConfigureResult {
         let document = NativeMarkdownParser.shared.parse(content)
         let style = NativeLayoutStyle(
             width: max(width, 40),
@@ -50,7 +47,10 @@ final class NativeMessageRenderView: UIView {
         )
         let nextRequestKey = "\(document.stamp)|\(style.keySuffix)"
         if requestKey == nextRequestKey, let current = layout {
-            return current.size.height
+            return NativeConfigureResult(
+                height: current.size.height,
+                isProvisional: isPreviewLayout(current)
+            )
         }
         requestKey = nextRequestKey
         renderGeneration += 1
@@ -58,21 +58,18 @@ final class NativeMessageRenderView: UIView {
 
         if let final = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
             apply(final)
-            return final.size.height
+            return NativeConfigureResult(height: final.size.height, isProvisional: false)
         }
 
         let formulas = formulaRequests(document)
-        if !formulas.isEmpty, formulas.allSatisfy({
-            NativeFormulaRenderer.shared.hasMemoryArtifact(
-                tex: $0.tex,
-                fontSize: style.bodyFontSize * ($0.display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: $0.display
-            )
+        hydrateCachedFormulas(formulas, style: style)
+
+        if formulas.isEmpty || formulas.allSatisfy({ formula in
+            formulaIsReady(formula, style: style)
         }) {
             let final = NativeMessageLayouter.shared.layout(document: document, style: style)
             apply(final)
-            return final.size.height
+            return NativeConfigureResult(height: final.size.height, isProvisional: false)
         }
 
         let preview = NativeMessageLayouter.shared.layout(
@@ -81,19 +78,35 @@ final class NativeMessageRenderView: UIView {
             renderMissingFormulas: false
         )
         apply(preview)
-        guard !formulas.isEmpty else {
-            let final = NativeMessageLayouter.shared.layout(document: document, style: style)
-            apply(final)
-            return final.size.height
+        let pending = formulas.filter { formula in
+            !formulaIsReady(formula, style: style)
         }
         warm(
-            formulas: formulas,
+            formulas: pending,
             index: 0,
             document: document,
             style: style,
             generation: generation
         )
-        return preview.size.height
+        let current = layout
+        return NativeConfigureResult(
+            height: current?.size.height ?? preview.size.height,
+            isProvisional: isPreviewLayout(current)
+        )
+    }
+
+    private func formulaIsReady(_ formula: (tex: String, display: Bool),
+                                style: NativeLayoutStyle) -> Bool {
+        NativeFormulaRenderer.shared.hasMemoryArtifact(
+            tex: formula.tex,
+            fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
+            color: style.colors.textPrimary,
+            display: formula.display
+        )
+    }
+
+    private func isPreviewLayout(_ layout: NativeMessageLayout?) -> Bool {
+        layout?.key.contains("|preview|") == true
     }
 
     func clear() {
@@ -103,6 +116,24 @@ final class NativeMessageRenderView: UIView {
         layout = nil
         setNeedsDisplay()
         invalidateIntrinsicContentSize()
+    }
+
+    private func hydrateCachedFormulas(_ formulas: [(tex: String, display: Bool)],
+                                       style: NativeLayoutStyle) {
+        for formula in formulas {
+            guard NativeFormulaRenderer.shared.hasCachedArtifact(
+                tex: formula.tex,
+                fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: formula.display
+            ) else { continue }
+            _ = NativeFormulaRenderer.shared.artifact(
+                tex: formula.tex,
+                fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: formula.display
+            )
+        }
     }
 
     private func apply(_ result: NativeMessageLayout) {
@@ -127,22 +158,40 @@ final class NativeMessageRenderView: UIView {
             return
         }
         let formula = formulas[index]
+        let fontSize = style.bodyFontSize * (formula.display ? 1.08 : 1)
+        let wasCached = NativeFormulaRenderer.shared.hasMemoryArtifact(
+            tex: formula.tex,
+            fontSize: fontSize,
+            color: style.colors.textPrimary,
+            display: formula.display
+        )
         autoreleasepool {
             _ = NativeFormulaRenderer.shared.artifact(
                 tex: formula.tex,
-                fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
+                fontSize: fontSize,
                 color: style.colors.textPrimary,
                 display: formula.display
             )
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.012) { [weak self] in
-            self?.warm(
+        let nextIndex = index + 1
+        if wasCached {
+            warm(
                 formulas: formulas,
-                index: index + 1,
+                index: nextIndex,
                 document: document,
                 style: style,
                 generation: generation
             )
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+                self?.warm(
+                    formulas: formulas,
+                    index: nextIndex,
+                    document: document,
+                    style: style,
+                    generation: generation
+                )
+            }
         }
     }
 

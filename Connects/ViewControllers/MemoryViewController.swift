@@ -61,12 +61,12 @@ final class MemoryViewController: UIViewController, UITextViewDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard !isEditingMemory else { return }
-        let height = renderedView.configure(content: MemoryStore.shared.assembledMarkdown(),
-                                            width: max(view.bounds.width - 32, 40),
-                                            fontSize: 15,
-                                            appearance: SettingsManager.shared.appearanceMode.rawValue,
-                                            colors: DSTheme.c)
-        renderHeight.constant = height
+        let renderResult = renderedView.configure(content: MemoryStore.shared.assembledMarkdown(),
+                                                  width: max(view.bounds.width - 32, 40),
+                                                  fontSize: 15,
+                                                  appearance: SettingsManager.shared.appearanceMode.rawValue,
+                                                  colors: DSTheme.c)
+        renderHeight.constant = renderResult.height
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }

@@ -31,7 +31,7 @@ final class NativeMessageLayouter {
                 style: NativeLayoutStyle,
                 renderMissingFormulas: Bool = true) -> NativeMessageLayout {
         let phase = renderMissingFormulas ? "final" : "preview"
-        let key = "native_layout_v9|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v10|\(phase)|\(document.stamp)|\(style.keySuffix)"
         if let hit = cache.object(forKey: key as NSString) {
             return hit.layout
         }
@@ -51,7 +51,7 @@ final class NativeMessageLayouter {
     }
 
     func cachedLayout(document: NativeMarkdownDocument, style: NativeLayoutStyle) -> NativeMessageLayout? {
-        let key = "native_layout_v9|final|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v10|final|\(document.stamp)|\(style.keySuffix)"
         return cache.object(forKey: key as NSString)?.layout
     }
 
@@ -256,18 +256,21 @@ final class NativeMessageLayouter {
             case .displayMath(let tex):
                 expectReferencesList = false
                 if !renderMissingFormulas {
-                    let structuralCommands = ["\\frac", "\\dfrac", "\\sum", "\\prod", "\\int", "\\begin"]
-                        .reduce(0) { $0 + tex.components(separatedBy: $1).count - 1 }
-                    let lineCount = max(1, tex.components(separatedBy: "\n").count)
-                    let estimated = min(
-                        220,
-                        max(
-                            72,
-                            style.bodyFontSize
-                                * (3.4 + CGFloat(structuralCommands) * 0.65 + CGFloat(lineCount - 1) * 0.55)
+                    // Preview must stay readable. Reserving blank vertical space
+                    // while iosMath warms looks like random empty lines in chat.
+                    let fallback = NSAttributedString(
+                        string: tex,
+                        attributes: baseAttributes(
+                            font: DSTheme.monoFont(size: style.bodyFontSize),
+                            color: style.colors.textPrimary
                         )
                     )
-                    y += estimated + 18
+                    let height = textHeight(fallback, width: width)
+                    commands.append(.text(fragment(
+                        fallback,
+                        frame: CGRect(x: 0, y: y, width: width, height: height)
+                    )))
+                    y += height + 10
                 } else if let formula = NativeFormulaRenderer.shared.artifact(
                     tex: tex,
                     fontSize: style.bodyFontSize * 1.08,
@@ -493,29 +496,13 @@ final class NativeMessageLayouter {
                     )
                     result.append(NSAttributedString(attachment: attachment))
                 } else {
-                    if renderMissingFormulas {
-                        result.append(NSAttributedString(
-                            string: tex,
-                            attributes: baseAttributes(
-                                font: DSTheme.monoFont(size: font.pointSize),
-                                color: foreground
-                            )
-                        ))
-                    } else {
-                        let attachment = NSTextAttachment()
-                        attachment.image = UIImage()
-                        let estimatedWidth = min(
-                            style.width * 0.92,
-                            max(font.pointSize * 1.8, CGFloat(tex.count) * font.pointSize * 0.5)
+                    result.append(NSAttributedString(
+                        string: tex,
+                        attributes: baseAttributes(
+                            font: DSTheme.monoFont(size: font.pointSize * 0.9),
+                            color: foreground
                         )
-                        attachment.bounds = CGRect(
-                            x: 0,
-                            y: (font.capHeight - font.lineHeight * 1.38) / 2 - 1,
-                            width: estimatedWidth,
-                            height: font.lineHeight * 1.38
-                        )
-                        result.append(NSAttributedString(attachment: attachment))
-                    }
+                    ))
                 }
             case .lineBreak:
                 result.append(NSAttributedString(string: "\n", attributes: baseAttributes(font: font, color: foreground)))

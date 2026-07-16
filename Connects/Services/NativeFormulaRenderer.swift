@@ -180,6 +180,35 @@ final class NativeFormulaRenderer {
         return cache.object(forKey: key as NSString) != nil
     }
 
+    /// Memory or on-disk PNG — lets native chat skip blank preview placeholders.
+    func hasCachedArtifact(tex: String,
+                           fontSize: CGFloat,
+                           color: UIColor,
+                           display: Bool,
+                           scale: CGFloat = UIScreen.main.scale) -> Bool {
+        if hasMemoryArtifact(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            scale: scale
+        ) {
+            return true
+        }
+        let key = cacheKey(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            scale: scale
+        )
+        let stamp = RenderCacheStore.stamp(key)
+        guard let raw = UserDefaults.standard.dictionary(forKey: Self.metadataKey) as? [String: [String: Double]],
+              raw[stamp] != nil else { return false }
+        let path = cacheDirectory().appendingPathComponent(stamp + ".png").path
+        return FileManager.default.fileExists(atPath: path)
+    }
+
     func clearDisk() {
         clear()
         UserDefaults.standard.removeObject(forKey: Self.metadataKey)
