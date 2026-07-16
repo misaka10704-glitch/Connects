@@ -921,7 +921,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         // Capture only cells that are already live native; snapshot cells stay as-is.
         scheduleCaptureVisibleBodySnapshots(layoutWidth: layoutWidth)
-        scheduleLazyNativeUpgrade(layoutWidth: layoutWidth)
+        releaseSnapshotHoldIfSnapshotsHealthy(layoutWidth: layoutWidth)
+    }
+
+    /// Good JPEGs are final paint — release snap-hold immediately; only bad snaps trigger native rescue.
+    private func releaseSnapshotHoldIfSnapshotsHealthy(layoutWidth: CGFloat) {
+        guard holdSnapshotsUntilIdle else { return }
+        guard let messages = ConversationStore.shared.currentConversation?.messages else {
+            holdSnapshotsUntilIdle = false
+            return
+        }
+        let hasBadSnapshot = tableView.visibleCells.contains { cell in
+            guard let assistant = cell as? AssistantMessageCell,
+                  assistant.isShowingBodySnapshot,
+                  !assistant.isReservingBodySnapshot,
+                  let msg = messages.first(where: { $0.id == assistant.messageID }) else { return false }
+            return assistant.shouldAbandonBodySnapshot(for: msg)
+        }
+        if hasBadSnapshot {
+            scheduleLazyNativeUpgrade(layoutWidth: layoutWidth)
+        } else {
+            holdSnapshotsUntilIdle = false
+        }
     }
 
     private func forceSnapOpenToBottom(_ messages: [ChatMessage]) {
@@ -964,14 +985,35 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         suppressHeightRemeasure = true
         lazyNativeUpgradeWork?.cancel()
         prewarmWork?.cancel()
-        // Decode only the newest assistant into RAM (bottom viewport). Extra snaps wait.
-        // Decode bottom assistants before first paint — avoid plain→JPEG flash.
-        let snapHits = AssistantBodySnapshotCache.shared.warmTail(
+        let tailAssistantCount = messages.reversed().prefix(12).filter {
+            $0.role == .assistant && !$0.isStreaming && !$0.content.isEmpty
+        }.count
+        let decodeLimit = min(max(tailAssistantCount, 3), 8)
+        let warmLimit = min(max(tailAssistantCount + 2, 6), 12)
+        // Decode bottom JPEGs off-main before first paint — avoid plain→JPEG flash and open hitch.
+        AssistantBodySnapshotCache.shared.warmTailAsync(
             messages: messages,
             layoutWidth: layoutWidth,
-            limit: 6,
-            decodeLimit: 3
-        )
+            limit: warmLimit,
+            decodeLimit: decodeLimit
+        ) { [weak self] snapHits in
+            self?.finishOpenConversationPaint(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                gen: gen,
+                snapHits: snapHits,
+                warmLimit: warmLimit,
+                decodeLimit: decodeLimit
+            )
+        }
+    }
+
+    private func finishOpenConversationPaint(messages: [ChatMessage],
+                                             layoutWidth: CGFloat,
+                                             gen: UInt,
+                                             snapHits: Int,
+                                             warmLimit: Int,
+                                             decodeLimit: Int) {
         guard gen == openGeneration else { return }
         holdSnapshotsUntilIdle = snapHits > 0
         // Empty/sparse width-bucket disk → cheap estimates under-sum contentSize and
@@ -1012,12 +1054,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   openID == self.currentConversationID else { return }
             let liveWidth = self.currentRenderWidth()
             if abs(liveWidth - laidOutWidth) > AssistantBodySnapshotCache.widthMatchTolerance {
-                _ = AssistantBodySnapshotCache.shared.warmTail(
+                AssistantBodySnapshotCache.shared.warmTailAsync(
                     messages: messages,
                     layoutWidth: liveWidth,
-                    limit: 6,
-                    decodeLimit: 3
-                )
+                    limit: warmLimit,
+                    decodeLimit: decodeLimit
+                ) { [weak self] _ in
+                    guard let self = self,
+                          gen == self.openGeneration,
+                          openID == self.renderedConversationID else { return }
+                    self.bindVisibleBodySnapshots(messages: messages, layoutWidth: liveWidth)
+                    self.revealVisibleActionChrome(messages: messages)
+                    if self.stickToBottom {
+                        self.forceSnapOpenToBottom(messages)
+                    }
+                }
             }
             self.bindVisibleBodySnapshots(messages: messages, layoutWidth: liveWidth)
             self.revealVisibleActionChrome(messages: messages)
@@ -1025,33 +1076,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self.forceSnapOpenToBottom(messages)
             }
             self.revalidateVisibleBodySnapshots()
-            if self.stickToBottom {
-                self.forceSnapOpenToBottom(messages)
-            }
             self.settleOpenConversation(messages: messages, layoutWidth: liveWidth)
             let warmEpoch = AssistantBodySnapshotCache.shared.beginWarmEpoch()
-            DispatchQueue.global(qos: .utility).async {
-                _ = AssistantBodySnapshotCache.shared.warmTail(
-                    messages: messages,
-                    layoutWidth: liveWidth,
-                    limit: 12,
-                    decodeLimit: 4,
-                    epoch: warmEpoch
-                )
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self,
-                          gen == self.openGeneration,
-                          openID == self.renderedConversationID else { return }
-                    self.bindVisibleBodySnapshots(messages: messages, layoutWidth: self.currentRenderWidth())
-                    if self.stickToBottom {
-                        self.forceSnapOpenToBottom(messages)
-                    }
+            AssistantBodySnapshotCache.shared.warmTailAsync(
+                messages: messages,
+                layoutWidth: liveWidth,
+                limit: max(warmLimit, 12),
+                decodeLimit: min(decodeLimit + 2, 10),
+                epoch: warmEpoch
+            ) { [weak self] _ in
+                guard let self = self,
+                      gen == self.openGeneration,
+                      openID == self.renderedConversationID else { return }
+                self.bindVisibleBodySnapshots(messages: messages, layoutWidth: self.currentRenderWidth())
+                if self.stickToBottom {
+                    self.forceSnapOpenToBottom(messages)
                 }
             }
         }
     }
 
-    /// Upgrade snapshot → native one visible cell at a time, only while idle.
+    /// Rescue blank/absurd snapshots only — good JPEGs stay as the final paint.
     private func scheduleLazyNativeUpgrade(layoutWidth: CGFloat) {
         lazyNativeUpgradeWork?.cancel()
         guard holdSnapshotsUntilIdle else { return }
@@ -1066,11 +1111,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self.scheduleLazyNativeUpgrade(layoutWidth: layoutWidth)
                 return
             }
-            let snapshots = self.tableView.visibleCells
-                .compactMap { $0 as? AssistantMessageCell }
-                .filter { $0.isShowingBodySnapshot }
-            guard let next = snapshots.first else {
-                guard gen == self.openGeneration else { return }
+            guard let messages = ConversationStore.shared.currentConversation?.messages else {
+                self.holdSnapshotsUntilIdle = false
+                return
+            }
+            let badSnapshots = self.tableView.visibleCells.compactMap { cell -> AssistantMessageCell? in
+                guard let assistant = cell as? AssistantMessageCell,
+                      assistant.isShowingBodySnapshot,
+                      !assistant.isReservingBodySnapshot,
+                      let msg = messages.first(where: { $0.id == assistant.messageID }),
+                      assistant.shouldAbandonBodySnapshot(for: msg) else { return nil }
+                return assistant
+            }
+            guard let next = badSnapshots.first else {
                 self.holdSnapshotsUntilIdle = false
                 self.scheduleCaptureVisibleBodySnapshots(layoutWidth: layoutWidth)
                 return
@@ -1081,9 +1134,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   openID == self.renderedConversationID else { return }
             _ = next.captureBodySnapshotIfEligible(layoutWidth: layoutWidth)
             guard gen == self.openGeneration else { return }
-            // Keep holding while any snapshot remains; continue after a short yield.
-            if self.tableView.visibleCells.contains(where: { ($0 as? AssistantMessageCell)?.isShowingBodySnapshot == true })
-                || next.isShowingBodySnapshot {
+            let stillBad = self.tableView.visibleCells.contains { cell in
+                guard let assistant = cell as? AssistantMessageCell,
+                      assistant.isShowingBodySnapshot,
+                      !assistant.isReservingBodySnapshot,
+                      let msg = messages.first(where: { $0.id == assistant.messageID }) else { return false }
+                return assistant.shouldAbandonBodySnapshot(for: msg)
+            }
+            if stillBad {
                 self.scheduleLazyNativeUpgrade(layoutWidth: layoutWidth)
             } else {
                 self.holdSnapshotsUntilIdle = false
@@ -1091,7 +1149,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
         lazyNativeUpgradeWork = work
-        // Short delay: blank snaps are rescued in settle; this upgrades the rest at rest.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: work)
     }
 
@@ -1258,13 +1315,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self.forceSnapOpenToBottom(messages)
             }
             // Tail native prewarm is for scroll, not open — wait until snap hold ends.
-            let delay: TimeInterval = self.holdSnapshotsUntilIdle ? 2.0 : 0.6
+            let delay: TimeInterval = self.holdSnapshotsUntilIdle ? 0.8 : 0.4
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self,
                       gen == self.openGeneration,
                       selfID == self.currentConversationID else { return }
                 guard !self.tableView.isDragging, !self.tableView.isDecelerating else { return }
                 guard !self.holdSnapshotsUntilIdle else { return }
+                AssistantMessageLayout.prewarmSwitchTail(
+                    messages: messages,
+                    layoutWidth: layoutWidth,
+                    turnPairLimit: 5
+                )
                 self.scheduleTailLayoutPrewarm(
                     messages: messages,
                     layoutWidth: layoutWidth,

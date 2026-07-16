@@ -210,7 +210,7 @@ final class AssistantBodySnapshotCache {
         let cost = max(1, Int(image.size.width * image.size.height * image.scale * image.scale * 4))
         lock.lock()
         retainedWidthBuckets.insert(bucket)
-        if retainedWidthBuckets.count > 3 {
+        if retainedWidthBuckets.count > 6 {
             retainedWidthBuckets = [bucket]
             memory.removeAllObjects()
         }
@@ -261,6 +261,29 @@ final class AssistantBodySnapshotCache {
             }
         }
         return hits
+    }
+
+    /// Decode tail JPEGs off the main thread, then call `completion` on main.
+    func warmTailAsync(messages: [ChatMessage],
+                       layoutWidth: CGFloat,
+                       limit: Int = 16,
+                       decodeLimit: Int = 6,
+                       epoch: Int? = nil,
+                       completion: @escaping (Int) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(0) }
+                return
+            }
+            let hits = self.warmTail(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                limit: limit,
+                decodeLimit: decodeLimit,
+                epoch: epoch
+            )
+            DispatchQueue.main.async { completion(hits) }
+        }
     }
 
     func removeAll() {

@@ -854,14 +854,28 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         // Always key off host layoutWidth — recycled column.bounds lags one pass and
         // caused portrait open to miss → plain flash → later snap.
         let width = snapshotTargetWidth(for: layoutWidth)
+        let allowDiskLookup = allowDisk
+            && (cellDelegate?.messageCellShouldDecodeSnapshotFromDisk(self) ?? true)
         guard let image = AssistantBodySnapshotCache.shared.image(
             messageID: message.id,
             content: message.content,
             fontSize: font,
             appearance: appearance,
             layoutWidth: width,
-            allowDisk: allowDisk
+            allowDisk: allowDiskLookup
         ) else {
+            // Open critical path: disk has a snap but decode is deferred — reserve, not plain/native.
+            if !allowDiskLookup,
+               AssistantBodySnapshotCache.shared.hasDiskOrMemoryImage(
+                   messageID: message.id,
+                   content: message.content,
+                   fontSize: font,
+                   appearance: appearance,
+                   layoutWidth: width
+               ) {
+                reserveSnapshotSlot(preferredColumnHeight: configuredPreferredHeight)
+                return true
+            }
             return false
         }
         let imgW = image.size.width
