@@ -24,8 +24,11 @@ extension MessageCellDelegate {
 /// ChatGPT-style layout: centered column, user bubble right, assistant prose + collapsible thinking + icon actions.
 final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDelegate {
     static let reuseID = "MessageCell"
+    static let userReuseID = "UserMessageCell"
+    static let assistantReuseID = "AssistantMessageCell"
     /// Vertical space reserved below assistant body for copy / retry / fork.
     static let actionRowReservedHeight: CGFloat = 44
+    private static let actionRowVisibleHeight: CGFloat = 28
     private static var expandedThinkingIDs = Set<String>()
     private static var expandedSearchIDs = Set<String>()
     /// Briefly shown while a recycled WKWebView restores an already-seen reply.
@@ -155,6 +158,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     private var configuredPreferredHeight: CGFloat?
     private var deferredNativeBind: DeferredNativeBind?
     private var nativeMessageForRemeasure: ChatMessage?
+    private var lastActionSignature = ""
 
     private struct DeferredNativeBind {
         let message: ChatMessage
@@ -362,6 +366,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         cachedImage = nil
         imageTranscriptionFailed = false
         deferredNativeBind = nil
+        lastActionSignature = ""
         configuredPreferredHeight = nil
         cachedReasoningText = ""
         cachedSearchText = ""
@@ -421,6 +426,125 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
 
     static func nativeLayoutWidth(for tableLayoutWidth: CGFloat) -> CGFloat {
         min(DSTheme.bubbleMaxWidth, max(tableLayoutWidth - 48, 120))
+    }
+
+    static func hasCachedNativeLayout(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {
+        guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
+            return false
+        }
+        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
+        let document = NativeMarkdownParser.shared.parse(message.content)
+        let style = NativeLayoutStyle(
+            width: width,
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+        return NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil
+    }
+
+    /// Prewarm finished assistant replies for each user-turn row in `userTurnRows`.
+    static func prewarmTurnWindow(messages: [ChatMessage],
+                                  userTurnRows: [Int],
+                                  targetWidth: CGFloat) {
+        var assistants: [ChatMessage] = []
+        for userRow in userTurnRows {
+            let assistantRow = userRow + 1
+            guard assistantRow < messages.count else { continue }
+            let msg = messages[assistantRow]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            assistants.append(msg)
+        }
+        guard !assistants.isEmpty else { return }
+        prewarmLayouts(for: assistants, targetWidth: targetWidth, layoutLimit: assistants.count)
+    }
+
+    /// Column content height from native layout when chrome is fixed (no thinking/search panels).
+    static func seedableContentHeight(for message: ChatMessage,
+                                      layoutWidth: CGFloat,
+                                      reserveActionRow: Bool) -> CGFloat? {
+        guard message.role == .assistant, !message.isStreaming else { return nil }
+        let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !reasoning.isEmpty { return nil }
+        if message.hasSearchProcess || message.hasImageTranscription { return nil }
+
+        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
+        let font = SettingsManager.shared.chatBodyFontSize
+        let colors = DSTheme.c
+        let style = NativeLayoutStyle(
+            width: width,
+            bodyFontSize: font,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: colors
+        )
+
+        var bodyHeight: CGFloat = 0
+        if message.content.isEmpty {
+            return nil
+        } else {
+            let document = NativeMarkdownParser.shared.parse(message.content)
+            if let cached = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
+                bodyHeight = cached.size.height
+            } else {
+                let layout = NativeMessageLayouter.shared.layout(document: document, style: style)
+                bodyHeight = layout.size.height
+            }
+        }
+        guard bodyHeight > 0 else { return nil }
+        return bodyHeight
+    }
+
+    /// Full column content height for `estimatedHeightForRowAt` (not stored as measured).
+    static func estimatedColumnContentHeight(for message: ChatMessage,
+                                             layoutWidth: CGFloat,
+                                             isLastRow: Bool) -> CGFloat? {
+        guard message.role == .assistant, !message.isStreaming else { return nil }
+        var total: CGFloat = 0
+
+        if message.hasSearchProcess || message.hasImageTranscription {
+            let expanded = expandedSearchIDs.contains(message.id)
+            let searchText = message.hasImageTranscription
+                ? message.imageTranscriptionContent
+                : message.searchProcessContent
+            total += expanded
+                ? 36 + CGFloat(max(1, searchText.count / 48)) * 16
+                : 36
+        }
+
+        let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !reasoning.isEmpty {
+            let expanded = expandedThinkingIDs.contains(message.id)
+            total += expanded
+                ? 28 + CGFloat(max(1, reasoning.count / 48)) * 16
+                : 36
+        }
+
+        if message.hasImage {
+            total += 168
+        }
+
+        if let body = seedableContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            reserveActionRow: false
+        ), body > 0 {
+            total += body
+        } else if !message.content.isEmpty {
+            let lines = max(1, message.content.count / 48)
+            total += CGFloat(36 + lines * 18)
+        }
+
+        let showActions = !message.content.isEmpty
+            || !reasoning.isEmpty
+            || message.hasSearchProcess
+            || message.hasImageTranscription
+        if showActions {
+            total += actionRowReservedHeight
+        }
+
+        guard total > 40 else { return nil }
+        _ = isLastRow
+        return total
     }
 
     var hasPendingDeferredNativeRender: Bool {
@@ -600,7 +724,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             canPrev: pager && message.versionIndex > 0,
             canNext: pager && message.versionIndex < message.versions.count - 1
         )
-        styleActionIcons(c)
+        if showAct {
+            styleActionIcons(c)
+        }
 
         let hasImage = !imageViewMsg.isHidden
         // Math/tables still need WKWebView+KaTeX even with deep-thinking.
@@ -608,11 +734,20 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         let needsRich = Self.needsRichRenderer(message.content)
 
         // Re-configuring the same visible row mid-scroll must not wipe painted content.
+        // Plain fallback waiting on deferred native must still be able to upgrade.
         if message.role == .assistant,
            !message.isStreaming,
            previousMessageID == message.id,
            deferHeavyRender,
-           hasVisibleAssistantBody() {
+           hasVisibleAssistantBody(),
+           deferredNativeBind == nil {
+            return
+        }
+        if message.role == .assistant,
+           !message.isStreaming,
+           deferredNativeBind != nil,
+           Self.hasCachedNativeLayout(for: message, layoutWidth: layoutWidth) {
+            applyDeferredNativeRenderIfNeeded()
             return
         }
 
@@ -1909,9 +2044,18 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
     }
 
+    private func actionSignature(on: Bool, versionText: String?, canPrev: Bool, canNext: Bool) -> String {
+        "\(on)|\(versionText ?? "")|\(canPrev)|\(canNext)"
+    }
+
     private func showActions(_ on: Bool, versionText: String? = nil, canPrev: Bool = false, canNext: Bool = false) {
+        let signature = actionSignature(on: on, versionText: versionText, canPrev: canPrev, canNext: canNext)
+        if signature == lastActionSignature, actionRow.isHidden == !on {
+            return
+        }
+        lastActionSignature = signature
         actionRow.isHidden = !on
-        actionHeight.constant = on ? 28 : 0
+        actionHeight.constant = on ? Self.actionRowVisibleHeight : 0
         copyButton.isHidden = !on
         retryButton.isHidden = !on
         forkButton.isHidden = !on
