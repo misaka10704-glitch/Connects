@@ -30,6 +30,8 @@ final class NativeMessageRenderView: UIView {
         backgroundColor = .clear
         contentMode = .redraw
         isUserInteractionEnabled = true
+        // First paint of long replies can hitch the scroll thread; async draw helps iOS 12.
+        layer.drawsAsynchronously = true
     }
 
     @discardableResult

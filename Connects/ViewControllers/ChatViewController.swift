@@ -27,9 +27,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var isReloadingFromStore = false
     private var needsDeferredStoreReload = false
     private var suppressHeightRemeasure = false
-    private var contentHeights: [String: CGFloat] = [:]
-    /// Row heights confirmed by a real cell measure — safe to pin in `heightForRowAt`.
-    private var measuredHeightIDs = Set<String>()
+    private let rowHeights = ChatRowHeightResolver()
     private var heightCacheByConversation: [String: [String: CGFloat]] = [:]
     private var renderedConversationID: String?
     private var stickToBottom = true
@@ -73,14 +71,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var widthInvalidateWork: DispatchWorkItem?
     private static let imageCache = NSCache<NSString, UIImage>()
     private static let attrCache = NSCache<NSString, NSAttributedString>()
-    private static let switchPrewarmMessageWindow = 32
+    private static let switchPrewarmMessageWindow = 40
     private static let switchPrewarmParseCount = 8
-    private static let switchPrewarmLayoutBatch = 4
-    private static let switchPrewarmLayoutTotal = 28
+    private static let switchPrewarmLayoutBatch = 3
+    private static let switchPrewarmLayoutTotal = 20
     /// How many Q&A turns to layout ahead of the visible viewport.
     private static let turnPrewarmCount = 3
-    /// Last assistant row includes copy/retry/fork action chrome.
-    private static let assistantActionRowSlack: CGFloat = MessageCell.actionRowReservedHeight
 
     private var currentConversationID: String? {
         ConversationStore.shared.currentConversationID
@@ -141,7 +137,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private static let renderSchemaKey = "connects_render_schema"
     // v39: native math preview uses TeX fallback instead of blank placeholders.
     // v43: build 131 cheap height seeds clipped rows — remeasure from scratch.
-    private static let renderSchemaVersion = 43
+    private static let renderSchemaVersion = 44
     private var didMigrateRenderSchema = false
     private var didPerformColdOpenRescue = false
 
@@ -165,10 +161,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let ud = UserDefaults.standard
         let v = ud.integer(forKey: Self.renderSchemaKey)
         guard v < Self.renderSchemaVersion else { return }
-        contentHeights.removeAll()
+        rowHeights.clearAll()
         heightCacheByConversation.removeAll()
         pendingHeights.removeAll()
-        measuredHeightIDs.removeAll()
         PlainMarkdown.clearCache()
         NativeMarkdownParser.shared.clear()
         NativeMessageLayouter.shared.clear()
@@ -237,14 +232,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let anchorDelta = anchor.map {
             tableView.rectForRow(at: $0).minY - tableView.contentOffset.y
         }
-        contentHeights.removeAll()
+        rowHeights.clearAll()
         if let cid = renderedConversationID {
             heightCacheByConversation[cid] = [:]
         }
         UIView.performWithoutAnimation {
             tableView.layoutIfNeeded()
             for path in visible where path.row < messages.count {
-                guard let cell = tableView.cellForRow(at: path) as? MessageCell else { continue }
+                guard let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
                 cell.contentView.setNeedsLayout()
                 cell.contentView.layoutIfNeeded()
                 cell.configure(with: messages[path.row], preferredHeight: nil, layoutWidth: currentRenderWidth())
@@ -304,7 +299,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         return Array(turns[start..<end])
     }
 
-    private func applyTurnWindowPrewarm(around anchorRows: [Int]) {
+    private static let syncPrewarmMaxChars = 700
+
+    private func applyTurnWindowPrewarm(around anchorRows: [Int],
+                                        allowSync: Bool = true,
+                                        syncCharLimit: Int = ChatViewController.syncPrewarmMaxChars) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               !anchorRows.isEmpty else { return }
         var userRows = Set<Int>()
@@ -314,52 +313,161 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard !userRows.isEmpty else { return }
         let sortedUserRows = userRows.sorted()
         let layoutWidth = currentRenderWidth()
-        var assistantsToWarm: [ChatMessage] = []
+        var syncTargets: [ChatMessage] = []
+        var asyncTargets: [ChatMessage] = []
         for userRow in sortedUserRows {
             let assistantRow = userRow + 1
             guard assistantRow < messages.count else { continue }
             let assistant = messages[assistantRow]
             guard assistant.role == .assistant, !assistant.isStreaming else { continue }
-            if !MessageCell.hasCachedNativeLayout(for: assistant, layoutWidth: layoutWidth) {
-                assistantsToWarm.append(assistant)
+            if AssistantMessageLayout.hasCachedNativeLayout(for: assistant, layoutWidth: layoutWidth) {
+                continue
+            }
+            if allowSync, assistant.content.count <= syncCharLimit, syncTargets.count < 2 {
+                syncTargets.append(assistant)
+            } else {
+                asyncTargets.append(assistant)
             }
         }
-        if !assistantsToWarm.isEmpty {
-            MessageCell.prewarmLayouts(
-                for: assistantsToWarm,
+        if !syncTargets.isEmpty {
+            AssistantMessageLayout.prewarmLayouts(
+                for: syncTargets,
                 targetWidth: layoutWidth,
-                layoutLimit: assistantsToWarm.count
+                layoutLimit: syncTargets.count
             )
         }
+        if !asyncTargets.isEmpty {
+            scheduleAsyncLayoutPrewarm(assistants: asyncTargets, layoutWidth: layoutWidth)
+        }
     }
 
-    private func rowHeightFromContent(_ contentHeight: CGFloat,
-                                      for msg: ChatMessage,
-                                      isLastRow: Bool) -> CGFloat {
-        var total = contentHeight + 20
-        if isLastRow, msg.role == .assistant, !msg.isStreaming {
-            total = max(total, contentHeight + 20 + Self.assistantActionRowSlack)
+    /// Layout replies off the scroll critical path (one assistant per runloop turn).
+    private func scheduleAsyncLayoutPrewarm(assistants: [ChatMessage], layoutWidth: CGFloat) {
+        guard !assistants.isEmpty else { return }
+        let openID = renderedConversationID
+        var remaining = assistants
+        func pump() {
+            guard openID == self.renderedConversationID,
+                  openID == self.currentConversationID,
+                  !remaining.isEmpty else { return }
+            let scrolling = tableView.isDragging || tableView.isDecelerating
+            let nextIndex: Int?
+            if scrolling {
+                // While scrolling, only warm short replies; defer long ones until idle.
+                nextIndex = remaining.firstIndex { $0.content.count <= Self.syncPrewarmMaxChars }
+                if nextIndex == nil {
+                    let work = DispatchWorkItem { pump() }
+                    prewarmWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+                    return
+                }
+            } else {
+                nextIndex = remaining.startIndex
+            }
+            guard let idx = nextIndex else { return }
+            let next = remaining.remove(at: idx)
+            AssistantMessageLayout.prewarmLayouts(
+                for: [next],
+                targetWidth: layoutWidth,
+                layoutLimit: 1
+            )
+            if let messages = ConversationStore.shared.currentConversation?.messages,
+               let row = messages.firstIndex(where: { $0.id == next.id }),
+               !rowHeights.isCommitted(next.id),
+               let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                   for: next,
+                   layoutWidth: layoutWidth,
+                   isLastRow: row == messages.count - 1,
+                   allowSyncLayout: false
+               ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: next.id, allowShrink: true)
+            }
+            if !remaining.isEmpty {
+                let work = DispatchWorkItem { pump() }
+                prewarmWork = work
+                DispatchQueue.main.async(execute: work)
+            }
         }
-        return total
+        let work = DispatchWorkItem { pump() }
+        prewarmWork = work
+        DispatchQueue.main.async(execute: work)
     }
 
-    private func estimatedTableRowHeight(for msg: ChatMessage, row: Int, messageCount: Int) -> CGFloat {
-        let isLast = row == messageCount - 1
-        if measuredHeightIDs.contains(msg.id), let h = contentHeights[msg.id], h > 40 {
-            return rowHeightIncrement(for: msg, isLastRow: isLast)
-        }
-        let layoutWidth = currentRenderWidth()
-        if let column = MessageCell.estimatedColumnContentHeight(
+    private func resolvedRowHeight(for msg: ChatMessage, row: Int, messageCount: Int) -> CGFloat {
+        rowHeights.rowHeight(
             for: msg,
-            layoutWidth: layoutWidth,
-            isLastRow: isLast
-        ), column > 40 {
-            return rowHeightFromContent(column, for: msg, isLastRow: isLast)
+            row: row,
+            messageCount: messageCount,
+            layoutWidth: currentRenderWidth()
+        )
+    }
+
+    /// While scrolling, uncommitted assistant rows use plain fallback height so row edge = painted plain body.
+    private func scrollAwareRowHeight(for msg: ChatMessage, row: Int, messageCount: Int) -> CGFloat {
+        let layoutWidth = currentRenderWidth()
+        let scrolling = tableView.isDragging || tableView.isDecelerating
+        if scrolling,
+           msg.role == .assistant,
+           !msg.isStreaming,
+           !rowHeights.isCommitted(msg.id),
+           let plain = AssistantMessageLayout.plainFallbackColumnContentHeight(
+               for: msg,
+               layoutWidth: layoutWidth
+           ), plain > 40 {
+            return plain + ChatRowHeightResolver.cellVerticalMargin
         }
-        if let h = contentHeights[msg.id], h > 40 {
-            return rowHeightIncrement(for: msg, isLastRow: isLast)
+        return resolvedRowHeight(for: msg, row: row, messageCount: messageCount)
+    }
+
+    /// Symmetric rows around the viewport — prewarm native layouts before Q↔A enters view.
+    private func scrollLookaheadRows(in messages: [ChatMessage]) -> [Int] {
+        let visible = tableView.indexPathsForVisibleRows ?? []
+        guard !visible.isEmpty else { return [] }
+        var rows = Set(visible.map(\.row))
+        let span = Self.turnPrewarmCount * 2 + 2
+        if let minRow = visible.map(\.row).min(), let maxRow = visible.map(\.row).max() {
+            for delta in 1...span {
+                rows.insert(max(0, minRow - delta))
+                rows.insert(min(messages.count - 1, maxRow + delta))
+            }
         }
-        return cheapEstimatedHeight(for: msg)
+        return rows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+    }
+
+    /// Prewarm Q↔A native layouts at drag start — short sync, long async (no contentSize snap).
+    private func prewarmScrollLookahead(messages: [ChatMessage], layoutWidth: CGFloat) {
+        var syncBatch: [ChatMessage] = []
+        var asyncBatch: [ChatMessage] = []
+        for row in scrollLookaheadRows(in: messages) {
+            guard row >= 0, row < messages.count else { continue }
+            let candidates: [ChatMessage]
+            if messages[row].role == .user, row + 1 < messages.count,
+               messages[row + 1].role == .assistant, !messages[row + 1].isStreaming {
+                candidates = [messages[row + 1]]
+            } else if messages[row].role == .assistant, !messages[row].isStreaming {
+                candidates = [messages[row]]
+            } else {
+                continue
+            }
+            for msg in candidates {
+                if AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth) {
+                    continue
+                }
+                if msg.content.count <= Self.syncPrewarmMaxChars, syncBatch.count < 1 {
+                    syncBatch.append(msg)
+                } else {
+                    asyncBatch.append(msg)
+                }
+            }
+        }
+        if !syncBatch.isEmpty {
+            AssistantMessageLayout.prewarmLayouts(
+                for: syncBatch,
+                targetWidth: layoutWidth,
+                layoutLimit: syncBatch.count
+            )
+        }
+        scheduleAsyncLayoutPrewarm(assistants: asyncBatch, layoutWidth: layoutWidth)
     }
 
     /// Rows about to enter the viewport — `turnPrewarmCount` turns ahead in scroll direction.
@@ -404,13 +512,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func upgradeVisibleDeferredNativeCells() {
-        for case let cell as MessageCell in tableView.visibleCells where cell.hasPendingDeferredNativeRender {
+        guard !tableView.isDragging, !tableView.isDecelerating else { return }
+        for case let cell as AssistantMessageCell in tableView.visibleCells where cell.hasPendingDeferredNativeRender {
             cell.applyDeferredNativeRenderIfNeeded()
         }
     }
 
     private func remeasureRowsPreservingViewport(anchorPath: IndexPath? = nil) {
-        let anchor = anchorPath ?? tableView.indexPathsForVisibleRows?.first
+        let visible = tableView.indexPathsForVisibleRows ?? []
+        let anchor = anchorPath ?? visible.min(by: { $0.row < $1.row })
         guard anchor?.section == 0,
               let anchor = anchor,
               anchor.row < tableView.numberOfRows(inSection: 0) else {
@@ -433,31 +543,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             )
             tableView.contentOffset.y = min(max(target, minOffset), maxOffset)
         }
-    }
-
-    private func cheapEstimatedHeight(for msg: ChatMessage) -> CGFloat {
-        if msg.role == .user {
-            let lines = max(1, msg.content.count / 28)
-            return min(CGFloat(52 + lines * 22), 220)
-        }
-        let reasoningExpanded = msg.hasReasoning && MessageCell.isThinkingExpanded(messageID: msg.id)
-        let reasoningChars = reasoningExpanded
-            ? msg.reasoningContent.count
-            : (msg.reasoningContent.isEmpty ? 0 : 40)
-        let chars = max(msg.content.count, reasoningChars)
-        let lines = max(1, chars / 48)
-        var rough = CGFloat(36 + lines * 18)
-        if msg.hasImage { rough += 168 }
-        if msg.hasReasoning {
-            rough += reasoningExpanded
-                ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 18) : 36
-        }
-        if msg.hasSearchProcess || msg.hasImageTranscription { rough += 36 }
-        if msg.role == .assistant && !msg.isStreaming { rough += 28 }
-        if msg.hasReasoning || msg.hasSearchProcess || msg.hasImageTranscription {
-            return min(max(rough, 64), 720)
-        }
-        return min(max(rough, 64), 4_000)
     }
 
     private func isViewportPinned() -> Bool {
@@ -492,42 +577,217 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    private func rowHeightIncrement(for msg: ChatMessage, isLastRow: Bool) -> CGFloat {
-        if let h = contentHeights[msg.id], h > 40 {
-            var total = h + 20
-            if isLastRow, msg.role == .assistant, !msg.isStreaming {
-                total = max(total, h + 20 + Self.assistantActionRowSlack)
-            }
-            return total
-        }
-        return cheapEstimatedHeight(for: msg)
+    /// Pin viewport to the real table content bottom (uses contentSize, not resolver sum).
+    private func snapTableContentOffsetToBottom() {
+        let inset = tableView.adjustedContentInset
+        let minY = -inset.top
+        guard tableView.bounds.height > 0 else { return }
+        let maxY = max(minY, tableView.contentSize.height + inset.bottom - tableView.bounds.height)
+        tableView.contentOffset.y = maxY
     }
 
-    /// Scroll so the last row's bottom edge is visible — never force maxY (clips action buttons).
+    private func scrollToLastRowReliable(_ messages: [ChatMessage]) {
+        guard !messages.isEmpty else { return }
+        let last = IndexPath(row: messages.count - 1, section: 0)
+        if last.row < tableView.numberOfRows(inSection: 0) {
+            tableView.scrollToRow(at: last, at: .bottom, animated: false)
+        }
+        snapTableContentOffsetToBottom()
+    }
+
+    /// Scroll so the last row sits flush above the input chrome.
     private func scrollToLastRowBottom() {
         guard !isViewportPinned() else { return }
-        guard let conv = ConversationStore.shared.currentConversation, !conv.messages.isEmpty else { return }
-        let lastRow = min(conv.messages.count - 1, tableView.numberOfRows(inSection: 0) - 1)
-        guard lastRow >= 0 else { return }
-        let path = IndexPath(row: lastRow, section: 0)
-        tableView.layoutIfNeeded()
-        tableView.scrollToRow(at: path, at: .bottom, animated: false)
-        tableView.layoutIfNeeded()
-        let rowRect = tableView.rectForRow(at: path)
-        let visibleBottom = tableView.contentOffset.y
-            + tableView.bounds.height
-            - tableView.adjustedContentInset.bottom
-        if rowRect.maxY > visibleBottom + 0.5 {
-            let minY = -tableView.adjustedContentInset.top
-            let maxY = max(
-                minY,
-                tableView.contentSize.height
-                    - tableView.bounds.height
-                    + tableView.adjustedContentInset.bottom
-            )
-            tableView.contentOffset.y = min(max(tableView.contentOffset.y + (rowRect.maxY - visibleBottom), minY), maxY)
-        }
+        guard let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty else { return }
+        snapTableContentOffsetToBottom()
         scheduleUpdateTurnContextBar()
+    }
+
+    /// Pin heights from layout cache only (never sync-layout). Safe during open / scroll.
+    @discardableResult
+    private func commitCachedLayoutHeights(messages: [ChatMessage],
+                                           layoutWidth: CGFloat,
+                                           rows: [Int],
+                                           syncLayoutBudget: Int = 0) -> Bool {
+        let count = messages.count
+        var budget = syncLayoutBudget
+        var changed = false
+        for row in rows {
+            guard row >= 0, row < count else { continue }
+            let msg = messages[row]
+            guard !msg.isStreaming, !rowHeights.isCommitted(msg.id) else { continue }
+            if msg.role == .user,
+               let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+                   for: msg,
+                   layoutWidth: layoutWidth
+               ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
+                changed = true
+                continue
+            }
+            guard msg.role == .assistant else { continue }
+            if AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth),
+               let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                   for: msg,
+                   layoutWidth: layoutWidth,
+                   isLastRow: row == count - 1,
+                   allowSyncLayout: false
+               ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
+                changed = true
+                continue
+            }
+            guard budget > 0 else { continue }
+            if let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                for: msg,
+                layoutWidth: layoutWidth,
+                isLastRow: row == count - 1,
+                allowSyncLayout: true
+            ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
+                changed = true
+                budget -= 1
+            }
+        }
+        return changed
+    }
+
+    /// After first paint: pin visible measured heights, then async-warm history above the fold.
+    private func settleOpenConversation(messages: [ChatMessage], layoutWidth: CGFloat) {
+        guard !messages.isEmpty,
+              !tableView.isDragging,
+              !tableView.isDecelerating else { return }
+        let visible = tableView.indexPathsForVisibleRows ?? []
+        for path in visible where path.row < messages.count {
+            let msg = messages[path.row]
+            guard !msg.isStreaming,
+                  let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
+            if let assistant = cell as? AssistantMessageCell {
+                assistant.applyDeferredNativeRenderIfNeeded()
+            }
+            let measured = cell.measuredContentHeight()
+            if measured > 40 {
+                rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: true)
+            }
+        }
+        let minRow = visible.map(\.row).min() ?? max(0, messages.count - 1)
+        // Warm a deep history window upward so the first Q↔A crossings are cache-ready.
+        let historyStart = max(0, minRow - 36)
+        var historyAssistants: [ChatMessage] = []
+        for row in stride(from: minRow, through: historyStart, by: -1) {
+            let msg = messages[row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            if !AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth) {
+                historyAssistants.append(msg)
+            } else if !rowHeights.isCommitted(msg.id),
+                      let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                          for: msg,
+                          layoutWidth: layoutWidth,
+                          isLastRow: row == messages.count - 1,
+                          allowSyncLayout: false
+                      ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
+            }
+        }
+        // One short sync warm for the nearest upward assistant only.
+        if let nearest = historyAssistants.first(where: { $0.content.count <= Self.syncPrewarmMaxChars }) {
+            AssistantMessageLayout.prewarmLayouts(
+                for: [nearest],
+                targetWidth: layoutWidth,
+                layoutLimit: 1
+            )
+            historyAssistants.removeAll { $0.id == nearest.id }
+            if let row = messages.firstIndex(where: { $0.id == nearest.id }),
+               let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                   for: nearest,
+                   layoutWidth: layoutWidth,
+                   isLastRow: row == messages.count - 1,
+                   allowSyncLayout: false
+               ), column > 40 {
+                rowHeights.commitMeasured(columnHeight: column, messageID: nearest.id, allowShrink: true)
+            }
+        }
+        scheduleAsyncLayoutPrewarm(assistants: historyAssistants, layoutWidth: layoutWidth)
+        if stickToBottom, !isViewportPinned() {
+            scrollToLastRowReliable(messages)
+        }
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
+        }
+    }
+
+    /// Show bottom immediately from disk heights — defer layout work off the open critical path.
+    private func openConversationAtBottom(messages: [ChatMessage], layoutWidth: CGFloat) {
+        guard !messages.isEmpty else { return }
+        tableView.reloadData()
+        tableView.layoutIfNeeded()
+        scrollToLastRowReliable(messages)
+        pendingOpenAtBottom = false
+        suppressHeightRemeasure = false
+        let openID = renderedConversationID
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  openID == self.renderedConversationID,
+                  openID == self.currentConversationID else { return }
+            self.settleOpenConversation(messages: messages, layoutWidth: layoutWidth)
+        }
+    }
+
+    private func seedDisplayFromLayoutCache(for message: ChatMessage,
+                                            row: Int,
+                                            messageCount: Int,
+                                            layoutWidth: CGFloat) {
+        if message.role == .user,
+           let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+               for: message,
+               layoutWidth: layoutWidth
+           ), column > 40 {
+            rowHeights.updateDisplayEstimate(columnHeight: column, messageID: message.id)
+            return
+        }
+        guard message.role == .assistant, !message.isStreaming else { return }
+        if let column = AssistantMessageLayout.estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: row == messageCount - 1,
+            allowSyncLayout: false
+        ), column > 40 {
+            rowHeights.updateDisplayEstimate(columnHeight: column, messageID: message.id)
+        }
+    }
+
+    /// Match UITableView row heights to measured column heights (grow or shrink).
+    private func reconcileVisibleRowHeights(preserveBottom: Bool) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let paths = tableView.indexPathsForVisibleRows ?? []
+        guard !paths.isEmpty else { return }
+        var changed = false
+        for path in paths {
+            guard path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard !msg.isStreaming else { continue }
+            guard let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
+            let measured = cell.measuredContentHeight()
+            guard measured > 40 else { continue }
+            let prior = rowHeights.bestKnownColumnHeight(for: msg.id)
+            guard abs(prior - measured) > 3 else { continue }
+            rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: true)
+            changed = true
+        }
+        guard changed else { return }
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
+            scheduleHeightCacheSave()
+        }
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            if preserveBottom, stickToBottom, !isViewportPinned() {
+                scrollToLastRowReliable(messages)
+            } else if isViewportPinned() {
+                schedulePinnedRemeasure()
+            }
+        }
     }
 
     /// Pin the table to the real content bottom so action buttons on the last reply stay visible.
@@ -546,8 +806,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func hydrateDeferredNativeRenders(priorityBottomCount: Int? = nil) {
-        var pending: [(row: Int, cell: MessageCell)] = []
-        for case let cell as MessageCell in tableView.visibleCells {
+        var pending: [(row: Int, cell: AssistantMessageCell)] = []
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard cell.hasPendingDeferredNativeRender,
                   let path = tableView.indexPath(for: cell) else { continue }
             pending.append((path.row, cell))
@@ -607,8 +867,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func invalidateExpandedChromeHeights() {
-        for messageID in MessageCell.expandedChromeMessageIDs() {
-            contentHeights.removeValue(forKey: messageID)
+        for messageID in AssistantMessageLayout.expandedChromeMessageIDs() {
+            rowHeights.invalidate(messageID: messageID)
         }
     }
 
@@ -624,60 +884,66 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateAttachAvailability()
         updateTitleFromConversation()
         syncStreamingChrome()
-        suppressHeightRemeasure = false
         refreshSwitchChromeImmediate()
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self,
                   selfID == self.currentConversationID else { return }
-            self.hydrateDeferredNativeRenders()
-            if self.stickToBottom, !self.isViewportPinned() {
-                self.scrollToLastRowBottom()
+            if self.stickToBottom, !self.isViewportPinned(), !messages.isEmpty {
+                self.scrollToLastRowReliable(messages)
             }
-            self.pendingOpenAtBottom = false
-            self.scheduleTailLayoutPrewarm(
-                messages: messages,
-                layoutWidth: layoutWidth,
-                conversationID: selfID
-            )
+            // History async warm already started in settleOpenConversation; only top up if idle.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self = self, selfID == self.currentConversationID else { return }
+                guard !self.tableView.isDragging, !self.tableView.isDecelerating else { return }
+                self.scheduleTailLayoutPrewarm(
+                    messages: messages,
+                    layoutWidth: layoutWidth,
+                    conversationID: selfID
+                )
+            }
         }
     }
 
     private func scheduleTailLayoutPrewarm(messages: [ChatMessage],
                                            layoutWidth: CGFloat,
                                            conversationID: String) {
-        prewarmWork?.cancel()
+        guard conversationID == renderedConversationID,
+              conversationID == currentConversationID else { return }
         let tail = Array(messages.suffix(Self.switchPrewarmMessageWindow))
         let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
         guard !assistants.isEmpty else { return }
+        // Do not cancel in-flight history warm from settleOpen — merge into the async pump.
+        scheduleAsyncLayoutPrewarm(assistants: assistants, layoutWidth: layoutWidth)
+    }
 
-        var cursor = 0
-        let layoutCap: Int
-        if messages.count > 48 {
-            layoutCap = 12
-        } else if messages.count > 28 {
-            layoutCap = 8
-        } else {
-            layoutCap = Self.switchPrewarmLayoutTotal
+    /// After background prewarm, pin layout heights while idle (no scroll gesture).
+    private func commitIdlePrewarmedHeights(messages: [ChatMessage],
+                                            layoutWidth: CGFloat,
+                                            assistants: [ChatMessage]) {
+        guard !tableView.isDragging, !tableView.isDecelerating else { return }
+        let count = messages.count
+        var changed = false
+        for msg in assistants where !msg.isStreaming && !rowHeights.isCommitted(msg.id) {
+            guard let row = messages.firstIndex(where: { $0.id == msg.id }) else { continue }
+            guard AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth),
+                  let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                      for: msg,
+                      layoutWidth: layoutWidth,
+                      isLastRow: row == count - 1,
+                      allowSyncLayout: false
+                  ), column > 40 else { continue }
+            rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
+            changed = true
         }
-        let limit = min(assistants.count, layoutCap)
-        func pump() {
-            guard conversationID == self.renderedConversationID,
-                  conversationID == self.currentConversationID else { return }
-            let end = min(cursor + Self.switchPrewarmLayoutBatch, limit)
-            guard cursor < end else { return }
-            MessageCell.prewarmLayouts(
-                for: Array(assistants[cursor..<end]),
-                targetWidth: layoutWidth
-            )
-            cursor = end
-            if cursor < limit {
-                let work = DispatchWorkItem { pump() }
-                prewarmWork = work
-                DispatchQueue.main.async(execute: work)
-            }
+        guard changed else { return }
+        if let cid = renderedConversationID {
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
         }
-        pump()
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        }
     }
 
     private func scheduleUpdateTurnContextBar() {
@@ -800,7 +1066,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         )
 
         var targetY: CGFloat
-        if let cell = tableView.cellForRow(at: path) as? MessageCell,
+        if let cell = tableView.cellForRow(at: path) as? UserMessageCell,
            let bubbleY = cell.userBubbleTop(in: tableView) {
             targetY = bubbleY - gap
         } else {
@@ -822,7 +1088,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         var offset: CGFloat = 0
         let end = min(row, messages.count)
         for i in 0..<end {
-            offset += rowHeightIncrement(for: messages[i], isLastRow: false)
+            offset += resolvedRowHeight(for: messages[i], row: i, messageCount: messages.count)
         }
         return offset
     }
@@ -988,21 +1254,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             // A cached row height cannot be shared by expanded and collapsed
             // reasoning states. Reusing the expanded height after collapse left
             // several screens of empty space on iOS 12.
-            contentHeights.removeValue(forKey: mid)
+            rowHeights.invalidate(messageID: mid)
             pendingHeights.removeValue(forKey: mid)
             if let cid = renderedConversationID {
-                heightCacheByConversation[cid] = contentHeights
+                heightCacheByConversation[cid] = rowHeights.exportPersistable()
             }
             let path = IndexPath(row: row, section: 0)
             let message = messages[row]
             let layoutWidth = currentRenderWidth()
             let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
             UIView.performWithoutAnimation {
-                if let cell = tableView.cellForRow(at: path) as? MessageCell {
+                if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
                     cell.finishChromeToggleLayout()
                 } else {
                     if isSearch {
-                        (tableView.cellForRow(at: path) as? MessageCell)?.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
+                        (tableView.cellForRow(at: path) as? AssistantMessageCell)?.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
                     }
                     tableView.reloadRows(at: [path], with: .none)
                 }
@@ -1018,7 +1284,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         PlainMarkdown.clearCache()
         NativeMessageLayouter.shared.clear()
         NativeFormulaRenderer.shared.clear()
-        contentHeights.removeAll()
+        rowHeights.clearAll()
         pendingHeights.removeAll()
         if let cid = renderedConversationID {
             heightCacheByConversation[cid] = [:]
@@ -1028,7 +1294,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func renderDebugChanged() {
-        for case let cell as MessageCell in tableView.visibleCells {
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
             cell.refreshRenderDebugOverlay()
         }
     }
@@ -1081,7 +1347,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @objc private func imageTranscriptionUpdated(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
-        contentHeights.removeAll()
+        rowHeights.clearAll()
         tableView.reloadData()
         refreshContextUsage()
     }
@@ -1122,15 +1388,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let path = IndexPath(row: messages.count - 1, section: 0)
         // Streaming reasoning is expanded and can be thousands of points tall.
         // Never seed the finished row with that transient geometry.
-        contentHeights.removeValue(forKey: last.id)
+        rowHeights.invalidate(messageID: last.id)
         pendingHeights.removeValue(forKey: last.id)
-        if let visibleCell = tableView.cellForRow(at: path) as? MessageCell,
+        if let visibleCell = tableView.cellForRow(at: path) as? AssistantMessageCell,
            visibleCell.messageID == last.id {
             if let measured = visibleCell.transitionToFinishedPlainRendering(
                 last,
-                preferredHeight: contentHeights[last.id]
+                preferredHeight: rowHeights.committedColumnHeight(for: last.id)
             ) {
-                contentHeights[last.id] = measured
+                rowHeights.commit(columnHeight: measured, messageID: last.id)
             }
             UIView.performWithoutAnimation {
                 tableView.beginUpdates()
@@ -1229,14 +1495,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let path = IndexPath(row: messages.count - 1, section: 0)
         UIView.performWithoutAnimation {
-            var cell = tableView.cellForRow(at: path) as? MessageCell
+            var cell = tableView.cellForRow(at: path) as? AssistantMessageCell
             if cell == nil, !readingHistory {
                 tableView.layoutIfNeeded()
-                cell = tableView.cellForRow(at: path) as? MessageCell
+                cell = tableView.cellForRow(at: path) as? AssistantMessageCell
             }
             if let cell = cell {
                 if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
-                    cell.configure(with: last, preferredHeight: contentHeights[last.id], layoutWidth: currentRenderWidth())
+                    cell.configure(with: last, preferredHeight: rowHeights.committedColumnHeight(for: last.id), layoutWidth: currentRenderWidth())
                 }
             } else if !readingHistory,
                       path.row < tableView.numberOfRows(inSection: 0) {
@@ -1311,18 +1577,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         // Persist heights for the conversation we are leaving (debounced, off hot path).
         if let old = renderedConversationID {
-            heightCacheByConversation[old] = contentHeights
+            heightCacheByConversation[old] = rowHeights.exportPersistable()
             DispatchQueue.main.async { [weak self] in
                 self?.saveHeightCaches()
             }
         }
         let newID = ConversationStore.shared.currentConversationID
         let conversationChanged = newID != renderedConversationID
+        let layoutWidth = currentRenderWidth()
         if conversationChanged {
             StableRichRenderer.shared.cancelPendingJobs()
-            contentHeights = heightCacheByConversation[newID ?? ""] ?? [:]
+            rowHeights.resetForConversation(
+                diskCache: heightCacheByConversation[newID ?? ""] ?? [:],
+                messages: ConversationStore.shared.currentConversation?.messages ?? [],
+                layoutWidth: layoutWidth
+            )
             pendingHeights.removeAll()
-            measuredHeightIDs.removeAll()
             renderedConversationID = newID
             // A newly selected conversation opens at its latest turn. Subsequent
             // reloads must preserve the reader's manual scroll position.
@@ -1340,19 +1610,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         invalidateExpandedChromeHeights()
 
-        let layoutWidth = currentRenderWidth()
-
         if conversationChanged {
             suppressHeightRemeasure = true
+            pendingOpenAtBottom = true
             updateTitleFromConversation()
             updateModelButton()
             updateAgentButton()
             updateAttachAvailability()
-            UIView.performWithoutAnimation {
-                tableView.reloadData()
-                tableView.layoutIfNeeded()
-                scrollToLastRowBottom()
-            }
+            let messages = ConversationStore.shared.currentConversation?.messages ?? []
+            tableView.alpha = 0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            openConversationAtBottom(messages: messages, layoutWidth: layoutWidth)
+            CATransaction.commit()
+            tableView.alpha = 1
             refreshSwitchChromeImmediate()
             finishConversationSwitchChrome(layoutWidth: layoutWidth)
         } else {
@@ -1534,15 +1805,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func setupTable() {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.separatorStyle = .none
-        tableView.estimatedRowHeight = 80
-        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 0
+        tableView.estimatedSectionHeaderHeight = 0
+        tableView.estimatedSectionFooterHeight = 0
+        tableView.rowHeight = 120
         tableView.keyboardDismissMode = .interactive
-        tableView.register(MessageCell.self, forCellReuseIdentifier: MessageCell.userReuseID)
-        tableView.register(MessageCell.self, forCellReuseIdentifier: MessageCell.assistantReuseID)
+        tableView.register(UserMessageCell.self, forCellReuseIdentifier: MessageCellReuseID.user)
+        tableView.register(AssistantMessageCell.self, forCellReuseIdentifier: MessageCellReuseID.assistant)
         tableView.dataSource = self
         tableView.delegate = self
         tableView.prefetchDataSource = self
-        tableView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        tableView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 2, right: 0)
         view.addSubview(tableView)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMessageLongPress(_:)))
@@ -2176,9 +2449,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             guard let messages = ConversationStore.shared.currentConversation?.messages,
                   !messages.isEmpty else { return }
             let path = IndexPath(row: messages.count - 1, section: 0)
-            contentHeights.removeValue(forKey: messages[path.row].id)
+            rowHeights.invalidate(messageID: messages[path.row].id)
             UIView.performWithoutAnimation {
-                if let cell = tableView.cellForRow(at: path) as? MessageCell {
+                if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
                     if !cell.updateStreamingContent(messages[path.row]) {
                         cell.configure(with: messages[path.row], preferredHeight: nil, layoutWidth: currentRenderWidth())
                     }
@@ -2621,27 +2894,45 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else {
             return UITableViewCell()
         }
-        let reuseID = msg.role == .user ? MessageCell.userReuseID : MessageCell.assistantReuseID
-        let cell = tableView.dequeueReusableCell(withIdentifier: reuseID, for: indexPath) as! MessageCell
+        let layoutWidth = currentRenderWidth()
+        let preferred = rowHeights.displayColumnHeight(for: msg.id)
+            ?? rowHeights.committedColumnHeight(for: msg.id)
+        if msg.role == .user {
+            let cell = tableView.dequeueReusableCell(
+                withIdentifier: MessageCellReuseID.user,
+                for: indexPath
+            ) as! UserMessageCell
+            cell.cellDelegate = self
+            bindImageCache(to: cell, message: msg)
+            cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
+            return cell
+        }
+        let cell = tableView.dequeueReusableCell(
+            withIdentifier: MessageCellReuseID.assistant,
+            for: indexPath
+        ) as! AssistantMessageCell
         cell.cellDelegate = self
-        if msg.hasImage, let b64 = msg.imageJPEGBase64 {
-            let key = msg.id as NSString
-            if let cached = ChatViewController.imageCache.object(forKey: key) {
-                cell.setCachedImage(cached)
-            } else {
-                let msgID = msg.id
-                DispatchQueue.global(qos: .utility).async {
-                    guard let img = ImageAttachmentHelper.image(from: b64) else { return }
-                    ChatViewController.imageCache.setObject(img, forKey: key)
-                    DispatchQueue.main.async { [weak cell] in
-                        guard let cell = cell, cell.messageID == msgID else { return }
-                        cell.setCachedImage(img)
-                    }
-                }
+        bindImageCache(to: cell, message: msg)
+        cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
+        return cell
+    }
+
+    private func bindImageCache(to cell: MessageCellType, message: ChatMessage) {
+        guard message.hasImage, let b64 = message.imageJPEGBase64 else { return }
+        let key = message.id as NSString
+        if let cached = ChatViewController.imageCache.object(forKey: key) {
+            cell.setCachedImage(cached)
+            return
+        }
+        let msgID = message.id
+        DispatchQueue.global(qos: .utility).async {
+            guard let img = ImageAttachmentHelper.image(from: b64) else { return }
+            ChatViewController.imageCache.setObject(img, forKey: key)
+            DispatchQueue.main.async { [weak cell] in
+                guard let cell = cell, cell.messageID == msgID else { return }
+                cell.setCachedImage(img)
             }
         }
-        cell.configure(with: msg, preferredHeight: contentHeights[msg.id], layoutWidth: currentRenderWidth())
-        return cell
     }
 
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
@@ -2651,60 +2942,71 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         }
         let msg = messages[indexPath.row]
         if msg.isStreaming { return UITableView.automaticDimension }
-        let isLast = indexPath.row == messages.count - 1
-        if measuredHeightIDs.contains(msg.id),
-           let h = contentHeights[msg.id], h > 40 {
-            return rowHeightIncrement(for: msg, isLastRow: isLast)
-        }
-        return UITableView.automaticDimension
+        return scrollAwareRowHeight(for: msg, row: indexPath.row, messageCount: messages.count)
     }
 
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               indexPath.row < messages.count else { return 72 }
         let msg = messages[indexPath.row]
-        return estimatedTableRowHeight(for: msg, row: indexPath.row, messageCount: messages.count)
+        return scrollAwareRowHeight(for: msg, row: indexPath.row, messageCount: messages.count)
             + (msg.isStreaming ? 28 : 0)
     }
 
     func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         scheduleUpdateTurnContextBar()
         let scrolling = tableView.isDragging || tableView.isDecelerating
-        if !scrolling {
-            prewarmForIncomingRow(indexPath.row)
-        }
-        if let messageCell = cell as? MessageCell, messageCell.hasPendingDeferredNativeRender {
-            messageCell.applyDeferredNativeRenderIfNeeded()
-        }
-        guard let cell = cell as? MessageCell,
-              let messages = ConversationStore.shared.currentConversation?.messages,
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
               indexPath.row < messages.count else { return }
         let msg = messages[indexPath.row]
         guard !msg.isStreaming else { return }
-        if SettingsManager.shared.renderDebugOverlayEnabled {
-            cell.refreshRenderDebugOverlay()
-        }
-        guard !scrolling else { return }
         let layoutWidth = currentRenderWidth()
-        if msg.role == .assistant {
-            cell.applyDeferredNativeRenderIfNeeded()
-            cell.ensureNativeLayoutWidth(layoutWidth)
-        } else if msg.role == .user {
-            cell.syncUserPresentation(with: msg, layoutWidth: layoutWidth)
+        if SettingsManager.shared.renderDebugOverlayEnabled,
+           let typedCell = cell as? MessageCellType {
+            typedCell.refreshRenderDebugOverlay()
         }
+        if scrolling {
+            // Pin from cache only — never sync-layout on willDisplay (long replies hitch hard).
+            var pinRows = [indexPath.row]
+            if scrollBiasUp {
+                for delta in 1...6 { pinRows.append(indexPath.row - delta) }
+            } else {
+                for delta in 1...6 { pinRows.append(indexPath.row + delta) }
+            }
+            _ = commitCachedLayoutHeights(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                rows: pinRows,
+                syncLayoutBudget: 0
+            )
+            applyTurnWindowPrewarm(around: [indexPath.row], allowSync: false)
+            return
+        }
+        prewarmForIncomingRow(indexPath.row)
+        if msg.role == .user, let userCell = cell as? UserMessageCell {
+            userCell.syncUserPresentation(with: msg, layoutWidth: layoutWidth)
+            scheduleStableHeightPin(for: userCell, message: msg)
+        } else if msg.role == .assistant, let assistantCell = cell as? AssistantMessageCell {
+            assistantCell.applyDeferredNativeRenderIfNeeded()
+            assistantCell.ensureNativeLayoutWidth(layoutWidth)
+            scheduleStableHeightPin(for: assistantCell, message: msg)
+        }
+    }
+
+    private func scheduleStableHeightPin(for cell: MessageCellType, message: ChatMessage) {
         DispatchQueue.main.async { [weak self, weak cell] in
             guard let self = self,
                   let cell = cell,
-                  cell.messageID == msg.id,
+                  cell.messageID == message.id,
                   cell.window != nil,
                   !self.tableView.isDragging,
                   !self.tableView.isDecelerating else { return }
             let height = cell.measuredContentHeight()
             guard height > 40 else { return }
-            let cached = self.contentHeights[msg.id] ?? 0
-            let pinned = self.measuredHeightIDs.contains(msg.id)
-            guard !pinned || height > cached + 4 else { return }
-            self.messageCell(cell, didFinishStableRender: height, for: msg.id)
+            let cached = self.rowHeights.committedColumnHeight(for: message.id) ?? 0
+            let pinned = self.rowHeights.isCommitted(message.id)
+            guard !pinned || abs(height - cached) > 4 else { return }
+            self.messageCell(cell, didFinishStableRender: height, for: message.id)
         }
     }
 
@@ -2715,6 +3017,45 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         readingHistory = true
         viewportPinnedByUser = true
         heightWork?.cancel()
+        if let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty {
+            let layoutWidth = currentRenderWidth()
+            prewarmScrollLookahead(messages: messages, layoutWidth: layoutWidth)
+            quickCommitVisibleHeights(messages: messages)
+            // Off-screen pins update heightForRowAt without beginUpdates (avoids drag-start hitch).
+            let lookRows = scrollLookaheadRows(in: messages)
+            _ = commitCachedLayoutHeights(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                rows: lookRows,
+                syncLayoutBudget: 0
+            )
+        }
+    }
+
+    /// Pin visible uncommitted rows before the first drag. Avoid beginUpdates unless a visible row changes.
+    private func quickCommitVisibleHeights(messages: [ChatMessage]) {
+        let paths = tableView.indexPathsForVisibleRows ?? []
+        guard !paths.isEmpty else { return }
+        var visibleHeightChanged = false
+        for path in paths {
+            guard path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard !msg.isStreaming, !rowHeights.isCommitted(msg.id),
+                  let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
+            let measured = cell.measuredContentHeight()
+            guard measured > 40 else { continue }
+            let prior = resolvedRowHeight(for: msg, row: path.row, messageCount: messages.count)
+            rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: true)
+            let next = resolvedRowHeight(for: msg, row: path.row, messageCount: messages.count)
+            if abs(prior - next) > 3 {
+                visibleHeightChanged = true
+            }
+        }
+        guard visibleHeightChanged else { return }
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -2756,14 +3097,44 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if !visible.isEmpty {
             applyLookaheadTurnPrewarm()
         }
-        for case let cell as MessageCell in tableView.visibleCells where cell.hasPendingDeferredNativeRender {
+        for case let cell as AssistantMessageCell in tableView.visibleCells where cell.hasPendingDeferredNativeRender {
             cell.applyDeferredNativeRenderIfNeeded()
         }
-        for case let cell as MessageCell in tableView.visibleCells {
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
             cell.applyDeferredHeightIfNeeded()
         }
         if !pendingHeights.isEmpty {
-            flushPendingHeights(force: false)
+            flushPendingHeights()
+        }
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let layoutWidth = currentRenderWidth()
+        for path in visible where path.row < messages.count {
+            seedDisplayFromLayoutCache(
+                for: messages[path.row],
+                row: path.row,
+                messageCount: messages.count,
+                layoutWidth: layoutWidth
+            )
+        }
+        for path in visible {
+            guard path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming,
+                  let cell = tableView.cellForRow(at: path) as? AssistantMessageCell else { continue }
+            cell.applyDeferredNativeRenderIfNeeded()
+            if !rowHeights.isCommitted(msg.id) {
+                let preferred = rowHeights.displayColumnHeight(for: msg.id)
+                    ?? rowHeights.committedColumnHeight(for: msg.id)
+                cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
+            }
+        }
+        reconcileVisibleRowHeights(preserveBottom: false)
+        for path in visible {
+            guard path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard !rowHeights.isCommitted(msg.id),
+                  let typedCell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
+            scheduleStableHeightPin(for: typedCell, message: msg)
         }
     }
 }
@@ -2771,15 +3142,68 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 extension ChatViewController: UITableViewDataSourcePrefetching {
     func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let scrolling = tableView.isDragging || tableView.isDecelerating
+        if scrolling {
+            applyTurnWindowPrewarm(around: indexPaths.map(\.row), allowSync: false)
+            return
+        }
+        let layoutWidth = currentRenderWidth()
+        let messageCount = messages.count
         var anchors = Set(indexPaths.map(\.row))
         for row in indexPaths.map(\.row) {
             for delta in 1...(Self.turnPrewarmCount * 2) {
                 if row - delta >= 0 { anchors.insert(row - delta) }
                 if row + delta < messages.count { anchors.insert(row + delta) }
             }
+            guard row >= 0, row < messages.count else { continue }
+            let msg = messages[row]
+            if msg.role == .user {
+                seedDisplayFromLayoutCache(
+                    for: msg,
+                    row: row,
+                    messageCount: messageCount,
+                    layoutWidth: layoutWidth
+                )
+                if row + 1 < messages.count {
+                    let assistant = messages[row + 1]
+                    if assistant.role == .assistant, !assistant.isStreaming {
+                        if assistant.content.count <= Self.syncPrewarmMaxChars {
+                            AssistantMessageLayout.prewarmLayouts(
+                                for: [assistant],
+                                targetWidth: layoutWidth,
+                                layoutLimit: 1
+                            )
+                        } else {
+                            scheduleAsyncLayoutPrewarm(assistants: [assistant], layoutWidth: layoutWidth)
+                        }
+                        seedDisplayFromLayoutCache(
+                            for: assistant,
+                            row: row + 1,
+                            messageCount: messageCount,
+                            layoutWidth: layoutWidth
+                        )
+                    }
+                }
+            }
+            if msg.role == .assistant, !msg.isStreaming {
+                if msg.content.count <= Self.syncPrewarmMaxChars {
+                    AssistantMessageLayout.prewarmLayouts(
+                        for: [msg],
+                        targetWidth: layoutWidth,
+                        layoutLimit: 1
+                    )
+                } else {
+                    scheduleAsyncLayoutPrewarm(assistants: [msg], layoutWidth: layoutWidth)
+                }
+                seedDisplayFromLayoutCache(
+                    for: msg,
+                    row: row,
+                    messageCount: messageCount,
+                    layoutWidth: layoutWidth
+                )
+            }
         }
         applyTurnWindowPrewarm(around: Array(anchors).sorted())
-        upgradeVisibleDeferredNativeCells()
     }
 
     func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
@@ -2788,11 +3212,12 @@ extension ChatViewController: UITableViewDataSourcePrefetching {
 }
 
 extension ChatViewController: MessageCellDelegate {
-    func messageCellShouldFreezeHeight(_ cell: MessageCell) -> Bool {
+    func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool {
         tableView.isDragging || tableView.isDecelerating
     }
 
-    func messageCellShouldDeferHeavyRender(_ cell: MessageCell) -> Bool {
+    func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool {
+        if pendingOpenAtBottom || suppressHeightRemeasure { return false }
         guard tableView.isDragging || tableView.isDecelerating else { return false }
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let msg = messages.first(where: { $0.id == cell.messageID }),
@@ -2800,80 +3225,84 @@ extension ChatViewController: MessageCellDelegate {
               !msg.isStreaming else {
             return false
         }
-        return !MessageCell.hasCachedNativeLayout(for: msg, layoutWidth: currentRenderWidth())
+        // Scroll path: native only when layout cache is warm. Never sync-layout mid-gesture.
+        return !AssistantMessageLayout.hasCachedNativeLayout(
+            for: msg,
+            layoutWidth: currentRenderWidth()
+        )
     }
 
-    func messageCell(_ cell: MessageCell, didUpdateHeight height: CGFloat, for messageID: String) {
-        // Preserve the viewport while browsing history. Fixed snapshot height
-        // metadata can still be recorded, but it must not trigger a table pass.
+    func messageCell(_ cell: MessageCellType, didUpdateHeight height: CGFloat, for messageID: String) {
         if readingHistory {
             if height > 40 {
-                contentHeights[messageID] = height
+                rowHeights.recordDiskEstimate(columnHeight: height, messageID: messageID)
                 if let cid = renderedConversationID {
-                    heightCacheByConversation[cid] = contentHeights
+                    heightCacheByConversation[cid] = rowHeights.exportPersistable()
                 }
+            }
+            return
+        }
+        guard ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == messageID }) != nil else {
+            return
+        }
+        let scrolling = tableView.isDragging || tableView.isDecelerating
+        if scrolling {
+            if height > 40 {
+                pendingHeights[messageID] = max(pendingHeights[messageID] ?? 0, height)
             }
             return
         }
         guard let msg = ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == messageID }) else {
             return
         }
-        let old = contentHeights[messageID] ?? 0
-        let scrolling = tableView.isDragging || tableView.isDecelerating
+        let old = rowHeights.bestKnownColumnHeight(for: messageID)
         let growing = height > old + 4
-        // Micro-jitter while scrolling: ignore tiny shrinks only.
-        let threshold: CGFloat = scrolling ? (growing ? 6 : 32) : 8
+        let threshold: CGFloat = growing ? 6 : 8
         guard abs(old - height) > threshold else {
             if old == 0, height > 40 {
-                contentHeights[messageID] = height
+                rowHeights.recordDiskEstimate(columnHeight: height, messageID: messageID)
             }
             return
         }
         pendingHeights[messageID] = height
         heightWork?.cancel()
-        // ChatGPT-style: never leave content clipped — apply growth even mid-scroll.
-        if scrolling && !growing {
-            return
-        }
         let work = DispatchWorkItem { [weak self] in
-            self?.flushPendingHeights(force: scrolling && growing)
+            self?.flushPendingHeights()
         }
         heightWork = work
-        // Streaming text paints at 25 fps, but UITableView self-sizing is much
-        // heavier. Limit live geometry updates so they cannot starve token paint.
         let delay: TimeInterval = msg.isStreaming ? 0.14 : (growing ? 0.03 : 0.18)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    func messageCell(_ cell: MessageCell, didFinishStableRender height: CGFloat, for messageID: String) {
+    func messageCell(_ cell: MessageCellType, didFinishStableRender height: CGFloat, for messageID: String) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let row = messages.firstIndex(where: { $0.id == messageID }),
               !messages[row].isStreaming else { return }
         let message = messages[row]
-        let hasVariableChrome = !message.reasoningContent.isEmpty || message.hasSearchProcess
         let scrolling = tableView.isDragging || tableView.isDecelerating
-        let cached = contentHeights[messageID] ?? 0
-        // Plain fallback during scroll must not shrink cached native geometry.
-        if scrolling, cell.hasPendingDeferredNativeRender, height + 8 < cached {
+        if scrolling {
+            if height > 40 {
+                pendingHeights[messageID] = max(pendingHeights[messageID] ?? 0, height)
+            }
             return
         }
-        var stored = max(cached, height)
-        if message.role == .assistant,
-           row == messages.count - 1,
-           !message.isStreaming {
-            stored = max(stored, height + 4)
+        let hasVariableChrome = !message.reasoningContent.isEmpty || message.hasSearchProcess
+        let cached = rowHeights.bestKnownColumnHeight(for: messageID)
+        if cell.hasPendingDeferredNativeRender, height + 8 < cached {
+            return
         }
-        contentHeights[messageID] = stored
-        measuredHeightIDs.insert(messageID)
+        let priorRow = resolvedRowHeight(for: message, row: row, messageCount: messages.count)
+        rowHeights.commitMeasured(columnHeight: height, messageID: messageID, allowShrink: true)
         if let cid = renderedConversationID {
-            heightCacheByConversation[cid] = contentHeights
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
             scheduleHeightCacheSave()
         }
         if suppressHeightRemeasure { return }
-        guard cell.window != nil, !scrolling else { return }
+        guard cell.window != nil else { return }
         let path = IndexPath(row: row, section: 0)
-        let targetRowHeight = rowHeightIncrement(for: message, isLastRow: row == messages.count - 1)
-        guard abs(tableView.rectForRow(at: path).height - targetRowHeight) > 4 else { return }
+        let targetRowHeight = resolvedRowHeight(for: message, row: row, messageCount: messages.count)
+        guard abs(priorRow - targetRowHeight) > 4
+            || abs(tableView.rectForRow(at: path).height - targetRowHeight) > 4 else { return }
         if isViewportPinned() || hasVariableChrome {
             schedulePinnedRemeasure()
             return
@@ -2887,30 +3316,29 @@ extension ChatViewController: MessageCellDelegate {
         }
     }
 
-    private func flushPendingHeights(force: Bool = false) {
+    private func flushPendingHeights() {
         guard !pendingHeights.isEmpty else { return }
-        let scrolling = tableView.isDragging || tableView.isDecelerating
-        if !force, scrolling {
-            pendingHeights = pendingHeights.filter { entry in
-                entry.value > (contentHeights[entry.key] ?? 0) + 4
-            }
-            guard !pendingHeights.isEmpty else { return }
-        }
+        if tableView.isDragging || tableView.isDecelerating { return }
         let includesStreamingMessage = pendingHeights.keys.contains { id in
             ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == id })?.isStreaming == true
         }
         var changed = false
         for (id, height) in pendingHeights {
-            let old = contentHeights[id] ?? 0
+            let old = rowHeights.bestKnownColumnHeight(for: id)
             if abs(old - height) > 3 {
-                contentHeights[id] = height
-                measuredHeightIDs.insert(id)
+                let streaming = ConversationStore.shared.currentConversation?.messages
+                    .first(where: { $0.id == id })?.isStreaming == true
+                rowHeights.commitMeasured(
+                    columnHeight: height,
+                    messageID: id,
+                    allowShrink: !streaming
+                )
                 changed = true
             }
         }
         pendingHeights.removeAll()
         if changed, !includesStreamingMessage, let cid = renderedConversationID {
-            heightCacheByConversation[cid] = contentHeights
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
             scheduleHeightCacheSave()
         }
         guard changed else { return }
@@ -2927,7 +3355,7 @@ extension ChatViewController: MessageCellDelegate {
         }
     }
 
-    func messageCellDidTapCopy(_ cell: MessageCell, messageID: String) {
+    func messageCellDidTapCopy(_ cell: MessageCellType, messageID: String) {
         guard let msg = ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == messageID }) else { return }
         UIPasteboard.general.string = msg.copyableText
         navigationItem.prompt = "已复制"
@@ -2938,18 +3366,18 @@ extension ChatViewController: MessageCellDelegate {
         }
     }
 
-    func messageCellDidTapRetry(_ cell: MessageCell, messageID: String) {
+    func messageCellDidTapRetry(_ cell: MessageCellType, messageID: String) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let idx = messages.firstIndex(where: { $0.id == messageID }) else { return }
         retryFromMessage(at: idx)
     }
 
-    func messageCellDidTapFork(_ cell: MessageCell, messageID: String) {
+    func messageCellDidTapFork(_ cell: MessageCellType, messageID: String) {
         guard let id = ConversationStore.shared.currentConversationID else { return }
         _ = ConversationStore.shared.forkConversation(id: id, throughMessageID: messageID)
     }
 
-    func messageCellDidShiftVersion(_ cell: MessageCell, messageID: String, delta: Int) {
+    func messageCellDidShiftVersion(_ cell: MessageCellType, messageID: String, delta: Int) {
         guard let convID = ConversationStore.shared.currentConversationID else { return }
         var changed = false
         ConversationStore.shared.updateConversationQuietly(id: convID) { c in
@@ -2958,9 +3386,9 @@ extension ChatViewController: MessageCellDelegate {
         }
         guard changed else { return }
         // Content length can differ a lot across versions — drop cached height.
-        contentHeights.removeValue(forKey: messageID)
+        rowHeights.invalidate(messageID: messageID)
         if let cid = renderedConversationID {
-            heightCacheByConversation[cid] = contentHeights
+            heightCacheByConversation[cid] = rowHeights.exportPersistable()
             saveHeightCaches()
         }
         guard let messages = ConversationStore.shared.currentConversation?.messages,
