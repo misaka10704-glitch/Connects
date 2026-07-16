@@ -464,11 +464,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self.tableView.endUpdates()
             }
             self.settleOpenAtBottom()
-            if msgCount <= 48 {
+            if msgCount <= 64 {
                 MessageCell.prewarmSnapshots(
                     for: Array(messages.suffix(Self.switchPrewarmMessageWindow)),
                     targetWidth: layoutWidthCopy,
-                    parseLimit: Self.switchPrewarmParseCount
+                    parseLimit: msgCount > 28 ? 4 : Self.switchPrewarmParseCount
                 )
             }
             self.scheduleTailLayoutPrewarm(
@@ -495,7 +495,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard !assistants.isEmpty else { return }
 
         var cursor = 0
-        let layoutCap = messages.count > 48 ? 12 : Self.switchPrewarmLayoutTotal
+        let layoutCap: Int
+        if messages.count > 48 {
+            layoutCap = 12
+        } else if messages.count > 28 {
+            layoutCap = 8
+        } else {
+            layoutCap = Self.switchPrewarmLayoutTotal
+        }
         let limit = min(assistants.count, layoutCap)
         func pump() {
             guard conversationID == self.renderedConversationID,
@@ -759,6 +766,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func storeChanged(_ note: Notification) {
         guard !isReloadingFromStore else { return }
+        if let source = note.userInfo?["source"] as? String, source == "projectFilter" {
+            return
+        }
         if let source = note.userInfo?["source"] as? String, source == "title" {
             updateTitleFromConversation()
             return

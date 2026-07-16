@@ -86,6 +86,9 @@
 		C1000001000000000000000A /* AgentListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000A /* AgentListViewController.swift */; };
 		C1000001000000000000000B /* MemorySettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000B /* MemorySettingsViewController.swift */; };
 		C1000001000000000000000C /* AgentAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000C /* AgentAppearance.swift */; };
+		C1000001000000000000000D /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000D /* Project.swift */; };
+		C1000001000000000000000E /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000E /* ProjectStore.swift */; };
+		C1000001000000000000000F /* ProjectListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000F /* ProjectListViewController.swift */; };
 		D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000001 /* MemoryAgentLogicTests.swift */; };
 		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 /* End PBXBuildFile section */
@@ -172,6 +175,9 @@
 		C2000001000000000000000A /* AgentListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentListViewController.swift; sourceTree = "<group>"; };
 		C2000001000000000000000B /* MemorySettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemorySettingsViewController.swift; sourceTree = "<group>"; };
 		C2000001000000000000000C /* AgentAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAppearance.swift; sourceTree = "<group>"; };
+		C2000001000000000000000D /* Project.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Project.swift; sourceTree = "<group>"; };
+		C2000001000000000000000E /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
+		C2000001000000000000000F /* ProjectListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListViewController.swift; sourceTree = "<group>"; };
 		D20000010000000000000001 /* MemoryAgentLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryAgentLogicTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -250,6 +256,7 @@
 				A20000010000000000000003 /* ChatMessage.swift */,
 				A20000010000000000000004 /* Conversation.swift */,
 				C20000010000000000000001 /* CustomAgent.swift */,
+				C2000001000000000000000D /* Project.swift */,
 				B20000010000000000000001 /* NativeMarkdown.swift */,
 			);
 			path = Models;
@@ -291,6 +298,7 @@
 				C20000010000000000000005 /* AgentPromptPolisher.swift */,
 				C20000010000000000000007 /* MemoryModels.swift */,
 				C2000001000000000000000C /* AgentAppearance.swift */,
+				C2000001000000000000000E /* ProjectStore.swift */,
 				B20000010000000000000002 /* NativeMarkdownParser.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
@@ -309,6 +317,7 @@
 				C20000010000000000000009 /* MemoryViewController.swift */,
 				C2000001000000000000000A /* AgentListViewController.swift */,
 				C2000001000000000000000B /* MemorySettingsViewController.swift */,
+				C2000001000000000000000F /* ProjectListViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
 			);
 			path = ViewControllers;
@@ -556,6 +565,9 @@
 				C1000001000000000000000A /* AgentListViewController.swift in Sources */,
 				C1000001000000000000000B /* MemorySettingsViewController.swift in Sources */,
 				C1000001000000000000000C /* AgentAppearance.swift in Sources */,
+				C1000001000000000000000D /* Project.swift in Sources */,
+				C1000001000000000000000E /* ProjectStore.swift in Sources */,
+				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -26,6 +26,20 @@ struct AgentAppearancePreset {
         UIBezierPath(ovalIn: rect).fill()
         return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
     }
+
+    static func colorBall(for project: Project, size: CGFloat = 12) -> UIImage {
+        let preset = preset(project.colorPreset)
+        let rect = CGRect(origin: .zero, size: CGSize(width: size, height: size))
+        UIGraphicsBeginImageContextWithOptions(rect.size, false, 0)
+        defer { UIGraphicsEndImageContext() }
+        preset.color.setFill()
+        UIBezierPath(ovalIn: rect).fill()
+        return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+    }
+
+    static func projectIcon(for project: Project, size: CGFloat = 28) -> UIImage {
+        colorBall(for: project, size: max(10, size * 0.42))
+    }
 }
 
 private extension UIColor {

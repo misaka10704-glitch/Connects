@@ -15,6 +15,7 @@ enum ActionIconFactory {
         case newChat
         case rename, trash
         case edit
+        case folder
         case chevronLeft, chevronRight
     }
 
@@ -363,6 +364,20 @@ enum ActionIconFactory {
             tip.addLine(to: CGPoint(x: r.maxX - 5.2, y: r.minY + 8.7))
             tip.close()
             tip.fill()
+
+        case .folder:
+            let tab = UIBezierPath()
+            tab.move(to: CGPoint(x: r.minX + 2.5, y: r.minY + 5.5))
+            tab.addLine(to: CGPoint(x: r.minX + 5.5, y: r.minY + 3))
+            tab.addLine(to: CGPoint(x: r.minX + pointSize * 0.48, y: r.minY + 3))
+            tab.addLine(to: CGPoint(x: r.minX + pointSize * 0.58, y: r.minY + 5.5))
+            tab.lineWidth = 1.45
+            tab.stroke()
+            let body = UIBezierPath(roundedRect: CGRect(x: r.minX + 2.2, y: r.minY + 5.5,
+                                                        width: pointSize - 4.4, height: pointSize - 7.8),
+                                     cornerRadius: 1.8)
+            body.lineWidth = 1.55
+            body.stroke()
 
         case .chevronLeft:
             let path = UIBezierPath()

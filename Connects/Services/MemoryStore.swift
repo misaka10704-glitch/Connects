@@ -45,13 +45,13 @@ final class MemoryStore {
         """
         APIClient.shared.complete(messages: [ChatMessage(role: .user, content: request)],
                                   model: conversation.model,
-                                  maxTokens: 280) { [weak self] result in
+                                  maxTokens: 120) { [weak self] result in
             guard let self = self, SettingsManager.shared.memoryEnabled else { return }
             let extracted: String
             if case .success(let text) = result, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                extracted = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1_200))
+                extracted = self.normalizeCaptureOutput(text, user: user)
             } else {
-                extracted = localSnippet
+                extracted = self.fallbackEventLine(user: user)
             }
             self.queue.async {
                 self.migrateIfNeeded()
@@ -64,7 +64,40 @@ final class MemoryStore {
 
     func injectedBackground() -> String {
         guard SettingsManager.shared.memoryEnabled else { return "" }
-        return String(historicalSummary.trimmingCharacters(in: .whitespacesAndNewlines).prefix(3_200))
+        let bg = String(historicalSummary.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1_200))
+        let events = recentEventsIndex(maxEntries: 20, maxChars: 800)
+        var parts: [String] = [prompt(for: .injection)]
+        if !bg.isEmpty {
+            parts.append("## 稳定背景\n\(bg)")
+        }
+        if !events.isEmpty {
+            parts.append("## 近期事件索引\n\(events)")
+        }
+        guard parts.count > 1 else { return "" }
+        return String(parts.joined(separator: "\n\n").prefix(1_800))
+    }
+
+    /// Compact event lines from the last week for API injection (detail via conversation links).
+    func recentEventsIndex(maxEntries: Int = 20, maxChars: Int = 800) -> String {
+        migrateIfNeeded()
+        var lines: [String] = []
+        for date in recentLogDates() {
+            let raw = linkifyLegacyConversationIDs(read(logURL(date)))
+            for block in raw.components(separatedBy: "### ").dropFirst() {
+                if let line = compactEventIndexLine(block: block, date: date) {
+                    lines.append(line)
+                }
+                if lines.count >= maxEntries { break }
+            }
+            if lines.count >= maxEntries { break }
+        }
+        var out = ""
+        for line in lines {
+            let next = out.isEmpty ? line : out + "\n" + line
+            if next.count > maxChars { break }
+            out = next
+        }
+        return out
     }
 
     func assembledMarkdown() -> String {
@@ -73,8 +106,8 @@ final class MemoryStore {
         for date in recentLogDates() {
             result += "## \(date)\n\n\(linkifyLegacyConversationIDs(read(logURL(date))))\n\n"
         }
-        result += "---\n\n## 整体背景\n\n"
-        result += historicalSummary.isEmpty ? "（尚无已确认的整体背景）\n" : historicalSummary
+        result += "---\n\n## 稳定背景\n\n"
+        result += historicalSummary.isEmpty ? "（尚无已确认的稳定背景）\n" : historicalSummary
         return result
     }
 
@@ -114,7 +147,7 @@ final class MemoryStore {
     }
 
     func proposeBackgroundUpdate(_ text: String) {
-        let next = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(6_000))
+        let next = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(3_000))
         guard next != historicalSummary else { return }
         createFolders()
         let change = PendingMemoryChange(id: UUID().uuidString,
@@ -195,11 +228,12 @@ final class MemoryStore {
         let name = dateFormatter().string(from: Date())
         let url = logURL(name)
         let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short)
+        let event = extracted
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let entry = """
         ### \(time)
-        - 会话：[打开聊天](connects://conversation/\(conversation.id))
-        - 用户提问：\(user.replacingOccurrences(of: "\n", with: " "))
-        - 提炼：\(extracted.replacingOccurrences(of: "\n", with: " "))
+        - 事件：\(event) | [打开聊天](connects://conversation/\(conversation.id))
 
         """
         append(entry, to: url)
@@ -260,7 +294,7 @@ final class MemoryStore {
 
     private func write(_ text: String, to url: URL) {
         createFolders()
-        try? String(text.prefix(6_000)).write(to: url, atomically: true, encoding: .utf8)
+        try? String(text.prefix(3_000)).write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func notify() {
@@ -269,8 +303,91 @@ final class MemoryStore {
 
     private func contextSnippet(_ conversation: Conversation) -> String {
         conversation.messages.filter { !$0.isStreaming }.suffix(2).map {
-            "\($0.role == .user ? "用户" : "助手")：\(String($0.content.prefix(500)))"
-        }.joined(separator: "\n")
+            let role = $0.role == .user ? "用户" : "助手"
+            return "\(role)：\(String($0.content.prefix(160)))"
+        }.joined(separator: " | ")
+    }
+
+    private func normalizeCaptureOutput(_ raw: String, user: String) -> String {
+        let line = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return fallbackEventLine(user: user) }
+        return String(line.prefix(120))
+    }
+
+    private func fallbackEventLine(user: String) -> String {
+        let topic = String(user.replacingOccurrences(of: "\n", with: " ").prefix(48))
+        return "用户谈及：\(topic)（详见原会话）"
+    }
+
+    private func compactEventIndexLine(block: String, date: String) -> String? {
+        let lines = block.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let header = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines), !header.isEmpty else {
+            return nil
+        }
+        let body = lines.dropFirst().joined(separator: " ")
+        let link = extractConversationLink(from: body) ?? extractConversationLink(from: block)
+        let summary = extractEventSummary(from: body)
+        guard !summary.isEmpty else { return nil }
+        if let link = link {
+            return "- \(date) \(header) | \(summary) | \(link)"
+        }
+        return "- \(date) \(header) | \(summary)"
+    }
+
+    private func extractConversationLink(from text: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"connects://conversation/[A-Za-z0-9-]+"#) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = re.firstMatch(in: text, options: [], range: range),
+              let swiftRange = Range(match.range, in: text) else { return nil }
+        let url = String(text[swiftRange])
+        return "[打开聊天](\(url))"
+    }
+
+    private func extractEventSummary(from text: String) -> String {
+        if let event = capturePrefixedLine(in: text, prefixes: ["事件：", "事件:"]) {
+            return truncateEventSummary(stripConversationLink(event))
+        }
+        if let distilled = capturePrefixedLine(in: text, prefixes: ["提炼：", "提炼:"]) {
+            return truncateEventSummary(stripConversationLink(distilled))
+        }
+        if let question = capturePrefixedLine(in: text, prefixes: ["用户提问：", "用户提问:"]) {
+            return truncateEventSummary(question)
+        }
+        let cleaned = text
+            .replacingOccurrences(of: #"\[打开聊天\]\(connects://conversation/[^)]+\)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"connects://conversation/[A-Za-z0-9-]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "- 会话：", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return truncateEventSummary(cleaned)
+    }
+
+    private func capturePrefixedLine(in text: String, prefixes: [String]) -> String? {
+        for prefix in prefixes {
+            if let range = text.range(of: prefix) {
+                let tail = text[range.upperBound...]
+                if let end = tail.firstIndex(where: { $0 == "\n" }) {
+                    return String(tail[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                return String(tail).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+
+    private func stripConversationLink(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"\[打开聊天\]\(connects://conversation/[^)]+\)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"connects://conversation/[A-Za-z0-9-]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: " | ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func truncateEventSummary(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return String(trimmed.prefix(88))
     }
 
     /// Older logs stored a bare conversation UUID. Render those entries as the

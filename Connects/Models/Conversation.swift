@@ -16,6 +16,8 @@ struct Conversation: Codable, Equatable {
     var contextSummaryThroughMessageID: String?
     /// Optional per-conversation custom agent.
     var agentID: String?
+    /// Optional project bucket for centralized management.
+    var projectID: String?
 
     init(id: String = UUID().uuidString,
          title: String = "新对话",
@@ -27,7 +29,8 @@ struct Conversation: Codable, Equatable {
          titleLocked: Bool = false,
          contextSummary: String? = nil,
          contextSummaryThroughMessageID: String? = nil,
-         agentID: String? = nil) {
+         agentID: String? = nil,
+         projectID: String? = nil) {
         self.id = id
         self.title = title
         self.model = model
@@ -39,12 +42,13 @@ struct Conversation: Codable, Equatable {
         self.contextSummary = contextSummary
         self.contextSummaryThroughMessageID = contextSummaryThroughMessageID
         self.agentID = agentID
+        self.projectID = projectID
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, messages, updatedAt, isArchived, forkedFromID, titleLocked
         case contextSummary, contextSummaryThroughMessageID
-        case agentID
+        case agentID, projectID
         case provider, modelId
     }
 
@@ -60,6 +64,7 @@ struct Conversation: Codable, Equatable {
         contextSummary = try container.decodeIfPresent(String.self, forKey: .contextSummary)
         contextSummaryThroughMessageID = try container.decodeIfPresent(String.self, forKey: .contextSummaryThroughMessageID)
         agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+        projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
         if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
@@ -84,6 +89,7 @@ struct Conversation: Codable, Equatable {
         try container.encodeIfPresent(contextSummary, forKey: .contextSummary)
         try container.encodeIfPresent(contextSummaryThroughMessageID, forKey: .contextSummaryThroughMessageID)
         try container.encodeIfPresent(agentID, forKey: .agentID)
+        try container.encodeIfPresent(projectID, forKey: .projectID)
         try container.encode(model.provider, forKey: .provider)
         try container.encode(model.modelId, forKey: .modelId)
     }

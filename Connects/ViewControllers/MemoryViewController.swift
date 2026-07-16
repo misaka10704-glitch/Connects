@@ -110,7 +110,7 @@ final class MemoryViewController: UIViewController, UITextViewDelegate {
         navigationItem.rightBarButtonItems?.last?.image = ActionIconFactory.image(isEditingMemory ? .send : .edit, pointSize: 16)
         if !isEditingMemory {
             let draft = sourceView.text ?? ""
-            let marker = "## 整体背景"
+            let marker = draft.contains("## 稳定背景") ? "## 稳定背景" : "## 整体背景"
             if let range = draft.range(of: marker) {
                 MemoryStore.shared.proposeBackgroundUpdate(String(draft[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
             }

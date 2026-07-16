@@ -11,9 +11,11 @@ final class ConversationStore {
     private(set) var conversations: [Conversation] = []
     private(set) var currentConversationID: String?
     private(set) var showArchived = false
+    private(set) var selectedProjectID: String?
 
     private let storageKey = "connects_conversations_v2"
     private let legacyKey = "connects_conversations"
+    private let selectedProjectKey = "connects_selected_project_id"
     private var saveWorkItem: DispatchWorkItem?
 
     var currentConversation: Conversation? {
@@ -28,7 +30,18 @@ final class ConversationStore {
     var visibleConversations: [Conversation] {
         conversations
             .filter { showArchived ? $0.isArchived : !$0.isArchived }
+            .filter { conv in
+                if showArchived { return true }
+                if let pid = selectedProjectID { return conv.projectID == pid }
+                return conv.projectID == nil
+            }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func conversationCount(inProject projectID: String?) -> Int {
+        conversations.filter {
+            !$0.isArchived && $0.projectID == projectID
+        }.count
     }
 
     init() {
@@ -41,6 +54,21 @@ final class ConversationStore {
         } else if currentConversationID == nil {
             currentConversationID = visibleConversations.first?.id ?? conversations.first?.id
         }
+        selectedProjectID = normalizedProjectID(
+            UserDefaults.standard.string(forKey: selectedProjectKey)
+        )
+    }
+
+    func setSelectedProjectID(_ projectID: String?) {
+        let normalized = normalizedProjectID(projectID)
+        guard normalized != selectedProjectID else { return }
+        selectedProjectID = normalized
+        if let projectID = selectedProjectID {
+            UserDefaults.standard.set(projectID, forKey: selectedProjectKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: selectedProjectKey)
+        }
+        notify(userInfo: ["source": "projectFilter"])
     }
 
     func setShowArchived(_ value: Bool) {
@@ -62,8 +90,9 @@ final class ConversationStore {
     }
 
     @discardableResult
-    func createConversation(model: AIModelOption = .deepseekV4Pro) -> Conversation {
-        let conversation = Conversation(model: model)
+    func createConversation(model: AIModelOption = .deepseekV4Pro, projectID: String? = nil) -> Conversation {
+        let assignedProject = projectID ?? selectedProjectID
+        let conversation = Conversation(model: model, projectID: assignedProject)
         conversations.insert(conversation, at: 0)
         currentConversationID = conversation.id
         showArchived = false
@@ -139,7 +168,8 @@ final class ConversationStore {
             titleLocked: false,
             contextSummary: source.contextSummary,
             contextSummaryThroughMessageID: source.contextSummaryThroughMessageID,
-            agentID: source.agentID
+            agentID: source.agentID,
+            projectID: source.projectID
         )
         // If forked mid-thread, drop summary unless the covered message is still present.
         if let tid = copy.contextSummaryThroughMessageID,
@@ -232,6 +262,29 @@ final class ConversationStore {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         conversations[index].agentID = agentID
         conversations[index].updatedAt = Date()
+        save()
+        notify()
+    }
+
+    func setProject(_ projectID: String?, for conversationID: String) {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        conversations[index].projectID = projectID
+        save()
+        notify()
+    }
+
+    private func normalizedProjectID(_ projectID: String?) -> String? {
+        guard let projectID = projectID else { return nil }
+        return ProjectStore.shared.project(id: projectID) == nil ? nil : projectID
+    }
+
+    func unassignProject(id projectID: String) {
+        var changed = false
+        for i in conversations.indices where conversations[i].projectID == projectID {
+            conversations[i].projectID = nil
+            changed = true
+        }
+        guard changed else { return }
         save()
         notify()
     }

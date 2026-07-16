@@ -326,10 +326,10 @@ extension Notification.Name {
 extension RootSplitViewController: SidebarViewControllerDelegate {
     func sidebarDidSelectConversation(id: String) {
         if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }),
-           target.messages.count <= 48 {
+           target.messages.count <= 64 {
             MessageCell.prewarmSnapshots(
                 for: Array(target.messages.suffix(32)),
-                parseLimit: 8
+                parseLimit: target.messages.count > 28 ? 4 : 8
             )
         }
         // The sidebar stays visible while Memory/settings are pushed inside the
@@ -383,6 +383,45 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
 
     func sidebarDidToggleArchiveFilter() {
         ConversationStore.shared.setShowArchived(!ConversationStore.shared.showArchived)
+    }
+
+    func sidebarDidSelectProjectFilter(projectID: String?) {
+        ConversationStore.shared.setSelectedProjectID(projectID)
+    }
+
+    func sidebarDidRequestNewProject() {
+        let alert = UIAlertController(title: "新建项目", message: nil, preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "项目名称" }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "创建", style: .default) { _ in
+            guard let name = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { return }
+            let project = Project(name: name, colorPreset: ProjectStore.shared.projects.count % 20)
+            ProjectStore.shared.upsert(project)
+            ConversationStore.shared.setSelectedProjectID(project.id)
+        })
+        present(alert, animated: true)
+    }
+
+    func sidebarDidRequestManageProjects() {
+        closeDrawer()
+        presentProjectSettings()
+    }
+
+    func sidebarDidMoveConversation(id: String, toProject projectID: String?) {
+        ConversationStore.shared.setProject(projectID, for: id)
+        if let projectID = projectID {
+            ConversationStore.shared.setSelectedProjectID(projectID)
+        }
+    }
+
+    private func presentProjectSettings() {
+        let settings = ProjectSettingsViewController()
+        let nav = UINavigationController(rootViewController: settings)
+        nav.modalPresentationStyle = .formSheet
+        nav.preferredContentSize = CGSize(width: 460, height: 620)
+        nav.navigationBar.isTranslucent = false
+        present(nav, animated: true)
     }
 }
 

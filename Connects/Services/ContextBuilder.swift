@@ -131,7 +131,7 @@ enum ContextBuilder {
            !background.isEmpty {
             systems.append(ChatMessage(
                 role: .system,
-                content: "[Cross-session user memory]\n\(MemoryStore.shared.prompt(for: .injection))\n\n\(String(background.prefix(3_200)))"
+                content: "[Cross-session user memory]\n\(String(background.prefix(1_800)))"
             ))
         }
         if let prompt = agentPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),

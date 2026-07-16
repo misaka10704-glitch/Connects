@@ -38,4 +38,10 @@ final class MemoryAgentLogicTests: XCTestCase {
         XCTAssertTrue(systems.contains { $0.contains("[Cross-session user memory]") })
         XCTAssertTrue(systems.contains { $0.contains("[Selected user agent]") })
     }
+
+    func testMemoryCaptureDefaultsDiscourageVerboseDumps() {
+        XCTAssertTrue(MemoryPromptKind.capture.defaultValue.contains("≤80字"))
+        XCTAssertTrue(MemoryPromptKind.compaction.defaultValue.contains("## 事件索引"))
+        XCTAssertTrue(MemoryPromptKind.injection.defaultValue.contains("会话链接"))
+    }
 }

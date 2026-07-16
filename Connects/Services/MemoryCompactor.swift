@@ -33,15 +33,15 @@ final class MemoryCompactor {
         \(previous.isEmpty ? "（无）" : previous)
 
         待合并的过期日志：
-        \(String(raw.prefix(12_000)))
+        \(String(raw.prefix(6_000)))
         """
         let model = AIModelOption.visible.first ?? .deepseekV4Flash
         APIClient.shared.complete(messages: [ChatMessage(role: .user, content: prompt)],
                                   model: model,
-                                  maxTokens: 900) { [weak self] result in
+                                  maxTokens: 500) { [weak self] result in
             defer { self?.finish(key) }
             guard case .success(let summary) = result else { return }
-            let cleaned = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = String(summary.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2_500))
             guard !cleaned.isEmpty else { return }
             MemoryStore.shared.applyAutomaticCompaction(sourceURLs: fileURLs, proposed: cleaned)
         }
