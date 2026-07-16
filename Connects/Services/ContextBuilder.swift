@@ -97,6 +97,29 @@ enum ContextBuilder {
               memoryBackground: MemoryStore.shared.injectedBackground()).usage
     }
 
+    /// Fast estimate for immediate switch UI; `usage(for:)` refines asynchronously.
+    static func quickUsageEstimate(for conversation: Conversation) -> Usage {
+        let budget = charBudget(for: conversation.model)
+        var chars = baseSystemPrompt.count + 400
+        let background = MemoryStore.shared.injectedBackground()
+        if !background.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            chars += min(background.count, 1_800)
+        }
+        if let agent = AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt {
+            chars += agent.count
+        }
+        if let summary = conversation.contextSummary {
+            chars += summary.count
+        }
+        for msg in conversation.messages where !msg.isStreaming {
+            chars += msg.content.count + msg.reasoningContent.count + msg.searchProcessContent.count
+            if let description = msg.imageDescription {
+                chars += description.count
+            }
+        }
+        return Usage(usedChars: chars, budgetChars: budget)
+    }
+
     /// Whether the meter should be visible for this conversation.
     static func shouldShowUsage(for conversation: Conversation) -> Bool {
         conversation.messages.contains { !$0.isStreaming && ($0.role == .user || $0.role == .assistant) }

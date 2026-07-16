@@ -241,18 +241,24 @@ final class RootSplitViewController: UIViewController {
         chatVC.updateSidebarToggleTitle(collapsed: false)
     }
 
-    @objc private func closeDrawer() {
+    @objc private func closeDrawer(animated: Bool = true) {
         guard isCompactLayout, isDrawerOpen else { return }
         isDrawerOpen = false
         sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
-        UIView.animate(withDuration: 0.22, animations: {
+        let apply = {
             self.dimView.alpha = 0
             self.view.layoutIfNeeded()
-        }, completion: { _ in
-            if !self.isDrawerOpen {
-                self.dimView.isHidden = true
-            }
-        })
+        }
+        if animated {
+            UIView.animate(withDuration: 0.22, animations: apply, completion: { _ in
+                if !self.isDrawerOpen {
+                    self.dimView.isHidden = true
+                }
+            })
+        } else {
+            apply()
+            dimView.isHidden = true
+        }
         chatVC.updateSidebarToggleTitle(collapsed: true)
     }
 
@@ -325,22 +331,21 @@ extension Notification.Name {
 
 extension RootSplitViewController: SidebarViewControllerDelegate {
     func sidebarDidSelectConversation(id: String) {
-        if let target = ConversationStore.shared.conversations.first(where: { $0.id == id }),
-           target.messages.count <= 64 {
+        if chatNav.topViewController !== chatVC {
+            chatNav.popToRootViewController(animated: false)
+        }
+        ConversationStore.shared.selectConversation(id: id)
+        chatVC.applyConversationSwitchHint()
+        closeDrawer(animated: false)
+        let convID = id
+        DispatchQueue.global(qos: .utility).async {
+            guard let target = ConversationStore.shared.conversation(id: convID),
+                  target.messages.count <= 64 else { return }
             MessageCell.prewarmSnapshots(
                 for: Array(target.messages.suffix(32)),
                 parseLimit: target.messages.count > 28 ? 4 : 8
             )
         }
-        // The sidebar stays visible while Memory/settings are pushed inside the
-        // chat navigation stack. Selecting a conversation must therefore also
-        // return to the chat root; otherwise selection changes behind Memory
-        // and the user appears to remain stuck on the same page.
-        if chatNav.topViewController !== chatVC {
-            chatNav.popToRootViewController(animated: true)
-        }
-        ConversationStore.shared.selectConversation(id: id)
-        closeDrawer()
     }
 
     func sidebarDidRequestNewChat() {

@@ -101,7 +101,10 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
     @objc private func themeChanged() { applyTheme() }
     @objc private func storeChanged(_ note: Notification) {
-        let projectFilterOnly = (note.userInfo?["source"] as? String) == "projectFilter"
+        let source = note.userInfo?["source"] as? String
+        let projectFilterOnly = source == "projectFilter"
+        let selectOnly = source == "select"
+        if selectOnly { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if projectFilterOnly {
@@ -568,6 +571,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             }
         case .conversation(let conv):
             delegate?.sidebarDidSelectConversation(id: conv.id)
+            highlightCurrentConversation()
         }
     }
 

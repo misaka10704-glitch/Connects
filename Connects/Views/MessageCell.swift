@@ -456,9 +456,15 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         roleLabel.text = nil
 
         if message.hasImage {
-            imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
-            imageViewMsg.isHidden = imageViewMsg.image == nil
-            imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
+            if cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
+                imageViewMsg.image = cachedImage
+                imageViewMsg.isHidden = cachedImage == nil
+                imageHeight.constant = cachedImage != nil ? 160 : 0
+            } else {
+                imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
+                imageViewMsg.isHidden = imageViewMsg.image == nil
+                imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
+            }
         } else {
             imageViewMsg.image = nil
             imageViewMsg.isHidden = true
@@ -708,8 +714,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                                  allowDefer: Bool = true) {
         let width = nativeLayoutWidth(for: layoutWidth)
         if allowDefer,
-           cellDelegate?.messageCellShouldDeferHeavyRender(self) == true,
-           !nativeLayoutIsCached(message: message, width: width, font: font, colors: colors) {
+           cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
             deferredNativeBind = DeferredNativeBind(
                 message: message,
                 hasThinking: hasThinking,
