@@ -38,7 +38,6 @@
 		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
 		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
 		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
-		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
 		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
 		E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000005 /* ChatRowHeightResolver.swift */; };
 		E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000006 /* AssistantBodySnapshotCache.swift */; };
@@ -132,7 +131,6 @@
 		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
 		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
 		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
-		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
 		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
 		E20000010000000000000005 /* ChatRowHeightResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowHeightResolver.swift; sourceTree = "<group>"; };
 		E20000010000000000000006 /* AssistantBodySnapshotCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantBodySnapshotCache.swift; sourceTree = "<group>"; };
@@ -300,7 +298,6 @@
 				A2000001000000000000001E /* ContextCompactor.swift */,
 				A20000010000000000000053 /* WebSearchService.swift */,
 				A20000010000000000000060 /* WebSearchCoordinator.swift */,
-				A20000010000000000000054 /* WebKitRenderWarmup.swift */,
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				E20000010000000000000005 /* ChatRowHeightResolver.swift */,
 				E20000010000000000000006 /* AssistantBodySnapshotCache.swift */,
@@ -551,7 +548,6 @@
 				A10000010000000000000061 /* TurnContextBarView.swift in Sources */,
 				A10000010000000000000053 /* WebSearchService.swift in Sources */,
 				A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */,
-				A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */,
 				A10000010000000000000055 /* RenderCacheStore.swift in Sources */,
 				E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */,
 				E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */,

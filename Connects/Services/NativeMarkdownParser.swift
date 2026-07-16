@@ -237,9 +237,11 @@ final class NativeMarkdownParser {
     }
 
     private let cache = NSCache<NSString, Box>()
+    private let stampCache = NSCache<NSString, NSString>()
 
     private init() {
         cache.countLimit = 160
+        stampCache.countLimit = 320
     }
 
     func parse(_ raw: String) -> NativeMarkdownDocument {
@@ -260,8 +262,30 @@ final class NativeMarkdownParser {
         return document
     }
 
+    /// Layout-cache fingerprint without building the AST (hot path for height/defer checks).
+    func layoutStamp(for raw: String) -> String {
+        let rawKey = RenderCacheStore.stamp(raw) as NSString
+        if let hit = stampCache.object(forKey: rawKey) {
+            return hit as String
+        }
+        if let hit = cache.object(forKey: rawKey) {
+            let stamp = hit.document.stamp
+            stampCache.setObject(stamp as NSString, forKey: rawKey)
+            return stamp
+        }
+        let normalized = MarkdownNormalizer.normalize(raw)
+        let stamp = RenderCacheStore.stamp(normalized)
+        if let hit = cache.object(forKey: stamp as NSString) {
+            stampCache.setObject(stamp as NSString, forKey: rawKey)
+            return stamp
+        }
+        stampCache.setObject(stamp as NSString, forKey: rawKey)
+        return stamp
+    }
+
     func clear() {
         cache.removeAllObjects()
+        stampCache.removeAllObjects()
     }
 
     private func parseBlocks(_ source: String) -> [NativeMessageBlock] {

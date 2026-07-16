@@ -104,14 +104,13 @@ enum AssistantMessageLayout {
             return false
         }
         let width = nativeLayoutWidth(for: max(layoutWidth, 120))
-        let document = NativeMarkdownParser.shared.parse(message.content)
         let style = NativeLayoutStyle(
             width: width,
             bodyFontSize: SettingsManager.shared.chatBodyFontSize,
             appearance: SettingsManager.shared.appearanceMode.rawValue,
             colors: DSTheme.c
         )
-        return NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil
+        return NativeMessageLayouter.shared.hasCachedLayout(forContent: message.content, style: style)
     }
 
     static func prewarmTurnWindow(messages: [ChatMessage],

@@ -495,7 +495,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         heightWork?.cancel()
         heightWork = nil
         AssistantBodySnapshotCache.shared.cancelWarm()
-        StableRichRenderer.shared.cancelPendingJobs()
         // Clear snap paint only — never sync-upgrade native during cancel (reload is imminent).
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             cell.clearBodySnapshotWithoutUpgrade()
