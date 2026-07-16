@@ -12,6 +12,8 @@ final class ChatRowHeightResolver {
     private var committedIDs = Set<String>()
     private var diskEstimates: [String: CGFloat] = [:]
     private var displayColumnHeights: [String: CGFloat] = [:]
+    /// While set, `rowHeight` ignores display mutations (scroll geometry freeze).
+    private var scrollFrozenRowHeights: [String: CGFloat]?
 
     // MARK: - Session lifecycle
 
@@ -20,6 +22,32 @@ final class ChatRowHeightResolver {
         committedIDs.removeAll()
         diskEstimates.removeAll()
         displayColumnHeights.removeAll()
+        scrollFrozenRowHeights = nil
+    }
+
+    var isScrollHeightFrozen: Bool { scrollFrozenRowHeights != nil }
+
+    func beginScrollHeightFreeze(messages: [ChatMessage], layoutWidth: CGFloat) {
+        guard !messages.isEmpty else {
+            scrollFrozenRowHeights = [:]
+            return
+        }
+        let count = messages.count
+        var map = [String: CGFloat]()
+        map.reserveCapacity(count)
+        for (row, message) in messages.enumerated() {
+            map[message.id] = rowHeight(
+                for: message,
+                row: row,
+                messageCount: count,
+                layoutWidth: layoutWidth
+            )
+        }
+        scrollFrozenRowHeights = map
+    }
+
+    func endScrollHeightFreeze() {
+        scrollFrozenRowHeights = nil
     }
 
     func resetForConversation(diskCache: [String: CGFloat],
@@ -27,6 +55,7 @@ final class ChatRowHeightResolver {
                               layoutWidth: CGFloat) {
         committedColumnHeights.removeAll()
         committedIDs.removeAll()
+        scrollFrozenRowHeights = nil
         diskEstimates = diskCache
         // Pin disk first so rebuild never walks plain boundingRect / parse for known rows.
         bootstrapCommittedFromDisk(messages: messages)
@@ -105,7 +134,10 @@ final class ChatRowHeightResolver {
         committedColumnHeights[messageID] = stored
         committedIDs.insert(messageID)
         diskEstimates.removeValue(forKey: messageID)
-        displayColumnHeights[messageID] = stored
+        // Do not mutate live geometry mid-gesture — freeze map owns heightForRowAt.
+        if scrollFrozenRowHeights == nil {
+            displayColumnHeights[messageID] = stored
+        }
     }
 
     func recordDiskEstimate(columnHeight: CGFloat, messageID: String) {
@@ -115,11 +147,19 @@ final class ChatRowHeightResolver {
 
     func updateDisplayEstimate(columnHeight: CGFloat, messageID: String) {
         guard columnHeight > 40 else { return }
+        guard scrollFrozenRowHeights == nil else { return }
         if committedIDs.contains(messageID) {
             displayColumnHeights[messageID] = committedColumnHeights[messageID] ?? columnHeight
             return
         }
         displayColumnHeights[messageID] = columnHeight
+    }
+
+    /// After scroll freeze ends, push committed heights into the display map.
+    func publishCommittedToDisplay() {
+        for (id, height) in committedColumnHeights where height > 40 {
+            displayColumnHeights[id] = height
+        }
     }
 
     func invalidate(messageID: String) {
@@ -140,6 +180,9 @@ final class ChatRowHeightResolver {
                    row: Int,
                    messageCount: Int,
                    layoutWidth: CGFloat) -> CGFloat {
+        if let frozen = scrollFrozenRowHeights?[message.id], frozen > 40 {
+            return frozen
+        }
         if let display = displayColumnHeights[message.id], display > 40 {
             return display + Self.cellVerticalMargin
         }
@@ -149,7 +192,9 @@ final class ChatRowHeightResolver {
             messageCount: messageCount,
             layoutWidth: layoutWidth
         )
-        displayColumnHeights[message.id] = fallback
+        if scrollFrozenRowHeights == nil {
+            displayColumnHeights[message.id] = fallback
+        }
         return fallback + Self.cellVerticalMargin
     }
 
@@ -281,7 +326,8 @@ final class ChatRowHeightResolver {
     static func estimatedUserColumnContentHeight(for message: ChatMessage,
                                                  layoutWidth: CGFloat) -> CGFloat? {
         guard message.role == .user else { return nil }
-        let columnWidth = min(DSTheme.bubbleMaxWidth, max(layoutWidth - 48, 120))
+        // layoutWidth is already bubble/content width from ChatVC.
+        let columnWidth = min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
         let labelWidth = max(columnWidth - 124, 80)
         let font = UIFont.systemFont(ofSize: SettingsManager.shared.chatBodyFontSize)
         var total: CGFloat = 0

@@ -93,8 +93,10 @@ enum AssistantMessageLayout {
         prewarmLayouts(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
     }
 
-    static func nativeLayoutWidth(for tableLayoutWidth: CGFloat) -> CGFloat {
-        min(DSTheme.bubbleMaxWidth, max(tableLayoutWidth - 48, 120))
+    /// `layoutWidth` from ChatVC is already bubble/content width (`currentRenderWidth`).
+    /// Clamp only — do not subtract horizontal chrome again.
+    static func nativeLayoutWidth(for layoutWidth: CGFloat) -> CGFloat {
+        min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
     }
 
     static func hasCachedNativeLayout(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {

@@ -156,7 +156,11 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
 
         let deleteButton = UIButton(type: .system)
         deleteButton.setTitle("删除项目", for: .normal)
-        deleteButton.setTitleColor(.systemRed, for: .normal)
+        if #available(iOS 13.0, *) {
+            deleteButton.setTitleColor(.systemRed, for: .normal)
+        } else {
+            deleteButton.setTitleColor(UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 1), for: .normal)
+        }
         deleteButton.contentHorizontalAlignment = .left
         deleteButton.accessibilityIdentifier = project.id
         deleteButton.addTarget(self, action: #selector(deleteTapped(_:)), for: .touchUpInside)

@@ -5,7 +5,8 @@ import WebKit
 enum RenderCacheStore {
     private static let heightsKey = "connects_web_heights_v1"
     private static let snapDirName = "connects_web_snaps"
-    private static let maxSnapFiles = 24
+    /// Body snapshots for many conversations × widths — keep a generous LRU.
+    private static let maxSnapFiles = 160
     private static var saveHeightsWork: DispatchWorkItem?
 
     // MARK: - Heights
@@ -65,12 +66,27 @@ enum RenderCacheStore {
 
     // MARK: - Snapshots
 
+    static func snapshotExists(forKey key: String) -> Bool {
+        FileManager.default.fileExists(atPath: fileURL(forKey: key).path)
+    }
+
     static func snapshot(forKey key: String) -> UIImage? {
         let url = fileURL(forKey: key)
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data) else { return nil }
-        // Touch mtime for simple LRU.
+              let raw = UIImage(data: data),
+              let cg = raw.cgImage else { return nil }
+        // jpegData drops UIImage.scale. Prefer screen scale (retina captures); if the
+        // bitmap's pixel width is already ~point-sized (older scale-1 snaps), keep scale 1.
+        let screen = UIScreen.main.scale
+        let px = CGFloat(cg.width)
+        let scale: CGFloat
+        if screen > 1, px > 120, px / screen >= 120 {
+            scale = screen
+        } else {
+            scale = 1
+        }
+        let image = UIImage(cgImage: cg, scale: scale, orientation: .up)
         try? FileManager.default.setAttributes(
             [.modificationDate: Date()],
             ofItemAtPath: url.path
@@ -79,8 +95,9 @@ enum RenderCacheStore {
     }
 
     static func storeSnapshot(_ image: UIImage, forKey key: String) {
-        DispatchQueue.global(qos: .utility).async {
-            guard let data = image.jpegData(compressionQuality: 0.55) else { return }
+        // Encode off-main but at userInitiated so cold-kill shortly after open still persists.
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let data = image.jpegData(compressionQuality: 0.78) else { return }
             let dir = snapDirectory()
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let url = fileURL(forKey: key)

@@ -44,7 +44,11 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
     func refreshRenderDebugOverlay() {
         let on = SettingsManager.shared.renderDebugOverlayEnabled
         column.layer.borderWidth = on ? 1 / UIScreen.main.scale : 0
-        column.layer.borderColor = UIColor.systemRed.withAlphaComponent(0.45).cgColor
+        guard on else { return }
+        let red: UIColor
+        if #available(iOS 13.0, *) { red = .systemRed }
+        else { red = UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 1) }
+        column.layer.borderColor = red.withAlphaComponent(0.45).cgColor
     }
 
     func applySharedImage(to message: ChatMessage) {

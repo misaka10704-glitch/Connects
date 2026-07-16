@@ -100,7 +100,11 @@ final class UserMessageCell: BaseMessageCell {
         super.refreshRenderDebugOverlay()
         let on = SettingsManager.shared.renderDebugOverlayEnabled
         userBubble.layer.borderWidth = on && !userBubble.isHidden ? 1 / UIScreen.main.scale : 0
-        userBubble.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.45).cgColor
+        guard on else { return }
+        let blue: UIColor
+        if #available(iOS 13.0, *) { blue = .systemBlue }
+        else { blue = UIColor(red: 0.0, green: 0.48, blue: 1.0, alpha: 1) }
+        userBubble.layer.borderColor = blue.withAlphaComponent(0.45).cgColor
     }
 
     private func setupUserBubble() {

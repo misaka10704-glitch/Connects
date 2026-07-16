@@ -41,6 +41,7 @@
 		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
 		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
 		E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000005 /* ChatRowHeightResolver.swift */; };
+		E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000006 /* AssistantBodySnapshotCache.swift */; };
 		A10000010000000000000056 /* ConnectsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000056 /* ConnectsMenu.swift */; };
 		A10000010000000000000057 /* ModelVisibilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000057 /* ModelVisibilityView.swift */; };
 		A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000058 /* ModelCapsuleDropdown.swift */; };
@@ -134,6 +135,7 @@
 		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
 		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
 		E20000010000000000000005 /* ChatRowHeightResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowHeightResolver.swift; sourceTree = "<group>"; };
+		E20000010000000000000006 /* AssistantBodySnapshotCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantBodySnapshotCache.swift; sourceTree = "<group>"; };
 		A20000010000000000000056 /* ConnectsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsMenu.swift; sourceTree = "<group>"; };
 		A20000010000000000000057 /* ModelVisibilityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelVisibilityView.swift; sourceTree = "<group>"; };
 		A20000010000000000000058 /* ModelCapsuleDropdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCapsuleDropdown.swift; sourceTree = "<group>"; };
@@ -301,6 +303,7 @@
 				A20000010000000000000054 /* WebKitRenderWarmup.swift */,
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				E20000010000000000000005 /* ChatRowHeightResolver.swift */,
+				E20000010000000000000006 /* AssistantBodySnapshotCache.swift */,
 				A2000001000000000000001A /* MarkdownHTMLRenderer.swift */,
 				A2000001000000000000001B /* PlainMarkdown.swift */,
 				C20000010000000000000002 /* AgentStore.swift */,
@@ -551,6 +554,7 @@
 				A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */,
 				A10000010000000000000055 /* RenderCacheStore.swift in Sources */,
 				E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */,
+				E10000010000000000000006 /* AssistantBodySnapshotCache.swift in Sources */,
 				A10000010000000000000056 /* ConnectsMenu.swift in Sources */,
 				A10000010000000000000057 /* ModelVisibilityView.swift in Sources */,
 				A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */,

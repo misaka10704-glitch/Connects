@@ -26,11 +26,17 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool
     /// When true, skip uncached native layout and use a plain-text placeholder.
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool
+    /// When true, bind a cached body snapshot before live native (fast reopen / scroll).
+    func messageCellShouldPreferSnapshot(_ cell: MessageCellType) -> Bool
+    /// When false, snapshot lookup stays in RAM only (open critical path).
+    func messageCellShouldDecodeSnapshotFromDisk(_ cell: MessageCellType) -> Bool
 }
 
 extension MessageCellDelegate {
     func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool { false }
+    func messageCellShouldPreferSnapshot(_ cell: MessageCellType) -> Bool { false }
+    func messageCellShouldDecodeSnapshotFromDisk(_ cell: MessageCellType) -> Bool { true }
     func messageCell(_ cell: MessageCellType, didFinishStableRender height: CGFloat, for messageID: String) {}
 }
 
