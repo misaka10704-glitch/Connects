@@ -24,6 +24,8 @@ extension MessageCellDelegate {
 /// ChatGPT-style layout: centered column, user bubble right, assistant prose + collapsible thinking + icon actions.
 final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDelegate {
     static let reuseID = "MessageCell"
+    /// Vertical space reserved below assistant body for copy / retry / fork.
+    static let actionRowReservedHeight: CGFloat = 44
     private static var expandedThinkingIDs = Set<String>()
     private static var expandedSearchIDs = Set<String>()
     /// Briefly shown while a recycled WKWebView restores an already-seen reply.
@@ -379,7 +381,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     static func prewarmSnapshots(for messages: [ChatMessage],
                                  targetWidth: CGFloat? = nil,
                                  parseLimit: Int = 4) {
-        let width = max(targetWidth ?? DSTheme.bubbleMaxWidth, 120)
+        let width = nativeLayoutWidth(for: max(targetWidth ?? DSTheme.bubbleMaxWidth, 120))
         let style = NativeLayoutStyle(
             width: width,
             bodyFontSize: SettingsManager.shared.chatBodyFontSize,
@@ -399,7 +401,7 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     static func prewarmLayouts(for messages: [ChatMessage],
                                targetWidth: CGFloat? = nil,
                                layoutLimit: Int = 12) {
-        let width = max(targetWidth ?? DSTheme.bubbleMaxWidth, 120)
+        let width = nativeLayoutWidth(for: max(targetWidth ?? DSTheme.bubbleMaxWidth, 120))
         let style = NativeLayoutStyle(
             width: width,
             bodyFontSize: SettingsManager.shared.chatBodyFontSize,
@@ -417,11 +419,15 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         }
     }
 
+    static func nativeLayoutWidth(for tableLayoutWidth: CGFloat) -> CGFloat {
+        min(DSTheme.bubbleMaxWidth, max(tableLayoutWidth - 48, 120))
+    }
+
     var hasPendingDeferredNativeRender: Bool {
         deferredNativeBind != nil
     }
 
-    func applyDeferredNativeRenderIfNeeded() {
+    func applyDeferredNativeRenderIfNeeded(suppressHeightNotify: Bool = false) {
         guard let bind = deferredNativeBind, bind.message.id == messageID else { return }
         deferredNativeBind = nil
         configureNative(
@@ -434,7 +440,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
             layoutWidth: bind.layoutWidth,
             allowDefer: false
         )
-        scheduleMeasuredHeightNotify(for: messageID)
+        if !suppressHeightNotify {
+            scheduleMeasuredHeightNotify(for: messageID)
+        }
     }
 
     func finishChromeToggleLayout() {
@@ -443,6 +451,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
     }
 
     func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat) {
+        let previousMessageID = messageID
+        let deferHeavyRender = cellDelegate?.messageCellShouldDeferHeavyRender(self) == true
         messageID = message.id
         preferredLayoutWidth = layoutWidth
         configuredPreferredHeight = preferredHeight
@@ -597,6 +607,15 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         // Non-math thinking replies stay on PlainMarkdown (fast, no blank-gap risk).
         let needsRich = Self.needsRichRenderer(message.content)
 
+        // Re-configuring the same visible row mid-scroll must not wipe painted content.
+        if message.role == .assistant,
+           !message.isStreaming,
+           previousMessageID == message.id,
+           deferHeavyRender,
+           hasVisibleAssistantBody() {
+            return
+        }
+
         if message.isStreaming || message.content.isEmpty {
             parkWeb()
             hideNativeRender()
@@ -713,8 +732,14 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                                  layoutWidth: CGFloat,
                                  allowDefer: Bool = true) {
         let width = nativeLayoutWidth(for: layoutWidth)
-        if allowDefer,
-           cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
+        let layoutReady = nativeLayoutIsCached(
+            message: message,
+            width: width,
+            font: font,
+            colors: colors
+        )
+        let scrolling = allowDefer && cellDelegate?.messageCellShouldDeferHeavyRender(self) == true
+        if scrolling && !layoutReady {
             deferredNativeBind = DeferredNativeBind(
                 message: message,
                 hasThinking: hasThinking,
@@ -730,7 +755,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
                 hasSearch: hasSearch,
                 hasImage: hasImage,
                 font: font,
-                colors: colors
+                colors: colors,
+                scheduleHeightNotify: false
             )
             return
         }
@@ -785,12 +811,23 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         return NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil
     }
 
+    private func hasVisibleAssistantBody() -> Bool {
+        if !nativeRenderView.isHidden { return true }
+        if !renderedReplyView.isHidden { return true }
+        if !assistantLabel.isHidden {
+            let text = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !text.isEmpty { return true }
+        }
+        return false
+    }
+
     private func configurePlainFallback(message: ChatMessage,
                                         hasThinking: Bool,
                                         hasSearch: Bool,
                                         hasImage: Bool,
                                         font: CGFloat,
-                                        colors: ThemeColors) {
+                                        colors: ThemeColors,
+                                        scheduleHeightNotify: Bool = true) {
         parkWeb()
         hideStableRenderedReply()
         hideNativeRender()
@@ -806,7 +843,9 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         assistantLabel.font = UIFont.systemFont(ofSize: font)
         assistantLabel.text = message.content
         applyAssistantLayoutWidth()
-        scheduleMeasuredHeightNotify(for: message.id)
+        if scheduleHeightNotify {
+            scheduleMeasuredHeightNotify(for: message.id)
+        }
     }
 
     /// Push the column's intrinsic height back to the table. iOS 12 can keep an
@@ -2200,6 +2239,8 @@ final class MessageCell: UITableViewCell, WKScriptMessageHandler, WKNavigationDe
         selectionStyle = .none
         backgroundColor = .clear
         contentView.backgroundColor = .clear
+        contentView.clipsToBounds = true
+        clipsToBounds = true
 
         column.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(column)

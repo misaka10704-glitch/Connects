@@ -15,21 +15,24 @@ enum WebSearchService {
         let processLog: String
     }
 
-    struct WeightedTerm {
-        let term: String
-        let weight: Int
+    struct SearchTarget {
+        let name: String
+        let domain: String?
+        let query: String
+        let reason: String?
+        let directURL: String?
     }
 
     struct SearchPlan {
-        let queries: [String]
-        let weightedTerms: [WeightedTerm]
+        let topic: String
+        let targets: [SearchTarget]
 
         static func fallback(_ query: String) -> SearchPlan {
             let cleaned = WebSearchService.sanitizeQuery(query)
-            return SearchPlan(
-                queries: cleaned.isEmpty ? [] : [cleaned],
-                weightedTerms: cleaned.isEmpty ? [] : [WeightedTerm(term: cleaned, weight: 5)]
-            )
+            guard !cleaned.isEmpty else {
+                return SearchPlan(topic: "", targets: [])
+            }
+            return SearchPlan(topic: cleaned, targets: heuristicTargets(for: cleaned))
         }
     }
 
@@ -54,12 +57,44 @@ enum WebSearchService {
     private static let maxCharsPerPage = 1800
     private static let maxDownloadBytes = 300_000
     private static let maxInjectedEvidenceChars = 8_000
-    private static let maxPlannedQueries = 5
-    private static let maxWeightedTerms = 6
+    private static let maxPlannedQueries = 4
+    private static let minQualifiedHits = 2
+    private static let trustedSourceHosts = [
+        "baike.baidu.com", "zhihu.com", "wikipedia.org", "douban.com",
+        "thepaper.cn", "edu.cn", "cnki.net", "huxiu.com", "36kr.com", "caixin.com"
+    ]
+    private static let blockedPlannerDomains = [
+        "gov.cn", "www.gov.cn", "china.com.cn", "www.china.com.cn",
+        "people.com.cn", "xinhuanet.com", "www.xinhuanet.com", "cctv.com", "news.cn"
+    ]
+    private static let topicStopwords: Set<String> = [
+        "中国", "我国", "国内", "中华", "人民", "共和国", "国家", "大陆",
+        "怎么", "如何", "为什么", "什么", "哪些", "怎样", "为何", "是否",
+        "发展", "起来", "过程", "历程", "历史", "背景", "现状", "起源",
+        "请问", "介绍", "讲解", "分析", "浅谈", "概述", "关于", "一下",
+        "文化", "讨论", "产业", "行业"
+    ]
+    private static let cultureTopicMarkers = [
+        "二次元", "ACG", "动漫", "亚文化", "御宅", "漫画", "游戏", "番剧", "同人"
+    ]
+    private static let geographyHitMarkers = [
+        "七大洲", "大陆板块", "地理", "环太平洋", "地壳", "板块", "独特之处",
+        "美洲", "非洲", "欧洲", "亚洲", "划分", "地球"
+    ]
+    private static let lowQualityHosts = [
+        "toutiao.com", "baijiahao.baidu.com", "haokan.baidu.com", "uc.cn", "ufcn.cn"
+    ]
+    private static let officialTopicMarkers = [
+        "政策", "法规", "条例", "国务院", "政府", "两会", "白皮书", "公文",
+        "社保", "公积金", "签证", "刑法", "宪法", "法律", "行政", "机关"
+    ]
+    private static let junkContentMarkers = [
+        "免费观看", "高清电影", "影视大全", "在线播放", "免费在线", "电影免费",
+        "电视剧", "综艺", "动漫在线", "番剧", "种子", "磁力", "博彩", "赌博"
+    ]
 
-    /// Ask the model to turn conversation context into concrete search queries.
-    /// Follow-ups like "那这个呢" should resolve against prior turns, not be searched verbatim.
-    static func planSearchQueries(
+    /// Ask the model where to look up the latest user question, then search those sites.
+    static func planSearch(
         contextMessages: [ChatMessage],
         model: AIModelOption,
         fallbackQuery: String,
@@ -77,26 +112,31 @@ enum WebSearchService {
         let prompt = ChatMessage(
             role: .user,
             content: """
-            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」生成检索词，并给出用来挑选文章的核心概念权重。
+            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」推荐 2–\(maxPlannedQueries) 个**适合查证该问题**的网站或资料来源，并给出在每个来源内该怎么搜。
 
             要求：
             - 必须结合前文消解指代（如「他呢」「那这个」「为什么」），写成具体实体 / 事件 / 问题，不要原样照抄模糊追问。
-            - 用户用中文时优先写中文检索词；专有名词可保留原文。
-            - 只要需要联网，输出 3–\(maxPlannedQueries) 条互补检索词，分别覆盖用户问题的定义/背景、起源/历史、发展/影响、研究/争议等实际相关维度；不要只是同一句话的机械改写。
-            - 检索的是用户要解决的事实、事件、产品、人物或问题；禁止把问题误写成「某词笔顺 / 汉字释义 / 拼音 / 读音 / 字形 / 语法解释」等语言学习关键词，除非最新消息明确要求查询这些内容。
-            - 不要搜索聊天措辞、单个虚词或泛化的元问题；必须保留具体主体与用户真正要了解的关系、原因或结论。
-            - 对概念、文化、历史、社会现象类问题，检索定义、起源、发展、研究或报道；不要生成用于找动画、番剧、视频、在线播放或播放平台的词。
-            - 权重词必须是区分资料相关性的具体实体、概念或关系；不要使用「文化」「社会」「新闻」等过泛词。权重 1–5，5 表示最核心。
+            - 优先推荐能给出定义、历史脉络、分析或可靠讨论的来源：百度百科、维基百科、知乎、豆瓣、行业媒体、高校站点等。
+            - 只有当用户明确询问政策、法规、政府文件、政务办理时，才可推荐 gov.cn / 中国政府网；文化、娱乐、亚文化、兴趣爱好、技术、生活类问题**禁止**推荐政府门户、人民网时政、中国网时政、央视时政。
+            - 每个来源的 query 必须保留问题的**主题词**（如「二次元文化」「御宅族」「ACG」），不要只剩「中国」「我国」「大陆」等国家/地理泛称，也不要把整句问法原样塞进去。
+            - **禁止**用「大陆」指代中国大陆；请写「中国」或直接写主题词（如「二次元文化」「ACG」）。地理问题除外。
+            - 禁止推荐：免费观影/盗版资源站、影视聚合站、动漫在线播放站、下载站、购物导购。
+            - 每个来源输出：
+              - name：站点名称（如「百度百科」）
+              - domain：域名（如 baike.baidu.com、zhihu.com）
+              - query：在该站内搜索的具体词（8–24 字，保留问题主体）
+              - reason：一句话说明为何查这里
+              - directURL：可选，若你非常确定某条百科/专题页可直接给出完整 URL
             - 只输出合法 JSON，不要 Markdown、解释或其它文字：
-              {"queries":["检索词 1"],"weights":[{"term":"核心概念","weight":5},{"term":"起源","weight":3}]}
-            - 若完全不需要联网，只输出：{"queries":[],"weights":[]}
+              {"topic":"问题摘要","targets":[{"name":"百度百科","domain":"baike.baidu.com","query":"二次元文化","reason":"定义与背景"}]}
+            - 若完全不需要联网，只输出：{"topic":"","targets":[]}
 
             【对话】
             \(transcript)
             """
         )
 
-        APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 220) { result in
+        APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 360) { result in
             switch result {
             case .success(let raw):
                 completion(parseSearchPlan(raw, fallback: fallback))
@@ -106,30 +146,23 @@ enum WebSearchService {
         }
     }
 
-    /// Search the web, open top result pages, and format evidence for the model.
-    /// `onStatus` is always called on the main queue (e.g. "正在搜索…" / "正在阅读网页…").
+    /// Legacy entry — single open-web query.
     static func searchAndFormat(
         query: String,
         onStatus: ((String) -> Void)? = nil,
         completion: @escaping (Result<SearchBundle, Error>) -> Void
     ) {
-        searchAndFormat(queries: [query], weightedTerms: [], onStatus: onStatus, completion: completion)
+        searchAndFormat(plan: SearchPlan.fallback(query), onStatus: onStatus, completion: completion)
     }
 
-    /// Search using one or more planned queries, then browse and format evidence.
+    /// Search recommended sources, open top pages, and format evidence.
     static func searchAndFormat(
-        queries: [String],
-        weightedTerms: [WeightedTerm] = [],
+        plan: SearchPlan,
         onStatus: ((String) -> Void)? = nil,
         completion: @escaping (Result<SearchBundle, Error>) -> Void
     ) {
-        let qs = Array(
-            queries
-                .map(sanitizeQuery)
-                .filter { !$0.isEmpty }
-                .prefix(maxPlannedQueries)
-        )
-        guard !qs.isEmpty else {
+        let targets = Array(plan.targets.prefix(maxPlannedQueries))
+        guard !targets.isEmpty else {
             DispatchQueue.main.async { completion(.failure(SearchError.emptyQuery)) }
             return
         }
@@ -141,9 +174,22 @@ enum WebSearchService {
         var allSources: [[Hit]] = []
         var lastError: Error?
 
-        for q in qs {
+        for target in targets {
+            if let direct = normalizedDirectURL(target.directURL) {
+                lock.lock()
+                allSources.append([
+                    Hit(
+                        title: target.name.isEmpty ? direct : target.name,
+                        url: direct,
+                        snippet: target.reason ?? target.query
+                    )
+                ])
+                lock.unlock()
+            }
+            let searchQuery = buildSearchQuery(for: target)
+            guard !searchQuery.isEmpty else { continue }
             group.enter()
-            fetchAllEngines(query: q) { hits, error in
+            fetchAllEngines(query: searchQuery) { hits, error in
                 lock.lock()
                 if !hits.isEmpty { allSources.append(hits) }
                 if let error = error, lastError == nil { lastError = error }
@@ -153,53 +199,205 @@ enum WebSearchService {
         }
 
         group.notify(queue: .global(qos: .userInitiated)) {
-            let rankKey = qs.joined(separator: " ")
-            let rankedHits = rankHits(
-                mergeHits(sources: allSources, limit: 40),
-                query: rankKey,
-                weightedTerms: weightedTerms
+            finishSearch(
+                plan: plan,
+                targets: targets,
+                allSources: allSources,
+                lastError: lastError,
+                onStatus: onStatus,
+                completion: completion
             )
-            // Weights are not merely a tie-breaker. A page that does not
-            // match the AI-selected core concepts must not reach browsing
-            // just because it happened to be returned near the end of Bing's
-            // result feed.
-            let weightQualifiedHits = rankedHits.filter {
-                passesWeightFilter($0, weightedTerms: weightedTerms)
+        }
+    }
+
+    private static func finishSearch(
+        plan: SearchPlan,
+        targets: [SearchTarget],
+        allSources: [[Hit]],
+        lastError: Error?,
+        onStatus: ((String) -> Void)? = nil,
+        completion: @escaping (Result<SearchBundle, Error>) -> Void
+    ) {
+        let topic = plan.topic.isEmpty ? targets.first?.query ?? "" : plan.topic
+        let hits = qualifiedHits(from: allSources, plan: plan, targets: targets, topic: topic)
+        if hits.count < minQualifiedHits {
+            let retryTopic = focusTopicPhrase(topic)
+            let retryPlan = SearchPlan(topic: retryTopic, targets: heuristicTargets(for: retryTopic))
+            let retryTargets = Array(retryPlan.targets.prefix(maxPlannedQueries))
+            let retryGroup = DispatchGroup()
+            let retryLock = NSLock()
+            var retrySources: [[Hit]] = []
+            var retryError = lastError
+            for target in retryTargets {
+                let searchQuery = buildSearchQuery(for: target)
+                guard !searchQuery.isEmpty else { continue }
+                retryGroup.enter()
+                fetchAllEngines(query: searchQuery) { fetched, error in
+                    retryLock.lock()
+                    if !fetched.isEmpty { retrySources.append(fetched) }
+                    if let error = error, retryError == nil { retryError = error }
+                    retryLock.unlock()
+                    retryGroup.leave()
+                }
             }
-            let candidates = weightedTerms.isEmpty ? rankedHits : weightQualifiedHits
-            // Watching/streaming platforms rarely provide an explanatory
-            // source even when their titles happen to contain the topic.
-            let informativeHits = candidates.filter { !isPlaybackPlatform($0.url) }
-            let hits = informativeHits.isEmpty ? candidates : informativeHits
-            guard !hits.isEmpty else {
+            retryGroup.notify(queue: .global(qos: .userInitiated)) {
+                var combined = allSources + retrySources
+                let mergedHits = qualifiedHits(
+                    from: combined,
+                    plan: retryPlan,
+                    targets: retryTargets,
+                    topic: retryTopic
+                )
+                deliverSearchResults(
+                    plan: mergedHits.isEmpty ? plan : retryPlan,
+                    targets: mergedHits.isEmpty ? targets : retryTargets,
+                    hits: mergedHits.isEmpty ? hits : mergedHits,
+                    lastError: retryError,
+                    onStatus: onStatus,
+                    completion: completion
+                )
+            }
+            return
+        }
+        deliverSearchResults(
+            plan: plan,
+            targets: targets,
+            hits: hits,
+            lastError: lastError,
+            onStatus: onStatus,
+            completion: completion
+        )
+    }
+
+    private static func qualifiedHits(
+        from sources: [[Hit]],
+        plan: SearchPlan,
+        targets: [SearchTarget],
+        topic: String
+    ) -> [Hit] {
+        let focusedQueries = targets.map { sanitizePlannerQuery($0.query, topic: topic) }.filter { !$0.isEmpty }
+        let merged = mergeHits(sources: sources, limit: 40)
+            .filter { !isJunkHit($0) }
+            .filter { !shouldBlockOfficialHit($0, topic: topic) }
+            .filter { !isWrongSenseHit($0, topic: topic) }
+            .filter { isTopicRelevantHit($0, topic: topic) }
+        let queryPool = poolRelevantToQueries(merged, topic: topic, queries: focusedQueries)
+        let rankedHits = rankHits(queryPool, topic: topic, targets: targets)
+        let candidates = selectQualifiedHits(
+            rankedHits,
+            topic: topic,
+            targetQueries: focusedQueries
+        )
+        let informativeHits = candidates.filter { !isPlaybackPlatform($0.url) }
+        return informativeHits.isEmpty ? candidates : informativeHits
+    }
+
+    private static func deliverSearchResults(
+        plan: SearchPlan,
+        targets: [SearchTarget],
+        hits: [Hit],
+        lastError: Error?,
+        onStatus: ((String) -> Void)?,
+        completion: @escaping (Result<SearchBundle, Error>) -> Void
+    ) {
+        let topic = plan.topic.isEmpty ? targets.first?.query ?? "" : plan.topic
+        guard !hits.isEmpty else {
+            DispatchQueue.main.async {
+                completion(.failure(lastError ?? SearchError.noResults))
+            }
+            return
+        }
+
+        let toBrowse = pickBrowseTargets(from: hits, limit: maxPageCandidates)
+        DispatchQueue.main.async { onStatus?("正在阅读网页…") }
+
+        fetchPages(toBrowse) { pages, _ in
+            let usableHits = hits
+                .filter { !isExcludedResultHost($0.url) && !isJunkHit($0) }
+                .filter { !shouldBlockOfficialHit($0, topic: topic) }
+                .filter { !isWrongSenseHit($0, topic: topic) }
+                .filter { isTopicRelevantHit($0, topic: topic) }
+            guard !usableHits.isEmpty else {
                 DispatchQueue.main.async {
-                    completion(.failure(lastError ?? SearchError.noResults))
+                    completion(.failure(SearchError.noResults))
                 }
                 return
             }
-
-            let toBrowse = pickBrowseTargets(from: hits, limit: maxPageCandidates)
-            DispatchQueue.main.async { onStatus?("正在阅读网页…") }
-
-            fetchPages(toBrowse) { pages, _ in
-                let usableHits = hits.filter { !isExcludedResultHost($0.url) }
-                guard !usableHits.isEmpty else {
-                    DispatchQueue.main.async {
-                        completion(.failure(SearchError.noResults))
-                    }
-                    return
-                }
-                let evidence = formatEvidence(queries: qs, hits: usableHits, pages: pages)
-                let process = formatProcessLog(queries: qs, hits: usableHits, pages: pages)
-                DispatchQueue.main.async {
-                    if evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        completion(.failure(lastError ?? SearchError.noResults))
-                    } else {
-                        completion(.success(SearchBundle(evidenceBlock: evidence, processLog: process)))
-                    }
+            let evidence = formatEvidence(plan: plan, hits: usableHits, pages: pages)
+            let process = formatProcessLog(plan: plan, hits: usableHits, pages: pages)
+            DispatchQueue.main.async {
+                if evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    completion(.failure(lastError ?? SearchError.noResults))
+                } else {
+                    completion(.success(SearchBundle(evidenceBlock: evidence, processLog: process)))
                 }
             }
         }
+    }
+
+    /// Deprecated — use `searchAndFormat(plan:)`.
+    static func searchAndFormat(
+        queries: [String],
+        onStatus: ((String) -> Void)? = nil,
+        completion: @escaping (Result<SearchBundle, Error>) -> Void
+    ) {
+        let topic = queries.first ?? ""
+        let targets = queries.map {
+            SearchTarget(name: "开放检索", domain: nil, query: $0, reason: nil, directURL: nil)
+        }
+        searchAndFormat(plan: SearchPlan(topic: topic, targets: targets), onStatus: onStatus, completion: completion)
+    }
+
+    private static func heuristicTargets(for topic: String) -> [SearchTarget] {
+        let focused = sanitizePlannerQuery(focusTopicPhrase(topic), topic: topic)
+        return [
+            SearchTarget(
+                name: "百度百科",
+                domain: "baike.baidu.com",
+                query: focused,
+                reason: "定义与背景",
+                directURL: nil
+            ),
+            SearchTarget(
+                name: "知乎",
+                domain: "zhihu.com",
+                query: focused,
+                reason: "讨论与分析",
+                directURL: nil
+            ),
+            SearchTarget(
+                name: "维基百科",
+                domain: "zh.wikipedia.org",
+                query: focused,
+                reason: "概念与脉络",
+                directURL: nil
+            )
+        ]
+    }
+
+    private static func buildSearchQuery(for target: SearchTarget) -> String {
+        let q = sanitizePlannerQuery(target.query, topic: target.query)
+        guard !q.isEmpty else { return "" }
+        if let domain = normalizeDomain(target.domain) {
+            return "site:\(domain) \(q)"
+        }
+        return q
+    }
+
+    private static func normalizeDomain(_ raw: String?) -> String? {
+        guard var domain = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !domain.isEmpty else { return nil }
+        if domain.hasPrefix("http://") || domain.hasPrefix("https://") {
+            domain = URL(string: domain)?.host?.lowercased() ?? domain
+        }
+        domain = domain.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return domain.isEmpty ? nil : domain
+    }
+
+    private static func normalizedDirectURL(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              raw.hasPrefix("http://") || raw.hasPrefix("https://") else { return nil }
+        return raw
     }
 
     private static func fetchAllEngines(query: String, completion: @escaping ([Hit], Error?) -> Void) {
@@ -218,13 +416,24 @@ enum WebSearchService {
     }
 
     private struct SearchPlanPayload: Decodable {
+        struct Target: Decodable {
+            let name: String?
+            let domain: String?
+            let query: String?
+            let reason: String?
+            let directURL: String?
+            let url: String?
+        }
+
         struct Weight: Decodable {
             let term: String
             let weight: Int
         }
 
-        let queries: [String]
-        let weights: [Weight]
+        let topic: String?
+        let targets: [Target]?
+        let queries: [String]?
+        let weights: [Weight]?
     }
 
     private static func parseSearchPlan(_ raw: String, fallback: String) -> SearchPlan {
@@ -236,25 +445,57 @@ enum WebSearchService {
 
         if let data = trimmed.data(using: .utf8),
            let payload = try? JSONDecoder().decode(SearchPlanPayload.self, from: data) {
-            let queries = normalizedQueries(payload.queries, fallback: fallback)
-            let weights = normalizedWeights(payload.weights)
-            if !queries.isEmpty {
+            let topic = sanitizeQuery(payload.topic ?? fallback)
+            let targets = normalizedTargets(payload.targets, fallbackTopic: topic.isEmpty ? fallback : topic)
+            if !targets.isEmpty {
+                return SearchPlan(topic: topic.isEmpty ? fallback : topic, targets: targets)
+            }
+            let legacyQueries = normalizedQueries(payload.queries ?? [], fallback: fallback)
+            if !legacyQueries.isEmpty {
                 return SearchPlan(
-                    queries: queries,
-                    weightedTerms: weights.isEmpty
-                        ? [WeightedTerm(term: queries[0], weight: 5)]
-                        : weights
+                    topic: topic.isEmpty ? legacyQueries[0] : topic,
+                    targets: legacyQueries.map {
+                        SearchTarget(name: "开放检索", domain: nil, query: $0, reason: nil, directURL: nil)
+                    }
                 )
             }
         }
 
-        let queries = parsePlannedQueries(raw, fallback: fallback)
-        return queries.isEmpty
-            ? SearchPlan.fallback(fallback)
-            : SearchPlan(
-                queries: queries,
-                weightedTerms: [WeightedTerm(term: queries[0], weight: 5)]
+        let lines = parsePlannedQueries(raw, fallback: fallback)
+        if !lines.isEmpty {
+            return SearchPlan(
+                topic: lines[0],
+                targets: lines.map {
+                    SearchTarget(name: "开放检索", domain: nil, query: $0, reason: nil, directURL: nil)
+                }
             )
+        }
+        return SearchPlan.fallback(fallback)
+    }
+
+    private static func normalizedTargets(_ raw: [SearchPlanPayload.Target]?, fallbackTopic: String) -> [SearchTarget] {
+        guard let raw = raw else { return [] }
+        var seen = Set<String>()
+        return raw.compactMap { item -> SearchTarget? in
+            let query = sanitizePlannerQuery(sanitizeQuery(item.query ?? fallbackTopic), topic: fallbackTopic)
+            guard !query.isEmpty else { return nil }
+            let domain = normalizeDomain(item.domain)
+            if let domain = domain, isBlockedPlannerDomain(domain), !topicNeedsOfficialSources(fallbackTopic) {
+                return nil
+            }
+            let name = sanitizeQuery(item.name ?? domain ?? "推荐来源")
+            let key = (domain ?? name) + "|" + query.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            return SearchTarget(
+                name: name.isEmpty ? "推荐来源" : name,
+                domain: domain,
+                query: query,
+                reason: item.reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+                directURL: normalizedDirectURL(item.directURL ?? item.url)
+            )
+        }
+        .prefix(maxPlannedQueries)
+        .map { $0 }
     }
 
     private static func normalizedQueries(_ raw: [String], fallback: String) -> [String] {
@@ -269,20 +510,6 @@ enum WebSearchService {
             return query
         }
         .prefix(maxPlannedQueries)
-        .map { $0 }
-    }
-
-    private static func normalizedWeights(_ raw: [SearchPlanPayload.Weight]) -> [WeightedTerm] {
-        var seen = Set<String>()
-        return raw.compactMap { item -> WeightedTerm? in
-            let term = sanitizeQuery(item.term)
-            guard term.count >= 2,
-                  seen.insert(term.lowercased()).inserted else {
-                return nil
-            }
-            return WeightedTerm(term: term, weight: max(1, min(5, item.weight)))
-        }
-        .prefix(maxWeightedTerms)
         .map { $0 }
     }
 
@@ -427,14 +654,18 @@ enum WebSearchService {
         let text: String
     }
 
-    private static func formatEvidence(queries: [String], hits: [Hit], pages: [PageText]) -> String {
+    private static func formatEvidence(plan: SearchPlan, hits: [Hit], pages: [PageText]) -> String {
         var lines: [String] = []
-        if queries.count <= 1 {
-            lines.append("检索词：\(queries.first ?? "")")
-        } else {
-            lines.append("检索词：")
-            for (i, q) in queries.enumerated() {
-                lines.append("  \(i + 1). \(q)")
+        lines.append("问题：\(plan.topic)")
+        lines.append("")
+        lines.append("【推荐查证来源】")
+        for (i, target) in plan.targets.enumerated() {
+            var row = "\(i + 1). \(target.name)"
+            if let domain = target.domain { row += " (\(domain))" }
+            lines.append(row)
+            lines.append("   检索：\(target.query)")
+            if let reason = target.reason, !reason.isEmpty {
+                lines.append("   原因：\(reason)")
             }
         }
         lines.append("")
@@ -464,13 +695,22 @@ enum WebSearchService {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func formatProcessLog(queries: [String], hits: [Hit], pages: [PageText]) -> String {
+    private static func formatProcessLog(plan: SearchPlan, hits: [Hit], pages: [PageText]) -> String {
         var lines: [String] = []
-        lines.append("根据对话上下文（含前文）规划检索，而不是只搜最后一句原文。")
+        lines.append("根据对话上下文推荐查证来源，并在对应站点定向检索。")
         lines.append("")
-        lines.append("检索词：")
-        for (i, q) in queries.enumerated() {
-            lines.append("\(i + 1). \(q)")
+        lines.append("推荐查证来源：")
+        for (i, target) in plan.targets.enumerated() {
+            var row = "\(i + 1). \(target.name)"
+            if let domain = target.domain { row += " (\(domain))" }
+            lines.append(row)
+            lines.append("   检索：\(target.query)")
+            if let reason = target.reason, !reason.isEmpty {
+                lines.append("   原因：\(reason)")
+            }
+            if let url = target.directURL, !url.isEmpty {
+                lines.append("   直达：\(url)")
+            }
         }
         lines.append("")
         lines.append("搜索结果：")
@@ -497,6 +737,32 @@ enum WebSearchService {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func formatEvidence(queries: [String], hits: [Hit], pages: [PageText]) -> String {
+        formatEvidence(
+            plan: SearchPlan(
+                topic: queries.first ?? "",
+                targets: queries.map {
+                    SearchTarget(name: "开放检索", domain: nil, query: $0, reason: nil, directURL: nil)
+                }
+            ),
+            hits: hits,
+            pages: pages
+        )
+    }
+
+    private static func formatProcessLog(queries: [String], hits: [Hit], pages: [PageText]) -> String {
+        formatProcessLog(
+            plan: SearchPlan(
+                topic: queries.first ?? "",
+                targets: queries.map {
+                    SearchTarget(name: "开放检索", domain: nil, query: $0, reason: nil, directURL: nil)
+                }
+            ),
+            hits: hits,
+            pages: pages
+        )
+    }
+
     private static func pickBrowseTargets(from hits: [Hit], limit: Int) -> [Hit] {
         var out: [Hit] = []
         var seenHost = Set<String>()
@@ -508,6 +774,7 @@ enum WebSearchService {
                   let host = url.host?.lowercased(),
                   !host.isEmpty else { continue }
             if isBlockedHost(host) { continue }
+            if shouldBlockOfficialHit(hit, topic: "") && isOfficialPortalHost(host) { continue }
             // Prefer unique hosts so we don't read three pages from the same site.
             if seenHost.contains(host) { continue }
             seenHost.insert(host)
@@ -531,10 +798,26 @@ enum WebSearchService {
         let h = host.lowercased()
         if h == "duckduckgo.com" || h.hasSuffix(".duckduckgo.com") { return true }
         if h == "bing.com" || h.hasSuffix(".bing.com") { return true }
-        if h == "baidu.com" || h.hasSuffix(".baidu.com") { return true }
+        if h == "baidu.com" || h == "www.baidu.com" { return true }
         if h.contains("google.") { return true }
         if h.contains("microsoft.com") || h.contains("microsoftonline.com") { return true }
         if h.contains("youtube.com") || h.contains("youtu.be") { return true }
+        return false
+    }
+
+    private static func isJunkHit(_ hit: Hit) -> Bool {
+        let blob = (hit.title + " " + hit.snippet + " " + hit.url).lowercased()
+        if junkContentMarkers.contains(where: { blob.contains($0.lowercased()) }) {
+            return true
+        }
+        if let host = URL(string: hit.url)?.host?.lowercased() {
+            if lowQualityHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
+                return true
+            }
+            if host.contains("ufcn") || host.contains("dytt") || host.contains("pianba") {
+                return true
+            }
+        }
         return false
     }
 
@@ -544,7 +827,7 @@ enum WebSearchService {
     /// summaries and choosing articles, so it cannot occupy the useful slots.
     private static func isExcludedResultHost(_ urlString: String) -> Bool {
         guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
-        return host == "baidu.com" || host.hasSuffix(".baidu.com")
+        return host == "baidu.com" || host == "www.baidu.com"
     }
 
     // MARK: - Page fetch
@@ -1027,33 +1310,35 @@ enum WebSearchService {
 
     private static func rankHits(
         _ hits: [Hit],
-        query: String,
-        weightedTerms: [WeightedTerm]
+        topic: String,
+        targets: [SearchTarget]
     ) -> [Hit] {
-        let terms = query
-            .lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 2 }
-        let compactQuery = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let compactTopic = sanitizePlannerQuery(focusTopicPhrase(topic), topic: topic).lowercased()
 
         func score(_ hit: Hit) -> Int {
             let title = hit.title.lowercased()
             let snippet = hit.snippet.lowercased()
             let sourceText = title + " " + snippet
             var value = 0
-            if !compactQuery.isEmpty {
-                if title.contains(compactQuery) { value += 6 }
-                if snippet.contains(compactQuery) { value += 3 }
+            if !compactTopic.isEmpty {
+                if title.contains(compactTopic) { value += 6 }
+                if snippet.contains(compactTopic) { value += 3 }
             }
-            for term in terms {
-                if title.contains(term) { value += 2 }
-                if snippet.contains(term) { value += 1 }
+            if relevantHits([hit], for: topic).count > 0 { value += 8 }
+            for target in targets {
+                if termMatches(sourceText, term: sanitizePlannerQuery(target.query, topic: topic)) { value += 6 }
             }
             if !hit.snippet.isEmpty { value += 1 }
-            for weighted in weightedTerms {
-                let term = weighted.term.lowercased()
-                if title.contains(term) { value += weighted.weight * 8 }
-                if snippet.contains(term) { value += weighted.weight * 4 }
+            if let host = URL(string: hit.url)?.host?.lowercased() {
+                if trustedSourceHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
+                    value += 10
+                }
+                for target in targets {
+                    guard let domain = target.domain else { continue }
+                    if host == domain || host.hasSuffix("." + domain) {
+                        value += 12
+                    }
+                }
             }
             let explanatoryMarkers = [
                 "定义", "起源", "发展", "历史", "研究", "论文", "报告",
@@ -1062,15 +1347,11 @@ enum WebSearchService {
             if explanatoryMarkers.contains(where: { sourceText.contains($0) }) {
                 value += 4
             }
-            let playbackMarkers = [
-                "在线观看", "在线播放", "播放", "番剧", "全集", "高清视频免费"
-            ]
-            if playbackMarkers.contains(where: { sourceText.contains($0) }) {
-                value -= 10
-            }
-            if isPlaybackPlatform(hit.url) {
-                value -= 12
-            }
+            if isJunkHit(hit) { value -= 50 }
+            if shouldBlockOfficialHit(hit, topic: topic) { value -= 100 }
+            if isWrongSenseHit(hit, topic: topic) { value -= 100 }
+            if isGenericNationHit(hit) && !isTopicRelevantHit(hit, topic: topic) { value -= 100 }
+            if isPlaybackPlatform(hit.url) { value -= 12 }
             return value
         }
 
@@ -1084,17 +1365,93 @@ enum WebSearchService {
             .map(\.element)
     }
 
-    private static func passesWeightFilter(_ hit: Hit, weightedTerms: [WeightedTerm]) -> Bool {
-        guard !weightedTerms.isEmpty else { return true }
-        let text = (hit.title + " " + hit.snippet).lowercased()
-        let highWeightTerms = weightedTerms.filter { $0.weight >= 4 }
-        if highWeightTerms.contains(where: { text.contains($0.term.lowercased()) }) {
-            return true
+    private static func poolRelevantToQueries(_ hits: [Hit], topic: String, queries: [String]) -> [Hit] {
+        var out: [Hit] = []
+        var seen = Set<String>()
+        for query in [topic] + queries {
+            for hit in hits where isTopicRelevantHit(hit, topic: query) {
+                let key = hit.url.lowercased().isEmpty ? hit.title.lowercased() : hit.url.lowercased()
+                guard seen.insert(key).inserted else { continue }
+                out.append(hit)
+            }
         }
-        let matchedWeight = weightedTerms.reduce(0) { total, weighted in
-            text.contains(weighted.term.lowercased()) ? total + weighted.weight : total
+        return out
+    }
+
+    private static func selectQualifiedHits(
+        _ rankedHits: [Hit],
+        topic: String,
+        targetQueries: [String]
+    ) -> [Hit] {
+        guard !rankedHits.isEmpty else { return [] }
+        let qualified = rankedHits.filter { hit in
+            guard !isJunkHit(hit), !shouldBlockOfficialHit(hit, topic: topic),
+                  !isWrongSenseHit(hit, topic: topic) else { return false }
+            return isTopicRelevantHit(hit, topic: topic)
         }
-        return matchedWeight >= 5
+        if qualified.count >= minQualifiedHits {
+            return qualified
+        }
+        if !qualified.isEmpty {
+            return padWithTopicRelevantHits(
+                qualified,
+                from: rankedHits,
+                topic: topic,
+                targetCount: minQualifiedHits
+            )
+        }
+        let relaxed = rankedHits.filter { hit in
+            guard !isJunkHit(hit), !shouldBlockOfficialHit(hit, topic: topic),
+                  !isWrongSenseHit(hit, topic: topic) else { return false }
+            return isTopicRelevantHit(hit, topic: topic)
+        }
+        if !relaxed.isEmpty {
+            return relaxed
+        }
+        return []
+    }
+
+    private static func padWithTopicRelevantHits(
+        _ seed: [Hit],
+        from rankedHits: [Hit],
+        topic: String,
+        targetCount: Int
+    ) -> [Hit] {
+        var out = seed
+        var seen = Set(seed.map { $0.url.lowercased() })
+        for hit in rankedHits {
+            guard out.count < targetCount else { break }
+            let key = hit.url.lowercased()
+            guard !seen.contains(key) else { continue }
+            guard isTopicRelevantHit(hit, topic: topic),
+                  !shouldBlockOfficialHit(hit, topic: topic),
+                  !isWrongSenseHit(hit, topic: topic) else { continue }
+            out.append(hit)
+            seen.insert(key)
+        }
+        return out
+    }
+
+    private static func termMatches(_ text: String, term: String) -> Bool {
+        let lower = text.lowercased()
+        let needle = term.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard needle.count >= 2 else { return false }
+        if lower.contains(needle) { return true }
+
+        let textCompact = searchableCharacters(in: lower)
+        let termCompact = searchableCharacters(in: needle)
+        guard termCompact.count >= 2 else { return lower.contains(needle) }
+        if textCompact.contains(termCompact) { return true }
+
+        let requiredRun: Int
+        if termCompact.count >= 6 {
+            requiredRun = 4
+        } else if termCompact.count >= 4 {
+            requiredRun = 3
+        } else {
+            requiredRun = 2
+        }
+        return longestCommonRun(termCompact, textCompact) >= requiredRun
     }
 
     private static func isPlaybackPlatform(_ urlString: String) -> Bool {
@@ -1106,20 +1463,175 @@ enum WebSearchService {
         return platforms.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
-    /// Reject SERP rows that are clearly for a truncated or unrelated query.
-    /// This matters especially for Chinese: a result for just "二" must not
-    /// be accepted for "二次元文化起源与发展历程".
-    private static func relevantHits(_ hits: [Hit], for query: String) -> [Hit] {
-        let compactQuery = searchableCharacters(in: query)
-        guard compactQuery.count >= 3 else { return hits }
-
-        let requiredRun = compactQuery.count >= 8 ? 3 : 2
-        return hits.filter { hit in
-            let candidate = searchableCharacters(in: hit.title + " " + hit.snippet)
-            guard !candidate.isEmpty else { return false }
-            if candidate.contains(compactQuery) { return true }
-            return longestCommonRun(compactQuery, candidate) >= requiredRun
+    /// Reject SERP rows that lack the topic's distinctive terms.
+    private static func isTopicRelevantHit(_ hit: Hit, topic: String) -> Bool {
+        if isWrongSenseHit(hit, topic: topic) { return false }
+        if isGenericNationHit(hit) {
+            return requiredMatchTerms(in: topic).contains { termMatches(hit.title + " " + hit.snippet, term: $0) }
         }
+        let terms = requiredMatchTerms(in: topic)
+        guard !terms.isEmpty else {
+            return false
+        }
+        let blob = hit.title + " " + hit.snippet
+        return terms.contains { termMatches(blob, term: $0) }
+    }
+
+    private static func requiredMatchTerms(in text: String) -> [String] {
+        let focused = focusTopicPhrase(text)
+        var terms = distinctiveTerms(in: focused)
+        if !topicNeedsGeography(text) {
+            terms = terms.filter { $0 != "大陆" }
+        }
+        let strong = terms.filter { term in
+            term.count >= 4
+                || term.uppercased().contains("ACG")
+                || cultureTopicMarkers.contains { term.contains($0) }
+        }
+        if !strong.isEmpty {
+            return Array(strong.prefix(3))
+        }
+        if let focusedTerm = terms.first(where: { $0.count >= 3 }) {
+            return [focusedTerm]
+        }
+        return focused.count >= 3 ? [focused] : []
+    }
+
+    private static func sanitizePlannerQuery(_ raw: String, topic: String) -> String {
+        var q = focusTopicPhrase(raw)
+        if !topicNeedsGeography(topic) && q.contains("大陆") {
+            q = q.replacingOccurrences(of: "大陆ACG", with: "中国ACG")
+            q = q.replacingOccurrences(of: "大陆二次元", with: "中国二次元")
+            q = q.replacingOccurrences(of: "大陆动漫", with: "中国动漫")
+            q = q.replacingOccurrences(of: "大陆", with: "中国")
+        }
+        let focused = focusedSearchQuery(q)
+        return focused.isEmpty ? q : focused
+    }
+
+    private static func topicNeedsGeography(_ topic: String) -> Bool {
+        let markers = ["地理", "地形", "板块", "大洲", "七大洲", "经纬", "地貌", "火山", "地震"]
+        return markers.contains { topic.contains($0) }
+    }
+
+    private static func topicIsCultural(_ topic: String) -> Bool {
+        cultureTopicMarkers.contains { topic.uppercased().contains($0.uppercased()) || topic.contains($0) }
+    }
+
+    private static func isWrongSenseHit(_ hit: Hit, topic: String) -> Bool {
+        let blob = hit.title + " " + hit.snippet
+        guard topicIsCultural(topic) else { return false }
+        if geographyHitMarkers.contains(where: { blob.contains($0) }) {
+            return true
+        }
+        if blob.contains("大陆") && (blob.contains("划分") || blob.contains("七大洲") || blob.contains("独特之处")) {
+            return true
+        }
+        return false
+    }
+
+    private static func focusTopicPhrase(_ raw: String) -> String {
+        var q = sanitizeQuery(raw)
+        let stripPrefixes = ["请问", "我想知道", "中国的", "中国", "我国", "关于"]
+        for prefix in stripPrefixes where q.hasPrefix(prefix) {
+            q = String(q.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let stripSuffixes = [
+            "是怎么发展起来的", "是如何发展的", "的发展历程", "的发展历史",
+            "是怎么来的", "是怎么产生的", "是什么", "有哪些", "怎么样", "吗"
+        ]
+        for suffix in stripSuffixes where q.hasSuffix(suffix) {
+            q = String(q.dropLast(suffix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return q.isEmpty ? sanitizeQuery(raw) : q
+    }
+
+    private static func focusedSearchQuery(_ raw: String) -> String {
+        let focused = focusTopicPhrase(raw)
+        let terms = distinctiveTerms(in: focused)
+        if let primary = terms.max(by: { $0.count < $1.count }) {
+            return primary
+        }
+        return focused
+    }
+
+    private static func distinctiveTerms(in text: String) -> [String] {
+        let focused = focusTopicPhrase(text)
+        var terms: [String] = []
+        var seen = Set<String>()
+
+        func add(_ value: String) {
+            let term = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard term.count >= 2,
+                  !topicStopwords.contains(term),
+                  seen.insert(term.lowercased()).inserted else { return }
+            terms.append(term)
+        }
+
+        add(focused)
+        let pieces = focused
+            .replacingOccurrences(of: #"[^\p{Han}a-zA-Z0-9]+"#, with: " ", options: .regularExpression)
+            .components(separatedBy: .whitespaces)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for piece in pieces { add(piece) }
+
+        if terms.count <= 2 {
+            let compact = searchableCharacters(in: focused)
+            if compact.count >= 4 {
+                for length in stride(from: min(6, compact.count), through: 4, by: -1) {
+                    for start in 0...(compact.count - length) {
+                        let startIdx = compact.index(compact.startIndex, offsetBy: start)
+                        let endIdx = compact.index(startIdx, offsetBy: length)
+                        add(String(compact[startIdx..<endIdx]))
+                    }
+                }
+            }
+        }
+        return terms.sorted { $0.count > $1.count }
+    }
+
+    private static func isGenericNationHit(_ hit: Hit) -> Bool {
+        let title = hit.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let markers = [
+            "中华人民共和国", "中国（", "中国政府网", "中华人民共和国国务院",
+            "中国的概况", "中国 - 百度百科", "中国_百度百科"
+        ]
+        return markers.contains { title.hasPrefix($0) || title == $0 }
+    }
+
+    private static func isOfficialPortalHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "gov.cn" || h.hasSuffix(".gov.cn") || h.contains(".gov.cn") { return true }
+        if h == "china.com.cn" || h.hasSuffix(".china.com.cn") { return true }
+        if h == "people.com.cn" || h.hasSuffix(".people.com.cn") { return true }
+        if h == "xinhuanet.com" || h.hasSuffix(".xinhuanet.com") { return true }
+        if h == "news.cn" || h.hasSuffix(".news.cn") { return true }
+        return false
+    }
+
+    private static func isBlockedPlannerDomain(_ domain: String) -> Bool {
+        let d = domain.lowercased()
+        return blockedPlannerDomains.contains { d == $0 || d.hasSuffix("." + $0) || d.contains($0) }
+    }
+
+    private static func topicNeedsOfficialSources(_ topic: String) -> Bool {
+        officialTopicMarkers.contains { topic.contains($0) }
+    }
+
+    private static func shouldBlockOfficialHit(_ hit: Hit, topic: String) -> Bool {
+        guard let host = URL(string: hit.url)?.host?.lowercased() else { return false }
+        if topicNeedsOfficialSources(topic) { return false }
+        if isOfficialPortalHost(host) { return true }
+        let blob = (hit.title + " " + hit.snippet).lowercased()
+        if blob.contains("中国政府网") || blob.contains("国务院") || blob.contains("中央人民政府") {
+            return true
+        }
+        return false
+    }
+
+    private static func relevantHits(_ hits: [Hit], for query: String) -> [Hit] {
+        hits.filter { isTopicRelevantHit($0, topic: query) }
     }
 
     private static func searchableCharacters(in text: String) -> String {

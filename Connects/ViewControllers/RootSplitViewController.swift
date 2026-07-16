@@ -337,15 +337,6 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
         closeDrawer(animated: false)
-        let convID = id
-        DispatchQueue.global(qos: .utility).async {
-            guard let target = ConversationStore.shared.conversation(id: convID),
-                  target.messages.count <= 64 else { return }
-            MessageCell.prewarmSnapshots(
-                for: Array(target.messages.suffix(32)),
-                parseLimit: target.messages.count > 28 ? 4 : 8
-            )
-        }
     }
 
     func sidebarDidRequestNewChat() {
