@@ -1,13 +1,21 @@
 import UIKit
 import WebKit
 
-/// Persists rich-message heights + JPEG snapshots across launches (cold-open paint).
+/// Persists rich-message row heights across launches.
 enum RenderCacheStore {
     private static let heightsKey = "connects_web_heights_v1"
     private static let snapDirName = "connects_web_snaps"
-    /// Body snapshots for many conversations × widths — keep a generous LRU.
-    private static let maxSnapFiles = 160
     private static var saveHeightsWork: DispatchWorkItem?
+
+    static func widthBucket(for layoutWidth: CGFloat) -> Int {
+        guard layoutWidth > 1 else { return 0 }
+        return Int((layoutWidth / 4).rounded()) * 4
+    }
+
+    /// Bubble/content width — host passes table width minus insets.
+    static func contentWidth(for layoutWidth: CGFloat) -> CGFloat {
+        min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
+    }
 
     // MARK: - Heights
 
@@ -64,54 +72,9 @@ enum RenderCacheStore {
         UserDefaults.standard.removeObject(forKey: heightsKey)
     }
 
-    // MARK: - Snapshots
+    // MARK: - Legacy snapshot cleanup
 
-    static func snapshotExists(forKey key: String) -> Bool {
-        FileManager.default.fileExists(atPath: fileURL(forKey: key).path)
-    }
-
-    static func snapshot(forKey key: String) -> UIImage? {
-        let url = fileURL(forKey: key)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let raw = UIImage(data: data),
-              let cg = raw.cgImage else { return nil }
-        // jpegData drops UIImage.scale. Prefer screen scale (retina captures); if the
-        // bitmap's pixel width is already ~point-sized (older scale-1 snaps), keep scale 1.
-        let screen = UIScreen.main.scale
-        let px = CGFloat(cg.width)
-        let scale: CGFloat
-        if screen > 1, px > 120, px / screen >= 120 {
-            scale = screen
-        } else {
-            scale = 1
-        }
-        let image = UIImage(cgImage: cg, scale: scale, orientation: .up)
-        try? FileManager.default.setAttributes(
-            [.modificationDate: Date()],
-            ofItemAtPath: url.path
-        )
-        return image
-    }
-
-    static func storeSnapshot(_ image: UIImage, forKey key: String) {
-        // Encode off-main but at userInitiated so cold-kill shortly after open still persists.
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let data = image.jpegData(compressionQuality: 0.78) else { return }
-            let dir = snapDirectory()
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let url = fileURL(forKey: key)
-            try? data.write(to: url, options: .atomic)
-            pruneSnapshotsIfNeeded()
-        }
-    }
-
-    static func removeSnapshot(forKey key: String) {
-        let url = fileURL(forKey: key)
-        try? FileManager.default.removeItem(at: url)
-    }
-
-    static func clearSnapshots() {
+    private static func clearSnapshots() {
         let dir = snapDirectory()
         try? FileManager.default.removeItem(at: dir)
     }
@@ -136,28 +99,6 @@ enum RenderCacheStore {
         return caches.appendingPathComponent(snapDirName, isDirectory: true)
     }
 
-    private static func fileURL(forKey key: String) -> URL {
-        let name = stamp(key) + ".jpg"
-        return snapDirectory().appendingPathComponent(name)
-    }
-
-    private static func pruneSnapshotsIfNeeded() {
-        let dir = snapDirectory()
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-        guard files.count > maxSnapFiles else { return }
-        let sorted = files.sorted { a, b in
-            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return da < db
-        }
-        for url in sorted.prefix(files.count - maxSnapFiles) {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
 }
 
 // MARK: - Stable finished-reply renderer

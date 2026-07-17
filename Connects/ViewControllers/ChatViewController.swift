@@ -38,11 +38,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var viewportPinnedByUser = false
     /// After switching conversations, keep scrolling to the latest turn until layout settles.
     private var pendingOpenAtBottom = false
-    /// Keep body JPEG snapshots after open/scroll instead of immediately upgrading to native.
-    private var holdSnapshotsUntilIdle = false
-    /// Bumped on every conversation switch — async open/prewarm/upgrade must bail when stale.
+    /// Bumped on every conversation switch — async open/prewarm must bail when stale.
     private var openGeneration: UInt = 0
-    private var lazyNativeUpgradeWork: DispatchWorkItem?
     private var contextUserIndex: Int?
     private var contextBarWork: DispatchWorkItem?
     private var contextUsageWork: DispatchWorkItem?
@@ -160,7 +157,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// If a rich cell is still showing blank WebView / failed inject, rebind it.
     private func rescueBlankRichCells() {
         // Snap-hold open already paints rich bodies — sync prewarm here only fights the open frame.
-        guard !holdSnapshotsUntilIdle, !pendingOpenAtBottom, !suppressHeightRemeasure else { return }
+        guard !pendingOpenAtBottom, !suppressHeightRemeasure else { return }
         prewarmVisibleRichReplies(for: currentRenderWidth())
     }
 
@@ -216,9 +213,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func widthBucket(for width: CGFloat) -> Int {
-        guard width > 1 else { return 0 }
-        // 4pt buckets absorb sub-pixel noise but catch Slide Over / rotation.
-        return Int((width / 4).rounded()) * 4
+        RenderCacheStore.widthBucket(for: width)
     }
 
     private func scheduleInvalidateHeightsForWidthChange() {
@@ -230,13 +225,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
     }
 
-    /// Snapshot keys include the width bucket. Rebind visible cells to their
-    /// matching immutable tiles while retaining the reader's exact viewport.
+    /// Width bucket change — rebind visible cells at the new layout width.
     private func invalidateHeightsForWidthChange(immediate: Bool) {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
-        // Portrait↔landscape must not keep the other orientation's JPEGs in RAM.
-        AssistantBodySnapshotCache.shared.dropMemoryCache()
-        AssistantBodySnapshotCache.shared.cancelWarm()
         let visible = tableView.indexPathsForVisibleRows ?? []
         let anchor = visible.first
         let anchorDelta = anchor.map {
@@ -268,8 +259,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     layoutWidth: layoutWidth
                 )
             }
-            // Column width is reliable only after the layout pass above.
-            revalidateVisibleBodySnapshots()
             tableView.beginUpdates()
             tableView.endUpdates()
             if stickToBottom && !isViewportPinned() {
@@ -308,7 +297,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Heights are width-specific — portrait must not reuse landscape row geometry.
     private func heightCacheStorageKey(for conversationID: String,
                                        width: CGFloat? = nil) -> String {
-        let bucket = AssistantBodySnapshotCache.widthBucket(
+        let bucket = RenderCacheStore.widthBucket(
             for: width ?? currentRenderWidth()
         )
         return "\(conversationID)|w\(bucket)"
@@ -326,7 +315,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let exact = heightCacheByConversation[exactKey], !exact.isEmpty {
             return exact
         }
-        let targetBucket = AssistantBodySnapshotCache.widthBucket(for: currentRenderWidth())
+        let targetBucket = RenderCacheStore.widthBucket(for: currentRenderWidth())
         var bestMap: [String: CGFloat]?
         var bestDist = Int.max
         var bestBucket = Int.max
@@ -493,12 +482,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Interrupt in-flight open/settle/prewarm/snap-upgrade from the previous conversation.
     private func cancelOpenPipeline() {
         openGeneration &+= 1
-        holdSnapshotsUntilIdle = false
         pendingOpenAtBottom = false
         suppressHeightRemeasure = false
         tableView.alpha = 1
-        lazyNativeUpgradeWork?.cancel()
-        lazyNativeUpgradeWork = nil
         prewarmWork?.cancel()
         prewarmWork = nil
         scrollSettleWork?.cancel()
@@ -515,29 +501,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         contextBarScrollWork = nil
         heightWork?.cancel()
         heightWork = nil
-        AssistantBodySnapshotCache.shared.cancelWarm()
         StableRichRenderer.shared.cancelPendingJobs()
-        // Clear snap paint only — never sync-upgrade native during cancel (reload is imminent).
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            cell.clearBodySnapshotWithoutUpgrade()
-        }
-    }
-
-    /// After layout settles: purge landscape snaps that landed in a portrait column.
-    private func revalidateVisibleBodySnapshots() {
-        guard !pendingOpenAtBottom, !suppressHeightRemeasure else { return }
-        let width = currentRenderWidth()
-        tableView.layoutIfNeeded()
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            cell.contentView.layoutIfNeeded()
-            // Never hide a snap without immediate native fallback — empty red/cyan flash.
-            _ = cell.discardSnapshotIfWidthMismatch(layoutWidth: width, upgradeToNative: true)
-            if cell.isShowingBodySnapshot,
-               let msg = ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == cell.messageID }),
-               cell.shouldAbandonBodySnapshot(for: msg) {
-                cell.upgradeSnapshotToNativeIfNeeded()
-            }
-        }
     }
 
     /// Sync paint all visible assistant bodies during open — call after every beginUpdates.
@@ -550,7 +514,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   msg.role == .assistant,
                   !msg.isStreaming,
                   !isTailAssistantMessage(msg.id),
-                  !cell.hasRichBodyPaint() else { continue }
+                  !cell.hasVisibleNativePaint else { continue }
             cell.configureForOpenHistory(
                 with: msg,
                 preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
@@ -585,43 +549,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         pinOpenViewportToBottom(messages)
         tableView.layoutIfNeeded()
         tableView.alpha = 1
-        // #region agent log
-        if let tailID = tailAssistantMessageID(in: messages),
-           let tail = messages.first(where: { $0.id == tailID }),
-           let cell = tableView.visibleCells.compactMap({ $0 as? AssistantMessageCell }).first(where: { $0.messageID == tailID }) {
-            AgentDebugLog.emit(hypothesisId: "H6", location: "ChatViewController.revealOpenTableWhenReady",
-                               message: "reveal",
-                               data: ["kind": cell.debugPaintKind(),
-                                      "substantial": cell.hasSubstantialOpenBodyPaint(for: tail)])
-        }
-        // #endregion
-    }
-
-    /// First layout pass: bind tail JPEG before any chrome layout (kills red→snap flash).
-    private func bindVisibleBodySnapshots(messages: [ChatMessage], layoutWidth: CGFloat) {
-        // Open uses sync native only — async JPEG bind caused red→white-cyan flash.
-        guard !pendingOpenAtBottom, !suppressHeightRemeasure else { return }
-        guard let tailID = tailAssistantMessageID(in: messages),
-              let msg = messages.first(where: { $0.id == tailID }) else { return }
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            guard cell.messageID == tailID else { continue }
-            if cell.rebindBodySnapshotIfPossible(layoutWidth: layoutWidth) {
-                cell.ensureActionButtonsVisible(for: msg)
-                continue
-            }
-            if cell.hasVisibleNativePaint, !pendingOpenAtBottom {
-                continue
-            }
-            if !cell.isShowingBodySnapshot {
-                cell.configure(
-                    with: msg,
-                    preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
-                    layoutWidth: layoutWidth
-                )
-            }
-            cell.paintOpenCriticalBodyIfNeeded(with: msg, layoutWidth: layoutWidth)
-            cell.ensureActionButtonsVisible(for: msg)
-        }
     }
 
     /// Force action buttons into layout and grow UITableView rows so they aren't clipped.
@@ -845,14 +772,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func pinOpenViewportToBottom(_ messages: [ChatMessage]) {
         guard !messages.isEmpty else { return }
         tableView.layoutIfNeeded()
-        let inset = tableView.adjustedContentInset
-        let contentH = tableView.contentSize.height
-        let visibleH = tableView.bounds.height - inset.top - inset.bottom
-        if contentH > 0, contentH <= visibleH + 4 {
-            scrollToLastRowReliable(messages)
-        } else {
-            snapTableContentOffsetToBottom()
-        }
+        snapTableContentOffsetToBottom()
     }
 
     private func scrollToLastRowReliable(_ messages: [ChatMessage]) {
@@ -940,32 +860,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
             if let assistant = cell as? AssistantMessageCell {
                 assistant.ensureActionButtonsVisible(for: msg)
-                // Blank / tiny snaps stay cyan forever unless we force native here.
-                if assistant.isShowingBodySnapshot,
-                   assistant.shouldAbandonBodySnapshot(for: msg) {
-                    assistant.upgradeSnapshotToNativeIfNeeded()
-                }
-                if holdSnapshotsUntilIdle,
-                   isTailAssistantMessage(msg.id),
-                   assistant.isShowingBodySnapshot {
-                    // Reconcile row height to the painted snap — kills empty gaps from
-                    // landscape disk heights used on a portrait open.
-                    let measured = assistant.measuredContentHeight()
-                    if measured > 40 {
-                        let prior = rowHeights.bestKnownColumnHeight(for: msg.id)
-                        rowHeights.commitMeasured(
-                            columnHeight: measured,
-                            messageID: msg.id,
-                            allowShrink: true
-                        )
-                        if abs(prior - measured) > 3 { heightChanged = true }
-                    }
-                    continue
-                }
-                if holdSnapshotsUntilIdle { continue }
-                if !assistant.isShowingBodySnapshot {
-                    assistant.applyDeferredNativeRenderIfNeeded()
-                }
+                assistant.applyDeferredNativeRenderIfNeeded()
             }
             let measured = cell.measuredContentHeight()
             guard measured > 40 else { continue }
@@ -992,12 +887,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
         // History layout warm waits until snap hold ends — otherwise it steals open frames.
-        if !historyAssistants.isEmpty, !holdSnapshotsUntilIdle {
+        if !historyAssistants.isEmpty {
             let openID = renderedConversationID
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard let self = self,
                       openID == self.renderedConversationID,
-                      !self.holdSnapshotsUntilIdle,
                       !self.tableView.isDragging,
                       !self.tableView.isDecelerating else { return }
                 self.scheduleAsyncLayoutPrewarm(
@@ -1018,13 +912,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         pendingOpenAtBottom = false
         suppressHeightRemeasure = false
-        holdSnapshotsUntilIdle = false
-        revalidateVisibleBodySnapshots()
         if let cid = renderedConversationID {
             storePersistedHeights(rowHeights.exportPersistable(), for: cid)
         }
-        // Capture tail native paint for the next cold open only.
-        scheduleCaptureVisibleBodySnapshots(layoutWidth: layoutWidth)
     }
 
     private func forceSnapOpenToBottom(_ messages: [ChatMessage]) {
@@ -1037,42 +927,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // Second pass: first scrollToRow can expand contentSize as the tail lays out.
         tableView.layoutIfNeeded()
         snapTableContentOffsetToBottom()
-        // #region agent log
-        AgentDebugLog.emit(hypothesisId: "H4", location: "ChatViewController.forceSnapOpenToBottom",
-                           message: "snapped",
-                           data: ["contentH": Int(tableView.contentSize.height),
-                                  "offsetY": Int(tableView.contentOffset.y),
-                                  "viewH": Int(tableView.bounds.height),
-                                  "lastRow": messages.count - 1])
-        // #endregion
     }
 
-    /// After at-rest native paint, snapshot long bodies for the current width bucket.
-    private func scheduleCaptureVisibleBodySnapshots(layoutWidth: CGFloat) {
-        let openID = renderedConversationID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            guard let self = self,
-                  openID == self.renderedConversationID,
-                  !self.pendingOpenAtBottom,
-                  !self.holdSnapshotsUntilIdle,
-                  !self.tableView.isDragging,
-                  !self.tableView.isDecelerating else { return }
-            self.captureVisibleBodySnapshots(layoutWidth: layoutWidth)
-        }
-    }
-
-    private func captureVisibleBodySnapshots(layoutWidth: CGFloat) {
-        guard let messages = ConversationStore.shared.currentConversation?.messages,
-              let tailID = tailAssistantMessageID(in: messages) else { return }
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            guard cell.messageID == tailID else { continue }
-            _ = cell.captureBodySnapshotIfEligible(layoutWidth: layoutWidth)
-        }
-    }
-
-    /// Show bottom immediately from disk heights + body snapshots when available.
-    /// Snapshot path only pays off when the first paint is already rich snap/native —
-    /// never blank or plain placeholder.
+    /// Show bottom immediately from disk heights when available.
     private func openConversationAtBottom(messages: [ChatMessage], layoutWidth: CGFloat) {
         guard !messages.isEmpty else {
             tableView.alpha = 1
@@ -1081,20 +938,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let gen = openGeneration
         pendingOpenAtBottom = true
         suppressHeightRemeasure = true
-        lazyNativeUpgradeWork?.cancel()
         prewarmWork?.cancel()
         tableView.alpha = 0
         tableView.layoutIfNeeded()
         let layoutWidth = currentRenderWidth()
-        _ = AssistantBodySnapshotCache.shared.prefetchTailAssistantImage(
-            messages: messages,
-            layoutWidth: layoutWidth
-        )
         guard gen == openGeneration else {
             tableView.alpha = 1
             return
         }
-        holdSnapshotsUntilIdle = false
         rowHeights.seedAllLayoutEstimatesIfNeeded(
             messages: messages,
             layoutWidth: layoutWidth,
@@ -1120,13 +971,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             exactPersistedHeights(for: $0)
         } ?? [:]
         let totalH = rowHeights.totalRowHeight(for: messages, layoutWidth: layoutWidth)
-        // #region agent log
-        AgentDebugLog.emit(hypothesisId: "H3", location: "ChatViewController.openConversationAtBottom",
-                           message: "after_prefetch",
-                           data: ["hold": holdSnapshotsUntilIdle,
-                                  "w": Int(layoutWidth), "tableW": Int(tableView.bounds.width),
-                                  "totalH": Int(totalH), "msgs": messages.count])
-        // #endregion
         let minPlausible = max(tableView.bounds.height * 0.55, CGFloat(messages.count) * 72)
         if messages.count >= 2, totalH < minPlausible {
             for msg in messages where !msg.isStreaming {
@@ -1319,14 +1163,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if self.stickToBottom, !messages.isEmpty {
                 self.pinOpenViewportToBottom(messages)
             }
-            // Tail native prewarm is for scroll, not open — wait until snap hold ends.
-            let delay: TimeInterval = self.holdSnapshotsUntilIdle ? 2.0 : 0.6
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self = self,
                       gen == self.openGeneration,
                       selfID == self.currentConversationID else { return }
                 guard !self.tableView.isDragging, !self.tableView.isDecelerating else { return }
-                guard !self.holdSnapshotsUntilIdle else { return }
                 self.scheduleTailLayoutPrewarm(
                     messages: messages,
                     layoutWidth: layoutWidth,
@@ -1625,8 +1466,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         setNeedsStatusBarAppearanceUpdate()
         inputBar.applyTheme()
         contextUsageView.applyTheme()
-        // Appearance is part of the snapshot key — drop stale bitmaps on theme change.
-        AssistantBodySnapshotCache.shared.removeAll()
         if reloadMessages {
             reloadTablePreservingViewport()
         }
@@ -2069,12 +1908,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             suppressHeightRemeasure = true
             pendingOpenAtBottom = true
             let messages = ConversationStore.shared.currentConversation?.messages ?? []
-            // #region agent log
-            AgentDebugLog.emit(hypothesisId: "H5", location: "ChatViewController.applyConversation",
-                               message: "switch_open",
-                               data: ["msgs": messages.count, "w": Int(layoutWidth),
-                                      "cid": String((newID ?? "").prefix(8))])
-            // #endregion
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             openConversationAtBottom(messages: messages, layoutWidth: layoutWidth)
@@ -3436,9 +3269,8 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
            let typedCell = cell as? MessageCellType {
             typedCell.refreshRenderDebugOverlay()
         }
-        // Open / snap-hold: no sync markdown prewarm, no native upgrade.
-        // This was the main "cached chat still slow" cost — unrelated to JPEG snaps.
-        if pendingOpenAtBottom || suppressHeightRemeasure || holdSnapshotsUntilIdle {
+        // Open: no sync markdown prewarm on willDisplay.
+        if pendingOpenAtBottom || suppressHeightRemeasure {
             return
         }
         if scrolling {
@@ -3463,11 +3295,9 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             userCell.syncUserPresentation(with: msg, layoutWidth: layoutWidth)
             scheduleStableHeightPin(for: userCell, message: msg)
         } else if msg.role == .assistant, let assistantCell = cell as? AssistantMessageCell {
-            if !assistantCell.isShowingBodySnapshot {
-                assistantCell.applyDeferredNativeRenderIfNeeded()
-                assistantCell.ensureNativeLayoutWidth(layoutWidth)
-                scheduleStableHeightPin(for: assistantCell, message: msg)
-            }
+            assistantCell.applyDeferredNativeRenderIfNeeded()
+            assistantCell.ensureNativeLayoutWidth(layoutWidth)
+            scheduleStableHeightPin(for: assistantCell, message: msg)
         }
     }
 
@@ -3569,12 +3399,6 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     private func performScrollHeightSettling() {
-        // #region agent log
-        AgentDebugLog.emit(hypothesisId: "H4", location: "ChatViewController.performScrollHeightSettling",
-                           message: "scroll_settle",
-                           data: ["visible": (tableView.indexPathsForVisibleRows ?? []).count,
-                                  "offsetY": Int(tableView.contentOffset.y)])
-        // #endregion
         contextBarScrollWork?.cancel()
         updateTurnContextBar()
         let wasFrozen = rowHeights.isScrollHeightFrozen
@@ -3590,12 +3414,11 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if !visible.isEmpty {
             applyLookaheadTurnPrewarm()
         }
-        // Upgrade plain deferred only — keep JPEG snapshots to avoid Q↔A re-render flash.
         for case let cell as AssistantMessageCell in tableView.visibleCells
-        where cell.hasPendingDeferredNativeRender && !cell.isShowingBodySnapshot {
+        where cell.hasPendingDeferredNativeRender {
             cell.applyDeferredNativeRenderIfNeeded()
         }
-        for case let cell as AssistantMessageCell in tableView.visibleCells where !cell.isShowingBodySnapshot {
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
             cell.applyDeferredHeightIfNeeded()
         }
         if !pendingHeights.isEmpty {
@@ -3617,12 +3440,8 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             let msg = messages[path.row]
             guard !rowHeights.isCommitted(msg.id),
                   let typedCell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
-            if let assistant = typedCell as? AssistantMessageCell, assistant.isShowingBodySnapshot {
-                continue
-            }
             scheduleStableHeightPin(for: typedCell, message: msg)
         }
-        scheduleCaptureVisibleBodySnapshots(layoutWidth: layoutWidth)
     }
 }
 
@@ -3721,33 +3540,12 @@ extension ChatViewController: MessageCellDelegate {
         )
     }
 
-    func messageCellShouldPreferSnapshot(_ cell: MessageCellType) -> Bool {
-        guard isTailAssistantMessage(cell.messageID) else { return false }
-        if holdSnapshotsUntilIdle { return true }
-        if pendingOpenAtBottom || suppressHeightRemeasure { return true }
-        return false
-    }
-
-    func messageCellUsesBodySnapshot(_ cell: MessageCellType) -> Bool {
-        isTailAssistantMessage(cell.messageID)
-    }
-
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool {
         pendingOpenAtBottom || suppressHeightRemeasure
     }
 
-    func messageCellOpenAllowsBodySnapshot(_ cell: MessageCellType) -> Bool {
-        // Open always sync-native first — disk JPEGs are often blank/wrong-width on iOS 12.
-        !pendingOpenAtBottom && !suppressHeightRemeasure
-    }
-
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool {
         !pendingOpenAtBottom && !suppressHeightRemeasure
-    }
-
-    func messageCellShouldDecodeSnapshotFromDisk(_ cell: MessageCellType) -> Bool {
-        // Block sync JPEG decode until the first open frame has been committed.
-        !(pendingOpenAtBottom || suppressHeightRemeasure)
     }
 
     func messageCell(_ cell: MessageCellType, didUpdateHeight height: CGFloat, for messageID: String) {

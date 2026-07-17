@@ -26,29 +26,17 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool
     /// When true, skip uncached native layout and use a plain-text placeholder.
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool
-    /// When true, bind a cached body snapshot before live native (fast reopen / scroll).
-    func messageCellShouldPreferSnapshot(_ cell: MessageCellType) -> Bool
-    /// When true, this row may use JPEG body snapshots (latest assistant turn only).
-    func messageCellUsesBodySnapshot(_ cell: MessageCellType) -> Bool
     /// When false, defer action-row layoutIfNeeded until body paint (open critical path).
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool
-    /// When false, snapshot lookup stays in RAM only (open critical path).
-    func messageCellShouldDecodeSnapshotFromDisk(_ cell: MessageCellType) -> Bool
-    /// When true, prepareForReuse keeps snap/native paint (open height updates).
+    /// When true, prepareForReuse keeps native paint (open height updates).
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool
-    /// When false, open critical path paints sync native only (no JPEG — avoids blank snaps).
-    func messageCellOpenAllowsBodySnapshot(_ cell: MessageCellType) -> Bool
 }
 
 extension MessageCellDelegate {
     func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool { false }
-    func messageCellShouldPreferSnapshot(_ cell: MessageCellType) -> Bool { false }
-    func messageCellUsesBodySnapshot(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool { true }
-    func messageCellShouldDecodeSnapshotFromDisk(_ cell: MessageCellType) -> Bool { true }
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool { false }
-    func messageCellOpenAllowsBodySnapshot(_ cell: MessageCellType) -> Bool { true }
     func messageCell(_ cell: MessageCellType, didFinishStableRender height: CGFloat, for messageID: String) {}
 }
 
