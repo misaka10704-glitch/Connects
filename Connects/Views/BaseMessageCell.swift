@@ -146,7 +146,7 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
             roleLabel.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             roleLabel.heightAnchor.constraint(equalToConstant: 0),
 
-            imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8),
+            imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0),
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             imageViewMsg.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             imageHeight

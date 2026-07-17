@@ -118,7 +118,7 @@ final class UserMessageCell: BaseMessageCell {
         userLabel.lineBreakMode = .byWordWrapping
         userBubble.addSubview(userLabel)
 
-        userTopToRole = userBubble.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
+        userTopToRole = userBubble.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         userTopToImage = userBubble.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         userBubbleBottom = userBubble.bottomAnchor.constraint(equalTo: column.bottomAnchor)
 

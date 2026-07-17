@@ -2037,16 +2037,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         thinkingToHeader = thinkingBox.bottomAnchor.constraint(equalTo: thinkingHeader.bottomAnchor)
         thinkingToBody = thinkingBox.bottomAnchor.constraint(equalTo: thinkingBody.bottomAnchor, constant: 10)
 
-        assistantTopToRole = assistantLabel.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
+        assistantTopToRole = assistantLabel.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         assistantTopToImage = assistantLabel.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         assistantTopToThink = assistantLabel.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
         nativeHeight = nativeRenderView.heightAnchor.constraint(equalToConstant: 0)
-        nativeTopToRole = nativeRenderView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
+        nativeTopToRole = nativeRenderView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         nativeTopToImage = nativeRenderView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         nativeTopToThink = nativeRenderView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
         nativeBottom = nativeRenderView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
         snapshotHeight = bodySnapshotView.heightAnchor.constraint(equalToConstant: 0)
-        snapshotTopToRole = bodySnapshotView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8)
+        snapshotTopToRole = bodySnapshotView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         snapshotTopToImage = bodySnapshotView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         snapshotTopToThink = bodySnapshotView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
         snapshotBottom = bodySnapshotView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
@@ -2079,7 +2079,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             roleLabel.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             roleLabel.heightAnchor.constraint(equalToConstant: 0),
 
-            imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 8),
+            imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0),
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             imageViewMsg.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             imageHeight,

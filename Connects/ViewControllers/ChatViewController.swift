@@ -314,6 +314,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         return "\(conversationID)|w\(bucket)"
     }
 
+    /// Exact width bucket only — never bootstrap open from landscape/other-bucket heights.
+    private func exactPersistedHeights(for conversationID: String) -> [String: CGFloat] {
+        heightCacheByConversation[heightCacheStorageKey(for: conversationID)] ?? [:]
+    }
+
     /// Exact width bucket, else nearest other-width / legacy map so first portrait open
     /// still has a non-empty contentSize (empty bucket → mid-screen open).
     private func persistedHeights(for conversationID: String) -> [String: CGFloat] {
@@ -573,8 +578,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func revealOpenTableWhenReady(messages: [ChatMessage], layoutWidth: CGFloat) {
-        let painted = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
+        _ = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
         commitOpenCriticalPaint(messages: messages, layoutWidth: layoutWidth)
+        revealVisibleActionChrome(messages: messages)
+        reconcileVisibleRowHeights(preserveBottom: true)
+        pinOpenViewportToBottom(messages)
         tableView.layoutIfNeeded()
         tableView.alpha = 1
         // #region agent log
@@ -583,8 +591,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
            let cell = tableView.visibleCells.compactMap({ $0 as? AssistantMessageCell }).first(where: { $0.messageID == tailID }) {
             AgentDebugLog.emit(hypothesisId: "H6", location: "ChatViewController.revealOpenTableWhenReady",
                                message: "reveal",
-                               data: ["painted": painted,
-                                      "kind": cell.debugPaintKind(),
+                               data: ["kind": cell.debugPaintKind(),
                                       "substantial": cell.hasSubstantialOpenBodyPaint(for: tail)])
         }
         // #endregion
@@ -621,6 +628,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Must run on the open critical path (not deferred to settle).
     private func revealVisibleActionChrome(messages: [ChatMessage]) {
         var changed = false
+        let openPath = pendingOpenAtBottom || suppressHeightRemeasure
         tableView.layoutIfNeeded()
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard let msg = messages.first(where: { $0.id == cell.messageID }),
@@ -630,10 +638,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let measured = cell.measuredContentHeight()
             guard measured > 40 else { continue }
             let prior = rowHeights.bestKnownColumnHeight(for: msg.id)
-            // Prefer growing so action row (28pt) is never below the clip edge.
-            let target = max(prior, measured)
-            rowHeights.commitMeasured(columnHeight: target, messageID: msg.id, allowShrink: false)
-            if abs(prior - target) > 1 { changed = true }
+            if openPath {
+                rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: true)
+            } else {
+                let target = max(prior, measured)
+                rowHeights.commitMeasured(columnHeight: target, messageID: msg.id, allowShrink: false)
+            }
+            if abs(prior - measured) > 1 { changed = true }
         }
         guard changed else { return }
         UIView.performWithoutAnimation {
@@ -820,11 +831,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let inset = tableView.adjustedContentInset
         let minY = -inset.top
         guard tableView.bounds.height > 1 else { return }
+        tableView.layoutIfNeeded()
         let contentH = tableView.contentSize.height
         guard contentH > 1 else { return }
-        let maxY = max(minY, contentH + inset.bottom - tableView.bounds.height)
+        let viewportH = tableView.bounds.height
+        let maxY = max(minY, contentH + inset.bottom - viewportH)
         if abs(tableView.contentOffset.y - maxY) > 0.5 {
             tableView.setContentOffset(CGPoint(x: 0, y: maxY), animated: false)
+        }
+    }
+
+    /// One bottom pin for open/settle — avoids scrollToRow + contentOffset fighting.
+    private func pinOpenViewportToBottom(_ messages: [ChatMessage]) {
+        guard !messages.isEmpty else { return }
+        tableView.layoutIfNeeded()
+        let inset = tableView.adjustedContentInset
+        let contentH = tableView.contentSize.height
+        let visibleH = tableView.bounds.height - inset.top - inset.bottom
+        if contentH > 0, contentH <= visibleH + 4 {
+            scrollToLastRowReliable(messages)
+        } else {
+            snapTableContentOffsetToBottom()
         }
     }
 
@@ -943,7 +970,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let measured = cell.measuredContentHeight()
             guard measured > 40 else { continue }
             let prior = rowHeights.bestKnownColumnHeight(for: msg.id)
-            rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: false)
+            rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: true)
             if abs(prior - measured) > 3 { heightChanged = true }
         }
         let minRow = visible.map(\.row).min() ?? max(0, messages.count - 1)
@@ -961,7 +988,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                           isLastRow: row == messages.count - 1,
                           allowSyncLayout: false
                       ), column > 40 {
-                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: false)
+                rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
             }
         }
         // History layout warm waits until snap hold ends — otherwise it steals open frames.
@@ -987,7 +1014,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
         if stickToBottom {
-            forceSnapOpenToBottom(messages)
+            pinOpenViewportToBottom(messages)
         }
         pendingOpenAtBottom = false
         suppressHeightRemeasure = false
@@ -1068,10 +1095,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
         holdSnapshotsUntilIdle = false
+        rowHeights.seedAllLayoutEstimatesIfNeeded(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            tailRowCount: max(4, messages.count),
+            syncLimit: min(12, max(2, messages.count))
+        )
+        AssistantMessageLayout.prewarmSwitchTail(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            turnPairLimit: max(2, (messages.count + 1) / 2)
+        )
+        for msg in messages where msg.role == .user {
+            if let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+                for: msg,
+                layoutWidth: layoutWidth
+            ), column > 40 {
+                rowHeights.updateDisplayEstimate(columnHeight: column, messageID: msg.id)
+            }
+        }
         // Empty/sparse width-bucket disk → cheap estimates under-sum contentSize and
-        // clamp the open offset mid-thread. Inflate only for multi-turn threads.
+        // clamp the open offset mid-thread. Seed short threads too (2-turn QA).
         let exactDisk = renderedConversationID.map {
-            heightCacheByConversation[heightCacheStorageKey(for: $0)] ?? [:]
+            exactPersistedHeights(for: $0)
         } ?? [:]
         let totalH = rowHeights.totalRowHeight(for: messages, layoutWidth: layoutWidth)
         // #region agent log
@@ -1081,43 +1127,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                                   "w": Int(layoutWidth), "tableW": Int(tableView.bounds.width),
                                   "totalH": Int(totalH), "msgs": messages.count])
         // #endregion
-        let minPlausible = max(tableView.bounds.height * 1.25, CGFloat(messages.count) * 96)
-        if exactDisk.isEmpty, messages.count >= 4, totalH < minPlausible {
+        let minPlausible = max(tableView.bounds.height * 0.55, CGFloat(messages.count) * 72)
+        if messages.count >= 2, totalH < minPlausible {
             for msg in messages where !msg.isStreaming {
+                if rowHeights.isCommitted(msg.id), exactDisk[msg.id] != nil { continue }
                 let cheap = ChatRowHeightResolver.cheapColumnEstimate(
                     for: msg,
                     layoutWidth: layoutWidth
                 )
-                // Bias tall so contentSize can reach the true bottom on first paint.
-                let floor = max(cheap * 1.35, msg.role == .assistant ? 120 : 64)
+                let floor = max(cheap * 1.15, msg.role == .assistant ? 96 : 52)
                 rowHeights.updateDisplayEstimate(columnHeight: floor, messageID: msg.id)
             }
         }
         tableView.reloadData()
         let openLayoutWidth = currentRenderWidth()
         commitOpenCriticalPaint(messages: messages, layoutWidth: openLayoutWidth)
-        forceSnapOpenToBottom(messages)
-        commitOpenCriticalPaint(messages: messages, layoutWidth: openLayoutWidth)
-        revealVisibleActionChrome(messages: messages)
-        commitOpenCriticalPaint(messages: messages, layoutWidth: openLayoutWidth)
-        if stickToBottom {
-            forceSnapOpenToBottom(messages)
-            commitOpenCriticalPaint(messages: messages, layoutWidth: openLayoutWidth)
-        }
         revealOpenTableWhenReady(messages: messages, layoutWidth: openLayoutWidth)
         let openID = renderedConversationID
-        let laidOutWidth = openLayoutWidth
         DispatchQueue.main.async { [weak self] in
             guard let self = self,
                   gen == self.openGeneration,
                   openID == self.renderedConversationID,
                   openID == self.currentConversationID else { return }
             let liveWidth = self.currentRenderWidth()
-            self.commitOpenCriticalPaint(messages: messages, layoutWidth: liveWidth)
             self.revealVisibleActionChrome(messages: messages)
-            if self.stickToBottom {
-                self.forceSnapOpenToBottom(messages)
-            }
+            self.reconcileVisibleRowHeights(preserveBottom: true)
+            self.pinOpenViewportToBottom(messages)
             self.settleOpenConversation(messages: messages, layoutWidth: liveWidth)
         }
     }
@@ -1282,7 +1317,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self.updateTitleFromConversation()
             self.refreshSwitchChromeImmediate()
             if self.stickToBottom, !messages.isEmpty {
-                self.forceSnapOpenToBottom(messages)
+                self.pinOpenViewportToBottom(messages)
             }
             // Tail native prewarm is for scroll, not open — wait until snap hold ends.
             let delay: TimeInterval = self.holdSnapshotsUntilIdle ? 2.0 : 0.6
@@ -2001,7 +2036,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let layoutWidth = currentRenderWidth()
         if conversationChanged {
-            let disk = newID.map { persistedHeights(for: $0) } ?? [:]
+            let disk = newID.map { exactPersistedHeights(for: $0) } ?? [:]
             rowHeights.resetForConversation(
                 diskCache: disk,
                 messages: ConversationStore.shared.currentConversation?.messages ?? [],
@@ -2235,7 +2270,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         tableView.dataSource = self
         tableView.delegate = self
         tableView.prefetchDataSource = self
-        tableView.contentInset = UIEdgeInsets(top: 8, left: 0, bottom: 2, right: 0)
+        tableView.contentInset = UIEdgeInsets(top: 4, left: 0, bottom: 2, right: 0)
         view.addSubview(tableView)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMessageLongPress(_:)))
@@ -3792,7 +3827,7 @@ extension ChatViewController: MessageCellDelegate {
                 tableView.beginUpdates()
                 tableView.endUpdates()
                 if stickToBottom {
-                    forceSnapOpenToBottom(messages)
+                    pinOpenViewportToBottom(messages)
                 }
             }
             return
