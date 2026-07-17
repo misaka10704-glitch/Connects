@@ -421,7 +421,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         APIClient.applyStreamRequestHeaders(&request)
         let preserveKimiThinking = model.provider == .kimi
-            && model.thinkingActive
+            && (model.forcesThinking || model.thinkingActive)
             && !assistantReasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let payload = APIClient.chatPayload(
             messages: continuationMessages,

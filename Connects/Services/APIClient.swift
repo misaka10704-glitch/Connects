@@ -101,7 +101,7 @@ final class APIClient: NSObject {
 
         let slim = Self.slimMessagesForAPI(messages)
         let payload = Self.chatPayload(messages: slim, model: model, stream: true)
-        // Note: do not set temperature/top_p for Kimi K2.6 — fixed by API.
+        // Note: do not set temperature/top_p for Kimi — fixed by API.
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload)
@@ -135,7 +135,7 @@ final class APIClient: NSObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         // Title / compaction helpers: always Instant + no reasoning history.
         var payload = Self.chatPayload(messages: messages, model: model, stream: false, maxTokens: maxTokens)
-        if model.supportsThinkingToggle {
+        if model.thinkingStyle == .thinkingType {
             payload["thinking"] = ["type": "disabled"]
         }
         payload["messages"] = messages.map {
@@ -218,6 +218,11 @@ final class APIClient: NSObject {
         case .enableThinking:
             if model.supportsThinkingToggle {
                 payload["enable_thinking"] = thinkingOn
+            }
+        case .reasoningEffort:
+            // K3 always reasons; only send effort on streaming chat (not title/compact helpers).
+            if stream {
+                payload["reasoning_effort"] = "max"
             }
         case .thinkingType:
             if model.supportsThinkingToggle {

@@ -74,7 +74,7 @@ open Connects.xcodeproj
 | 提供商 | 模型 ID（示例） | Base URL（示例） |
 |--------|-----------------|------------------|
 | DeepSeek | `deepseek-v4-flash` / `deepseek-v4-pro` | `https://api.deepseek.com` |
-| Kimi | `kimi-k2.6` 等 | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
+| Kimi | `kimi-k3`（旗舰）、`kimi-k2.6` 等 | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
 
 Key 只存本机 Keychain，不会打进仓库或上传。
 

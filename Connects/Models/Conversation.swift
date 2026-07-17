@@ -70,8 +70,8 @@ struct Conversation: Codable, Equatable {
         if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
             model = available
         } else if provider == .kimi {
-            // Retired Kimi variants migrate to the supported general-purpose model.
-            model = .kimi26
+            // Retired Kimi variants migrate to the current flagship.
+            model = .kimiK3
         } else {
             model = .deepseekV4Pro
         }

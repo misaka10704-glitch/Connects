@@ -312,12 +312,14 @@ enum ContextBuilder {
     // MARK: - Budgets
 
     /// Practical char budgets (≈ 2 chars/token). Leave headroom for `max_tokens` and avoid context rot.
-    /// Model windows: DeepSeek V4 ≈ 1M, Kimi K2.6 ≈ 262K — we intentionally stay far below.
+    /// Model windows: DeepSeek V4 ≈ 1M, Kimi K3 ≈ 1M, Kimi K2.6 ≈ 256K — we intentionally stay far below.
     static func charBudget(for model: AIModelOption) -> Int {
         switch model.modelId {
         case AIModelOption.deepseekV4Flash.modelId:
             return 72_000
         case AIModelOption.deepseekV4Pro.modelId:
+            return 100_000
+        case AIModelOption.kimiK3.modelId:
             return 100_000
         case AIModelOption.kimi26.modelId:
             // Keep prefill small for lower time-to-first-token; older turns are

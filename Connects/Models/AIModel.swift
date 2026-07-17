@@ -24,6 +24,8 @@ enum ThinkingPayloadStyle {
     case thinkingType
     /// `enable_thinking: bool` — DashScope Qwen
     case enableThinking
+    /// `reasoning_effort: "max"` — Kimi K3
+    case reasoningEffort
 }
 
 struct AIModelOption: Equatable {
@@ -82,6 +84,12 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
 
+    static let kimiK3 = AIModelOption(
+        provider: .kimi, modelId: "kimi-k3", displayName: "Kimi K3",
+        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
+        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .reasoningEffort
+    )
+
     static let kimi26 = AIModelOption(
         provider: .kimi, modelId: "kimi-k2.6", displayName: "Kimi K2.6",
         baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
@@ -110,14 +118,14 @@ struct AIModelOption: Equatable {
 
     static let all: [AIModelOption] = [
         .deepseekV4Flash, .deepseekV4Pro,
-        .kimi26,
+        .kimiK3, .kimi26,
         .qwen37Plus,
         .glm52,
         .doubaoSeed16
     ]
 
     static let defaultEnabled: [AIModelOption] = [
-        .deepseekV4Flash, .deepseekV4Pro, .kimi26, .qwen37Plus, .glm52, .doubaoSeed16
+        .deepseekV4Flash, .deepseekV4Pro, .kimiK3, .qwen37Plus, .glm52, .doubaoSeed16
     ]
 
     static var visible: [AIModelOption] {
@@ -129,7 +137,7 @@ struct AIModelOption: Equatable {
 
     static var preferredVision: AIModelOption {
         if let v = visible.first(where: { $0.supportsVision }) { return v }
-        return all.first(where: { $0.supportsVision }) ?? .kimi26
+        return all.first(where: { $0.supportsVision }) ?? .kimiK3
     }
 
     static func option(stableID: String) -> AIModelOption? {
