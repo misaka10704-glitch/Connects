@@ -46,17 +46,48 @@ final class ConversationStore {
 
     init() {
         load()
+        selectedProjectID = normalizedProjectID(
+            UserDefaults.standard.string(forKey: selectedProjectKey)
+        )
+        reconcileCurrentConversationAfterLoad()
+    }
+
+    /// Restore last opened chat and align sidebar project filter with it.
+    private func reconcileCurrentConversationAfterLoad() {
+        if let id = currentConversationID,
+           let conv = conversations.first(where: { $0.id == id }) {
+            if !conv.isArchived {
+                alignProjectFilter(with: conv.projectID, persist: true)
+            }
+            return
+        }
+        currentConversationID = nil
         if conversations.isEmpty {
             let first = Conversation()
             conversations = [first]
             currentConversationID = first.id
             save()
-        } else if currentConversationID == nil {
-            currentConversationID = visibleConversations.first?.id ?? conversations.first?.id
+            return
         }
-        selectedProjectID = normalizedProjectID(
-            UserDefaults.standard.string(forKey: selectedProjectKey)
-        )
+        currentConversationID = visibleConversations.first?.id ?? conversations.first?.id
+        persistCurrentConversationID()
+    }
+
+    private func alignProjectFilter(with projectID: String?, persist: Bool) {
+        let target = normalizedProjectID(projectID)
+        guard target != selectedProjectID else { return }
+        selectedProjectID = target
+        guard persist else { return }
+        if let projectID = selectedProjectID {
+            UserDefaults.standard.set(projectID, forKey: selectedProjectKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: selectedProjectKey)
+        }
+    }
+
+    private func persistCurrentConversationID() {
+        guard let id = currentConversationID else { return }
+        UserDefaults.standard.set(id, forKey: storageKey + "_current")
     }
 
     func setSelectedProjectID(_ projectID: String?) {
@@ -81,8 +112,18 @@ final class ConversationStore {
 
     func selectConversation(id: String) {
         guard currentConversationID != id else { return }
+        guard conversations.contains(where: { $0.id == id }) else { return }
+        let priorProject = selectedProjectID
         currentConversationID = id
-        notify(userInfo: ["source": "select"])
+        if let conv = conversation(id: id), !conv.isArchived {
+            alignProjectFilter(with: conv.projectID, persist: true)
+        }
+        persistCurrentConversationID()
+        var userInfo: [AnyHashable: Any] = ["source": "select"]
+        if priorProject != selectedProjectID {
+            userInfo["projectFilterChanged"] = true
+        }
+        notify(userInfo: userInfo)
     }
 
     private func notify(userInfo: [AnyHashable: Any]? = nil) {
@@ -386,8 +427,6 @@ final class ConversationStore {
         if let data = try? JSONEncoder().encode(conversations) {
             UserDefaults.standard.set(data, forKey: storageKey)
         }
-        if let id = currentConversationID {
-            UserDefaults.standard.set(id, forKey: storageKey + "_current")
-        }
+        persistCurrentConversationID()
     }
 }

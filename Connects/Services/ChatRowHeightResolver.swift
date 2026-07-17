@@ -73,19 +73,52 @@ final class ChatRowHeightResolver {
         }
     }
 
-    func rebuildDisplayHeights(messages: [ChatMessage], layoutWidth: CGFloat) {
+    func rebuildDisplayHeights(messages: [ChatMessage],
+                               layoutWidth: CGFloat,
+                               throughRow: Int? = nil) {
         displayColumnHeights.removeAll()
         guard !messages.isEmpty else { return }
         let count = messages.count
+        // Cold long threads: only probe native layout cache near the tail — head rows use disk/cheap.
+        let layoutProbeTailRows = min(count, 36)
+        let tailProbeStart = max(0, count - layoutProbeTailRows)
+        let jumpProbeEnd = throughRow.map { min($0, count - 1) }
         displayColumnHeights.reserveCapacity(count)
         for (row, message) in messages.enumerated() {
-            displayColumnHeights[message.id] = resolveDisplayColumnHeight(
-                for: message,
-                row: row,
-                messageCount: count,
-                layoutWidth: layoutWidth
-            )
+            let probeFullLayout = row >= tailProbeStart
+                || jumpProbeEnd.map { row <= $0 } == true
+            if probeFullLayout {
+                displayColumnHeights[message.id] = resolveDisplayColumnHeight(
+                    for: message,
+                    row: row,
+                    messageCount: count,
+                    layoutWidth: layoutWidth
+                )
+            } else {
+                displayColumnHeights[message.id] = resolveFastDisplayColumnHeight(
+                    for: message,
+                    layoutWidth: layoutWidth
+                )
+            }
         }
+    }
+
+    /// Switch hot path for history rows — never walks layout cache.
+    private func resolveFastDisplayColumnHeight(for message: ChatMessage,
+                                                layoutWidth: CGFloat) -> CGFloat {
+        if committedIDs.contains(message.id),
+           let column = committedColumnHeights[message.id], column > 40 {
+            return column
+        }
+        if let disk = diskEstimates[message.id], disk > 40 {
+            return disk
+        }
+        if message.role == .user,
+           let column = Self.estimatedUserColumnContentHeight(for: message, layoutWidth: layoutWidth),
+           column > 40 {
+            return column
+        }
+        return max(Self.cheapColumnEstimate(for: message, layoutWidth: layoutWidth), 44)
     }
 
     func exportPersistable() -> [String: CGFloat] {

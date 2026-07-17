@@ -106,7 +106,12 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         let source = note.userInfo?["source"] as? String
         let projectFilterOnly = source == "projectFilter"
         let selectOnly = source == "select"
-        if selectOnly { return }
+        if selectOnly {
+            if note.userInfo?["projectFilterChanged"] as? Bool == true {
+                reloadProjectFilter()
+            }
+            return
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if projectFilterOnly {

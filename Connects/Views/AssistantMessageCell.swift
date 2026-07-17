@@ -133,7 +133,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         forcePaintOpenTailBody(with: message, layoutWidth: layoutWidth)
     }
 
-    /// History assistant rows on open — sync native, never empty red frames.
+    /// History assistant rows on open — sync native only when layout is already warm.
     func configureForOpenHistory(with message: ChatMessage,
                                  preferredHeight: CGFloat?,
                                  layoutWidth: CGFloat) {
@@ -972,6 +972,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             column.layer.borderColor = green.withAlphaComponent(0.55).cgColor
             nativeRenderView.layer.borderWidth = hair
             nativeRenderView.layer.borderColor = green.withAlphaComponent(0.55).cgColor
+        } else if !assistantLabel.isHidden {
+            let plain = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !plain.isEmpty {
+                let yellow: UIColor
+                if #available(iOS 13.0, *) { yellow = .systemYellow }
+                else { yellow = UIColor(red: 1, green: 0.8, blue: 0, alpha: 1) }
+                column.layer.borderWidth = hair
+                column.layer.borderColor = yellow.withAlphaComponent(0.55).cgColor
+                nativeRenderView.layer.borderWidth = 0
+                return
+            }
         } else {
             let red: UIColor
             if #available(iOS 13.0, *) { red = .systemRed }

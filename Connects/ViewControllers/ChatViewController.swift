@@ -62,11 +62,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var selectReloadWork: DispatchWorkItem?
     private var prewarmWork: DispatchWorkItem?
     private var openSettleWork: DispatchWorkItem?
+    private var openSettleFollowUpWork: DispatchWorkItem?
+    private var openCoalesceWork: DispatchWorkItem?
+    private static let switchCoalesceDelay: TimeInterval = 0.12
     private var idlePrewarmWork: DispatchWorkItem?
     private var lastScrollOffsetY: CGFloat = 0
     private var scrollBiasUp = false
     private var scrollSettleWork: DispatchWorkItem?
     private var pinnedRemeasureWork: DispatchWorkItem?
+    private var jumpAnchorWork: DispatchWorkItem?
     private var heightCacheSaveWork: DispatchWorkItem?
     private var contextBarScrollWork: DispatchWorkItem?
     /// A vision pass turns attachments into durable text before they enter a conversation.
@@ -385,7 +389,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private static let syncPrewarmMaxChars = 700
-    private static let switchPrewarmTurnPairs = 3
+    private static let switchPrewarmTurnPairs = 5
     private static let recentConversationPrewarmLimit = 8
 
     /// Background layout warm for recent sidebar conversations (one tail each).
@@ -419,18 +423,26 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     /// Start layout warm as soon as the user targets a conversation (before store reload).
+    func prepareForConversationSwitch(to conversationID: String) {
+        guard conversationID != renderedConversationID else { return }
+        prewarmConversationSwitch(to: conversationID)
+    }
+
     func prewarmConversationSwitch(to conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID),
               !conv.messages.isEmpty else { return }
         switchPrewarmGeneration &+= 1
         let layoutWidth = currentRenderWidth()
-        AssistantMessageLayout.prewarmSnapshots(
-            for: conv.messages,
-            targetWidth: layoutWidth,
-            parseLimit: 2
-        )
+        let messages = conv.messages
+        AssistantMessageLayout.layoutPrewarmQueue.async {
+            AssistantMessageLayout.prewarmSnapshots(
+                for: messages,
+                targetWidth: layoutWidth,
+                parseLimit: 2
+            )
+        }
         AssistantMessageLayout.prewarmSwitchTailOnBackground(
-            messages: conv.messages,
+            messages: messages,
             layoutWidth: layoutWidth,
             turnPairLimit: Self.switchPrewarmTurnPairs
         )
@@ -551,12 +563,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         prewarmWork = nil
         openSettleWork?.cancel()
         openSettleWork = nil
+        openSettleFollowUpWork?.cancel()
+        openSettleFollowUpWork = nil
+        openCoalesceWork?.cancel()
+        openCoalesceWork = nil
         idlePrewarmWork?.cancel()
         idlePrewarmWork = nil
         scrollSettleWork?.cancel()
         scrollSettleWork = nil
         pinnedRemeasureWork?.cancel()
         pinnedRemeasureWork = nil
+        jumpAnchorWork?.cancel()
+        jumpAnchorWork = nil
         chromeWork?.cancel()
         chromeWork = nil
         contextUsageWork?.cancel()
@@ -593,9 +611,63 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             && openID == currentConversationID
     }
 
+    private func enqueueOpenTailWork(generation: UInt,
+                                     openID: String?,
+                                     delay: TimeInterval = 0,
+                                     _ body: @escaping () -> Void) {
+        openSettleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self,
+                  self.openPaintStillValid(generation: generation, openID: openID) else { return }
+            body()
+        }
+        openSettleWork = work
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        } else {
+            DispatchQueue.main.async(execute: work)
+        }
+    }
+
+    private func scheduleDeferredOpenSettle(generation: UInt,
+                                            openID: String?,
+                                            layoutWidth: CGFloat) {
+        openSettleFollowUpWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.runDeferredOpenSettle(
+                generation: generation,
+                openID: openID,
+                layoutWidth: layoutWidth
+            )
+        }
+        openSettleFollowUpWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// Debounce tail upgrade + settle until rapid A→B→C taps finish — only the last conversation paints.
+    private func scheduleCoalescedOpenUpgrade() {
+        openCoalesceWork?.cancel()
+        let gen = openGeneration
+        let openID = renderedConversationID
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self,
+                  self.openPaintStillValid(generation: gen, openID: openID) else {
+                self?.suppressHeightRemeasure = false
+                return
+            }
+            self.scheduleOpenTailPaint(generation: gen)
+        }
+        openCoalesceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.switchCoalesceDelay, execute: work)
+    }
+
     /// Scroll tail into view, configure, sync-native paint — returns true when body has pixels.
     @discardableResult
-    private func materializeAndPaintOpenTail(messages: [ChatMessage], layoutWidth: CGFloat) -> Bool {
+    private func materializeAndPaintOpenTail(messages: [ChatMessage],
+                                             layoutWidth: CGFloat,
+                                             generation: UInt,
+                                             openID: String?) -> Bool {
+        guard openPaintStillValid(generation: generation, openID: openID) else { return false }
         guard let tailID = tailAssistantMessageID(in: messages),
               let row = messages.firstIndex(where: { $0.id == tailID }) else { return false }
         let tail = messages[row]
@@ -604,12 +676,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let path = IndexPath(row: row, section: 0)
         guard tableView.numberOfRows(inSection: 0) > row else { return false }
+        guard openPaintStillValid(generation: generation, openID: openID) else { return false }
         tableView.scrollToRow(at: path, at: .bottom, animated: false)
+        guard openPaintStillValid(generation: generation, openID: openID) else { return false }
         tableView.layoutIfNeeded()
         snapTableContentOffsetToBottom()
         let preferred = rowHeights.displayColumnHeight(for: tail.id)
             ?? rowHeights.committedColumnHeight(for: tail.id)
-        guard let cell = tableView.cellForRow(at: path) as? AssistantMessageCell else { return false }
+        guard openPaintStillValid(generation: generation, openID: openID),
+              let cell = tableView.cellForRow(at: path) as? AssistantMessageCell else { return false }
         cell.configureForOpenBottom(with: tail, preferredHeight: preferred, layoutWidth: layoutWidth)
         return cell.hasSubstantialOpenBodyPaint(for: tail)
     }
@@ -790,12 +865,36 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func schedulePinnedRemeasure() {
         pinnedRemeasureWork?.cancel()
+        let anchorRow = contextUserIndex
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.isViewportPinned() else { return }
-            self.remeasureRowsPreservingViewport()
+            let anchorPath: IndexPath?
+            if let row = anchorRow, row < self.tableView.numberOfRows(inSection: 0) {
+                anchorPath = IndexPath(row: row, section: 0)
+            } else {
+                anchorPath = nil
+            }
+            self.remeasureRowsPreservingViewport(anchorPath: anchorPath)
+            if let row = anchorRow {
+                self.applyUserBubbleScrollAnchor(at: row, animated: false)
+            }
         }
         pinnedRemeasureWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    /// Stop async open/settle work that would pin the viewport to the bottom.
+    private func cancelViewportAutoPin() {
+        openCoalesceWork?.cancel()
+        openCoalesceWork = nil
+        openSettleWork?.cancel()
+        openSettleWork = nil
+        openSettleFollowUpWork?.cancel()
+        openSettleFollowUpWork = nil
+        pinnedRemeasureWork?.cancel()
+        pinnedRemeasureWork = nil
+        jumpAnchorWork?.cancel()
+        jumpAnchorWork = nil
     }
 
     /// Only update sticky/bottom mode when the user finishes a scroll gesture.
@@ -940,13 +1039,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    private func scheduleOpenTailPaint(messages: [ChatMessage], generation: UInt) {
-        openSettleWork?.cancel()
-        guard !messages.isEmpty else {
+    private func scheduleOpenTailPaint(generation: UInt) {
+        guard let openID = renderedConversationID,
+              let messages = openMessages(for: openID),
+              !messages.isEmpty else {
             pendingOpenAtBottom = false
+            suppressHeightRemeasure = false
             return
         }
-        let openID = renderedConversationID
         let layoutWidth = currentRenderWidth()
         let tailMessage: ChatMessage? = {
             guard let tailID = tailAssistantMessageID(in: messages) else { return nil }
@@ -954,13 +1054,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }()
 
         let enqueuePaint: () -> Void = { [weak self] in
-            guard let self = self,
-                  self.openPaintStillValid(generation: generation, openID: openID) else { return }
-            let work = DispatchWorkItem { [weak self] in
-                self?.runOpenTailPaint(messages: messages, generation: generation, openID: openID)
+            guard let self = self else { return }
+            self.enqueueOpenTailWork(generation: generation, openID: openID) { [weak self] in
+                self?.runOpenTailPaint(generation: generation, openID: openID)
             }
-            self.openSettleWork = work
-            DispatchQueue.main.async(execute: work)
         }
 
         if let tail = tailMessage,
@@ -980,39 +1077,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    private func finishOpenTailSettle(messages: [ChatMessage],
-                                      generation: UInt,
+    private func finishOpenTailSettle(generation: UInt,
                                       openID: String?,
                                       layoutWidth: CGFloat) {
         guard openPaintStillValid(generation: generation, openID: openID) else { return }
-        paintVisibleOpenHistoryIfCached(messages: messages, layoutWidth: layoutWidth)
-        guard openPaintStillValid(generation: generation, openID: openID) else { return }
-        revealVisibleActionChrome(messages: messages)
-        guard openPaintStillValid(generation: generation, openID: openID) else { return }
-        reconcileVisibleRowHeights(preserveBottom: true)
-        pinOpenViewportToBottom(messages)
-        settleOpenConversation(messages: messages, layoutWidth: layoutWidth)
         pendingOpenAtBottom = false
-
-        let tail = Array(messages.suffix(Self.switchPrewarmMessageWindow))
-        let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
-        if !assistants.isEmpty {
-            scheduleAsyncLayoutPrewarm(assistants: assistants, layoutWidth: layoutWidth)
-        }
-        scheduleIdleConversationPrewarm()
+        scheduleDeferredOpenSettle(generation: generation, openID: openID, layoutWidth: layoutWidth)
     }
 
-    private func runOpenTailPaint(messages: [ChatMessage], generation: UInt, openID: String?) {
-        guard openPaintStillValid(generation: generation, openID: openID) else { return }
-        let liveWidth = currentRenderWidth()
-
-        if let lastUser = messages.last(where: { $0.role == .user }),
-           let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
-               for: lastUser,
-               layoutWidth: liveWidth
-           ), column > 40 {
-            rowHeights.updateDisplayEstimate(columnHeight: column, messageID: lastUser.id)
+    /// Heavy open settle — debounced and cancellable so rapid A→B→C never blocks B on A's work.
+    private func runDeferredOpenSettle(generation: UInt,
+                                       openID: String?,
+                                       layoutWidth: CGFloat) {
+        guard openPaintStillValid(generation: generation, openID: openID),
+              let messages = openMessages(for: openID) else {
+            suppressHeightRemeasure = false
+            return
         }
+        let liveWidth = layoutWidth
         let exactDisk = openID.map { exactPersistedHeights(for: $0) } ?? [:]
         if messages.count >= 2, exactDisk.isEmpty {
             let totalH = rowHeights.totalRowHeight(for: messages, layoutWidth: liveWidth)
@@ -1027,54 +1109,121 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     let floor = max(cheap * 1.15, msg.role == .assistant ? 96 : 52)
                     rowHeights.updateDisplayEstimate(columnHeight: floor, messageID: msg.id)
                 }
-                tableView.reloadData()
-                pinOpenViewportToBottom(messages)
-            }
-        }
-
-        guard openPaintStillValid(generation: generation, openID: openID) else { return }
-        let tailMessage: ChatMessage? = {
-            guard let tailID = tailAssistantMessageID(in: messages) else { return nil }
-            return messages.first(where: { $0.id == tailID })
-        }()
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self,
-                  self.openPaintStillValid(generation: generation, openID: openID) else { return }
-            if self.materializeAndPaintOpenTail(messages: messages, layoutWidth: liveWidth) {
-                self.finishOpenTailSettle(
-                    messages: messages,
-                    generation: generation,
-                    openID: openID,
-                    layoutWidth: liveWidth
-                )
-                return
-            }
-            guard let tail = tailMessage,
-                  self.openPaintStillValid(generation: generation, openID: openID) else {
-                self.pendingOpenAtBottom = false
-                return
-            }
-            AssistantMessageLayout.prewarmLayoutsOnBackground(
-                for: [tail],
-                targetWidth: liveWidth,
-                layoutLimit: 1,
-                completion: { [weak self] in
-                    guard let self = self,
-                          self.openPaintStillValid(generation: generation, openID: openID) else { return }
-                    DispatchQueue.main.async {
-                        guard self.openPaintStillValid(generation: generation, openID: openID) else { return }
-                        _ = self.materializeAndPaintOpenTail(messages: messages, layoutWidth: liveWidth)
-                        self.finishOpenTailSettle(
-                            messages: messages,
-                            generation: generation,
-                            openID: openID,
-                            layoutWidth: liveWidth
-                        )
-                    }
+                guard openPaintStillValid(generation: generation, openID: openID) else { return }
+                UIView.performWithoutAnimation {
+                    tableView.beginUpdates()
+                    tableView.endUpdates()
                 }
-            )
+                if let live = openMessages(for: openID), !isViewportPinned() {
+                    pinOpenViewportToBottom(live)
+                }
+            }
         }
+        guard openPaintStillValid(generation: generation, openID: openID),
+              let settledMessages = openMessages(for: openID) else {
+            suppressHeightRemeasure = false
+            return
+        }
+        paintVisibleOpenHistoryIfCached(messages: settledMessages, layoutWidth: layoutWidth)
+        guard openPaintStillValid(generation: generation, openID: openID) else { return }
+        hydrateDeferredNativeRenders(priorityBottomCount: 4)
+        guard openPaintStillValid(generation: generation, openID: openID) else { return }
+        revealVisibleActionChrome(messages: settledMessages)
+        guard openPaintStillValid(generation: generation, openID: openID) else { return }
+        reconcileVisibleRowHeights(preserveBottom: !isViewportPinned())
+        guard openPaintStillValid(generation: generation, openID: openID) else { return }
+        if !isViewportPinned() {
+            pinOpenViewportToBottom(settledMessages)
+        }
+        settleOpenConversation(messages: settledMessages, layoutWidth: layoutWidth)
+        suppressHeightRemeasure = false
+
+        let tail = Array(settledMessages.suffix(Self.switchPrewarmMessageWindow))
+        let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
+        if !assistants.isEmpty {
+            scheduleAsyncLayoutPrewarm(assistants: assistants, layoutWidth: layoutWidth)
+        }
+        scheduleIdleConversationPrewarm()
+    }
+
+    private func runOpenTailPaint(generation: UInt, openID: String?) {
+        guard openPaintStillValid(generation: generation, openID: openID),
+              let liveMessages = openMessages(for: openID) else { return }
+        let liveWidth = currentRenderWidth()
+
+        continueOpenTailPaint(
+            generation: generation,
+            openID: openID,
+            messages: liveMessages,
+            layoutWidth: liveWidth
+        )
+    }
+
+    private func continueOpenTailPaint(generation: UInt,
+                                       openID: String?,
+                                       messages: [ChatMessage],
+                                       layoutWidth: CGFloat) {
+        guard openPaintStillValid(generation: generation, openID: openID),
+              let liveMessages = openMessages(for: openID) else { return }
+
+        if let tailID = tailAssistantMessageID(in: liveMessages),
+           let tail = liveMessages.first(where: { $0.id == tailID }),
+           let row = liveMessages.firstIndex(where: { $0.id == tailID }),
+           row < tableView.numberOfRows(inSection: 0),
+           let cell = tableView.cellForRow(at: IndexPath(row: row, section: 0)) as? AssistantMessageCell,
+           cell.hasSubstantialOpenBodyPaint(for: tail) {
+            finishOpenTailSettle(
+                generation: generation,
+                openID: openID,
+                layoutWidth: layoutWidth
+            )
+            return
+        }
+
+        if materializeAndPaintOpenTail(
+            messages: liveMessages,
+            layoutWidth: layoutWidth,
+            generation: generation,
+            openID: openID
+        ) {
+            finishOpenTailSettle(
+                generation: generation,
+                openID: openID,
+                layoutWidth: layoutWidth
+            )
+            return
+        }
+        guard let tailID = tailAssistantMessageID(in: liveMessages),
+              let tail = liveMessages.first(where: { $0.id == tailID }),
+              openPaintStillValid(generation: generation, openID: openID) else {
+            pendingOpenAtBottom = false
+            suppressHeightRemeasure = false
+            return
+        }
+        AssistantMessageLayout.prewarmLayoutsOnBackground(
+            for: [tail],
+            targetWidth: layoutWidth,
+            layoutLimit: 1,
+            completion: { [weak self] in
+                guard let self = self else { return }
+                self.enqueueOpenTailWork(generation: generation, openID: openID) { [weak self] in
+                    guard let self = self,
+                          self.openPaintStillValid(generation: generation, openID: openID),
+                          let finalMessages = self.openMessages(for: openID) else { return }
+                    _ = self.materializeAndPaintOpenTail(
+                        messages: finalMessages,
+                        layoutWidth: layoutWidth,
+                        generation: generation,
+                        openID: openID
+                    )
+                    self.finishOpenTailSettle(
+                        generation: generation,
+                        openID: openID,
+                        layoutWidth: layoutWidth
+                    )
+                }
+            }
+        )
     }
 
     private func forceSnapOpenToBottom(_ messages: [ChatMessage]) {
@@ -1395,21 +1544,89 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func jumpToUserQuestion(at index: Int) {
-        guard index >= 0, index < tableView.numberOfRows(inSection: 0) else { return }
+        guard index >= 0,
+              index < tableView.numberOfRows(inSection: 0),
+              let messages = ConversationStore.shared.currentConversation?.messages,
+              index < messages.count else { return }
+
+        cancelViewportAutoPin()
         contextUserIndex = index
         readingHistory = true
         stickToBottom = false
         viewportPinnedByUser = true
 
+        let layoutWidth = currentRenderWidth()
+        rowHeights.rebuildDisplayHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            throughRow: index
+        )
+        let prefixRows = Array(0...index)
+        _ = commitCachedLayoutHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            rows: prefixRows,
+            syncLayoutBudget: min(16, prefixRows.count)
+        )
+
         let path = IndexPath(row: index, section: 0)
         UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            tableView.layoutIfNeeded()
+
+            let gap = tableView.adjustedContentInset.top + 6
+            let minY = -tableView.adjustedContentInset.top
+            let maxY = max(
+                minY,
+                tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            )
+            let coarse = contentOffsetForRowTop(index) - gap
+            tableView.contentOffset.y = min(max(coarse, minY), maxY)
+            tableView.layoutIfNeeded()
+
             tableView.scrollToRow(at: path, at: .top, animated: false)
             tableView.layoutIfNeeded()
             applyUserBubbleScrollAnchor(at: index, animated: false)
+            remeasureRowsPreservingViewport(anchorPath: path)
         }
+        scheduleRefinedJumpAnchor(at: index)
+    }
+
+    private func scheduleRefinedJumpAnchor(at index: Int) {
+        jumpAnchorWork?.cancel()
+        let path = IndexPath(row: index, section: 0)
+
+        func refine() {
+            guard contextUserIndex == index,
+                  index < tableView.numberOfRows(inSection: 0) else { return }
+            UIView.performWithoutAnimation {
+                tableView.layoutIfNeeded()
+                applyUserBubbleScrollAnchor(at: index, animated: false)
+                remeasureRowsPreservingViewport(anchorPath: path)
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
-            self?.applyUserBubbleScrollAnchor(at: index, animated: true)
-            self?.scheduleUpdateTurnContextBar()
+            guard let self = self else { return }
+            refine()
+            self.scheduleUpdateTurnContextBar()
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.refineJumpAnchorIfNeeded(at: index, path: path)
+        }
+        jumpAnchorWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    private func refineJumpAnchorIfNeeded(at index: Int, path: IndexPath) {
+        guard contextUserIndex == index,
+              index < tableView.numberOfRows(inSection: 0) else { return }
+        UIView.performWithoutAnimation {
+            tableView.layoutIfNeeded()
+            applyUserBubbleScrollAnchor(at: index, animated: false)
+            remeasureRowsPreservingViewport(anchorPath: path)
         }
     }
 
@@ -1430,7 +1647,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
            let bubbleY = cell.userBubbleTop(in: tableView) {
             targetY = bubbleY - gap
         } else {
-            targetY = contentOffsetForRowTop(row) - gap
+            let rowRect = tableView.rectForRow(at: path)
+            if rowRect.height > 0.5 {
+                targetY = rowRect.minY - gap
+            } else {
+                targetY = contentOffsetForRowTop(row) - gap
+            }
         }
         targetY = min(max(targetY, minY), maxY)
 
@@ -1444,7 +1666,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Sum cached/estimated row heights — reliable for far jumps before the cell exists.
     private func contentOffsetForRowTop(_ row: Int) -> CGFloat {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
-              row > 0 else { return -tableView.adjustedContentInset.top }
+              row > 0 else { return 0 }
         var offset: CGFloat = 0
         let end = min(row, messages.count)
         for i in 0..<end {
@@ -1932,12 +2154,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Instant conversation swap — disk heights only; tail paint runs async afterward.
     func switchToConversation(id: String) {
         guard id != renderedConversationID else { return }
+        guard ConversationStore.shared.currentConversationID == id else { return }
         cancelOpenPipeline()
         guard let conv = ConversationStore.shared.conversation(id: id) else { return }
 
         if let oldID = renderedConversationID {
             storePersistedHeights(rowHeights.exportPersistable(), for: oldID)
-            scheduleHeightCacheSave()
+            heightCacheSaveWork?.cancel()
+            DispatchQueue.main.async { [weak self] in
+                self?.saveHeightCaches()
+            }
         }
 
         let messages = conv.messages
@@ -1953,7 +2179,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         readingHistory = false
         viewportPinnedByUser = false
         pendingOpenAtBottom = !messages.isEmpty
-        suppressHeightRemeasure = false
+        suppressHeightRemeasure = true
 
         streamUIWork?.cancel()
         streamUIWork = nil
@@ -1965,15 +2191,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if !messages.isEmpty {
             pinOpenViewportToBottom(messages)
         }
-        tableView.layoutIfNeeded()
+        pendingOpenAtBottom = false
+        scheduleCoalescedOpenUpgrade()
+    }
 
-        AssistantMessageLayout.prewarmSwitchTailOnBackground(
-            messages: messages,
-            layoutWidth: layoutWidth,
-            turnPairLimit: Self.switchPrewarmTurnPairs
-        )
-        let gen = openGeneration
-        scheduleOpenTailPaint(messages: messages, generation: gen)
+    private func openMessages(for openID: String?) -> [ChatMessage]? {
+        guard let openID = openID,
+              openID == renderedConversationID,
+              openID == currentConversationID else { return nil }
+        return ConversationStore.shared.conversation(id: openID)?.messages
     }
 
     func applyConversationSwitchHint() {
@@ -3285,9 +3511,11 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        guard let msg = ConversationStore.shared.currentConversation?.messages[indexPath.row] else {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              indexPath.row < messages.count else {
             return UITableViewCell()
         }
+        let msg = messages[indexPath.row]
         let layoutWidth = currentRenderWidth()
         let preferred = rowHeights.displayColumnHeight(for: msg.id)
             ?? rowHeights.committedColumnHeight(for: msg.id)
@@ -3307,23 +3535,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         ) as! AssistantMessageCell
         cell.cellDelegate = self
         bindImageCache(to: cell, message: msg)
-        if pendingOpenAtBottom, !msg.isStreaming {
-            if isTailAssistantMessage(msg.id) {
-                cell.configureForOpenBottom(
-                    with: msg,
-                    preferredHeight: preferred,
-                    layoutWidth: layoutWidth
-                )
-            } else {
-                cell.configureForOpenHistory(
-                    with: msg,
-                    preferredHeight: preferred,
-                    layoutWidth: layoutWidth
-                )
-            }
-        } else {
-            cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
-        }
+        cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
         return cell
     }
 
@@ -3631,7 +3843,20 @@ extension ChatViewController: MessageCellDelegate {
     }
 
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool {
-        if pendingOpenAtBottom || suppressHeightRemeasure { return false }
+        if pendingOpenAtBottom || suppressHeightRemeasure {
+            guard let messages = ConversationStore.shared.currentConversation?.messages,
+                  let msg = messages.first(where: { $0.id == cell.messageID }),
+                  msg.role == .assistant,
+                  !msg.isStreaming else {
+                return true
+            }
+            let layoutWidth = currentRenderWidth()
+            if isTailAssistantMessage(cell.messageID) {
+                return !AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth)
+            }
+            // History rows: plain text on swap, native upgraded async when warm.
+            return true
+        }
         guard tableView.isDragging || tableView.isDecelerating else { return false }
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let msg = messages.first(where: { $0.id == cell.messageID }),
