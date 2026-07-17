@@ -71,11 +71,30 @@ enum AssistantMessageLayout {
         }
     }
 
+    /// Serial queue for markdown parse + layout warm (Chatto-style off-main sizing).
+    static let layoutPrewarmQueue = DispatchQueue(label: "com.connects.layout.prewarm", qos: .userInitiated)
+
     /// Prewarm the last N Q&A turn-pairs before painting a conversation (switch path).
     static func prewarmSwitchTail(messages: [ChatMessage],
                                   layoutWidth: CGFloat,
                                   turnPairLimit: Int = 5) {
-        guard !messages.isEmpty else { return }
+        let assistants = switchTailAssistants(messages: messages, turnPairLimit: turnPairLimit)
+        guard !assistants.isEmpty else { return }
+        prewarmLayouts(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
+    }
+
+    /// Background parse + layout for the switch tail — safe to call before `reloadChat`.
+    static func prewarmSwitchTailOnBackground(messages: [ChatMessage],
+                                              layoutWidth: CGFloat,
+                                              turnPairLimit: Int = 4) {
+        let assistants = switchTailAssistants(messages: messages, turnPairLimit: turnPairLimit)
+        guard !assistants.isEmpty else { return }
+        prewarmLayoutsOnBackground(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
+    }
+
+    private static func switchTailAssistants(messages: [ChatMessage],
+                                             turnPairLimit: Int) -> [ChatMessage] {
+        guard !messages.isEmpty else { return [] }
         var userRows: [Int] = []
         for (index, msg) in messages.enumerated() where msg.role == .user {
             userRows.append(index)
@@ -89,8 +108,87 @@ enum AssistantMessageLayout {
             guard assistant.role == .assistant, !assistant.isStreaming else { continue }
             assistants.append(assistant)
         }
-        guard !assistants.isEmpty else { return }
-        prewarmLayouts(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
+        return assistants
+    }
+
+    /// Parse + layout on `layoutPrewarmQueue`. Preview layout when formulas are not cached yet.
+    static func prewarmLayoutsOnBackground(for messages: [ChatMessage],
+                                           targetWidth: CGFloat,
+                                           layoutLimit: Int) {
+        let batch = Array(messages.suffix(max(1, layoutLimit)))
+        guard !batch.isEmpty else { return }
+        layoutPrewarmQueue.async {
+            let width = nativeLayoutWidth(for: max(targetWidth, 120))
+            let style = NativeLayoutStyle(
+                width: width,
+                bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                colors: DSTheme.c
+            )
+            for message in batch where message.role == .assistant && !message.isStreaming {
+                autoreleasepool {
+                    let document = NativeMarkdownParser.shared.parse(message.content)
+                    if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil {
+                        return
+                    }
+                    if formulasReady(in: document, style: style) {
+                        _ = NativeMessageLayouter.shared.layout(document: document, style: style)
+                    } else {
+                        _ = NativeMessageLayouter.shared.layout(
+                            document: document,
+                            style: style,
+                            renderMissingFormulas: false
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private static func formulasReady(in document: NativeMarkdownDocument,
+                                      style: NativeLayoutStyle) -> Bool {
+        var formulas = [(String, Bool)]()
+        func scan(_ inlines: [NativeInline]) {
+            for inline in inlines {
+                switch inline {
+                case .inlineMath(let tex):
+                    formulas.append((tex, false))
+                case .bold(let children), .italic(let children), .link(let children, _):
+                    scan(children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in document.blocks {
+            switch block {
+            case .displayMath(let tex):
+                formulas.append((tex, true))
+            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
+                scan(inlines)
+            case .list(_, let items):
+                items.forEach(scan)
+            case .table(let table):
+                table.header.forEach(scan)
+                table.rows.flatMap { $0 }.forEach(scan)
+            default:
+                break
+            }
+        }
+        guard !formulas.isEmpty else { return true }
+        return formulas.allSatisfy { tex, display in
+            NativeFormulaRenderer.shared.hasMemoryArtifact(
+                tex: tex,
+                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: display
+            ) || NativeFormulaRenderer.shared.hasCachedArtifact(
+                tex: tex,
+                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: display
+            )
+        }
     }
 
     /// `layoutWidth` from ChatVC is already bubble/content width (`currentRenderWidth`).

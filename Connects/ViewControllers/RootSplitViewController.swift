@@ -330,10 +330,15 @@ extension Notification.Name {
 }
 
 extension RootSplitViewController: SidebarViewControllerDelegate {
+    func sidebarWillSelectConversation(id: String) {
+        chatVC.prewarmConversationSwitch(to: id)
+    }
+
     func sidebarDidSelectConversation(id: String) {
         if chatNav.topViewController !== chatVC {
             chatNav.popToRootViewController(animated: false)
         }
+        chatVC.prewarmConversationSwitch(to: id)
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
         closeDrawer(animated: false)

@@ -1,6 +1,7 @@
 import UIKit
 
 protocol SidebarViewControllerDelegate: AnyObject {
+    func sidebarWillSelectConversation(id: String)
     func sidebarDidSelectConversation(id: String)
     func sidebarDidRequestNewChat()
     func sidebarDidRequestSettings()
@@ -556,6 +557,14 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             cell.textLabel?.font = DSTheme.bodyFont(size: 14)
         }
         return cell
+    }
+
+    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        let row = sections[indexPath.section].rows[indexPath.row]
+        if case .conversation(let conv) = row {
+            delegate?.sidebarWillSelectConversation(id: conv.id)
+        }
+        return indexPath
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {

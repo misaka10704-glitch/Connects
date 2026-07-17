@@ -40,6 +40,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var pendingOpenAtBottom = false
     /// Bumped on every conversation switch — async open/prewarm must bail when stale.
     private var openGeneration: UInt = 0
+    /// Bumped when switch prewarm should stop (rapid sidebar taps / cancelOpenPipeline).
+    private var switchPrewarmGeneration: UInt = 0
     private var contextUserIndex: Int?
     private var contextBarWork: DispatchWorkItem?
     private var contextUsageWork: DispatchWorkItem?
@@ -279,7 +281,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         return min(DSTheme.bubbleMaxWidth, max(raw - 48, 120))
     }
 
-    /// Latest finished assistant reply — only this row uses JPEG snapshots.
+    /// Latest finished assistant reply — open path sync-paints this row first.
     private func tailAssistantMessageID(in messages: [ChatMessage]) -> String? {
         for msg in messages.reversed() {
             guard msg.role == .assistant, !msg.isStreaming, !msg.content.isEmpty else { continue }
@@ -380,6 +382,31 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private static let syncPrewarmMaxChars = 700
+    private static let openSyncLayoutLimit = 3
+    private static let openTailTurnPairs = 2
+
+    /// Start layout warm as soon as the user targets a conversation (before store reload).
+    func prewarmConversationSwitch(to conversationID: String) {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID),
+              !conv.messages.isEmpty else { return }
+        switchPrewarmGeneration &+= 1
+        let token = switchPrewarmGeneration
+        let layoutWidth = currentRenderWidth()
+        let messages = conv.messages
+        AssistantMessageLayout.prewarmSwitchTailOnBackground(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            turnPairLimit: 4
+        )
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, token == self.switchPrewarmGeneration else { return }
+            AssistantMessageLayout.prewarmSwitchTail(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                turnPairLimit: Self.openTailTurnPairs
+            )
+        }
+    }
 
     private func applyTurnWindowPrewarm(around anchorRows: [Int],
                                         allowSync: Bool = true,
@@ -449,29 +476,35 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             guard let idx = nextIndex else { return }
             let next = remaining.remove(at: idx)
             guard gen == self.openGeneration else { return }
-            AssistantMessageLayout.prewarmLayouts(
+            AssistantMessageLayout.layoutPrewarmQueue.async { [weak self] in
+            AssistantMessageLayout.prewarmLayoutsOnBackground(
                 for: [next],
                 targetWidth: layoutWidth,
                 layoutLimit: 1
             )
-            guard gen == self.openGeneration,
-                  openID == self.renderedConversationID else { return }
-            if let messages = ConversationStore.shared.currentConversation?.messages,
-               let row = messages.firstIndex(where: { $0.id == next.id }),
-               !rowHeights.isCommitted(next.id),
-               let column = AssistantMessageLayout.estimatedColumnContentHeight(
-                   for: next,
-                   layoutWidth: layoutWidth,
-                   isLastRow: row == messages.count - 1,
-                   allowSyncLayout: false
-               ), column > 40 {
-                rowHeights.commitMeasured(columnHeight: column, messageID: next.id, allowShrink: true)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    guard gen == self.openGeneration,
+                          openID == self.renderedConversationID else { return }
+                    if let messages = ConversationStore.shared.currentConversation?.messages,
+                       let row = messages.firstIndex(where: { $0.id == next.id }),
+                       !self.rowHeights.isCommitted(next.id),
+                       let column = AssistantMessageLayout.estimatedColumnContentHeight(
+                           for: next,
+                           layoutWidth: layoutWidth,
+                           isLastRow: row == messages.count - 1,
+                           allowSyncLayout: false
+                       ), column > 40 {
+                        self.rowHeights.commitMeasured(columnHeight: column, messageID: next.id, allowShrink: true)
+                    }
+                    if !remaining.isEmpty {
+                        let work = DispatchWorkItem { pump() }
+                        self.prewarmWork = work
+                        DispatchQueue.main.async(execute: work)
+                    }
+                }
             }
-            if !remaining.isEmpty {
-                let work = DispatchWorkItem { pump() }
-                prewarmWork = work
-                DispatchQueue.main.async(execute: work)
-            }
+            return
         }
         prewarmWork?.cancel()
         let work = DispatchWorkItem { pump() }
@@ -482,6 +515,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Interrupt in-flight open/settle/prewarm/snap-upgrade from the previous conversation.
     private func cancelOpenPipeline() {
         openGeneration &+= 1
+        switchPrewarmGeneration &+= 1
         pendingOpenAtBottom = false
         suppressHeightRemeasure = false
         tableView.alpha = 1
@@ -504,17 +538,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         StableRichRenderer.shared.cancelPendingJobs()
     }
 
-    /// Sync paint all visible assistant bodies during open — call after every beginUpdates.
+    /// Sync paint the open tail only — history rows defer until after reveal.
     private func commitOpenCriticalPaint(messages: [ChatMessage], layoutWidth: CGFloat) {
         guard pendingOpenAtBottom else { return }
         _ = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
         tableView.layoutIfNeeded()
+    }
+
+    private func paintVisibleOpenHistoryIfCached(messages: [ChatMessage], layoutWidth: CGFloat) {
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard let msg = messages.first(where: { $0.id == cell.messageID }),
                   msg.role == .assistant,
                   !msg.isStreaming,
                   !isTailAssistantMessage(msg.id),
-                  !cell.hasVisibleNativePaint else { continue }
+                  !cell.hasVisibleNativePaint,
+                  AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth) else { continue }
             cell.configureForOpenHistory(
                 with: msg,
                 preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
@@ -542,13 +580,26 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func revealOpenTableWhenReady(messages: [ChatMessage], layoutWidth: CGFloat) {
-        _ = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
-        commitOpenCriticalPaint(messages: messages, layoutWidth: layoutWidth)
-        revealVisibleActionChrome(messages: messages)
-        reconcileVisibleRowHeights(preserveBottom: true)
+        var tailReady = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
+        if !tailReady {
+            tableView.layoutIfNeeded()
+            tailReady = materializeAndPaintOpenTail(messages: messages, layoutWidth: layoutWidth)
+        }
         pinOpenViewportToBottom(messages)
         tableView.layoutIfNeeded()
         tableView.alpha = 1
+        let gen = openGeneration
+        let openID = renderedConversationID
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  gen == self.openGeneration,
+                  openID == self.renderedConversationID,
+                  openID == self.currentConversationID else { return }
+            self.paintVisibleOpenHistoryIfCached(messages: messages, layoutWidth: layoutWidth)
+            self.revealVisibleActionChrome(messages: messages)
+            self.reconcileVisibleRowHeights(preserveBottom: true)
+            self.pinOpenViewportToBottom(messages)
+        }
     }
 
     /// Force action buttons into layout and grow UITableView rows so they aren't clipped.
@@ -949,13 +1000,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         rowHeights.seedAllLayoutEstimatesIfNeeded(
             messages: messages,
             layoutWidth: layoutWidth,
-            tailRowCount: max(4, messages.count),
-            syncLimit: min(12, max(2, messages.count))
+            tailRowCount: 6,
+            syncLimit: min(Self.openSyncLayoutLimit, max(1, messages.count))
         )
         AssistantMessageLayout.prewarmSwitchTail(
             messages: messages,
             layoutWidth: layoutWidth,
-            turnPairLimit: max(2, (messages.count + 1) / 2)
+            turnPairLimit: Self.openTailTurnPairs
         )
         for msg in messages where msg.role == .user {
             if let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
@@ -1500,10 +1551,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         if let source = note.userInfo?["source"] as? String, source == "select" {
             // Interrupt previous open immediately; coalesce rapid sidebar taps to the latest id.
-            // Keep table visible — alpha=0 caused a white flash before snaps painted.
             selectReloadWork?.cancel()
             cancelOpenPipeline()
             let targetID = ConversationStore.shared.currentConversationID
+            if let id = targetID {
+                prewarmConversationSwitch(to: id)
+            }
             updateTitleFromConversation()
             updateModelButton()
             updateAgentButton()
