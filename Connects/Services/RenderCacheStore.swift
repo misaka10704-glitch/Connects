@@ -106,6 +106,11 @@ enum RenderCacheStore {
         }
     }
 
+    static func removeSnapshot(forKey key: String) {
+        let url = fileURL(forKey: key)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     static func clearSnapshots() {
         let dir = snapDirectory()
         try? FileManager.default.removeItem(at: dir)

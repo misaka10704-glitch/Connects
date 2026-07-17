@@ -111,8 +111,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Blank / absurd snaps that must not stay on screen (cyan empty frames).
     func shouldAbandonBodySnapshot(for message: ChatMessage) -> Bool {
         guard isShowingBodySnapshot, let image = bodySnapshotView.image else { return false }
-        // Reserve placeholder is temporary — never "abandon" into sync native on open.
-        if image === Self.snapshotReserveImage || image.size.width <= 2 { return false }
+        if image.size.width <= 2 { return false }
+        if AssistantBodySnapshotCache.isBlankSnapshot(image) { return true }
         let imgH = image.size.height
         let imgW = image.size.width
         if imgW < 40 || imgH < 20 || imgH > 6000 { return true }
@@ -123,16 +123,240 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         return false
     }
 
-    /// Re-attempt disk/memory snap bind after table layout (open path).
+    /// True while native rich body is the live paint (not JPEG / plain).
+    var hasVisibleNativePaint: Bool {
+        !nativeRenderView.isHidden
+    }
+
+    /// Snap or native — not plain/empty (open path must not treat plain as "already painted").
+    func hasRichBodyPaint() -> Bool {
+        isShowingBodySnapshot || hasVisibleNativePaint
+    }
+
     @discardableResult
     func rebindBodySnapshotIfPossible(layoutWidth: CGFloat) -> Bool {
-        guard let bind = deferredNativeBind, bind.message.id == messageID else { return false }
+        let message: ChatMessage
+        let font: CGFloat
+        if let bind = deferredNativeBind, bind.message.id == messageID {
+            message = bind.message
+            font = bind.font
+        } else if let cached = nativeMessageForRemeasure, cached.id == messageID {
+            message = cached
+            font = SettingsManager.shared.chatBodyFontSize
+        } else {
+            return false
+        }
         return tryShowBodySnapshot(
-            for: bind.message,
+            for: message,
             layoutWidth: layoutWidth,
-            font: bind.font,
+            font: font,
             allowDisk: true
         )
+    }
+
+    /// Open critical path: force snap or sync native — never leave empty/plain on first frame.
+    func paintOpenCriticalBodyIfNeeded(with message: ChatMessage, layoutWidth: CGFloat) {
+        guard message.role == .assistant,
+              !message.isStreaming,
+              message.id == messageID else { return }
+        if cellDelegate?.messageCellUsesBodySnapshot(self) == true {
+            forcePaintOpenTailBody(with: message, layoutWidth: layoutWidth)
+        } else if !hasRichBodyPaint() {
+            paintOpenHistoryBody(with: message, layoutWidth: layoutWidth)
+        }
+    }
+
+    /// Tail-only open configure — no early returns, no plain placeholder.
+    func configureForOpenBottom(with message: ChatMessage,
+                                preferredHeight: CGFloat?,
+                                layoutWidth: CGFloat) {
+        messageID = message.id
+        preferredLayoutWidth = layoutWidth
+        configuredPreferredHeight = preferredHeight
+        guard message.role == .assistant, !message.isStreaming else { return }
+        roleLabel.isHidden = true
+        roleLabel.text = nil
+        if message.hasImage {
+            imageViewMsg.image = cachedImage
+            imageViewMsg.isHidden = cachedImage == nil
+            imageHeight.constant = cachedImage != nil ? 160 : 0
+        } else {
+            imageViewMsg.image = nil
+            imageViewMsg.isHidden = true
+            imageHeight.constant = 0
+        }
+        forcePaintOpenTailBody(with: message, layoutWidth: layoutWidth)
+    }
+
+    /// History assistant rows on open — sync native, never empty red frames.
+    func configureForOpenHistory(with message: ChatMessage,
+                                 preferredHeight: CGFloat?,
+                                 layoutWidth: CGFloat) {
+        messageID = message.id
+        preferredLayoutWidth = layoutWidth
+        configuredPreferredHeight = preferredHeight
+        guard message.role == .assistant, !message.isStreaming else { return }
+        if hasRichBodyPaint() { return }
+        paintOpenHistoryBody(with: message, layoutWidth: layoutWidth)
+    }
+
+    private func paintOpenHistoryBody(with message: ChatMessage, layoutWidth: CGFloat) {
+        let c = DSTheme.c
+        let font = SettingsManager.shared.chatBodyFontSize
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        roleLabel.isHidden = true
+        roleLabel.text = nil
+        if message.hasImage {
+            imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
+            imageViewMsg.isHidden = imageViewMsg.image == nil
+            imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
+        } else {
+            imageViewMsg.image = nil
+            imageViewMsg.isHidden = true
+            imageHeight.constant = 0
+        }
+        let hasImage = !imageViewMsg.isHidden
+        hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        deferredNativeBind = DeferredNativeBind(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage,
+            font: font,
+            colors: c,
+            layoutWidth: layoutWidth
+        )
+        guard !message.content.isEmpty else {
+            applyAssistantChrome(
+                message: message,
+                colors: c,
+                thinkFont: thinkFont,
+                streaming: false,
+                lightweightBodies: true
+            )
+            updateRenderDebugOverlay()
+            return
+        }
+        paintOpenNativeBody(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage,
+            font: font,
+            colors: c,
+            layoutWidth: layoutWidth
+        )
+        applyAssistantChrome(
+            message: message,
+            colors: c,
+            thinkFont: thinkFont,
+            streaming: false,
+            lightweightBodies: true
+        )
+        ensureActionButtonsVisible(for: message)
+        updateRenderDebugOverlay()
+    }
+
+    /// True when open can reveal the table — body has real pixels, not an empty shell.
+    func hasSubstantialOpenBodyPaint(for message: ChatMessage) -> Bool {
+        if isShowingBodySnapshot, let image = bodySnapshotView.image {
+            return AssistantBodySnapshotCache.isSnapUsableForOpen(image: image, message: message)
+                && !shouldAbandonBodySnapshot(for: message)
+        }
+        if hasVisibleNativePaint {
+            return (nativeHeight?.constant ?? 0) > 36
+        }
+        return false
+    }
+
+    func forcePaintOpenTailBody(with message: ChatMessage, layoutWidth: CGFloat) {
+        let c = DSTheme.c
+        let font = SettingsManager.shared.chatBodyFontSize
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        let hasImage = !imageViewMsg.isHidden
+        hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        deferredNativeBind = DeferredNativeBind(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage,
+            font: font,
+            colors: c,
+            layoutWidth: layoutWidth
+        )
+        let allowSnap = cellDelegate?.messageCellOpenAllowsBodySnapshot(self) == true
+        var painted = false
+        if allowSnap,
+           tryShowBodySnapshot(
+               for: message,
+               layoutWidth: layoutWidth,
+               font: font,
+               allowDisk: true
+           ) {
+            if shouldAbandonBodySnapshot(for: message) {
+                hideBodySnapshot()
+            } else {
+                painted = true
+            }
+        }
+        if !painted {
+            hideBodySnapshot()
+            paintOpenNativeBody(
+                message: message,
+                hasThinking: hasThinking,
+                hasSearch: hasSearch,
+                hasImage: hasImage,
+                font: font,
+                colors: c,
+                layoutWidth: layoutWidth
+            )
+        }
+        applyAssistantChrome(
+            message: message,
+            colors: c,
+            thinkFont: thinkFont,
+            streaming: false,
+            lightweightBodies: true
+        )
+        ensureActionButtonsVisible(for: message)
+        updateRenderDebugOverlay()
+        // #region agent log
+        AgentDebugLog.emit(hypothesisId: "H2", location: "AssistantMessageCell.forcePaintOpenTailBody",
+                           message: "painted",
+                           data: ["kind": debugPaintKind(),
+                                  "substantial": hasSubstantialOpenBodyPaint(for: message),
+                                  "allowSnap": allowSnap,
+                                  "msg": String(message.id.prefix(8)),
+                                  "w": Int(layoutWidth)])
+        // #endregion
+    }
+
+    /// Sync native on open — disables async layer draw so the first frame has pixels.
+    private func paintOpenNativeBody(message: ChatMessage,
+                                     hasThinking: Bool,
+                                     hasSearch: Bool,
+                                     hasImage: Bool,
+                                     font: CGFloat,
+                                     colors: ThemeColors,
+                                     layoutWidth: CGFloat) {
+        let priorAsync = nativeRenderView.layer.drawsAsynchronously
+        nativeRenderView.layer.drawsAsynchronously = false
+        configureNative(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage,
+            font: font,
+            colors: colors,
+            layoutWidth: layoutWidth,
+            allowDefer: false
+        )
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        nativeRenderView.layer.displayIfNeeded()
+        nativeRenderView.layer.drawsAsynchronously = priorAsync
     }
 
     func syncThinkingPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
@@ -213,6 +437,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        if cellDelegate?.messageCellShouldPreserveOpenPaint(self) == true,
+           hasRichBodyPaint() {
+            // Height-only relayout during open — never wipe snap/native mid-pipeline.
+            lastChromeActionKey = ""
+            lastActionRowSignature = ""
+            return
+        }
         if cellDelegate?.messageCellShouldFreezeHeight(self) == true {
             messageID = ""
             deferredNativeBind = nil
@@ -245,6 +476,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         hideBodySnapshot()
         cachedImage = nil
         imageTranscriptionFailed = false
+        column.layer.borderWidth = 0
+        nativeRenderView.layer.borderWidth = 0
+        bodySnapshotView.layer.borderWidth = 0
         deferredNativeBind = nil
         lastActionRowSignature = ""
         lastChromeActionKey = ""
@@ -269,11 +503,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     func applyDeferredNativeRenderIfNeeded(suppressHeightNotify: Bool = false) {
         guard let bind = deferredNativeBind, bind.message.id == messageID else { return }
-        // Keep disk/memory snapshots until the host explicitly upgrades (avoids open flash).
-        if isShowingBodySnapshot,
-           cellDelegate?.messageCellShouldPreferSnapshot(self) == true {
-            return
-        }
+        // Never auto-replace a painted JPEG — avoids snap→native flash after open.
+        if isShowingBodySnapshot { return }
         deferredNativeBind = nil
         configureNative(
             message: bind.message,
@@ -323,26 +554,27 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         guard message.role == .assistant else { return }
 
-        // Action chrome first — never wait for snap/native/settle.
-        if !message.isStreaming {
-            ensureActionButtonsVisible(for: message)
+        let usesBodySnapshot = cellDelegate?.messageCellUsesBodySnapshot(self) == true
+
+        // History rows never keep JPEG paint — tail-only snapshots.
+        if !message.isStreaming, !usesBodySnapshot, isShowingBodySnapshot {
+            upgradeSnapshotToNativeIfNeeded()
+            updateRenderDebugOverlay()
+            return
         }
 
-        // Same row already painted (snapshot/native/plain): skip teardown — kills Q↔A re-render flash.
+        // Same row already painted (snap/native): skip teardown — kills Q↔A re-render flash.
+        // Never skip on preferSnap alone — empty/plain must upgrade to snap or native on open.
         if !message.isStreaming,
            previousMessageID == message.id,
-           hasVisibleAssistantBody() {
+           hasRichBodyPaint() {
+            if freezeLayout || isShowingBodySnapshot {
+                updateRenderDebugOverlay()
+                return
+            }
             let preferSnap = cellDelegate?.messageCellShouldPreferSnapshot(self) == true
-            if freezeLayout || isShowingBodySnapshot || preferSnap {
-                if isReservingBodySnapshot {
-                    let font = SettingsManager.shared.chatBodyFontSize
-                    _ = tryShowBodySnapshot(
-                        for: message,
-                        layoutWidth: layoutWidth,
-                        font: font,
-                        allowDisk: true
-                    )
-                }
+            if preferSnap && (isShowingBodySnapshot || hasVisibleNativePaint) {
+                updateRenderDebugOverlay()
                 return
             }
         }
@@ -382,6 +614,69 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             cachedImage = nil
         }
 
+        let hasImage = !imageViewMsg.isHidden
+        var finishedBodyPainted = false
+
+        // Paint snap/native before thinking/search chrome lays out — kills red debug flash.
+        if !message.isStreaming {
+            hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            hasSearch = message.hasSearchProcess || message.hasImageTranscription
+            deferredNativeBind = DeferredNativeBind(
+                message: message,
+                hasThinking: hasThinking,
+                hasSearch: hasSearch,
+                hasImage: hasImage,
+                font: font,
+                colors: c,
+                layoutWidth: layoutWidth
+            )
+            if usesBodySnapshot,
+               tryShowBodySnapshot(
+                   for: message,
+                   layoutWidth: layoutWidth,
+                   font: font,
+                   allowDisk: true
+               ) {
+                finishedBodyPainted = true
+            } else if usesBodySnapshot, preferSnapshot {
+                configureNative(
+                    message: message,
+                    hasThinking: hasThinking,
+                    hasSearch: hasSearch,
+                    hasImage: hasImage,
+                    font: font,
+                    colors: c,
+                    layoutWidth: layoutWidth,
+                    allowDefer: false
+                )
+                finishedBodyPainted = true
+            } else if AssistantMessageLayout.hasCachedNativeLayout(for: message, layoutWidth: layoutWidth) {
+                configureNative(
+                    message: message,
+                    hasThinking: hasThinking,
+                    hasSearch: hasSearch,
+                    hasImage: hasImage,
+                    font: font,
+                    colors: c,
+                    layoutWidth: layoutWidth,
+                    allowDefer: false
+                )
+                finishedBodyPainted = true
+            } else if !(deferHeavyRender && freezeLayout) {
+                configureNative(
+                    message: message,
+                    hasThinking: hasThinking,
+                    hasSearch: hasSearch,
+                    hasImage: hasImage,
+                    font: font,
+                    colors: c,
+                    layoutWidth: layoutWidth,
+                    allowDefer: false
+                )
+                finishedBodyPainted = true
+            }
+        }
+
         // Open/scroll: skip PlainMarkdown thinking bodies — snapshot/plain carry the paint.
         applyAssistantChrome(
             message: message,
@@ -391,7 +686,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             lightweightBodies: preferSnapshot || deferHeavyRender
         )
 
-        let hasImage = !imageViewMsg.isHidden
+        if finishedBodyPainted {
+            if !message.isStreaming {
+                ensureActionButtonsVisible(for: message)
+            }
+            updateRenderDebugOverlay()
+            return
+        }
 
         // Reopen meaning: show rich body (snapshot or native), never blank/plain placeholder.
         if !message.isStreaming {
@@ -404,35 +705,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 colors: c,
                 layoutWidth: layoutWidth
             )
-            if tryShowBodySnapshot(
-                for: message,
-                layoutWidth: layoutWidth,
-                font: font,
-                allowDisk: true
-            ) {
-                updateRenderDebugOverlay()
-                return
-            }
-            // Open/snap-hold: never paint plain/native that later swaps to JPEG.
-            if preferSnapshot {
-                reserveSnapshotSlot(preferredColumnHeight: configuredPreferredHeight)
-                updateRenderDebugOverlay()
-                return
-            }
-            if AssistantMessageLayout.hasCachedNativeLayout(for: message, layoutWidth: layoutWidth) {
-                configureNative(
-                    message: message,
-                    hasThinking: hasThinking,
-                    hasSearch: hasSearch,
-                    hasImage: hasImage,
-                    font: font,
-                    colors: c,
-                    layoutWidth: layoutWidth,
-                    allowDefer: false
-                )
-                updateRenderDebugOverlay()
-                return
-            }
             // Scroll defer only: keep chrome, body waits for cache (not a blank open paint).
             if deferHeavyRender,
                cellDelegate?.messageCellShouldFreezeHeight(self) == true {
@@ -445,6 +717,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                     colors: c,
                     scheduleHeightNotify: false
                 )
+                ensureActionButtonsVisible(for: message)
                 updateRenderDebugOverlay()
                 return
             }
@@ -491,12 +764,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 allowDefer: false
             )
         }
+        if !message.isStreaming {
+            ensureActionButtonsVisible(for: message)
+        }
         updateRenderDebugOverlay()
     }
 
     /// Lightweight path for UITableView reuse while the finger is down.
     private func configureWhileScrolling(message: ChatMessage, layoutWidth: CGFloat) {
         streamingPresentation = false
+        let usesBodySnapshot = cellDelegate?.messageCellUsesBodySnapshot(self) == true
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
@@ -513,17 +790,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             imageHeight.constant = 0
         }
 
-        applyAssistantChrome(
-            message: message,
-            colors: c,
-            thinkFont: thinkFont,
-            streaming: false,
-            lightweightBodies: true
-        )
-
         let hasImage = !imageViewMsg.isHidden
-        let deferHeavy = cellDelegate?.messageCellShouldDeferHeavyRender(self) == true
-        let cacheReady = AssistantMessageLayout.hasCachedNativeLayout(for: message, layoutWidth: layoutWidth)
+        hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasSearch = message.hasSearchProcess || message.hasImageTranscription
         deferredNativeBind = DeferredNativeBind(
             message: message,
             hasThinking: hasThinking,
@@ -533,31 +802,35 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             colors: c,
             layoutWidth: layoutWidth
         )
-        if tryShowBodySnapshot(for: message, layoutWidth: layoutWidth, font: font) {
+        if usesBodySnapshot,
+           tryShowBodySnapshot(for: message, layoutWidth: layoutWidth, font: font) {
+            applyAssistantChrome(
+                message: message,
+                colors: c,
+                thinkFont: thinkFont,
+                streaming: false,
+                lightweightBodies: true
+            )
             return
         }
-        if !deferHeavy, cacheReady {
-            configureNative(
-                message: message,
-                hasThinking: hasThinking,
-                hasSearch: hasSearch,
-                hasImage: hasImage,
-                font: font,
-                colors: c,
-                layoutWidth: layoutWidth,
-                allowDefer: false
-            )
-        } else {
-            configurePlainFallback(
-                message: message,
-                hasThinking: hasThinking,
-                hasSearch: hasSearch,
-                hasImage: hasImage,
-                font: font,
-                colors: c,
-                scheduleHeightNotify: false
-            )
-        }
+        configureNative(
+            message: message,
+            hasThinking: hasThinking,
+            hasSearch: hasSearch,
+            hasImage: hasImage,
+            font: font,
+            colors: c,
+            layoutWidth: layoutWidth,
+            allowDefer: false
+        )
+        applyAssistantChrome(
+            message: message,
+            colors: c,
+            thinkFont: thinkFont,
+            streaming: false,
+            lightweightBodies: true
+        )
+        ensureActionButtonsVisible(for: message)
     }
 
     private func applyAssistantChrome(message: ChatMessage,
@@ -696,7 +969,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         )
         styleActionIcons(cachedThemeColors ?? DSTheme.c)
         lastChromeActionKey = "\(message.id)|true|\(pager)|\(message.versionIndex)|\(message.versions.count)"
-        // Make sure Auto Layout has applied actionHeight before the host measures.
+        guard cellDelegate?.messageCellShouldLayoutActionChromeNow(self) != false else { return }
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
     }
@@ -812,7 +1085,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             )
             return
         }
-        deferredNativeBind = nil
+        let keepSnapshotBind = cellDelegate?.messageCellUsesBodySnapshot(self) == true
+        if !keepSnapshotBind {
+            deferredNativeBind = nil
+        }
         hideBodySnapshot()
         assistantLabel.isHidden = true
         assistantLabel.attributedText = nil
@@ -843,6 +1119,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if !renderResult.isProvisional {
             scheduleMeasuredHeightNotify(for: message.id)
         }
+        if keepSnapshotBind {
+            deferredNativeBind = DeferredNativeBind(
+                message: message,
+                hasThinking: hasThinking,
+                hasSearch: hasSearch,
+                hasImage: hasImage,
+                font: font,
+                colors: colors,
+                layoutWidth: layoutWidth
+            )
+        }
     }
 
     @discardableResult
@@ -862,6 +1149,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: width,
             allowDisk: allowDisk
         ) else {
+            // #region agent log
+            AgentDebugLog.emit(hypothesisId: "H1", location: "AssistantMessageCell.tryShowBodySnapshot",
+                               message: "miss",
+                               data: ["msg": String(message.id.prefix(8)), "w": Int(width),
+                                      "hasDisk": AssistantBodySnapshotCache.shared.hasDiskOrMemoryImage(
+                                        messageID: message.id, content: message.content,
+                                        fontSize: font, appearance: appearance, layoutWidth: width)])
+            // #endregion
             return false
         }
         let imgW = image.size.width
@@ -871,6 +1166,20 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard imgW > 40, imgH > 20, imgH < 6000 else { return false }
         if message.content.count > 160, imgH < 64 { return false }
         if message.content.count > 800, imgH < 120 { return false }
+        if AssistantBodySnapshotCache.isBlankSnapshot(image) {
+            AssistantBodySnapshotCache.shared.purgeSnapshot(
+                messageID: message.id,
+                content: message.content,
+                fontSize: font,
+                appearance: appearance,
+                layoutWidth: width
+            )
+            return false
+        }
+        if !AssistantBodySnapshotCache.isSnapUsableForOpen(image: image, message: message) {
+            return false
+        }
+        // Width drift is OK on paint (scaleToFill); discardSnapshotIfWidthMismatch handles rotation.
         showBodySnapshot(image, message: message, layoutWidth: width, hasImage: !imageViewMsg.isHidden)
         return true
     }
@@ -879,58 +1188,32 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         AssistantBodySnapshotCache.contentWidth(for: layoutWidth)
     }
 
-    /// Chrome-only placeholder while RAM/disk snap binds — no plain 原文 flash.
-    private func reserveSnapshotSlot(preferredColumnHeight: CGFloat?) {
-        hideNativeRender()
-        assistantLabel.isHidden = true
-        assistantLabel.text = nil
-        assistantLabel.attributedText = nil
-        labelBottom.isActive = false
-        labelBottomFloor.isActive = false
-        assistantTopToRole.isActive = false
-        assistantTopToImage.isActive = false
-        assistantTopToThink.isActive = false
-        snapshotTopToRole.isActive = false
-        snapshotTopToImage.isActive = false
-        snapshotTopToThink.isActive = false
-        snapshotBottom.isActive = true
-        if hasThinking || hasSearch { snapshotTopToThink.isActive = true }
-        else { snapshotTopToRole.isActive = true }
-        let slotH = max(72, (preferredColumnHeight ?? 200) - 56)
-        // Tiny opaque bitmap keeps isShowingBodySnapshot true (cyan) without 原文.
-        bodySnapshotView.image = Self.snapshotReserveImage
-        bodySnapshotView.backgroundColor = DSTheme.c.surface
-        bodySnapshotView.contentMode = .scaleToFill
-        snapshotHeight.constant = slotH
-        bodySnapshotView.isHidden = false
-        if let bind = deferredNativeBind, bind.message.id == messageID {
-            refreshActionChrome(for: bind.message, streaming: false, colors: bind.colors)
+    func debugPaintKind() -> String {
+        if isShowingBodySnapshot { return "snap" }
+        if !nativeRenderView.isHidden { return "native" }
+        if !assistantLabel.isHidden {
+            let t = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !t.isEmpty { return "plain" }
         }
+        return "empty"
     }
 
-    /// True while waiting for a real JPEG over a chrome-only slot.
-    var isReservingBodySnapshot: Bool {
-        guard isShowingBodySnapshot, let image = bodySnapshotView.image else { return false }
-        return image === Self.snapshotReserveImage || image.size.width <= 2
+    func debugPaintMetrics() -> [String: Any] {
+        [
+            "snapH": Int(snapshotHeight.constant),
+            "colH": Int(column.bounds.height),
+            "prefH": Int(configuredPreferredHeight ?? 0),
+            "imgW": Int(bodySnapshotView.image?.size.width ?? 0),
+            "imgH": Int(bodySnapshotView.image?.size.height ?? 0)
+        ]
     }
-
-    private static let snapshotReserveImage: UIImage = {
-        let size = CGSize(width: 2, height: 2)
-        UIGraphicsBeginImageContextWithOptions(size, true, 1)
-        UIColor(white: 0.94, alpha: 1).setFill()
-        UIRectFill(CGRect(origin: .zero, size: size))
-        let image = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        return image ?? UIImage()
-    }()
 
     /// After layout / rotation: drop snaps whose bitmap width ≠ live content width.
     @discardableResult
     func discardSnapshotIfWidthMismatch(layoutWidth: CGFloat,
                                         upgradeToNative: Bool = true) -> Bool {
         guard isShowingBodySnapshot, let image = bodySnapshotView.image else { return false }
-        // Open reserve placeholder is 2pt — must not count as a width mismatch.
-        if image === Self.snapshotReserveImage || image.size.width <= 2 { return false }
+        if image.size.width <= 2 { return false }
         let target = snapshotTargetWidth(for: layoutWidth)
         // Accept column-vs-host drift (scaleToFill). Only drop clear orientation mismatches.
         let probe = AssistantBodySnapshotCache.nearbyWidthProbe
@@ -970,6 +1253,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                   message: ChatMessage,
                                   layoutWidth: CGFloat,
                                   hasImage: Bool) {
+        guard !AssistantBodySnapshotCache.isBlankSnapshot(image) else {
+            AssistantBodySnapshotCache.shared.purgeSnapshot(
+                messageID: message.id,
+                content: message.content,
+                fontSize: SettingsManager.shared.chatBodyFontSize,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                layoutWidth: layoutWidth
+            )
+            return
+        }
         hideNativeRender()
         assistantLabel.isHidden = true
         assistantLabel.text = nil
@@ -1020,7 +1313,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Capture finished native body after at-rest paint (never on open critical path).
     @discardableResult
     func captureBodySnapshotIfEligible(layoutWidth: CGFloat) -> Bool {
-        guard !nativeRenderView.isHidden,
+        guard !isShowingBodySnapshot,
+              !nativeRenderView.isHidden,
               bodySnapshotView.isHidden,
               let message = nativeMessageForRemeasure,
               message.id == messageID,
@@ -1048,8 +1342,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         // Full screen scale — sharp on retina. Open path only decodes the bottom 1–2 snaps.
         UIGraphicsBeginImageContextWithOptions(bounds.size, false, 0)
         defer { UIGraphicsEndImageContext() }
-        guard nativeRenderView.drawHierarchy(in: bounds, afterScreenUpdates: false),
-              let image = UIGraphicsGetImageFromCurrentImageContext() else { return false }
+        guard nativeRenderView.drawHierarchy(in: bounds, afterScreenUpdates: true),
+              let image = UIGraphicsGetImageFromCurrentImageContext(),
+              !AssistantBodySnapshotCache.isBlankSnapshot(image) else { return false }
         AssistantBodySnapshotCache.shared.store(
             image,
             messageID: message.id,

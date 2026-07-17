@@ -219,6 +219,106 @@ final class AssistantBodySnapshotCache {
         RenderCacheStore.storeSnapshot(image, forKey: key)
     }
 
+    /// Sync-decode the latest assistant JPEG for cold open (must run before reloadData).
+    /// Purges blank / unusable bitmaps so open never paints white JPEG frames.
+    @discardableResult
+    func prefetchTailAssistantImage(messages: [ChatMessage], layoutWidth: CGFloat) -> UIImage? {
+        let appearance = SettingsManager.shared.appearanceMode.rawValue
+        let font = SettingsManager.shared.chatBodyFontSize
+        let width = Self.contentWidth(for: layoutWidth)
+        guard let message = messages.reversed().first(where: {
+            $0.role == .assistant && !$0.isStreaming && !$0.content.isEmpty
+        }) else { return nil }
+        guard let image = image(
+            messageID: message.id,
+            content: message.content,
+            fontSize: font,
+            appearance: appearance,
+            layoutWidth: width,
+            allowDisk: true
+        ) else { return nil }
+        if Self.isSnapUsableForOpen(image: image, message: message) {
+            return image
+        }
+        purgeSnapshot(
+            messageID: message.id,
+            content: message.content,
+            fontSize: font,
+            appearance: appearance,
+            layoutWidth: width
+        )
+        return nil
+    }
+
+    /// Open paint gate — stricter than idle display (rejects white / postage-stamp snaps).
+    static func isSnapUsableForOpen(image: UIImage, message: ChatMessage) -> Bool {
+        if isBlankSnapshot(image) { return false }
+        let imgW = image.size.width
+        let imgH = image.size.height
+        guard imgW > 40, imgH > 20, imgH < 6000 else { return false }
+        let contentLen = message.content.count
+        if contentLen > 160, imgH < 64 { return false }
+        if contentLen > 800, imgH < 120 { return false }
+        if contentLen > 2000, imgH < 200 { return false }
+        return true
+    }
+
+    /// Empty / failed captures (drawHierarchy before paint) — reject for display.
+    static func isBlankSnapshot(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage else { return true }
+        let w = min(cg.width, 32)
+        let h = min(cg.height, 32)
+        guard w > 0, h > 0 else { return true }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &pixels,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        ctx.interpolationQuality = .none
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var bright = 0
+        let total = w * h
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = CGFloat(pixels[i]) / 255
+            let g = CGFloat(pixels[i + 1]) / 255
+            let b = CGFloat(pixels[i + 2]) / 255
+            let luma = 0.299 * r + 0.587 * g + 0.114 * b
+            if luma > 0.93 { bright += 1 }
+        }
+        return Double(bright) / Double(total) > 0.92
+    }
+
+    func purgeSnapshot(messageID: String,
+                       content: String,
+                       fontSize: CGFloat,
+                       appearance: String,
+                       layoutWidth: CGFloat) {
+        let primary = cacheKey(
+            messageID: messageID,
+            content: content,
+            fontSize: fontSize,
+            appearance: appearance,
+            layoutWidth: layoutWidth
+        )
+        for candidate in probeWidths(around: primary.width) {
+            let width = Self.contentWidth(for: candidate)
+            let key = Self.makeKey(
+                messageID: messageID,
+                content: content,
+                fontSize: fontSize,
+                appearance: appearance,
+                layoutWidth: width
+            )
+            memory.removeObject(forKey: key as NSString)
+            RenderCacheStore.removeSnapshot(forKey: key)
+        }
+    }
+
     /// Prefetch tail snapshots into RAM. Decodes only the newest few (visible open);
     /// probes the rest with fileExists so open isn't blocked on JPEG decode.
     @discardableResult
