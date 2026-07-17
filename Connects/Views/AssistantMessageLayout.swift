@@ -120,8 +120,63 @@ enum AssistantMessageLayout {
                 }
             }
             if let completion = completion {
-                DispatchQueue.main.async(execute: completion)
+                DispatchQueue.main.async {
+                    for message in batch where message.role == .assistant && !message.isStreaming {
+                        let document = NativeMarkdownParser.shared.parse(message.content)
+                        hydrateFormulaDiskCache(document: document, style: style)
+                    }
+                    completion()
+                }
             }
+        }
+    }
+
+    /// Load iosMath disk artifacts on the main thread so later paints skip cold formula layout.
+    private static func hydrateFormulaDiskCache(document: NativeMarkdownDocument,
+                                                style: NativeLayoutStyle) {
+        assert(Thread.isMainThread)
+        var formulas = [(String, Bool)]()
+        func scan(_ inlines: [NativeInline]) {
+            for inline in inlines {
+                switch inline {
+                case .inlineMath(let tex):
+                    formulas.append((tex, false))
+                case .bold(let children), .italic(let children), .link(let children, _):
+                    scan(children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in document.blocks {
+            switch block {
+            case .displayMath(let tex):
+                formulas.append((tex, true))
+            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
+                scan(inlines)
+            case .list(_, let items):
+                items.forEach(scan)
+            case .table(let table):
+                table.header.forEach(scan)
+                table.rows.flatMap { $0 }.forEach(scan)
+            default:
+                break
+            }
+        }
+        for (tex, display) in formulas {
+            let fontSize = style.bodyFontSize * (display ? 1.08 : 1)
+            guard NativeFormulaRenderer.shared.hasCachedArtifact(
+                tex: tex,
+                fontSize: fontSize,
+                color: style.colors.textPrimary,
+                display: display
+            ) else { continue }
+            _ = NativeFormulaRenderer.shared.artifact(
+                tex: tex,
+                fontSize: fontSize,
+                color: style.colors.textPrimary,
+                display: display
+            )
         }
     }
 

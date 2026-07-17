@@ -342,6 +342,9 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         if chatNav.topViewController !== chatVC {
             chatNav.popToRootViewController(animated: false)
         }
+        if ConversationStore.shared.currentConversationID != id {
+            chatVC.switchToConversation(id: id)
+        }
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
         closeDrawer(animated: false)
