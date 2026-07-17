@@ -83,13 +83,66 @@ enum AssistantMessageLayout {
         prewarmLayouts(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
     }
 
+    /// Parse + layout on `layoutPrewarmQueue`. Preview layout when formulas are not cached yet.
+    static func prewarmLayoutsOnBackground(for messages: [ChatMessage],
+                                           targetWidth: CGFloat,
+                                           layoutLimit: Int,
+                                           completion: (() -> Void)? = nil) {
+        let batch = Array(messages.suffix(max(1, layoutLimit)))
+        guard !batch.isEmpty else {
+            if let completion = completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+            return
+        }
+        layoutPrewarmQueue.async {
+            let width = nativeLayoutWidth(for: max(targetWidth, 120))
+            let style = NativeLayoutStyle(
+                width: width,
+                bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                colors: DSTheme.c
+            )
+            for message in batch where message.role == .assistant && !message.isStreaming {
+                autoreleasepool {
+                    let document = NativeMarkdownParser.shared.parse(message.content)
+                    if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
+                        if formulasReady(in: document, style: style) {
+                            _ = NativeMessageLayouter.shared.layout(document: document, style: style)
+                        } else {
+                            _ = NativeMessageLayouter.shared.layout(
+                                document: document,
+                                style: style,
+                                renderMissingFormulas: false
+                            )
+                        }
+                    }
+                }
+            }
+            if let completion = completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
+    }
+
     /// Background parse + layout for the switch tail — safe to call before `reloadChat`.
     static func prewarmSwitchTailOnBackground(messages: [ChatMessage],
                                               layoutWidth: CGFloat,
-                                              turnPairLimit: Int = 4) {
+                                              turnPairLimit: Int = 4,
+                                              completion: (() -> Void)? = nil) {
         let assistants = switchTailAssistants(messages: messages, turnPairLimit: turnPairLimit)
-        guard !assistants.isEmpty else { return }
-        prewarmLayoutsOnBackground(for: assistants, targetWidth: layoutWidth, layoutLimit: assistants.count)
+        guard !assistants.isEmpty else {
+            if let completion = completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+            return
+        }
+        prewarmLayoutsOnBackground(
+            for: assistants,
+            targetWidth: layoutWidth,
+            layoutLimit: assistants.count,
+            completion: completion
+        )
     }
 
     private static func switchTailAssistants(messages: [ChatMessage],
@@ -109,40 +162,6 @@ enum AssistantMessageLayout {
             assistants.append(assistant)
         }
         return assistants
-    }
-
-    /// Parse + layout on `layoutPrewarmQueue`. Preview layout when formulas are not cached yet.
-    static func prewarmLayoutsOnBackground(for messages: [ChatMessage],
-                                           targetWidth: CGFloat,
-                                           layoutLimit: Int) {
-        let batch = Array(messages.suffix(max(1, layoutLimit)))
-        guard !batch.isEmpty else { return }
-        layoutPrewarmQueue.async {
-            let width = nativeLayoutWidth(for: max(targetWidth, 120))
-            let style = NativeLayoutStyle(
-                width: width,
-                bodyFontSize: SettingsManager.shared.chatBodyFontSize,
-                appearance: SettingsManager.shared.appearanceMode.rawValue,
-                colors: DSTheme.c
-            )
-            for message in batch where message.role == .assistant && !message.isStreaming {
-                autoreleasepool {
-                    let document = NativeMarkdownParser.shared.parse(message.content)
-                    if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil {
-                        return
-                    }
-                    if formulasReady(in: document, style: style) {
-                        _ = NativeMessageLayouter.shared.layout(document: document, style: style)
-                    } else {
-                        _ = NativeMessageLayouter.shared.layout(
-                            document: document,
-                            style: style,
-                            renderMissingFormulas: false
-                        )
-                    }
-                }
-            }
-        }
     }
 
     private static func formulasReady(in document: NativeMarkdownDocument,

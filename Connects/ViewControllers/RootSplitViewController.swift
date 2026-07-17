@@ -334,6 +334,10 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         chatVC.prewarmConversationSwitch(to: id)
     }
 
+    func sidebarDidRefreshConversationList() {
+        chatVC.prewarmRecentConversationTails()
+    }
+
     func sidebarDidSelectConversation(id: String) {
         if chatNav.topViewController !== chatVC {
             chatNav.popToRootViewController(animated: false)

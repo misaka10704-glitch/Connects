@@ -2,6 +2,7 @@ import UIKit
 
 protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarWillSelectConversation(id: String)
+    func sidebarDidRefreshConversationList()
     func sidebarDidSelectConversation(id: String)
     func sidebarDidRequestNewChat()
     func sidebarDidRequestSettings()
@@ -124,6 +125,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         rebuildSections()
         tableView.reloadData()
         highlightCurrentConversation()
+        delegate?.sidebarDidRefreshConversationList()
     }
 
     private func reloadProjectFilter() {

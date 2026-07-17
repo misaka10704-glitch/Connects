@@ -62,6 +62,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var selectReloadWork: DispatchWorkItem?
     private var prewarmWork: DispatchWorkItem?
     private var openSettleWork: DispatchWorkItem?
+    private var idlePrewarmWork: DispatchWorkItem?
     private var lastScrollOffsetY: CGFloat = 0
     private var scrollBiasUp = false
     private var scrollSettleWork: DispatchWorkItem?
@@ -155,6 +156,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.rescueBlankRichCells()
         }
+        scheduleIdleConversationPrewarm()
     }
 
     /// If a rich cell is still showing blank WebView / failed inject, rebind it.
@@ -383,9 +385,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private static let syncPrewarmMaxChars = 700
-    private static let openSyncLayoutLimit = 1
-    private static let openTailTurnPairs = 3
     private static let switchPrewarmTurnPairs = 3
+    private static let recentConversationPrewarmLimit = 8
+
+    /// Background layout warm for recent sidebar conversations (one tail each).
+    func prewarmRecentConversationTails(limit: Int = recentConversationPrewarmLimit,
+                                        skipConversationID: String? = nil) {
+        let layoutWidth = currentRenderWidth()
+        let skip = skipConversationID ?? renderedConversationID
+        var warmed = 0
+        for conv in ConversationStore.shared.visibleConversations {
+            if conv.id == skip { continue }
+            guard !conv.messages.isEmpty else { continue }
+            AssistantMessageLayout.prewarmSwitchTailOnBackground(
+                messages: conv.messages,
+                layoutWidth: layoutWidth,
+                turnPairLimit: 1
+            )
+            warmed += 1
+            if warmed >= limit { break }
+        }
+    }
+
+    private func scheduleIdleConversationPrewarm() {
+        idlePrewarmWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard !self.tableView.isDragging, !self.tableView.isDecelerating else { return }
+            self.prewarmRecentConversationTails()
+        }
+        idlePrewarmWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
 
     /// Start layout warm as soon as the user targets a conversation (before store reload).
     func prewarmConversationSwitch(to conversationID: String) {
@@ -393,6 +424,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               !conv.messages.isEmpty else { return }
         switchPrewarmGeneration &+= 1
         let layoutWidth = currentRenderWidth()
+        AssistantMessageLayout.prewarmSnapshots(
+            for: conv.messages,
+            targetWidth: layoutWidth,
+            parseLimit: 2
+        )
         AssistantMessageLayout.prewarmSwitchTailOnBackground(
             messages: conv.messages,
             layoutWidth: layoutWidth,
@@ -515,6 +551,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         prewarmWork = nil
         openSettleWork?.cancel()
         openSettleWork = nil
+        idlePrewarmWork?.cancel()
+        idlePrewarmWork = nil
         scrollSettleWork?.cancel()
         scrollSettleWork = nil
         pinnedRemeasureWork?.cancel()
@@ -899,61 +937,90 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
         let openID = renderedConversationID
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self,
-                  generation == self.openGeneration,
-                  openID == self.renderedConversationID,
-                  openID == self.currentConversationID else { return }
-            let liveWidth = self.currentRenderWidth()
+        let layoutWidth = currentRenderWidth()
+        let tailMessage: ChatMessage? = {
+            guard let tailID = tailAssistantMessageID(in: messages) else { return nil }
+            return messages.first(where: { $0.id == tailID })
+        }()
 
+        let enqueuePaint: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            let work = DispatchWorkItem { [weak self] in
+                self?.runOpenTailPaint(messages: messages, generation: generation, openID: openID)
+            }
+            self.openSettleWork = work
+            DispatchQueue.main.async(execute: work)
+        }
+
+        if let tail = tailMessage,
+           !AssistantMessageLayout.hasCachedNativeLayout(for: tail, layoutWidth: layoutWidth) {
+            AssistantMessageLayout.prewarmLayoutsOnBackground(
+                for: [tail],
+                targetWidth: layoutWidth,
+                layoutLimit: 1,
+                completion: enqueuePaint
+            )
+        } else {
+            enqueuePaint()
+        }
+    }
+
+    private func runOpenTailPaint(messages: [ChatMessage], generation: UInt, openID: String?) {
+        guard generation == openGeneration,
+              openID == renderedConversationID,
+              openID == currentConversationID else { return }
+        let liveWidth = currentRenderWidth()
+
+        if let tailID = tailAssistantMessageID(in: messages),
+           let tail = messages.first(where: { $0.id == tailID }),
+           !AssistantMessageLayout.hasCachedNativeLayout(for: tail, layoutWidth: liveWidth) {
             self.rowHeights.seedTailLayoutEstimatesIfNeeded(
                 messages: messages,
                 layoutWidth: liveWidth,
-                tailRowCount: 4,
+                tailRowCount: 2,
                 syncLimit: 1
             )
-            if let lastUser = messages.last(where: { $0.role == .user }),
-               let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
-                   for: lastUser,
-                   layoutWidth: liveWidth
-               ), column > 40 {
-                self.rowHeights.updateDisplayEstimate(columnHeight: column, messageID: lastUser.id)
-            }
-            let exactDisk = openID.map { self.exactPersistedHeights(for: $0) } ?? [:]
-            if messages.count >= 2, exactDisk.isEmpty {
-                let totalH = self.rowHeights.totalRowHeight(for: messages, layoutWidth: liveWidth)
-                let minPlausible = max(self.tableView.bounds.height * 0.55, CGFloat(min(messages.count, 8)) * 72)
-                if totalH < minPlausible {
-                    for msg in messages.suffix(8) where !msg.isStreaming {
-                        if self.rowHeights.isCommitted(msg.id) { continue }
-                        let cheap = ChatRowHeightResolver.cheapColumnEstimate(
-                            for: msg,
-                            layoutWidth: liveWidth
-                        )
-                        let floor = max(cheap * 1.15, msg.role == .assistant ? 96 : 52)
-                        self.rowHeights.updateDisplayEstimate(columnHeight: floor, messageID: msg.id)
-                    }
-                    self.tableView.reloadData()
-                    self.pinOpenViewportToBottom(messages)
+        }
+        if let lastUser = messages.last(where: { $0.role == .user }),
+           let column = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+               for: lastUser,
+               layoutWidth: liveWidth
+           ), column > 40 {
+            rowHeights.updateDisplayEstimate(columnHeight: column, messageID: lastUser.id)
+        }
+        let exactDisk = openID.map { exactPersistedHeights(for: $0) } ?? [:]
+        if messages.count >= 2, exactDisk.isEmpty {
+            let totalH = rowHeights.totalRowHeight(for: messages, layoutWidth: liveWidth)
+            let minPlausible = max(tableView.bounds.height * 0.55, CGFloat(min(messages.count, 8)) * 72)
+            if totalH < minPlausible {
+                for msg in messages.suffix(8) where !msg.isStreaming {
+                    if rowHeights.isCommitted(msg.id) { continue }
+                    let cheap = ChatRowHeightResolver.cheapColumnEstimate(
+                        for: msg,
+                        layoutWidth: liveWidth
+                    )
+                    let floor = max(cheap * 1.15, msg.role == .assistant ? 96 : 52)
+                    rowHeights.updateDisplayEstimate(columnHeight: floor, messageID: msg.id)
                 }
-            }
-
-            _ = self.materializeAndPaintOpenTail(messages: messages, layoutWidth: liveWidth)
-            self.paintVisibleOpenHistoryIfCached(messages: messages, layoutWidth: liveWidth)
-            self.revealVisibleActionChrome(messages: messages)
-            self.reconcileVisibleRowHeights(preserveBottom: true)
-            self.pinOpenViewportToBottom(messages)
-            self.settleOpenConversation(messages: messages, layoutWidth: liveWidth)
-            self.pendingOpenAtBottom = false
-
-            let tail = Array(messages.suffix(Self.switchPrewarmMessageWindow))
-            let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
-            if !assistants.isEmpty {
-                self.scheduleAsyncLayoutPrewarm(assistants: assistants, layoutWidth: liveWidth)
+                tableView.reloadData()
+                pinOpenViewportToBottom(messages)
             }
         }
-        openSettleWork = work
-        DispatchQueue.main.async(execute: work)
+
+        _ = materializeAndPaintOpenTail(messages: messages, layoutWidth: liveWidth)
+        paintVisibleOpenHistoryIfCached(messages: messages, layoutWidth: liveWidth)
+        revealVisibleActionChrome(messages: messages)
+        reconcileVisibleRowHeights(preserveBottom: true)
+        pinOpenViewportToBottom(messages)
+        settleOpenConversation(messages: messages, layoutWidth: liveWidth)
+        pendingOpenAtBottom = false
+
+        let tail = Array(messages.suffix(Self.switchPrewarmMessageWindow))
+        let assistants = tail.filter { $0.role == .assistant && !$0.isStreaming }
+        if !assistants.isEmpty {
+            scheduleAsyncLayoutPrewarm(assistants: assistants, layoutWidth: liveWidth)
+        }
+        scheduleIdleConversationPrewarm()
     }
 
     private func forceSnapOpenToBottom(_ messages: [ChatMessage]) {
@@ -1848,6 +1915,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         tableView.layoutIfNeeded()
 
+        AssistantMessageLayout.prewarmSwitchTailOnBackground(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            turnPairLimit: Self.switchPrewarmTurnPairs
+        )
         let gen = openGeneration
         scheduleOpenTailPaint(messages: messages, generation: gen)
     }
