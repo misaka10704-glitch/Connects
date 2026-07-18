@@ -210,7 +210,9 @@ final class ConversationStore {
             contextSummary: source.contextSummary,
             contextSummaryThroughMessageID: source.contextSummaryThroughMessageID,
             agentID: source.agentID,
-            projectID: source.projectID
+            projectID: source.projectID,
+            studyDocumentID: source.studyDocumentID,
+            studyPageCaptureEnabled: source.studyPageCaptureEnabled
         )
         // If forked mid-thread, drop summary unless the covered message is still present.
         if let tid = copy.contextSummaryThroughMessageID,

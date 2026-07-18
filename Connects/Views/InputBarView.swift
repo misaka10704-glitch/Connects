@@ -5,6 +5,7 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapStop()
     func inputBarDidTapAttach()
     func inputBarDidTapAgent()
+    func inputBarDidToggleStudyCapture(_ enabled: Bool)
 }
 
 /// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
@@ -15,6 +16,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let attachButton = UIButton(type: .system)
     private let webSearchButton = UIButton(type: .system)
     private let thinkingButton = UIButton(type: .system)
+    private let studyCaptureButton = UIButton(type: .system)
     private let memoryButton = UIButton(type: .system)
     private let agentButton = UIButton(type: .system)
     private let textView = UITextView()
@@ -32,6 +34,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     private var chipHeightConstraint: NSLayoutConstraint?
     private var textTopToChip: NSLayoutConstraint?
     private var textTopToContainer: NSLayoutConstraint?
+    private var studyCaptureWidthConstraint: NSLayoutConstraint?
     private var pendingImageBase64: String?
 
     private let btnSize: CGFloat = 30
@@ -54,6 +57,18 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     var hasAttachment: Bool { pendingImageBase64 != nil }
     var agentAnchorView: UIView { agentButton }
+
+    var studyCaptureVisible = false {
+        didSet {
+            studyCaptureButton.isHidden = !studyCaptureVisible
+            studyCaptureWidthConstraint?.constant = studyCaptureVisible ? btnSize : 0
+            setNeedsLayout()
+        }
+    }
+
+    var studyPageCaptureEnabled = false {
+        didSet { updateStudyCaptureAppearance() }
+    }
 
     func setAgent(_ agent: CustomAgent?) {
         agentButton.setTitle(nil, for: .normal)
@@ -122,6 +137,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateSendEnabled()
         updateWebSearchAppearance()
         updateThinkingAppearance()
+        updateStudyCaptureAppearance()
         updateMemoryAppearance()
     }
 
@@ -221,6 +237,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         thinkingButton.addTarget(self, action: #selector(thinkingTapped), for: .touchUpInside)
         containerView.addSubview(thinkingButton)
 
+        studyCaptureButton.translatesAutoresizingMaskIntoConstraints = false
+        studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
+        studyCaptureButton.imageView?.contentMode = .scaleAspectFit
+        studyCaptureButton.accessibilityLabel = "同步阅读页"
+        studyCaptureButton.addTarget(self, action: #selector(studyCaptureTapped), for: .touchUpInside)
+        studyCaptureButton.isHidden = true
+        containerView.addSubview(studyCaptureButton)
+
         memoryButton.translatesAutoresizingMaskIntoConstraints = false
         memoryButton.setImage(ActionIconFactory.image(.vinyl, pointSize: 16), for: .normal)
         memoryButton.accessibilityLabel = "跨会话记忆"
@@ -269,6 +293,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         chipHeightConstraint = chip.heightAnchor.constraint(equalToConstant: 0)
         textTopToChip = textView.topAnchor.constraint(equalTo: chip.bottomAnchor, constant: 4)
         textTopToContainer = textView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 39)
+        studyCaptureWidthConstraint = studyCaptureButton.widthAnchor.constraint(equalToConstant: 0)
         textTopToContainer?.isActive = true
 
         NSLayoutConstraint.activate([
@@ -325,6 +350,11 @@ final class InputBarView: UIView, ThemeRefreshable {
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
 
+            studyCaptureButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
+            studyCaptureButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            studyCaptureWidthConstraint!,
+            studyCaptureButton.heightAnchor.constraint(equalToConstant: btnSize),
+
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
             sendButton.widthAnchor.constraint(equalToConstant: btnSize),
@@ -362,6 +392,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         webSearchButton.alpha = isStreaming ? 0.35 : 1
         thinkingButton.isEnabled = !isStreaming
         thinkingButton.alpha = isStreaming ? 0.35 : 1
+        studyCaptureButton.isEnabled = !isStreaming && studyCaptureVisible
+        studyCaptureButton.alpha = studyCaptureButton.isEnabled ? 1 : 0.35
         memoryButton.isEnabled = !isStreaming
         memoryButton.alpha = isStreaming ? 0.35 : 1
         agentButton.isEnabled = !isStreaming
@@ -384,6 +416,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func updateThinkingAppearance() {
         updateToggleAppearance(thinkingButton, on: thinkingEnabled)
+    }
+
+    private func updateStudyCaptureAppearance() {
+        updateToggleAppearance(studyCaptureButton, on: studyPageCaptureEnabled)
     }
 
     private func updateMemoryAppearance() {
@@ -434,6 +470,11 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    @objc private func studyCaptureTapped() {
+        studyPageCaptureEnabled.toggle()
+        delegate?.inputBarDidToggleStudyCapture(studyPageCaptureEnabled)
     }
 
     @objc private func memoryTapped() {

@@ -100,6 +100,13 @@
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
 		F10000010000000000000003 /* ConnectsBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000003 /* ConnectsBackupService.swift */; };
+		S10000010000000000000001 /* StudyDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000001 /* StudyDocument.swift */; };
+		S10000010000000000000002 /* StudyDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000002 /* StudyDocumentStore.swift */; };
+		S10000010000000000000003 /* StudyProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000003 /* StudyProgressStore.swift */; };
+		S10000010000000000000004 /* StudyReadingContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000004 /* StudyReadingContext.swift */; };
+		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
+		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
+		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -199,6 +206,13 @@
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
 		F20000010000000000000002 /* SimpleZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleZip.swift; sourceTree = "<group>"; };
 		F20000010000000000000003 /* ConnectsBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsBackupService.swift; sourceTree = "<group>"; };
+		S20000010000000000000001 /* StudyDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocument.swift; sourceTree = "<group>"; };
+		S20000010000000000000002 /* StudyDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentStore.swift; sourceTree = "<group>"; };
+		S20000010000000000000003 /* StudyProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyProgressStore.swift; sourceTree = "<group>"; };
+		S20000010000000000000004 /* StudyReadingContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyReadingContext.swift; sourceTree = "<group>"; };
+		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -275,6 +289,7 @@
 				A20000010000000000000004 /* Conversation.swift */,
 				C20000010000000000000001 /* CustomAgent.swift */,
 				C2000001000000000000000D /* Project.swift */,
+				S20000010000000000000001 /* StudyDocument.swift */,
 				B20000010000000000000001 /* NativeMarkdown.swift */,
 			);
 			path = Models;
@@ -325,6 +340,9 @@
 				F20000010000000000000001 /* BackupBundleHelper.swift */,
 				F20000010000000000000002 /* SimpleZip.swift */,
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
+				S20000010000000000000002 /* StudyDocumentStore.swift */,
+				S20000010000000000000003 /* StudyProgressStore.swift */,
+				S20000010000000000000004 /* StudyReadingContext.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -342,6 +360,9 @@
 				C2000001000000000000000B /* MemorySettingsViewController.swift */,
 				C2000001000000000000000F /* ProjectListViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
+				S20000010000000000000005 /* PDFReaderViewController.swift */,
+				S20000010000000000000006 /* StudyShellViewController.swift */,
+				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
 			);
 			path = ViewControllers;
 			sourceTree = "<group>";
@@ -602,6 +623,13 @@
 				F10000010000000000000001 /* BackupBundleHelper.swift in Sources */,
 				F10000010000000000000002 /* SimpleZip.swift in Sources */,
 				F10000010000000000000003 /* ConnectsBackupService.swift in Sources */,
+				S10000010000000000000001 /* StudyDocument.swift in Sources */,
+				S10000010000000000000002 /* StudyDocumentStore.swift in Sources */,
+				S10000010000000000000003 /* StudyProgressStore.swift in Sources */,
+				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,
+				S10000010000000000000005 /* PDFReaderViewController.swift in Sources */,
+				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
+				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -6,8 +6,15 @@ protocol ChatViewControllerDelegate: AnyObject {
     func chatDidFinishInitialLaunch()
 }
 
-final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate, StudyDocumentPickerDelegate {
+    enum StudyChromeMode: Equatable {
+        case none
+        case documentReader
+        case portraitPanel
+    }
+
     weak var delegate: ChatViewControllerDelegate?
+    weak var studyContextProvider: StudyReadingContextProviding?
     var onToggleSidebar: (() -> Void)?
 
     private let tableView = UITableView(frame: .zero, style: .plain)
@@ -21,7 +28,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var emptyChips: UIStackView?
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
+    private var studyChromeMode: StudyChromeMode = .none
     private var bottomConstraint: NSLayoutConstraint?
+    private var composerBottomUsesViewBottom = false
     private var inputSideInsetConstraint: NSLayoutConstraint?
     private var isCompactChrome = false
     private var keyboardVisible = false
@@ -196,6 +205,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        applyStudyChrome()
         if renderedConversationID == nil, view.window != nil {
             // Bind the restored conversation as soon as we are in a window —
             // before the first painted frame shows the empty-state chrome.
@@ -1875,6 +1885,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             updateTitleFromConversation()
             updateModelButton()
             updateAgentButton()
+            updateStudyInputBar()
             updateEmptyState()
             syncStreamingChrome()
             finishConversationSwitchChrome(layoutWidth: currentRenderWidth())
@@ -2213,6 +2224,31 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
+    func setStudyChrome(_ mode: StudyChromeMode) {
+        guard studyChromeMode != mode else {
+            refreshStudyComposerLayout()
+            return
+        }
+        studyChromeMode = mode
+        applyStudyChrome()
+    }
+
+    func refreshStudyComposerLayout() {
+        refreshComposerBottomAnchorIfNeeded()
+        bottomConstraint?.constant = restingComposerBottomConstant()
+    }
+
+    private func isStudySessionActive() -> Bool {
+        if studyChromeMode != .none { return true }
+        return ConversationStore.shared.currentConversation?.studyDocumentID != nil
+    }
+
+    private func applyStudyChrome() {
+        navigationItem.leftBarButtonItem = isStudySessionActive() ? nil : sidebarToggleItem
+        refreshComposerBottomAnchorIfNeeded()
+        updateEmptyState()
+    }
+
     /// Slide Over / narrow width: tighter chrome for 网课侧拉.
     func setCompactChrome(_ on: Bool) {
         isCompactChrome = on
@@ -2297,8 +2333,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateModelButton()
         updateAgentButton()
         updateAttachAvailability()
+        updateStudyInputBar()
         updateEmptyState()
         refreshSwitchChromeImmediate()
+    }
+
+    private func updateStudyInputBar() {
+        guard let conv = ConversationStore.shared.currentConversation else {
+            inputBar.studyCaptureVisible = false
+            inputBar.studyPageCaptureEnabled = false
+            return
+        }
+        inputBar.studyCaptureVisible = conv.studyDocumentID != nil
+        inputBar.studyPageCaptureEnabled = conv.studyPageCaptureEnabled
+        applyStudyChrome()
     }
 
     func reloadChat() {
@@ -2443,10 +2491,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @objc private func moreTapped() {
         guard let conv = ConversationStore.shared.currentConversation else { return }
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
-        ConnectsMenu.present(
-            from: self,
-            title: conv.title,
-            items: [
+        var items: [ConnectsMenuItem] = []
+        if let docID = conv.studyDocumentID,
+           let doc = StudyDocumentStore.shared.document(id: docID) {
+            items.append(ConnectsMenuItem(title: "文档：\(doc.title)", icon: .book) {})
+            items.append(ConnectsMenuItem(title: "更换文档", icon: .folder) { [weak self] in
+                self?.presentStudyDocumentPicker()
+            })
+            items.append(ConnectsMenuItem(title: "取消依附", icon: .trash, isDestructive: true) { [weak self] in
+                self?.detachStudyDocument()
+            })
+        } else {
+            items.append(ConnectsMenuItem(title: "依附于文档", icon: .book) { [weak self] in
+                self?.presentStudyDocumentPicker()
+            })
+        }
+        items.append(contentsOf: [
                 ConnectsMenuItem(title: "分享 / 导出 Markdown", icon: .share) { [weak self] in
                     self?.shareCurrentMarkdown()
                 },
@@ -2465,9 +2525,43 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 ConnectsMenuItem(title: "重跑上一轮", icon: .retry) { [weak self] in
                     self?.retryLastTurn()
                 }
-            ],
+        ])
+        ConnectsMenu.present(
+            from: self,
+            title: conv.title,
+            items: items,
             barButtonItem: navigationItem.rightBarButtonItem
         )
+    }
+
+    private func presentStudyDocumentPicker() {
+        let picker = StudyDocumentPickerViewController()
+        picker.delegate = self
+        navigationController?.pushViewController(picker, animated: true)
+    }
+
+    private func detachStudyDocument() {
+        guard let id = currentConversationID else { return }
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyDocumentID = nil
+            draft.studyPageCaptureEnabled = false
+        }
+        updateStudyInputBar()
+    }
+
+    func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelect documentID: String) {
+        guard let id = currentConversationID else { return }
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyDocumentID = documentID
+        }
+        updateStudyInputBar()
+        if navigationController?.topViewController === picker {
+            navigationController?.popViewController(animated: true)
+        }
+    }
+
+    func studyDocumentPickerDidRequestImport(_ picker: StudyDocumentPickerViewController) {
+        picker.presentImportPicker(from: self)
     }
 
     private func setupNavBar() {
@@ -2497,8 +2591,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             action: #selector(moreTapped),
             accessibility: "更多"
         )
-        navigationItem.leftBarButtonItem = sidebarToggleItem
         navigationItem.rightBarButtonItem = moreItem
+        applyStudyChrome()
         if let collapsed = pendingSidebarCollapsed {
             updateSidebarToggleTitle(collapsed: collapsed)
         }
@@ -2746,7 +2840,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             clearNavigationPrompt()
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
-            if let chips = emptyChips {
+            let hideChips = keyboardVisible
+            emptyChips?.isHidden = hideChips
+            if let chips = emptyChips, !hideChips {
                 for case let b as UIButton in chips.arrangedSubviews {
                     b.setTitleColor(c.textPrimary, for: .normal)
                     b.backgroundColor = c.surfaceHover
@@ -2760,7 +2856,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// When keyboard is up, keep title/subtitle above the composer; hide suggestion chips to avoid clutter.
     private func layoutEmptyChromeForKeyboard() {
         guard !emptyContainer.isHidden else { return }
-        emptyChips?.isHidden = keyboardVisible
+        let hideChips = keyboardVisible
+        emptyChips?.isHidden = hideChips
         emptySubtitleLabel.isHidden = keyboardVisible
         // Slightly higher title when keyboard consumes the lower half.
         // (centerY constant is fixed in constraints; hide chips is enough for Air 1 landscape.)
@@ -2807,6 +2904,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
               let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double else { return }
 
+        if studyContextProvider?.managesPortraitKeyboardLayout == true {
+            applyPortraitStudyComposerBottom(keyboardFrame: frame)
+            layoutEmptyChromeForKeyboard()
+            animateKeyboard(duration: duration, note: note)
+            return
+        }
+
         // Convert keyboard to this VC's view (correct for split detail pane on iPad).
         let converted = view.convert(frame, from: nil)
         let intersection = view.bounds.intersection(converted)
@@ -2815,14 +2919,61 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let safePad = view.safeAreaInsets.bottom
         let lift = max(0, overlap - safePad)
         keyboardVisible = lift > 20
-        bottomConstraint?.constant = keyboardVisible ? -(lift + 6) : -DSTheme.inputBarBottomPadding
+        bottomConstraint?.constant = keyboardVisible ? -(lift + 6) : restingComposerBottomConstant()
         layoutEmptyChromeForKeyboard()
+        animateKeyboard(duration: duration, note: note)
+    }
 
+    private func animateKeyboard(duration: Double, note: Notification) {
         let curveRaw = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.intValue
             ?? UIView.AnimationCurve.easeInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: UInt(curveRaw << 16))
         UIView.animate(withDuration: duration, delay: 0, options: options) {
             self.view.layoutIfNeeded()
+        }
+    }
+
+    private func restingComposerBottomConstant() -> CGFloat {
+        if studyContextProvider?.managesPortraitKeyboardLayout == true {
+            return -(view.safeAreaInsets.bottom + DSTheme.inputBarBottomPadding)
+        }
+        return -DSTheme.inputBarBottomPadding
+    }
+
+    private func applyPortraitStudyComposerBottom(keyboardFrame: CGRect) {
+        refreshComposerBottomAnchorIfNeeded()
+        let converted = view.convert(keyboardFrame, from: nil)
+        let overlap = max(0, view.bounds.maxY - converted.minY)
+        keyboardVisible = overlap > 20
+        bottomConstraint?.constant = restingComposerBottomConstant()
+    }
+
+    private func refreshComposerBottomAnchorIfNeeded() {
+        let useViewBottom = studyContextProvider?.managesPortraitKeyboardLayout == true
+        guard useViewBottom != composerBottomUsesViewBottom else {
+            bottomConstraint?.constant = restingComposerBottomConstant()
+            return
+        }
+        composerBottomUsesViewBottom = useViewBottom
+        bottomConstraint?.isActive = false
+        if useViewBottom {
+            bottomConstraint = inputBar.bottomAnchor.constraint(
+                equalTo: view.bottomAnchor,
+                constant: restingComposerBottomConstant()
+            )
+        } else {
+            bottomConstraint = inputBar.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor,
+                constant: restingComposerBottomConstant()
+            )
+        }
+        bottomConstraint?.isActive = true
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        if studyContextProvider?.managesPortraitKeyboardLayout == true {
+            bottomConstraint?.constant = restingComposerBottomConstant()
         }
     }
 
@@ -3514,8 +3665,25 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                              conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
 
+        var outgoing = text
+        if conv.studyPageCaptureEnabled,
+           let snippet = studyContextProvider?.captureCurrentStudyPage() {
+            if snippet.text.isEmpty {
+                if conversationID == currentConversationID {
+                    navigationItem.prompt = "当前页无可提取文字"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                        if self?.navigationItem.prompt == "当前页无可提取文字" {
+                            self?.navigationItem.prompt = nil
+                        }
+                    }
+                }
+            } else {
+                outgoing = "[阅读上下文 · \(snippet.label)]\n\(String(snippet.text.prefix(4000)))\n\n\(text)"
+            }
+        }
+
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
-        let displayText = text.isEmpty && imageBase64 != nil ? "[图片]" : text
+        let displayText = outgoing.isEmpty && imageBase64 != nil ? "[图片]" : outgoing
         let userMsg = ChatMessage(role: .user, content: displayText, imageJPEGBase64: imageBase64)
         let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
         let assistantMsg = ChatMessage(
@@ -4162,6 +4330,14 @@ extension ChatViewController: MessageCellDelegate {
 extension ChatViewController: InputBarViewDelegate {
     func inputBarDidTapAgent() {
         agentTapped()
+    }
+
+    func inputBarDidToggleStudyCapture(_ enabled: Bool) {
+        guard let id = currentConversationID else { return }
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyPageCaptureEnabled = enabled
+        }
+        inputBar.studyPageCaptureEnabled = enabled
     }
 
     func inputBarDidTapSend(text: String, imageBase64: String?) {

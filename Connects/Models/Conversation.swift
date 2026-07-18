@@ -18,6 +18,10 @@ struct Conversation: Codable, Equatable {
     var agentID: String?
     /// Optional project bucket for centralized management.
     var projectID: String?
+    /// Bound study PDF document id, if any.
+    var studyDocumentID: String?
+    /// When true, each send prepends the current PDF page text.
+    var studyPageCaptureEnabled: Bool
 
     init(id: String = UUID().uuidString,
          title: String = "新对话",
@@ -30,7 +34,9 @@ struct Conversation: Codable, Equatable {
          contextSummary: String? = nil,
          contextSummaryThroughMessageID: String? = nil,
          agentID: String? = nil,
-         projectID: String? = nil) {
+         projectID: String? = nil,
+         studyDocumentID: String? = nil,
+         studyPageCaptureEnabled: Bool = false) {
         self.id = id
         self.title = title
         self.model = model
@@ -43,12 +49,15 @@ struct Conversation: Codable, Equatable {
         self.contextSummaryThroughMessageID = contextSummaryThroughMessageID
         self.agentID = agentID
         self.projectID = projectID
+        self.studyDocumentID = studyDocumentID
+        self.studyPageCaptureEnabled = studyPageCaptureEnabled
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, messages, updatedAt, isArchived, forkedFromID, titleLocked
         case contextSummary, contextSummaryThroughMessageID
         case agentID, projectID
+        case studyDocumentID, studyPageCaptureEnabled
         case provider, modelId
     }
 
@@ -65,6 +74,8 @@ struct Conversation: Codable, Equatable {
         contextSummaryThroughMessageID = try container.decodeIfPresent(String.self, forKey: .contextSummaryThroughMessageID)
         agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
         projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
+        studyDocumentID = try container.decodeIfPresent(String.self, forKey: .studyDocumentID)
+        studyPageCaptureEnabled = try container.decodeIfPresent(Bool.self, forKey: .studyPageCaptureEnabled) ?? false
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
         if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
@@ -90,6 +101,8 @@ struct Conversation: Codable, Equatable {
         try container.encodeIfPresent(contextSummaryThroughMessageID, forKey: .contextSummaryThroughMessageID)
         try container.encodeIfPresent(agentID, forKey: .agentID)
         try container.encodeIfPresent(projectID, forKey: .projectID)
+        try container.encodeIfPresent(studyDocumentID, forKey: .studyDocumentID)
+        try container.encode(studyPageCaptureEnabled, forKey: .studyPageCaptureEnabled)
         try container.encode(model.provider, forKey: .provider)
         try container.encode(model.modelId, forKey: .modelId)
     }

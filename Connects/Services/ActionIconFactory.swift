@@ -16,7 +16,8 @@ enum ActionIconFactory {
         case rename, trash
         case edit
         case folder
-        case chevronLeft, chevronRight
+        case chevronLeft, chevronRight, chevronUp, chevronDown
+        case book
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
@@ -394,6 +395,40 @@ enum ActionIconFactory {
             path.addLine(to: CGPoint(x: r.midX - 2.2, y: r.maxY - 3.5))
             path.lineWidth = 1.7
             path.stroke()
+
+        case .chevronUp:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: r.minX + 3.5, y: r.midY + 2.2))
+            path.addLine(to: CGPoint(x: r.midX, y: r.midY - 2.4))
+            path.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.midY + 2.2))
+            path.lineWidth = 1.7
+            path.stroke()
+
+        case .chevronDown:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: r.minX + 3.5, y: r.midY - 2.2))
+            path.addLine(to: CGPoint(x: r.midX, y: r.midY + 2.4))
+            path.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.midY - 2.2))
+            path.lineWidth = 1.7
+            path.stroke()
+
+        case .book:
+            let cover = CGRect(x: r.minX + 3.5, y: r.minY + 2.5, width: pointSize - 7, height: pointSize - 5)
+            let spine = UIBezierPath()
+            spine.move(to: CGPoint(x: cover.minX + cover.width * 0.22, y: cover.minY))
+            spine.addLine(to: CGPoint(x: cover.minX + cover.width * 0.22, y: cover.maxY))
+            spine.lineWidth = 1.4
+            spine.stroke()
+            let outer = UIBezierPath(roundedRect: cover, cornerRadius: 1.8)
+            outer.lineWidth = 1.55
+            outer.stroke()
+            let page = UIBezierPath()
+            page.move(to: CGPoint(x: cover.minX + cover.width * 0.38, y: cover.minY + 4))
+            page.addLine(to: CGPoint(x: cover.maxX - 3.5, y: cover.minY + 4))
+            page.move(to: CGPoint(x: cover.minX + cover.width * 0.38, y: cover.midY))
+            page.addLine(to: CGPoint(x: cover.maxX - 3.5, y: cover.midY))
+            page.lineWidth = 1.2
+            page.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)

@@ -1,12 +1,12 @@
 import UIKit
 
-/// Two-pane root with collapsible sidebar.
-/// In Slide Over / narrow width: chat is full-bleed; conversation list is an edge-pull drawer
-/// so Connects stays usable while watching 网课 fullscreen in another app.
-final class RootSplitViewController: UIViewController {
+/// Root shell: chat/study is always full-bleed; conversation list is a left-edge overlay drawer
+/// (compact Slide Over and wide iPad use the same logic).
+final class RootSplitViewController: UIViewController, UIDocumentPickerDelegate {
     private let sidebarVC = SidebarViewController()
     private let chatNav: UINavigationController
     private let chatVC = ChatViewController()
+    private let studyShell: StudyShellViewController
 
     private let sidebarContainer = UIView()
     private let divider = UIView()
@@ -28,12 +28,15 @@ final class RootSplitViewController: UIViewController {
     private var lastNotifiedWidthBucket: Int = 0
     private var didDismissLaunchOverlay = false
     private var didPreloadChat = false
+    private var pendingStudyConversationID: String?
+    private var studySessionActive = false
 
     /// Below this width → Slide Over / 侧拉网课模式.
     private let compactBreakpoint: CGFloat = 520
 
     init() {
         chatNav = UINavigationController(rootViewController: chatVC)
+        studyShell = StudyShellViewController(chatNav: chatNav, chatVC: chatVC)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -48,21 +51,24 @@ final class RootSplitViewController: UIViewController {
         chatVC.onToggleSidebar = { [weak self] in
             self?.toggleSidebar()
         }
+        studyShell.onToggleSidebar = { [weak self] in
+            self?.toggleSidebar()
+        }
 
         isSidebarCollapsed = UserDefaults.standard.bool(forKey: "connects_sidebar_collapsed")
 
         addChild(sidebarVC)
-        addChild(chatNav)
+        addChild(studyShell)
         sidebarContainer.addSubview(sidebarVC.view)
-        chatContainer.addSubview(chatNav.view)
+        chatContainer.addSubview(studyShell.view)
         sidebarVC.didMove(toParent: self)
-        chatNav.didMove(toParent: self)
+        studyShell.didMove(toParent: self)
 
         dimView.translatesAutoresizingMaskIntoConstraints = false
         dimView.backgroundColor = UIColor.black.withAlphaComponent(0.35)
         dimView.alpha = 0
         dimView.isHidden = true
-        let tapDim = UITapGestureRecognizer(target: self, action: #selector(closeDrawer))
+        let tapDim = UITapGestureRecognizer(target: self, action: #selector(dimViewTapped))
         dimView.addGestureRecognizer(tapDim)
 
         [chatContainer, dimView, sidebarContainer, divider].forEach {
@@ -74,7 +80,7 @@ final class RootSplitViewController: UIViewController {
         view.bringSubviewToFront(sidebarContainer)
 
         sidebarVC.view.translatesAutoresizingMaskIntoConstraints = false
-        chatNav.view.translatesAutoresizingMaskIntoConstraints = false
+        studyShell.view.translatesAutoresizingMaskIntoConstraints = false
 
         sidebarWidthConstraint = sidebarContainer.widthAnchor.constraint(
             equalToConstant: isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
@@ -109,10 +115,10 @@ final class RootSplitViewController: UIViewController {
             chatContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             chatLeadingWide,
 
-            chatNav.view.leadingAnchor.constraint(equalTo: chatContainer.leadingAnchor),
-            chatNav.view.trailingAnchor.constraint(equalTo: chatContainer.trailingAnchor),
-            chatNav.view.topAnchor.constraint(equalTo: chatContainer.topAnchor),
-            chatNav.view.bottomAnchor.constraint(equalTo: chatContainer.bottomAnchor),
+            studyShell.view.leadingAnchor.constraint(equalTo: chatContainer.leadingAnchor),
+            studyShell.view.trailingAnchor.constraint(equalTo: chatContainer.trailingAnchor),
+            studyShell.view.topAnchor.constraint(equalTo: chatContainer.topAnchor),
+            studyShell.view.bottomAnchor.constraint(equalTo: chatContainer.bottomAnchor),
 
             dimView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             dimView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -124,6 +130,12 @@ final class RootSplitViewController: UIViewController {
         applyThemeColors()
         setupLaunchOverlay()
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(conversationStoreDidUpdate),
+            name: .conversationStoreDidUpdate,
+            object: nil
+        )
 
         let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleEdgePan(_:)))
         edge.edges = .left
@@ -131,6 +143,8 @@ final class RootSplitViewController: UIViewController {
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleDrawerPan(_:)))
         sidebarContainer.addGestureRecognizer(pan)
+
+        applyLayoutMode(animated: false)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -138,8 +152,16 @@ final class RootSplitViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         preloadChatIfNeeded()
-        if !isSidebarCollapsed {
-            sidebarVC.ensureListLoaded()
+        let studyNow = isStudySessionActive()
+        if studyNow != studySessionActive {
+            studySessionActive = studyNow
+            if studyNow, isDrawerOpen {
+                closeDrawer(animated: true)
+            } else {
+                applyLayoutMode(animated: false)
+            }
+        } else {
+            studySessionActive = studyNow
         }
     }
 
@@ -148,7 +170,11 @@ final class RootSplitViewController: UIViewController {
         didPreloadChat = true
         chatNav.loadViewIfNeeded()
         chatVC.loadViewIfNeeded()
-        chatVC.updateSidebarToggleTitle(collapsed: isSidebarCollapsed)
+        syncSidebarToggleUI(collapsed: isSidebarCollapsed)
+    }
+
+    private func syncSidebarToggleUI(collapsed: Bool) {
+        studyShell.syncSidebarToggle(collapsed: collapsed)
     }
 
     override func viewDidLayoutSubviews() {
@@ -176,6 +202,36 @@ final class RootSplitViewController: UIViewController {
     }
 
     @objc private func themeChanged() { applyThemeColors() }
+
+    @objc private func conversationStoreDidUpdate() {
+        let active = isStudySessionActive()
+        guard active != studySessionActive else { return }
+        studySessionActive = active
+        if active, isDrawerOpen {
+            closeDrawer(animated: true)
+        } else {
+            applyLayoutMode(animated: true)
+        }
+    }
+
+    private func isStudySessionActive() -> Bool {
+        ConversationStore.shared.currentConversation?.studyDocumentID != nil
+    }
+
+    private func usesOverlaySidebar() -> Bool {
+        true
+    }
+
+    private func ensureOverlaySidebarConstraints() {
+        sidebarLeadingWide.isActive = false
+        chatLeadingWide.isActive = false
+        sidebarLeadingCompact.isActive = true
+        chatLeadingCompact.isActive = true
+        chatLeadingCompact.constant = 0
+        sidebarWidthConstraint.constant = DSTheme.sidebarWidth
+        dividerWidthConstraint.constant = 0
+        divider.isHidden = true
+    }
 
     private func setupLaunchOverlay() {
         launchOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -230,39 +286,32 @@ final class RootSplitViewController: UIViewController {
             sidebarContainer.layer.shadowRadius = 10
             sidebarContainer.layer.shadowOffset = CGSize(width: 2, height: 0)
         } else {
-            sidebarContainer.layer.shadowOpacity = 0
+            sidebarContainer.layer.shadowColor = UIColor.black.cgColor
+            sidebarContainer.layer.shadowOpacity = 0.2
+            sidebarContainer.layer.shadowRadius = 12
+            sidebarContainer.layer.shadowOffset = CGSize(width: 3, height: 0)
         }
     }
 
     private func applyLayoutMode(animated: Bool) {
-        isDrawerOpen = false
-        dimView.isHidden = true
-        dimView.alpha = 0
+        studySessionActive = isStudySessionActive()
+        ensureOverlaySidebarConstraints()
 
         if isCompactLayout {
-            // Chat full width; sidebar is an overlay drawer.
-            sidebarLeadingWide.isActive = false
-            chatLeadingWide.isActive = false
-            sidebarLeadingCompact.isActive = true
-            chatLeadingCompact.isActive = true
+            isDrawerOpen = false
+            dimView.isHidden = true
+            dimView.alpha = 0
             sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
-            sidebarWidthConstraint.constant = DSTheme.sidebarWidth
-            dividerWidthConstraint.constant = 0
-            divider.isHidden = true
             isSidebarCollapsed = true
-            chatVC.updateSidebarToggleTitle(collapsed: true)
+            syncSidebarToggleUI(collapsed: true)
             chatVC.setCompactChrome(true)
         } else {
-            sidebarLeadingCompact.isActive = false
-            chatLeadingCompact.isActive = false
-            sidebarLeadingWide.isActive = true
-            chatLeadingWide.isActive = true
-            dividerWidthConstraint.constant = 1 / UIScreen.main.scale
-            divider.isHidden = false
-            isSidebarCollapsed = UserDefaults.standard.bool(forKey: "connects_sidebar_collapsed")
-            sidebarWidthConstraint.constant = isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
-            chatVC.updateSidebarToggleTitle(collapsed: isSidebarCollapsed)
             chatVC.setCompactChrome(false)
+            sidebarLeadingCompact.constant = isDrawerOpen ? 0 : -DSTheme.sidebarWidth
+            isSidebarCollapsed = !isDrawerOpen
+            syncSidebarToggleUI(collapsed: isSidebarCollapsed)
+            dimView.isHidden = !isDrawerOpen
+            dimView.alpha = isDrawerOpen ? 1 : 0
         }
         applyThemeColors()
         let updates = { self.view.layoutIfNeeded() }
@@ -274,26 +323,15 @@ final class RootSplitViewController: UIViewController {
     }
 
     private func toggleSidebar() {
-        if isCompactLayout {
-            if isDrawerOpen { closeDrawer() } else { openDrawer() }
-            return
-        }
-        isSidebarCollapsed.toggle()
-        UserDefaults.standard.set(isSidebarCollapsed, forKey: "connects_sidebar_collapsed")
-        sidebarWidthConstraint.constant = isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
-        if !isSidebarCollapsed {
-            sidebarVC.ensureListLoaded()
-        }
-        UIView.animate(withDuration: 0.22) {
-            self.view.layoutIfNeeded()
-        }
-        chatVC.updateSidebarToggleTitle(collapsed: isSidebarCollapsed)
+        if isDrawerOpen { closeDrawer() } else { openDrawer() }
     }
 
     private func openDrawer() {
-        guard isCompactLayout else { return }
+        guard usesOverlaySidebar() else { return }
+        ensureOverlaySidebarConstraints()
         sidebarVC.ensureListLoaded()
         isDrawerOpen = true
+        isSidebarCollapsed = false
         dimView.isHidden = false
         sidebarLeadingCompact.constant = 0
         view.bringSubviewToFront(dimView)
@@ -302,35 +340,45 @@ final class RootSplitViewController: UIViewController {
             self.dimView.alpha = 1
             self.view.layoutIfNeeded()
         }
-        chatVC.updateSidebarToggleTitle(collapsed: false)
+        syncSidebarToggleUI(collapsed: false)
+    }
+
+    @objc private func dimViewTapped() {
+        closeDrawer(animated: true)
     }
 
     @objc private func closeDrawer(animated: Bool = true) {
-        guard isCompactLayout, isDrawerOpen else { return }
+        guard usesOverlaySidebar(), isDrawerOpen else { return }
+        ensureOverlaySidebarConstraints()
+
         isDrawerOpen = false
-        sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
-        let apply = {
-            self.dimView.alpha = 0
-            self.view.layoutIfNeeded()
-        }
+        isSidebarCollapsed = true
+        syncSidebarToggleUI(collapsed: true)
+
         if animated {
-            UIView.animate(withDuration: 0.22, animations: apply, completion: { _ in
+            UIView.animate(withDuration: 0.22, animations: {
+                self.sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
+                self.dimView.alpha = 0
+                self.view.layoutIfNeeded()
+            }, completion: { _ in
                 if !self.isDrawerOpen {
                     self.dimView.isHidden = true
                 }
             })
         } else {
-            apply()
+            sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
+            dimView.alpha = 0
+            view.layoutIfNeeded()
             dimView.isHidden = true
         }
-        chatVC.updateSidebarToggleTitle(collapsed: true)
     }
 
     @objc private func handleEdgePan(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        guard isCompactLayout else { return }
+        guard usesOverlaySidebar() else { return }
         let t = gesture.translation(in: view).x
         switch gesture.state {
         case .began:
+            ensureOverlaySidebarConstraints()
             dimView.isHidden = false
             view.bringSubviewToFront(dimView)
             view.bringSubviewToFront(sidebarContainer)
@@ -354,7 +402,7 @@ final class RootSplitViewController: UIViewController {
     }
 
     @objc private func handleDrawerPan(_ gesture: UIPanGestureRecognizer) {
-        guard isCompactLayout, isDrawerOpen else { return }
+        guard usesOverlaySidebar(), isDrawerOpen else { return }
         let t = gesture.translation(in: view).x
         switch gesture.state {
         case .changed:
@@ -408,7 +456,45 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         }
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
-        closeDrawer(animated: false)
+        closeDrawer(animated: true)
+    }
+
+    func sidebarDidRequestNewStudy() {
+        let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+        let conv = ConversationStore.shared.createConversation(model: model)
+        presentStudyImport(for: conv.id)
+        closeDrawer()
+    }
+
+    private func presentStudyImport(for conversationID: String) {
+        pendingStudyConversationID = conversationID
+        let picker = UIDocumentPickerViewController(documentTypes: ["com.adobe.pdf"], in: .import)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let conversationID = pendingStudyConversationID, let url = urls.first else { return }
+        pendingStudyConversationID = nil
+        do {
+            let doc = try StudyDocumentStore.shared.importPDF(from: url)
+            ConversationStore.shared.updateConversation(id: conversationID) { draft in
+                draft.studyDocumentID = doc.id
+                if draft.title == "新对话" {
+                    draft.title = String(doc.title.prefix(40))
+                }
+            }
+            chatVC.reloadChat()
+        } catch {
+            let alert = UIAlertController(title: "导入失败", message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+            present(alert, animated: true)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        pendingStudyConversationID = nil
     }
 
     func sidebarDidRequestNewChat() {

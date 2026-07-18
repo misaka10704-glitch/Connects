@@ -19,6 +19,7 @@ struct ConnectsBackupSummary: Equatable {
     let includesPreferences: Bool
     let includesKeychain: Bool
     let includesMemory: Bool
+    let includesStudy: Bool
 }
 
 enum ConnectsBackupService {
@@ -49,6 +50,12 @@ enum ConnectsBackupService {
             to: staging.appendingPathComponent("ConnectsMemory", isDirectory: true)
         )
 
+        let studySource = documents.appendingPathComponent("ConnectsStudy", isDirectory: true)
+        try BackupBundleHelper.copyDirectory(
+            from: studySource,
+            to: staging.appendingPathComponent("ConnectsStudy", isDirectory: true)
+        )
+
         let manifest: [String: Any] = [
             "format": formatID,
             "version": formatVersion,
@@ -57,6 +64,7 @@ enum ConnectsBackupService {
             "includesPreferences": true,
             "includesKeychain": true,
             "includesMemory": FileManager.default.fileExists(atPath: memorySource.path),
+            "includesStudy": FileManager.default.fileExists(atPath: studySource.path),
         ]
         let manifestData = try JSONSerialization.data(
             withJSONObject: manifest,
@@ -71,7 +79,8 @@ enum ConnectsBackupService {
             createdAt: Date(),
             includesPreferences: true,
             includesKeychain: true,
-            includesMemory: FileManager.default.fileExists(atPath: memorySource.path)
+            includesMemory: FileManager.default.fileExists(atPath: memorySource.path),
+            includesStudy: FileManager.default.fileExists(atPath: studySource.path)
         )
     }
 
@@ -102,6 +111,15 @@ enum ConnectsBackupService {
             )
         }
 
+        let studySource = staging.appendingPathComponent("ConnectsStudy", isDirectory: true)
+        if FileManager.default.fileExists(atPath: studySource.path) {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            try BackupBundleHelper.copyDirectory(
+                from: studySource,
+                to: documents.appendingPathComponent("ConnectsStudy", isDirectory: true)
+            )
+        }
+
         ConnectsBackupRestoreCoordinator.applyAfterImport()
 
         let createdAt = (manifest["createdAt"] as? String)
@@ -111,7 +129,8 @@ enum ConnectsBackupService {
             createdAt: createdAt,
             includesPreferences: FileManager.default.fileExists(atPath: preferencesURL.path),
             includesKeychain: FileManager.default.fileExists(atPath: keychainURL.path),
-            includesMemory: FileManager.default.fileExists(atPath: memorySource.path)
+            includesMemory: FileManager.default.fileExists(atPath: memorySource.path),
+            includesStudy: FileManager.default.fileExists(atPath: studySource.path)
         )
     }
 
@@ -136,6 +155,7 @@ enum ConnectsBackupRestoreCoordinator {
         ConversationStore.shared.reloadAfterBackupImport()
         AgentStore.shared.reloadAfterBackupImport()
         ProjectStore.shared.reloadAfterBackupImport()
+        StudyDocumentStore.shared.reloadAfterBackupImport()
         RenderCacheStore.clearAll()
         PlainMarkdown.clearCache()
         NotificationCenter.default.post(name: .memoryStoreDidUpdate, object: nil)
