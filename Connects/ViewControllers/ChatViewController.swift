@@ -2237,7 +2237,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     func refreshStudyComposerLayout() {
         guard isViewLoaded else { return }
+        let preserveKeyboardLift = keyboardVisible
         refreshComposerBottomAnchorIfNeeded()
+        if !preserveKeyboardLift {
+            bottomConstraint?.constant = restingComposerBottomConstant()
+        }
+    }
+
+    func dismissComposerKeyboard() {
+        guard isViewLoaded else { return }
+        view.endEditing(true)
+        keyboardVisible = false
         bottomConstraint?.constant = restingComposerBottomConstant()
     }
 
@@ -2967,15 +2977,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let converted = view.convert(keyboardFrame, from: nil)
         let overlap = max(0, view.bounds.maxY - converted.minY)
         keyboardVisible = overlap > 20
-        bottomConstraint?.constant = restingComposerBottomConstant()
+        if keyboardVisible {
+            bottomConstraint?.constant = -(overlap + DSTheme.inputBarBottomPadding)
+        } else {
+            bottomConstraint?.constant = restingComposerBottomConstant()
+        }
     }
 
     private func refreshComposerBottomAnchorIfNeeded() {
         let useViewBottom = studyContextProvider?.managesPortraitKeyboardLayout == true
-        guard useViewBottom != composerBottomUsesViewBottom else {
-            bottomConstraint?.constant = restingComposerBottomConstant()
-            return
-        }
+        guard useViewBottom != composerBottomUsesViewBottom else { return }
         composerBottomUsesViewBottom = useViewBottom
         bottomConstraint?.isActive = false
         if useViewBottom {
@@ -3688,7 +3699,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                              conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
 
-        var outgoing = text
+        var studyPrefix: String?
         if conv.studyPageCaptureEnabled,
            let snippet = studyContextProvider?.captureCurrentStudyPage() {
             if snippet.text.isEmpty {
@@ -3701,13 +3712,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     }
                 }
             } else {
-                outgoing = "[阅读上下文 · \(snippet.label)]\n\(String(snippet.text.prefix(4000)))\n\n\(text)"
+                studyPrefix = "[阅读上下文 · \(snippet.label)]\n\(String(snippet.text.prefix(4000)))"
             }
         }
 
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
-        let displayText = outgoing.isEmpty && imageBase64 != nil ? "[图片]" : outgoing
-        let userMsg = ChatMessage(role: .user, content: displayText, imageJPEGBase64: imageBase64)
+        let displayText = text.isEmpty && imageBase64 != nil ? "[图片]" : text
+        let userMsg = ChatMessage(
+            role: .user,
+            content: displayText,
+            imageJPEGBase64: imageBase64,
+            apiContextPrefix: studyPrefix
+        )
         let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
         let assistantMsg = ChatMessage(
             role: .assistant,

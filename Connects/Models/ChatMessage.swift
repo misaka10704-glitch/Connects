@@ -89,6 +89,8 @@ struct ChatMessage: Codable, Equatable {
     var isStreaming: Bool
     /// JPEG base64 for Kimi multimodal & local display
     var imageJPEGBase64: String?
+    /// Prepended to this user turn when serializing for the API. Not shown in chat bubbles.
+    var apiContextPrefix: String?
     /// Durable semantic replacement used after the original image leaves API context.
     var imageDescription: String?
     /// Companion assistant status for the non-blocking image transcription job.
@@ -108,6 +110,7 @@ struct ChatMessage: Codable, Equatable {
          createdAt: Date = Date(),
          isStreaming: Bool = false,
          imageJPEGBase64: String? = nil,
+         apiContextPrefix: String? = nil,
          imageDescription: String? = nil,
          imageTranscriptionContent: String = "",
          imageTranscriptionPhase: ImageTranscriptionPhase = .idle,
@@ -122,6 +125,7 @@ struct ChatMessage: Codable, Equatable {
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.imageJPEGBase64 = imageJPEGBase64
+        self.apiContextPrefix = apiContextPrefix
         self.imageDescription = imageDescription
         self.imageTranscriptionContent = imageTranscriptionContent
         self.imageTranscriptionPhase = imageTranscriptionPhase
@@ -259,7 +263,7 @@ struct ChatMessage: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, reasoningContent, searchProcessContent, searchProcessPhase
-        case createdAt, isStreaming, imageJPEGBase64, imageDescription
+        case createdAt, isStreaming, imageJPEGBase64, apiContextPrefix, imageDescription
         case imageTranscriptionContent, imageTranscriptionPhase
         case versions, versionIndex
     }
@@ -275,6 +279,7 @@ struct ChatMessage: Codable, Equatable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
         imageJPEGBase64 = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64)
+        apiContextPrefix = try c.decodeIfPresent(String.self, forKey: .apiContextPrefix)
         imageDescription = try c.decodeIfPresent(String.self, forKey: .imageDescription)
         imageTranscriptionContent = try c.decodeIfPresent(String.self, forKey: .imageTranscriptionContent) ?? ""
         imageTranscriptionPhase = try c.decodeIfPresent(ImageTranscriptionPhase.self, forKey: .imageTranscriptionPhase) ?? .idle
@@ -317,6 +322,7 @@ struct ChatMessage: Codable, Equatable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encodeIfPresent(imageJPEGBase64, forKey: .imageJPEGBase64)
+        try c.encodeIfPresent(apiContextPrefix, forKey: .apiContextPrefix)
         try c.encodeIfPresent(imageDescription, forKey: .imageDescription)
         if !imageTranscriptionContent.isEmpty || imageTranscriptionPhase != .idle {
             try c.encode(imageTranscriptionContent, forKey: .imageTranscriptionContent)

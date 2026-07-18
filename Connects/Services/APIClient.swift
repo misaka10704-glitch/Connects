@@ -237,6 +237,7 @@ final class APIClient: NSObject {
     }
 
     static func serializeMessagePublic(_ message: ChatMessage, model: AIModelOption, includeReasoning: Bool = true) -> [String: Any] {
+        let apiContent = apiRequestContent(for: message)
         // Only keep the latest image in the request to avoid multi-MB re-uploads every turn.
         // (Caller may already filter; this is a safety net when message still has image.)
         if model.supportsVision, let b64 = message.imageJPEGBase64, !b64.isEmpty {
@@ -246,7 +247,7 @@ final class APIClient: NSObject {
                     "image_url": ["url": "data:image/jpeg;base64,\(b64)"]
                 ]
             ]
-            let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = apiContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 parts.append(["type": "text", "text": text])
             } else {
@@ -255,7 +256,7 @@ final class APIClient: NSObject {
             return ["role": message.apiRole, "content": parts]
         }
 
-        var body: [String: Any] = ["role": message.apiRole, "content": message.content]
+        var body: [String: Any] = ["role": message.apiRole, "content": apiContent]
         // Huge prior reasoning_content is a common cause of Instant-mode still being slow
         // (prefill balloons). Only send when thinking is ON.
         if includeReasoning, message.role == .assistant {
@@ -271,6 +272,20 @@ final class APIClient: NSObject {
             }
         }
         return body
+    }
+
+    /// Bubble text plus API-only prefixes (study page context, user rules, etc.).
+    static func apiRequestContent(for message: ChatMessage) -> String {
+        var text = message.content
+        if let prefix = message.apiContextPrefix?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prefix.isEmpty {
+            if text.isEmpty || text == "[图片]" {
+                text = prefix
+            } else {
+                text = prefix + "\n\n" + text
+            }
+        }
+        return SettingsManager.shared.userRulesPrefixedContent(text)
     }
 
     /// Drop image payloads from all but the last user message that has one.

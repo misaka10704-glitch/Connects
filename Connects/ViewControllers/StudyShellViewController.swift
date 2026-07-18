@@ -852,6 +852,10 @@ final class StudyShellViewController: UIViewController {
 
     @objc private func toggleChatCollapse() {
         guard isReaderVisible else { return }
+        let collapsing = !isChatCollapsed
+        if collapsing {
+            chatVC.dismissComposerKeyboard()
+        }
         if isPortraitMode {
             isChatCollapsed.toggle()
             updatePortraitOverlay()
@@ -923,10 +927,6 @@ final class StudyShellViewController: UIViewController {
 }
 
 extension StudyShellViewController: StudyReadingContextProviding {
-    var managesPortraitKeyboardLayout: Bool {
-        isReaderVisible && isPortraitMode && !isChatCollapsed
-    }
-
     func captureCurrentStudyPage() -> (label: String, text: String)? {
         guard isReaderVisible else { return nil }
         let label = pdfReaderVC.currentPageLabel()
