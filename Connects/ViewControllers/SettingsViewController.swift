@@ -1,7 +1,8 @@
 import UIKit
+import MobileCoreServices
 
 /// Clean form-style settings — no nested colored blocks, no reload-embedding bugs.
-final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFieldDelegate, UITextViewDelegate {
+final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFieldDelegate, UITextViewDelegate, UIDocumentPickerDelegate {
     private let scrollView = UIScrollView()
     private let contentStack = UIStackView()
 
@@ -23,6 +24,9 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let qwenCNLabel = UILabel()
     private let modelVisibility = ModelVisibilityView()
     private let agentsButton = UIButton(type: .system)
+    private let exportBackupButton = UIButton(type: .system)
+    private let importBackupButton = UIButton(type: .system)
+    private var backupBusy = false
 
     private var sectionLabels: [UILabel] = []
     private var cards: [UIView] = []
@@ -109,6 +113,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         qwenCNSwitch.onTintColor = c.accent
         modelVisibility.applyTheme()
         agentsButton.setTitleColor(c.accent, for: .normal)
+        exportBackupButton.setTitleColor(c.accent, for: .normal)
+        importBackupButton.setTitleColor(UIColor.systemRed, for: .normal)
 
         appearanceControl.tintColor = c.accent
         fontSizeControl.tintColor = c.accent
@@ -303,6 +309,28 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(slideTip)
         contentStack.setCustomSpacing(22, after: slideTip)
 
+        contentStack.addArrangedSubview(makeSectionTitle("备份与恢复"))
+        exportBackupButton.setTitle("导出完整备份", for: .normal)
+        exportBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        exportBackupButton.contentHorizontalAlignment = .left
+        exportBackupButton.addTarget(self, action: #selector(exportBackupTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: exportBackupButton, height: 42, inset: 0))
+
+        importBackupButton.setTitle("从完整备份恢复", for: .normal)
+        importBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        importBackupButton.contentHorizontalAlignment = .left
+        importBackupButton.setTitleColor(UIColor.systemRed, for: .normal)
+        importBackupButton.addTarget(self, action: #selector(importBackupTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: importBackupButton, height: 42, inset: 0))
+
+        let backupTip = UILabel()
+        backupTip.numberOfLines = 0
+        backupTip.font = DSTheme.bodyFont(size: 13)
+        backupTip.text = "完整备份包含对话、智能体、项目、设置、API Key 与 Memory 文档（不含可重建的渲染缓存）。恢复将覆盖本机现有数据。"
+        footerLabels.append(backupTip)
+        contentStack.addArrangedSubview(backupTip)
+        contentStack.setCustomSpacing(22, after: backupTip)
+
         contentStack.addArrangedSubview(makeSectionTitle("关于"))
         let about = UILabel()
         about.numberOfLines = 0
@@ -411,6 +439,167 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     @objc private func openAgents() {
         navigationController?.pushViewController(AgentListViewController(), animated: true)
     }
+
+    @objc private func exportBackupTapped() {
+        guard !backupBusy else { return }
+        setBackupBusy(true)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("connects-backup-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let stamp = Self.backupStampFormatter.string(from: Date())
+                let url = folder.appendingPathComponent(
+                    "ConnectsBackup_\(stamp).\(ConnectsBackupService.fileExtension)"
+                )
+                _ = try ConnectsBackupService.export(to: url)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.setBackupBusy(false)
+                    let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    activity.completionWithItemsHandler = { _, _, _, _ in
+                        try? FileManager.default.removeItem(at: folder)
+                    }
+                    if let popover = activity.popoverPresentationController {
+                        popover.sourceView = self.view
+                        popover.sourceRect = CGRect(
+                            x: self.view.bounds.midX,
+                            y: self.view.bounds.midY,
+                            width: 1,
+                            height: 1
+                        )
+                    }
+                    self.present(activity, animated: true)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.setBackupBusy(false)
+                    self.showBackupMessage(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    @objc private func importBackupTapped() {
+        let picker = UIDocumentPickerViewController(documentTypes: ["public.data", "public.archive"], in: .import)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let source = urls.first else { return }
+        let accessing = source.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { source.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("connects-import-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let localURL = folder.appendingPathComponent(source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: localURL)
+            beginBackupRestore(from: localURL, stagingFolder: folder)
+        } catch {
+            showBackupMessage(error.localizedDescription)
+        }
+    }
+
+    private func beginBackupRestore(from url: URL, stagingFolder: URL) {
+        let alert = UIAlertController(
+            title: "从完整备份恢复？",
+            message: "将覆盖对话、智能体、项目、设置、API Key 与 Memory 数据。此操作不可撤销。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: stagingFolder)
+        })
+        alert.addAction(UIAlertAction(title: "继续", style: .destructive) { [weak self] _ in
+            self?.confirmBackupRestore(from: url, stagingFolder: stagingFolder)
+        })
+        present(alert, animated: true)
+    }
+
+    private func confirmBackupRestore(from url: URL, stagingFolder: URL) {
+        let alert = UIAlertController(
+            title: "二次确认",
+            message: "请输入“恢复完整备份”以确认。",
+            preferredStyle: .alert
+        )
+        alert.addTextField { $0.autocorrectionType = .no }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: stagingFolder)
+        })
+        alert.addAction(UIAlertAction(title: "恢复", style: .destructive) { [weak self] _ in
+            guard let self = self else { return }
+            guard alert.textFields?.first?.text == "恢复完整备份" else {
+                try? FileManager.default.removeItem(at: stagingFolder)
+                self.showBackupMessage("确认文字不匹配，未恢复。")
+                return
+            }
+            self.setBackupBusy(true)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    _ = try ConnectsBackupService.importBackup(from: url)
+                    DispatchQueue.main.async {
+                        self.setBackupBusy(false)
+                        try? FileManager.default.removeItem(at: stagingFolder)
+                        self.applyImportedSettingsToForm()
+                        self.showBackupMessage("完整备份已恢复。")
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.setBackupBusy(false)
+                        try? FileManager.default.removeItem(at: stagingFolder)
+                        self.showBackupMessage(error.localizedDescription)
+                    }
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func applyImportedSettingsToForm() {
+        appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
+        fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
+        renderDebugSwitch.isOn = SettingsManager.shared.renderDebugOverlayEnabled
+        turnContextBarSwitch.isOn = SettingsManager.shared.turnContextBarEnabled
+        deepseekField.text = SettingsManager.shared.deepseekAPIKey
+        kimiField.text = SettingsManager.shared.kimiAPIKey
+        dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
+        zhipuField.text = SettingsManager.shared.zhipuAPIKey
+        doubaoField.text = SettingsManager.shared.doubaoAPIKey
+        doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
+        kimiCNSwitch.isOn = SettingsManager.shared.kimiUseChinaEndpoint
+        qwenCNSwitch.isOn = SettingsManager.shared.qwenUseChinaEndpoint
+        modelVisibility.reload()
+    }
+
+    private func setBackupBusy(_ busy: Bool) {
+        backupBusy = busy
+        exportBackupButton.isEnabled = !busy
+        importBackupButton.isEnabled = !busy
+        if busy {
+            let indicator = UIActivityIndicatorView(style: .gray)
+            indicator.startAnimating()
+            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
+        } else {
+            navigationItem.rightBarButtonItem = nil
+        }
+    }
+
+    private func showBackupMessage(_ message: String) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    private static let backupStampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter
+    }()
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         textField.resignFirstResponder()

@@ -70,5 +70,29 @@ enum KeychainHelper {
         static let dashscopeAPIKey = "dashscope_api_key"
         static let zhipuAPIKey = "zhipu_api_key"
         static let doubaoAPIKey = "doubao_api_key"
+
+        static let all: [String] = [
+            deepseekAPIKey,
+            kimiAPIKey,
+            dashscopeAPIKey,
+            zhipuAPIKey,
+            doubaoAPIKey,
+        ]
+    }
+
+    static func exportSnapshot() -> [String: String] {
+        var snapshot: [String: String] = [:]
+        for key in Keys.all {
+            if let value = load(key: key) {
+                snapshot[key] = value
+            }
+        }
+        return snapshot
+    }
+
+    static func importSnapshot(_ snapshot: [String: String]) {
+        for (key, value) in snapshot {
+            _ = save(key: key, value: value)
+        }
     }
 }

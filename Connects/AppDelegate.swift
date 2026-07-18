@@ -6,6 +6,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        UserDefaults.standard.register(defaults: ["connects_sidebar_collapsed": true])
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = DSTheme.c.background
         NativeRendererSelfTest.installFixtureIfRequested()

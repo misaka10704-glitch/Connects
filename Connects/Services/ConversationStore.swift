@@ -429,4 +429,13 @@ final class ConversationStore {
         }
         persistCurrentConversationID()
     }
+
+    func reloadAfterBackupImport() {
+        load()
+        selectedProjectID = normalizedProjectID(
+            UserDefaults.standard.string(forKey: selectedProjectKey)
+        )
+        reconcileCurrentConversationAfterLoad()
+        NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil)
+    }
 }

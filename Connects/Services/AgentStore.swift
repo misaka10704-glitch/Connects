@@ -67,6 +67,11 @@ final class AgentStore {
         NotificationCenter.default.post(name: .agentsDidChange, object: nil)
     }
 
+    func reloadAfterBackupImport() {
+        load()
+        NotificationCenter.default.post(name: .agentsDidChange, object: nil)
+    }
+
     private func migrateLegacyUserRulesIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
         defer {

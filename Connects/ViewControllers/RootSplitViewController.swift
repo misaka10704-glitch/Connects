@@ -20,7 +20,7 @@ final class RootSplitViewController: UIViewController {
     private var chatLeadingCompact: NSLayoutConstraint!
     private var dividerWidthConstraint: NSLayoutConstraint!
 
-    private var isSidebarCollapsed = false
+    private var isSidebarCollapsed = true
     private var isCompactLayout = false
     private var isDrawerOpen = false
     private var lastNotifiedWidthBucket: Int = 0
@@ -72,7 +72,9 @@ final class RootSplitViewController: UIViewController {
         sidebarVC.view.translatesAutoresizingMaskIntoConstraints = false
         chatNav.view.translatesAutoresizingMaskIntoConstraints = false
 
-        sidebarWidthConstraint = sidebarContainer.widthAnchor.constraint(equalToConstant: DSTheme.sidebarWidth)
+        sidebarWidthConstraint = sidebarContainer.widthAnchor.constraint(
+            equalToConstant: isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
+        )
         sidebarLeadingWide = sidebarContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor)
         sidebarLeadingCompact = sidebarContainer.leadingAnchor.constraint(
             equalTo: view.leadingAnchor,

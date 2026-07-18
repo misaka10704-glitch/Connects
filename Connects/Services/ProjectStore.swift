@@ -61,4 +61,9 @@ final class ProjectStore {
         }
         NotificationCenter.default.post(name: .projectsDidChange, object: nil)
     }
+
+    func reloadAfterBackupImport() {
+        load()
+        NotificationCenter.default.post(name: .projectsDidChange, object: nil)
+    }
 }

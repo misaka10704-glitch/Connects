@@ -96,6 +96,9 @@
 		C1000001000000000000000F /* ProjectListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000F /* ProjectListViewController.swift */; };
 		D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000001 /* MemoryAgentLogicTests.swift */; };
 		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
+		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
+		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
+		F10000010000000000000003 /* ConnectsBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000003 /* ConnectsBackupService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -191,6 +194,9 @@
 		D20000010000000000000001 /* MemoryAgentLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryAgentLogicTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
+		F20000010000000000000002 /* SimpleZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleZip.swift; sourceTree = "<group>"; };
+		F20000010000000000000003 /* ConnectsBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsBackupService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -313,6 +319,9 @@
 				B20000010000000000000002 /* NativeMarkdownParser.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
+				F20000010000000000000001 /* BackupBundleHelper.swift */,
+				F20000010000000000000002 /* SimpleZip.swift */,
+				F20000010000000000000003 /* ConnectsBackupService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -587,6 +596,9 @@
 				C1000001000000000000000C /* AgentAppearance.swift in Sources */,
 				C1000001000000000000000D /* Project.swift in Sources */,
 				C1000001000000000000000E /* ProjectStore.swift in Sources */,
+				F10000010000000000000001 /* BackupBundleHelper.swift in Sources */,
+				F10000010000000000000002 /* SimpleZip.swift in Sources */,
+				F10000010000000000000003 /* ConnectsBackupService.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -666,6 +678,10 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -693,6 +709,10 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
