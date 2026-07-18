@@ -25,4 +25,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // iPad Air 1: support all orientations; layout uses Auto Layout
         return .all
     }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        // iPad Air 1 can enter memory pressure while scrolling long rich chats.
+        // Keep visible/persisted content intact; discard only rebuildable RAM caches.
+        RenderCacheStore.trimTransientMemory()
+    }
 }

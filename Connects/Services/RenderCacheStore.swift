@@ -12,6 +12,38 @@ enum RenderCacheStore {
         return Int((layoutWidth / 4).rounded()) * 4
     }
 
+    static func heightCacheStorageKey(conversationID: String, layoutWidth: CGFloat) -> String {
+        "\(conversationID)|w\(widthBucket(for: layoutWidth))"
+    }
+
+    /// Exact width bucket, else nearest persisted map (ties → narrower bucket).
+    static func nearestPersistedHeights(conversationID: String,
+                                        layoutWidth: CGFloat,
+                                        cache: [String: [String: CGFloat]]) -> [String: CGFloat] {
+        let exactKey = heightCacheStorageKey(conversationID: conversationID, layoutWidth: layoutWidth)
+        if let exact = cache[exactKey], !exact.isEmpty {
+            return exact
+        }
+        let targetBucket = widthBucket(for: layoutWidth)
+        var bestMap: [String: CGFloat]?
+        var bestDist = Int.max
+        var bestBucket = Int.max
+        let prefix = conversationID + "|w"
+        for (key, map) in cache where !map.isEmpty {
+            guard key.hasPrefix(prefix) else { continue }
+            let bucketStr = key.dropFirst(prefix.count)
+            guard let bucket = Int(bucketStr) else { continue }
+            let dist = abs(bucket - targetBucket)
+            if dist < bestDist || (dist == bestDist && bucket < bestBucket) {
+                bestMap = map
+                bestDist = dist
+                bestBucket = bucket
+            }
+        }
+        if let bestMap = bestMap { return bestMap }
+        return cache[conversationID] ?? [:]
+    }
+
     /// Bubble/content width — host passes table width minus insets.
     static func contentWidth(for layoutWidth: CGFloat) -> CGFloat {
         min(DSTheme.bubbleMaxWidth, max(layoutWidth, 120))
@@ -82,6 +114,18 @@ enum RenderCacheStore {
     static func clearAll() {
         clearHeights()
         clearSnapshots()
+    }
+
+    /// Release only recreatable in-memory artifacts after an OS memory warning.
+    /// Persisted heights and disk-backed render artifacts stay intact, so the
+    /// next visible message can still recover without losing content or state.
+    static func trimTransientMemory() {
+        NativeMarkdownParser.shared.clear()
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
+        PlainMarkdown.clearCache()
+        StableRichRenderer.shared.clearMemory()
+        ChatViewController.clearTransientRenderCaches()
     }
 
     /// Stable fingerprint — Swift's `hashValue` is not stable across launches.
@@ -253,6 +297,13 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
         previewMemory.removeAllObjects()
         UserDefaults.standard.removeObject(forKey: Self.metaKey)
         try? FileManager.default.removeItem(at: tileDirectory())
+    }
+
+    /// Memory-warning path: retain disk artifacts and metadata for fast reload.
+    func clearMemory() {
+        memory.removeAllObjects()
+        previewMemory.removeAllObjects()
+        queue.removeAll()
     }
 
     /// Drop stale prefetch jobs when the reader switches conversations.

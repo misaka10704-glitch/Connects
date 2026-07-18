@@ -260,6 +260,12 @@ final class NativeMarkdownParser {
         return document
     }
 
+    /// Non-parsing cache probe for scroll-critical render decisions.
+    func cachedDocument(_ raw: String) -> NativeMarkdownDocument? {
+        let rawKey = RenderCacheStore.stamp(raw) as NSString
+        return cache.object(forKey: rawKey)?.document
+    }
+
     func clear() {
         cache.removeAllObjects()
     }
@@ -1014,7 +1020,10 @@ enum NativeRendererSelfTest {
             ),
             renderMissingFormulas: false
         )
-        assert(compactPreview.size.height >= compact.size.height)
+        // Preview deliberately shows readable TeX while iosMath warms. Its
+        // height need not match the final formula image; the render view
+        // invalidates its intrinsic size when the final layout arrives.
+        assert(compactPreview.size.height > 0)
         #endif
     }
 

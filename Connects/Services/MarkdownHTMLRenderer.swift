@@ -289,24 +289,54 @@ enum MarkdownHTMLRenderer {
         // A few model responses emit a display formula as a bare TeX line
         // (for example "\frac{a}{b}") without any delimiter. Wrap only lines
         // that clearly begin with a math command, so prose is unaffected.
-        let lines = s.components(separatedBy: "\n").map { line -> String in
+        let lines = s.components(separatedBy: "\n")
+        var normalizedLines = [String]()
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let openingBraces = trimmed.filter { $0 == "{" }.count
-            let closingBraces = trimmed.filter { $0 == "}" }.count
-            guard trimmed.hasPrefix("\\"),
-                  !trimmed.hasPrefix("\\["),
-                  !trimmed.hasPrefix("\\("),
-                  !trimmed.hasPrefix("\\begin{"),
-                  trimmed.range(
-                    of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left)\b"#,
-                    options: .regularExpression
-                  ) != nil,
-                  openingBraces == closingBraces else { return line }
+            guard isBareDisplayMathStart(trimmed) else {
+                normalizedLines.append(line)
+                index += 1
+                continue
+            }
+
+            // Gateways sometimes emit a multi-line derivation without `$$`.
+            // Treat adjacent equation-continuation lines as one display block;
+            // otherwise each line is parsed as prose and visibly misaligned.
+            var formulaLines = [trimmed]
+            var next = index + 1
+            while next < lines.count {
+                let continuation = lines[next].trimmingCharacters(in: .whitespaces)
+                guard isBareDisplayMathContinuation(continuation) else { break }
+                formulaLines.append(continuation)
+                next += 1
+            }
             let indent = line.prefix { $0 == " " || $0 == "\t" }
-            return "\(indent)$$\(trimmed)$$"
+            normalizedLines.append("\(indent)$$\(formulaLines.joined(separator: "\n"))$$")
+            index = next
         }
-        s = lines.joined(separator: "\n")
+        s = normalizedLines.joined(separator: "\n")
         return s
+    }
+
+    private static func isBareDisplayMathStart(_ line: String) -> Bool {
+        guard line.hasPrefix("\\"),
+              !line.hasPrefix("\\["),
+              !line.hasPrefix("\\("),
+              !line.hasPrefix("\\begin{"),
+              line.range(
+                of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|operatorname)\b"#,
+                options: .regularExpression
+              ) != nil else {
+            return false
+        }
+        return line.filter { $0 == "{" }.count == line.filter { $0 == "}" }.count
+    }
+
+    private static func isBareDisplayMathContinuation(_ line: String) -> Bool {
+        guard !line.isEmpty else { return false }
+        return line.hasPrefix("=") || line.hasPrefix("+") || line.hasPrefix("-")
     }
 
     /// A few OpenAI-compatible gateways return already JSON-decoded text that
@@ -344,7 +374,11 @@ enum MarkdownHTMLRenderer {
 
     private static func containsDoubleEscapedCommand(_ source: String) -> Bool {
         guard let regex = try? NSRegularExpression(
-            pattern: #"\\\\(?:[A-Za-z]+|[,;:!])"#
+            // A single letter after `\\` is commonly the first cell of the
+            // next matrix row (`a&b\\c&d`), not a double-escaped command.
+            // Requiring a multi-letter command preserves TeX row separators
+            // while still repairing JSON-escaped commands such as `\\frac`.
+            pattern: #"\\\\(?:[A-Za-z]{2,}|[,;:!])"#
         ) else { return false }
         let range = NSRange(location: 0, length: (source as NSString).length)
         return regex.firstMatch(in: source, options: [], range: range) != nil

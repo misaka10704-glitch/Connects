@@ -73,6 +73,28 @@ enum AssistantMessageLayout {
 
     /// Serial queue for markdown parse + layout warm (Chatto-style off-main sizing).
     static let layoutPrewarmQueue = DispatchQueue(label: "com.connects.layout.prewarm", qos: .userInitiated)
+    private static let switchPrewarmGenerationLock = NSLock()
+    private static var _switchPrewarmGeneration: UInt = 0
+
+    static var switchPrewarmGeneration: UInt {
+        switchPrewarmGenerationLock.lock()
+        defer { switchPrewarmGenerationLock.unlock() }
+        return _switchPrewarmGeneration
+    }
+
+    @discardableResult
+    static func bumpSwitchPrewarmGeneration() -> UInt {
+        switchPrewarmGenerationLock.lock()
+        defer { switchPrewarmGenerationLock.unlock() }
+        _switchPrewarmGeneration &+= 1
+        return _switchPrewarmGeneration
+    }
+
+    static func isSwitchPrewarmGeneration(_ generation: UInt) -> Bool {
+        switchPrewarmGenerationLock.lock()
+        defer { switchPrewarmGenerationLock.unlock() }
+        return generation == _switchPrewarmGeneration
+    }
 
     /// Prewarm the last N Q&A turn-pairs before painting a conversation (switch path).
     static func prewarmSwitchTail(messages: [ChatMessage],
@@ -87,6 +109,7 @@ enum AssistantMessageLayout {
     static func prewarmLayoutsOnBackground(for messages: [ChatMessage],
                                            targetWidth: CGFloat,
                                            layoutLimit: Int,
+                                           generation: UInt? = nil,
                                            completion: (() -> Void)? = nil) {
         let batch = Array(messages.suffix(max(1, layoutLimit)))
         guard !batch.isEmpty else {
@@ -96,6 +119,7 @@ enum AssistantMessageLayout {
             return
         }
         layoutPrewarmQueue.async {
+            if let generation = generation, !isSwitchPrewarmGeneration(generation) { return }
             let width = nativeLayoutWidth(for: max(targetWidth, 120))
             let style = NativeLayoutStyle(
                 width: width,
@@ -120,7 +144,10 @@ enum AssistantMessageLayout {
                 }
             }
             if let completion = completion {
-                DispatchQueue.main.async(execute: completion)
+                DispatchQueue.main.async {
+                    if let generation = generation, !isSwitchPrewarmGeneration(generation) { return }
+                    completion()
+                }
             }
         }
     }
@@ -129,6 +156,7 @@ enum AssistantMessageLayout {
     static func prewarmSwitchTailOnBackground(messages: [ChatMessage],
                                               layoutWidth: CGFloat,
                                               turnPairLimit: Int = 4,
+                                              generation: UInt? = nil,
                                               completion: (() -> Void)? = nil) {
         let assistants = switchTailAssistants(messages: messages, turnPairLimit: turnPairLimit)
         guard !assistants.isEmpty else {
@@ -141,27 +169,33 @@ enum AssistantMessageLayout {
             for: assistants,
             targetWidth: layoutWidth,
             layoutLimit: assistants.count,
+            generation: generation,
             completion: completion
         )
     }
 
-    private static func switchTailAssistants(messages: [ChatMessage],
-                                             turnPairLimit: Int) -> [ChatMessage] {
+    static func switchTailAssistants(messages: [ChatMessage],
+                                     turnPairLimit: Int) -> [ChatMessage] {
         guard !messages.isEmpty else { return [] }
-        var userRows: [Int] = []
-        for (index, msg) in messages.enumerated() where msg.role == .user {
-            userRows.append(index)
-        }
-        let tailUsers = userRows.suffix(max(1, turnPairLimit))
+        let limit = max(1, turnPairLimit)
         var assistants: [ChatMessage] = []
-        for userRow in tailUsers {
+        assistants.reserveCapacity(limit)
+        var inspectedTurns = 0
+
+        // Switches only need the tail. Scanning backwards avoids walking every
+        // row in a long transcript just to find the newest few turn pairs.
+        for userRow in messages.indices.reversed() where messages[userRow].role == .user {
+            inspectedTurns += 1
             let assistantRow = userRow + 1
-            guard assistantRow < messages.count else { continue }
-            let assistant = messages[assistantRow]
-            guard assistant.role == .assistant, !assistant.isStreaming else { continue }
-            assistants.append(assistant)
+            if assistantRow < messages.count {
+                let assistant = messages[assistantRow]
+                if assistant.role == .assistant, !assistant.isStreaming {
+                    assistants.append(assistant)
+                }
+            }
+            if inspectedTurns == limit { break }
         }
-        return assistants
+        return assistants.reversed()
     }
 
     private static func formulasReady(in document: NativeMarkdownDocument,
@@ -221,7 +255,11 @@ enum AssistantMessageLayout {
             return false
         }
         let width = nativeLayoutWidth(for: max(layoutWidth, 120))
-        let document = NativeMarkdownParser.shared.parse(message.content)
+        // Called from `cellForRowAt` while scrolling. Never parse here: a
+        // cache miss must remain constant-time and use the plain fallback.
+        guard let document = NativeMarkdownParser.shared.cachedDocument(message.content) else {
+            return false
+        }
         let style = NativeLayoutStyle(
             width: width,
             bodyFontSize: SettingsManager.shared.chatBodyFontSize,

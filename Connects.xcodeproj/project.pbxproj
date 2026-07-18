@@ -95,6 +95,7 @@
 		C1000001000000000000000E /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000E /* ProjectStore.swift */; };
 		C1000001000000000000000F /* ProjectListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000F /* ProjectListViewController.swift */; };
 		D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000001 /* MemoryAgentLogicTests.swift */; };
+		D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000003 /* ConversationRenderSwitchTests.swift */; };
 		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
@@ -192,6 +193,7 @@
 		C2000001000000000000000E /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		C2000001000000000000000F /* ProjectListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListViewController.swift; sourceTree = "<group>"; };
 		D20000010000000000000001 /* MemoryAgentLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryAgentLogicTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000003 /* ConversationRenderSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRenderSwitchTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
@@ -282,6 +284,7 @@
 			isa = PBXGroup;
 			children = (
 				D20000010000000000000001 /* MemoryAgentLogicTests.swift */,
+				D20000010000000000000003 /* ConversationRenderSwitchTests.swift */,
 			);
 			path = ConnectsTests;
 			sourceTree = "<group>";
@@ -608,6 +611,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D10000010000000000000001 /* MemoryAgentLogicTests.swift in Sources */,
+				D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -793,6 +797,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
@@ -813,6 +818,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Connects/Vendor/iosMath/lib",

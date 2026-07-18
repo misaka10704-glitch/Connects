@@ -833,7 +833,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                  allowDefer: Bool = true) {
         let width = nativeLayoutWidth(for: layoutWidth)
         let scrolling = allowDefer && cellDelegate?.messageCellShouldDeferHeavyRender(self) == true
-        if scrolling {
+        // A warmed native layout binds without Markdown parsing or layout work.
+        // Keep it visible while fast-scrolling instead of replacing it with a
+        // truncated UILabel fallback, which caused blank/flashy Q↔A boundaries.
+        let hasCachedLayout = scrolling
+            && AssistantMessageLayout.hasCachedNativeLayout(for: message, layoutWidth: width)
+        if scrolling && !hasCachedLayout {
             deferredNativeBind = DeferredNativeBind(
                 message: message,
                 hasThinking: hasThinking,
