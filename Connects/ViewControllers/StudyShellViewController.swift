@@ -202,6 +202,8 @@ final class StudyShellViewController: UIViewController {
             portraitChatHeightConstraint.isActive = false
             chatVC.setStudyChrome(.none)
             pdfReaderVC.setSidebarButtonHidden(true)
+            pdfReaderVC.setReaderSurfaceActive(false)
+            pdfReaderVC.prepareForShellLayoutChange()
         } else {
             readerHost.isHidden = false
         }
@@ -315,19 +317,53 @@ final class StudyShellViewController: UIViewController {
             if !wasInStudy || docChanged {
                 isChatCollapsed = true
             }
-            if docChanged {
-                StudyDocumentStore.shared.touch(documentID: docID)
-                let progress = StudyProgressStore.shared.progress(for: docID)
-                pdfReaderVC.load(documentID: docID, restore: progress)
-            }
         } else {
             isReaderVisible = false
-            pdfReaderVC.clearDocument()
+            pdfReaderVC.pauseReading()
             isChatCollapsed = false
         }
+
         applyLayoutMode()
+
+        if let docID = docID {
+            let progress = StudyProgressStore.shared.progress(for: docID)
+            let needsLoad = !pdfReaderVC.isLoaded(documentID: docID)
+            if needsLoad {
+                StudyDocumentStore.shared.touch(documentID: docID)
+                pdfReaderVC.load(documentID: docID) { [weak self] ok in
+                    guard let self = self, ok, self.loadGeneration == gen else { return }
+                    self.commitReaderViewport(progress: progress, generation: gen)
+                }
+            } else {
+                resumeReaderAfterConversationSwitch(generation: gen)
+            }
+        }
         guard gen == loadGeneration else { return }
         postChatWidthNotification()
+    }
+
+    private func commitReaderViewport(progress: StudyProgress?, generation: UInt) {
+        guard loadGeneration == generation, isReaderVisible, !readerHost.isHidden else { return }
+        pdfReaderVC.setReaderSurfaceActive(true)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.loadGeneration == generation,
+                  self.isReaderVisible, !self.readerHost.isHidden else { return }
+            self.view.layoutIfNeeded()
+            self.pdfReaderVC.realignVisibleViewport(using: progress)
+        }
+    }
+
+    private func resumeReaderAfterConversationSwitch(generation: UInt) {
+        guard loadGeneration == generation, isReaderVisible, !readerHost.isHidden else { return }
+        pdfReaderVC.setReaderSurfaceActive(true)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.loadGeneration == generation,
+                  self.isReaderVisible, !self.readerHost.isHidden else { return }
+            self.view.layoutIfNeeded()
+            self.pdfReaderVC.resumeAfterConversationSwitch()
+        }
     }
 
     private func applyLayoutMode() {

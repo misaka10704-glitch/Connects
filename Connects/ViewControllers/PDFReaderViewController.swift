@@ -13,6 +13,8 @@ final class PDFReaderViewController: UIViewController {
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
     private var lastLayoutSize: CGSize = .zero
     private var isRestoringViewport = false
+    private var readerSurfaceActive = true
+    private var pendingViewportProgress: StudyProgress?
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
@@ -89,11 +91,23 @@ final class PDFReaderViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        guard readerSurfaceActive, canLayoutViewport else { return }
+
+        if let pending = pendingViewportProgress {
+            pendingViewportProgress = nil
+            beginViewportRestore(using: pending)
+            return
+        }
+
         let size = pdfView.bounds.size
-        guard size.width > 1, size.height > 1, size != lastLayoutSize else { return }
-        lastLayoutSize = size
-        guard !isRestoringViewport else { return }
-        resetScrollInsets()
+        if size.width > 1, size.height > 1, size != lastLayoutSize {
+            lastLayoutSize = size
+            if !isRestoringViewport, pdfView.document != nil, !isZoomedIn {
+                refitScaleIfNeeded()
+            }
+        }
+
+        stabilizeViewportIfNeeded()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -103,6 +117,17 @@ final class PDFReaderViewController: UIViewController {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    func isLoaded(documentID: String) -> Bool {
+        currentDocumentID == documentID && pdfView.document != nil
+    }
+
+    func setReaderSurfaceActive(_ active: Bool) {
+        readerSurfaceActive = active
+        if !active {
+            pendingViewportProgress = nil
+        }
     }
 
     func updateSidebarToggle(collapsed: Bool) {
@@ -129,7 +154,10 @@ final class PDFReaderViewController: UIViewController {
         sidebarButton.tintColor = DSTheme.c.textSecondary
     }
 
-    func load(documentID: String, restore progress: StudyProgress?) {
+    func load(documentID: String, completion: ((Bool) -> Void)? = nil) {
+        if currentDocumentID != documentID {
+            pdfView.document = nil
+        }
         currentDocumentID = documentID
         loadGeneration &+= 1
         let gen = loadGeneration
@@ -139,39 +167,81 @@ final class PDFReaderViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let document = StudyDocumentStore.shared.cachedPDFDocument(for: documentID)
             DispatchQueue.main.async {
-                guard let self = self, gen == self.loadGeneration, self.currentDocumentID == documentID else { return }
+                guard let self = self, gen == self.loadGeneration, self.currentDocumentID == documentID else {
+                    completion?(false)
+                    return
+                }
                 self.spinner.stopAnimating()
                 guard let document = document else {
                     self.pageLabel.text = "无法打开 PDF"
                     self.pdfView.document = nil
+                    self.currentDocumentID = nil
+                    completion?(false)
                     return
                 }
                 self.pdfView.document = document
-                self.invalidateViewportLayout()
-                self.restoreProgress(progress, in: document)
                 self.updatePageLabel()
-                self.resetScrollInsets()
-                self.finishViewportLayout(using: progress)
+                completion?(true)
             }
         }
+    }
+
+    func pauseReading() {
+        saveReadingProgressNow()
+    }
+
+    /// Same document still in memory after leaving study — do not reload progress or refit scale.
+    func resumeAfterConversationSwitch() {
+        guard pdfView.document != nil else { return }
+        readerSurfaceActive = true
+        isRestoringViewport = true
+        view.layoutIfNeeded()
+        lastLayoutSize = pdfView.bounds.size
+        clearSpuriousContentInsets()
+        isRestoringViewport = false
     }
 
     func prepareForShellLayoutChange() {
         invalidateViewportLayout()
     }
 
-    private func invalidateViewportLayout() {
-        lastLayoutSize = .zero
+    func realignVisibleViewport(using progress: StudyProgress?) {
+        guard pdfView.document != nil else { return }
+        guard readerSurfaceActive, canLayoutViewport else {
+            pendingViewportProgress = progress
+            return
+        }
+        beginViewportRestore(using: progress)
     }
 
-    private func finishViewportLayout(using progress: StudyProgress?) {
-        _ = progress
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.view.layoutIfNeeded()
-            self.resetScrollInsets()
-            self.lastLayoutSize = self.pdfView.bounds.size
-        }
+    func restoreReadingProgress(_ progress: StudyProgress?) {
+        realignVisibleViewport(using: progress)
+    }
+
+    private var canLayoutViewport: Bool {
+        pdfView.bounds.width > 64 && pdfView.bounds.height > 64
+    }
+
+    func stabilizeViewportIfNeeded() {
+        guard readerSurfaceActive, canLayoutViewport, pdfView.document != nil,
+              !isRestoringViewport else { return }
+        clearSpuriousContentInsets()
+    }
+
+    private func beginViewportRestore(using progress: StudyProgress?) {
+        isRestoringViewport = true
+        invalidateViewportLayout()
+        view.layoutIfNeeded()
+        applyFitScale(from: progress)
+        updatePageLabel()
+        scrollToProgress(progress, in: pdfView.document!)
+        clearSpuriousContentInsets()
+        lastLayoutSize = pdfView.bounds.size
+        isRestoringViewport = false
+    }
+
+    private func invalidateViewportLayout() {
+        lastLayoutSize = .zero
     }
 
     func captureReadingProgress() -> StudyProgress? {
@@ -180,32 +250,17 @@ final class PDFReaderViewController: UIViewController {
               let page = pdfView.currentPage else { return nil }
         let index = doc.index(for: page)
         let topLeft = pdfView.convert(CGPoint(x: 0, y: 0), to: page)
+        let center = pdfView.convert(CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY), to: page)
+        let zoomed = isZoomedIn
         return StudyProgress(
             pageIndex: max(0, index),
             pageOffsetY: topLeft.y,
-            pageOffsetX: nil,
-            anchorX: nil,
-            anchorY: nil,
-            scaleFactor: pdfView.scaleFactor,
+            pageOffsetX: zoomed ? topLeft.x : nil,
+            anchorX: zoomed ? center.x : nil,
+            anchorY: zoomed ? center.y : nil,
+            scaleFactor: zoomed ? pdfView.scaleFactor : nil,
             updatedAt: Date()
         )
-    }
-
-    func restoreReadingProgress(_ progress: StudyProgress?) {
-        guard pdfView.document != nil else { return }
-        isRestoringViewport = true
-        invalidateViewportLayout()
-        if let document = pdfView.document {
-            restoreProgress(progress, in: document)
-        }
-        updatePageLabel()
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.view.layoutIfNeeded()
-            self.resetScrollInsets()
-            self.isRestoringViewport = false
-            self.lastLayoutSize = self.pdfView.bounds.size
-        }
     }
 
     func saveReadingProgressNow() {
@@ -215,11 +270,12 @@ final class PDFReaderViewController: UIViewController {
 
     func clearDocument() {
         loadGeneration &+= 1
+        saveReadingProgressNow()
         currentDocumentID = nil
         pdfView.document = nil
         pageLabel.text = nil
+        pendingViewportProgress = nil
         invalidateViewportLayout()
-        flushProgressSave()
     }
 
     func currentPageText() -> String? {
@@ -246,6 +302,9 @@ final class PDFReaderViewController: UIViewController {
     }
 
     @objc private func scaleChanged() {
+        if !isZoomedIn {
+            stabilizeViewportIfNeeded()
+        }
         scheduleProgressSave()
     }
 
@@ -253,34 +312,79 @@ final class PDFReaderViewController: UIViewController {
         pageLabel.text = currentPageLabel()
     }
 
-    private func restoreProgress(_ progress: StudyProgress?, in document: PDFDocument) {
-        let hasSavedScale = (progress?.scaleFactor ?? 0) > 0
-        if hasSavedScale {
-            pdfView.autoScales = false
-            if let scale = progress?.scaleFactor {
-                pdfView.scaleFactor = scale
-            }
+    private var isZoomedIn: Bool {
+        let fit = pdfView.scaleFactorForSizeToFit
+        guard fit > 0 else { return false }
+        return pdfView.scaleFactor > fit * 1.02
+    }
+
+    private func applyFitScale(from progress: StudyProgress?) {
+        pdfView.autoScales = true
+        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
+        pdfView.autoScales = false
+
+        if let saved = progress?.scaleFactor, saved > fitScale * 1.02 {
+            pdfView.minScaleFactor = fitScale
+            pdfView.maxScaleFactor = max(saved * 2, fitScale * 4)
+            pdfView.scaleFactor = saved
         } else {
-            pdfView.autoScales = true
-            pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-            pdfView.autoScales = false
+            pdfView.minScaleFactor = fitScale
+            pdfView.maxScaleFactor = fitScale * 4
+            pdfView.scaleFactor = fitScale
         }
+    }
+
+    private func scrollToProgress(_ progress: StudyProgress?, in document: PDFDocument) {
         guard let progress = progress else { return }
         let pageIndex = min(max(0, progress.pageIndex), max(document.pageCount - 1, 0))
         guard let page = document.page(at: pageIndex) else { return }
         let y = progress.pageOffsetY ?? 0
-        pdfView.go(to: PDFDestination(page: page, at: CGPoint(x: 0, y: y)))
+        let x = progress.pageOffsetX ?? 0
+        pdfView.go(to: PDFDestination(page: page, at: CGPoint(x: x, y: y)))
+        if let anchorX = progress.anchorX, let anchorY = progress.anchorY, isZoomedIn {
+            alignViewport(toPagePoint: CGPoint(x: anchorX, y: anchorY), in: page)
+        }
+        clearSpuriousContentInsets()
     }
 
-    private func resetScrollInsets() {
-        guard let scrollView = pdfView.embeddedScrollView else { return }
-        guard scrollView.contentInset != .zero || scrollView.scrollIndicatorInsets != .zero else { return }
-        scrollView.contentInset = .zero
-        scrollView.scrollIndicatorInsets = .zero
+    private func alignViewport(toPagePoint point: CGPoint, in page: PDFPage) {
+        let pointInView = pdfView.convert(point, from: page)
+        let target = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY)
+        let delta = CGPoint(x: target.x - pointInView.x, y: target.y - pointInView.y)
+        guard abs(delta.x) > 0.5 || abs(delta.y) > 0.5 else { return }
+        for scrollView in pdfView.allEmbeddedScrollViews {
+            var offset = scrollView.contentOffset
+            offset.x -= delta.x
+            offset.y -= delta.y
+            scrollView.contentOffset = offset
+        }
+    }
+
+    private func refitScaleIfNeeded() {
+        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
+        guard abs(pdfView.scaleFactor - fitScale) > 0.01 else { return }
+        pdfView.minScaleFactor = fitScale
+        pdfView.maxScaleFactor = fitScale * 4
+        pdfView.scaleFactor = fitScale
+    }
+
+    private func clearSpuriousContentInsets() {
+        for scrollView in pdfView.allEmbeddedScrollViews {
+            if #available(iOS 11.0, *) {
+                scrollView.contentInsetAdjustmentBehavior = .never
+            }
+            guard scrollView.contentInset != .zero || scrollView.scrollIndicatorInsets != .zero else { continue }
+            var offset = scrollView.contentOffset
+            offset.x += scrollView.contentInset.left
+            offset.y += scrollView.contentInset.top
+            scrollView.contentInset = .zero
+            scrollView.scrollIndicatorInsets = .zero
+            scrollView.contentOffset = offset
+        }
     }
 
     private func scheduleProgressSave() {
-        guard let documentID = currentDocumentID else { return }
+        guard currentDocumentID != nil else { return }
         progressWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.flushProgressSave()
@@ -297,15 +401,17 @@ final class PDFReaderViewController: UIViewController {
 }
 
 private extension PDFView {
-    var embeddedScrollView: UIScrollView? {
-        if let scrollView = subviews.compactMap({ $0 as? UIScrollView }).first {
-            return scrollView
-        }
-        for subview in subviews {
-            if let scrollView = subview.subviews.compactMap({ $0 as? UIScrollView }).first {
-                return scrollView
+    var allEmbeddedScrollViews: [UIScrollView] {
+        var results: [UIScrollView] = []
+        func walk(_ view: UIView) {
+            if let scrollView = view as? UIScrollView {
+                results.append(scrollView)
+            }
+            for subview in view.subviews {
+                walk(subview)
             }
         }
-        return nil
+        walk(self)
+        return results
     }
 }
