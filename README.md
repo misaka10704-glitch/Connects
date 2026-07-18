@@ -49,11 +49,23 @@
 
 | 项目 | 说明 |
 |------|------|
-| 目标设备 | iPad（以 iPad Air 1 9.7" 为主） |
+| 目标设备 | iPad（主）/ iPhone（可安装，UI 仍为 iPad 布局） |
 | 最低系统 | iOS 12.0 |
 | 布局 | 可折叠侧栏 + 居中聊天列（约 720pt 阅读宽） |
 
-仅适配 iPad（`TARGETED_DEVICE_FAMILY = 2`），未做 iPhone 窄屏。
+### 构建路线（源码相同）
+
+| 路线 | Scheme | 设备 | 配置 |
+|------|--------|------|------|
+| iPad | `Connects-iPad` | iPad（含 Air 1） | Debug / Release |
+| iPhone | `Connects-iPhone` | iPhone（iOS 26 等） | Debug-iPhone / Release-iPhone |
+
+`Connects` scheme 为 **iPad 路线** 的别名。
+
+```bash
+./scripts/build-device.sh ipad
+./scripts/build-device.sh iphone Release
+```
 
 ## 打开与运行
 
@@ -62,7 +74,7 @@ open Connects.xcodeproj
 ```
 
 1. **Signing & Capabilities** → 选择你的 Team
-2. Destination → 真机 iPad 或 iOS 12+ 模拟器
+2. Destination → 选 **Connects-iPad** 或 **Connects-iPhone** scheme，再选真机 / 模拟器
 3. Run
 
 真机首次安装后，在「设置 → 通用 → 设备管理」信任开发者证书。
