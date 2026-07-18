@@ -32,6 +32,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var bottomConstraint: NSLayoutConstraint?
     private var composerBottomUsesViewBottom = false
     private var inputSideInsetConstraint: NSLayoutConstraint?
+    private var turnContextBarTopToSafe: NSLayoutConstraint!
+    private var turnContextBarTopToView: NSLayoutConstraint!
     private var isCompactChrome = false
     private var keyboardVisible = false
     private var isReloadingFromStore = false
@@ -2234,8 +2236,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     func refreshStudyComposerLayout() {
+        guard isViewLoaded else { return }
         refreshComposerBottomAnchorIfNeeded()
         bottomConstraint?.constant = restingComposerBottomConstant()
+    }
+
+    /// Shell-owned spacers handle top clearance; reset any prior compensation.
+    func normalizePortraitPanelSafeArea() {
+        guard isViewLoaded else { return }
+        if studyChromeMode != .portraitPanel, additionalSafeAreaInsets != .zero {
+            additionalSafeAreaInsets = .zero
+        }
     }
 
     private func isStudySessionActive() -> Bool {
@@ -2245,7 +2256,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func applyStudyChrome() {
         navigationItem.leftBarButtonItem = isStudySessionActive() ? nil : sidebarToggleItem
-        refreshComposerBottomAnchorIfNeeded()
+        if isViewLoaded, turnContextBarTopToSafe != nil, turnContextBarTopToView != nil {
+            let portraitPanel = studyChromeMode == .portraitPanel
+            turnContextBarTopToSafe.isActive = !portraitPanel
+            turnContextBarTopToView.isActive = portraitPanel
+        }
+        if isViewLoaded {
+            refreshComposerBottomAnchorIfNeeded()
+            normalizePortraitPanelSafeArea()
+        }
         updateEmptyState()
     }
 
@@ -2610,8 +2629,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self?.presentTurnContextPicker()
         }
         view.addSubview(turnContextBar)
+        turnContextBarTopToSafe = turnContextBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        turnContextBarTopToView = turnContextBar.topAnchor.constraint(equalTo: view.topAnchor)
+        turnContextBarTopToView.isActive = false
         NSLayoutConstraint.activate([
-            turnContextBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            turnContextBarTopToSafe,
             turnContextBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             turnContextBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
@@ -2972,6 +2994,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        normalizePortraitPanelSafeArea()
         if studyContextProvider?.managesPortraitKeyboardLayout == true {
             bottomConstraint?.constant = restingComposerBottomConstant()
         }

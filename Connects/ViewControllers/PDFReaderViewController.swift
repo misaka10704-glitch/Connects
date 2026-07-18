@@ -13,6 +13,8 @@ final class PDFReaderViewController: UIViewController {
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
     private var lastLayoutSize: CGSize = .zero
     private var isRestoringViewport = false
+    private var isShellRotating = false
+    private var shellRotationProgress: StudyProgress?
     private var readerSurfaceActive = true
     private var pendingViewportProgress: StudyProgress?
 
@@ -93,6 +95,11 @@ final class PDFReaderViewController: UIViewController {
         super.viewDidLayoutSubviews()
         guard readerSurfaceActive, canLayoutViewport else { return }
 
+        if isShellRotating {
+            updateDuringShellRotation()
+            return
+        }
+
         if let pending = pendingViewportProgress {
             pendingViewportProgress = nil
             beginViewportRestore(using: pending)
@@ -102,12 +109,20 @@ final class PDFReaderViewController: UIViewController {
         let size = pdfView.bounds.size
         if size.width > 1, size.height > 1, size != lastLayoutSize {
             lastLayoutSize = size
-            if !isRestoringViewport, pdfView.document != nil, !isZoomedIn {
+            if !isRestoringViewport, !isUserInteractingWithPDF, pdfView.document != nil, !isZoomedIn {
                 refitScaleIfNeeded()
             }
         }
 
-        stabilizeViewportIfNeeded()
+        if !isUserInteractingWithPDF {
+            stabilizeViewportIfNeeded()
+        }
+    }
+
+    private var isUserInteractingWithPDF: Bool {
+        pdfView.allEmbeddedScrollViews.contains {
+            $0.isTracking || $0.isDragging || $0.isDecelerating
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -202,7 +217,65 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func prepareForShellLayoutChange() {
+        guard !isShellRotating else { return }
         invalidateViewportLayout()
+    }
+
+    /// Freeze heavy reflow while the study shell rotates; step scale during the transition.
+    func beginShellRotation(keeping progress: StudyProgress?) {
+        shellRotationProgress = progress
+        isShellRotating = true
+        isRestoringViewport = true
+    }
+
+    func updateDuringShellRotation() {
+        guard isShellRotating, pdfView.document != nil else { return }
+        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
+        let progress = shellRotationProgress
+        let zoomed = progress?.scaleFactor.map { $0 > fitScale * 1.02 } ?? false
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if zoomed, let progress = progress, let scale = progress.scaleFactor, let document = pdfView.document {
+            pdfView.minScaleFactor = fitScale
+            pdfView.maxScaleFactor = max(scale * 2, fitScale * 4)
+            pdfView.scaleFactor = scale
+            let pageIndex = min(max(progress.pageIndex, 0), max(document.pageCount - 1, 0))
+            if let page = document.page(at: pageIndex),
+               let anchorX = progress.anchorX, let anchorY = progress.anchorY {
+                alignViewport(toPagePoint: CGPoint(x: anchorX, y: anchorY), in: page)
+            }
+        } else {
+            pdfView.minScaleFactor = fitScale
+            pdfView.maxScaleFactor = fitScale * 4
+            pdfView.scaleFactor = fitScale
+            if let progress = progress, let document = pdfView.document,
+               pdfView.bounds.size != lastLayoutSize {
+                scrollToProgress(progress, in: document)
+            }
+        }
+        clearSpuriousContentInsets()
+        CATransaction.commit()
+        lastLayoutSize = pdfView.bounds.size
+    }
+
+    /// Single settle pass after rotation — avoids repeated go(to:) during the animation.
+    func finishShellRotation(using progress: StudyProgress?) {
+        let snapshot = progress ?? shellRotationProgress
+        defer {
+            isShellRotating = false
+            isRestoringViewport = false
+            shellRotationProgress = nil
+            lastLayoutSize = pdfView.bounds.size
+        }
+        guard let snapshot = snapshot, let document = pdfView.document else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        applyFitScale(from: snapshot)
+        scrollToProgress(snapshot, in: document)
+        clearSpuriousContentInsets()
+        CATransaction.commit()
+        updatePageLabel()
     }
 
     func realignVisibleViewport(using progress: StudyProgress?) {
@@ -302,7 +375,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     @objc private func scaleChanged() {
-        if !isZoomedIn {
+        if !isZoomedIn, !isUserInteractingWithPDF {
             stabilizeViewportIfNeeded()
         }
         scheduleProgressSave()
@@ -369,6 +442,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private func clearSpuriousContentInsets() {
+        guard !isUserInteractingWithPDF else { return }
         for scrollView in pdfView.allEmbeddedScrollViews {
             if #available(iOS 11.0, *) {
                 scrollView.contentInsetAdjustmentBehavior = .never
