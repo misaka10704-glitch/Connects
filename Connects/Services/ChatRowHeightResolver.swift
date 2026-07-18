@@ -52,14 +52,19 @@ final class ChatRowHeightResolver {
 
     func resetForConversation(diskCache: [String: CGFloat],
                               messages: [ChatMessage],
-                              layoutWidth: CGFloat) {
+                              layoutWidth: CGFloat,
+                              layoutProbeTailRows: Int? = nil) {
         committedColumnHeights.removeAll()
         committedIDs.removeAll()
         scrollFrozenRowHeights = nil
         diskEstimates = diskCache
         // Pin disk first so rebuild never walks plain boundingRect / parse for known rows.
         bootstrapCommittedFromDisk(messages: messages)
-        rebuildDisplayHeights(messages: messages, layoutWidth: layoutWidth)
+        rebuildDisplayHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            layoutProbeTailRows: layoutProbeTailRows
+        )
     }
 
     /// Trust persisted column heights so first scroll uses native geometry (no plain pass).
@@ -75,13 +80,14 @@ final class ChatRowHeightResolver {
 
     func rebuildDisplayHeights(messages: [ChatMessage],
                                layoutWidth: CGFloat,
-                               throughRow: Int? = nil) {
+                               throughRow: Int? = nil,
+                               layoutProbeTailRows: Int? = nil) {
         displayColumnHeights.removeAll()
         guard !messages.isEmpty else { return }
         let count = messages.count
         // Cold long threads: only probe native layout cache near the tail — head rows use disk/cheap.
-        let layoutProbeTailRows = min(count, 36)
-        let tailProbeStart = max(0, count - layoutProbeTailRows)
+        let probeTailRows = layoutProbeTailRows.map { min(count, max(1, $0)) } ?? min(count, 36)
+        let tailProbeStart = max(0, count - probeTailRows)
         let jumpProbeEnd = throughRow.map { min($0, count - 1) }
         displayColumnHeights.reserveCapacity(count)
         for (row, message) in messages.enumerated() {

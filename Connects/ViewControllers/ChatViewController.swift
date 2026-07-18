@@ -3,6 +3,7 @@ import UIKit
 protocol ChatViewControllerDelegate: AnyObject {
     func chatDidUpdateTitle(_ title: String)
     func chatDidRequestShare()
+    func chatDidFinishInitialLaunch()
 }
 
 final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
@@ -138,7 +139,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(chatWidthDidChange(_:)), name: .connectsChatWidthDidChange, object: nil)
         migrateRenderSchemaIfNeeded()
         if !didMigrateRenderSchema {
-            heightCacheByConversation = RenderCacheStore.loadHeights()
+            loadLaunchHeightCaches()
         }
         registerKeyboard()
         applyTheme()
@@ -150,6 +151,36 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self.prewarmVisibleRichReplies(for: self.currentRenderWidth())
             }
         }
+        bootstrapColdLaunchChrome()
+    }
+
+    /// Align empty/list chrome with the restored store before the first open bind.
+    private func bootstrapColdLaunchChrome() {
+        updateEmptyState()
+        guard renderedConversationID == nil else { return }
+        let hasMessages = !(ConversationStore.shared.currentConversation?.messages.isEmpty ?? true)
+        guard hasMessages else { return }
+        // Launch overlay covers the chat, but keep the empty-state UI from flashing
+        // underneath if the overlay is dismissed early.
+        emptyContainer.isHidden = true
+        tableView.isHidden = true
+    }
+
+    private func loadLaunchHeightCaches() {
+        guard let conversationID = ConversationStore.shared.currentConversationID else { return }
+        heightCacheByConversation = RenderCacheStore.loadHeights(forConversationID: conversationID)
+    }
+
+    private func ensureHeightCacheLoaded(for conversationID: String) {
+        let widthPrefix = conversationID + "|w"
+        let hasBucket = heightCacheByConversation.keys.contains {
+            $0 == conversationID || $0.hasPrefix(widthPrefix)
+        }
+        guard !hasBucket else { return }
+        let loaded = RenderCacheStore.loadHeights(forConversationID: conversationID)
+        for (key, map) in loaded {
+            heightCacheByConversation[key] = map
+        }
     }
 
     /// 1.4.13 briefly routed tables to PlainMarkdown; wipe bad height caches so old chats remasure.
@@ -159,10 +190,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private static let renderSchemaVersion = 44
     private var didMigrateRenderSchema = false
     private var didPerformColdOpenRescue = false
+    private var didNotifyInitialLaunch = false
+    private var isPerformingColdLaunchOpen = false
+    private static let coldLaunchLayoutProbeRows = 10
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if renderedConversationID == nil, view.window != nil {
+            // Bind the restored conversation as soon as we are in a window —
+            // before the first painted frame shows the empty-state chrome.
+            reloadChat()
+        }
+    }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if renderedConversationID == nil {
+        if renderedConversationID == nil, view.window != nil {
             // Root preloads this controller before its navigation view is in a
             // window. UITableView must not lay out/reload its visible rows yet.
             reloadChat()
@@ -181,7 +224,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.rescueBlankRichCells()
         }
-        scheduleIdleConversationPrewarm()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.scheduleIdleConversationPrewarm()
+        }
     }
 
     /// If a rich cell is still showing blank WebView / failed inject, rebind it.
@@ -344,7 +389,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Exact width bucket, else nearest other-width / legacy map so first portrait open
     /// still has a non-empty contentSize (empty bucket → mid-screen open).
     private func persistedHeights(for conversationID: String) -> [String: CGFloat] {
-        RenderCacheStore.nearestPersistedHeights(
+        ensureHeightCacheLoaded(for: conversationID)
+        return RenderCacheStore.nearestPersistedHeights(
             conversationID: conversationID,
             layoutWidth: currentRenderWidth(),
             cache: heightCacheByConversation
@@ -2186,7 +2232,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     /// Instant conversation swap — disk heights only; tail paint runs async afterward.
-    func switchToConversation(id: String) {
+    func switchToConversation(id: String, coldLaunch: Bool = false) {
         guard id != renderedConversationID else { return }
         guard ConversationStore.shared.currentConversationID == id else { return }
         cancelOpenPipeline()
@@ -2202,10 +2248,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         let messages = conv.messages
         let layoutWidth = currentRenderWidth()
+        ensureHeightCacheLoaded(for: id)
         rowHeights.resetForConversation(
             diskCache: persistedHeights(for: id),
             messages: messages,
-            layoutWidth: layoutWidth
+            layoutWidth: layoutWidth,
+            layoutProbeTailRows: coldLaunch ? Self.coldLaunchLayoutProbeRows : nil
         )
         pendingHeights.removeAll()
         renderedConversationID = id
@@ -2220,8 +2268,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         clearNavigationPrompt()
 
         tableView.alpha = 1
+        tableView.isHidden = messages.isEmpty
         tableView.reloadData()
-        if !messages.isEmpty {
+        if coldLaunch {
+            notifyInitialLaunchIfNeeded()
+            if !messages.isEmpty {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self,
+                          id == self.renderedConversationID else { return }
+                    self.pinOpenViewportToBottom(messages)
+                }
+            }
+        } else if !messages.isEmpty {
             pinOpenViewportToBottom(messages)
         }
         scheduleCoalescedOpenUpgrade()
@@ -2247,6 +2305,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         isReloadingFromStore = true
         let newID = ConversationStore.shared.currentConversationID
         let conversationChanged = newID != renderedConversationID
+        let coldLaunch = conversationChanged && !didNotifyInitialLaunch
+        isPerformingColdLaunchOpen = coldLaunch
         chromeWork?.cancel()
         prewarmWork?.cancel()
         contextUsageWork?.cancel()
@@ -2265,10 +2325,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         if conversationChanged {
             if let id = newID {
-                switchToConversation(id: id)
+                switchToConversation(id: id, coldLaunch: coldLaunch)
             }
             guard newID == ConversationStore.shared.currentConversationID else {
                 isReloadingFromStore = false
+                isPerformingColdLaunchOpen = false
                 reloadChat()
                 return
             }
@@ -2280,6 +2341,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // streaming cell composited under a clear empty overlay.
         updateEmptyState()
         syncStreamingChrome()
+        if coldLaunch {
+            notifyInitialLaunchIfNeeded()
+        }
         DispatchQueue.main.async { [weak self] in
             self?.queueLegacyImageTranscriptionIfNeeded()
         }
@@ -2314,6 +2378,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if !conversationChanged {
             scheduleUpdateTurnContextBar()
         }
+        if !coldLaunch {
+            notifyInitialLaunchIfNeeded()
+        }
+        isPerformingColdLaunchOpen = false
+    }
+
+    private func notifyInitialLaunchIfNeeded() {
+        guard !didNotifyInitialLaunch, view.window != nil else { return }
+        didNotifyInitialLaunch = true
+        delegate?.chatDidFinishInitialLaunch()
     }
 
     /// Older conversations can still contain an image-only turn. Migrate one

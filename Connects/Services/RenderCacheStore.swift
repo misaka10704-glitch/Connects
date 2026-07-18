@@ -55,6 +55,23 @@ enum RenderCacheStore {
         guard let raw = UserDefaults.standard.dictionary(forKey: heightsKey) as? [String: [String: Double]] else {
             return [:]
         }
+        return decodeHeightMaps(raw)
+    }
+
+    /// Cold launch: read only buckets for one conversation instead of the full map.
+    static func loadHeights(forConversationID conversationID: String) -> [String: [String: CGFloat]] {
+        guard let raw = UserDefaults.standard.dictionary(forKey: heightsKey) as? [String: [String: Double]] else {
+            return [:]
+        }
+        let widthPrefix = conversationID + "|w"
+        var filtered: [String: [String: Double]] = [:]
+        for (key, map) in raw where key == conversationID || key.hasPrefix(widthPrefix) {
+            filtered[key] = map
+        }
+        return decodeHeightMaps(filtered)
+    }
+
+    private static func decodeHeightMaps(_ raw: [String: [String: Double]]) -> [String: [String: CGFloat]] {
         var out: [String: [String: CGFloat]] = [:]
         for (cid, map) in raw {
             var inner: [String: CGFloat] = [:]

@@ -51,6 +51,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
     private var sections: [SidebarSection] = []
     private var filterText = ""
+    private var listContentLoaded = false
+    private var listNeedsRefresh = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -63,12 +65,35 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         NotificationCenter.default.addObserver(self, selector: #selector(memoryChanged), name: .memoryStoreDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(projectsChanged), name: .projectsDidChange, object: nil)
         applyTheme()
+        refreshArchiveIcon()
+        refreshMemoryButton()
+    }
+
+    /// Sidebar starts collapsed — defer building the conversation list until it opens.
+    func ensureListLoaded() {
+        if listContentLoaded {
+            if listNeedsRefresh {
+                listNeedsRefresh = false
+                reloadData()
+            }
+            return
+        }
+        listContentLoaded = true
+        listNeedsRefresh = false
+        reloadData()
+    }
+
+    private func markListDirty() {
+        guard listContentLoaded else {
+            listNeedsRefresh = true
+            return
+        }
         reloadData()
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    @objc private func streamFinishedSidebar() { reloadData() }
+    @objc private func streamFinishedSidebar() { markListDirty() }
 
     func applyTheme() {
         let c = DSTheme.c
@@ -97,7 +122,9 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         memoryButton.setTitleColor(c.textPrimary, for: .normal)
         memoryButton.backgroundColor = c.surface
         memoryButton.layer.borderColor = c.border.cgColor
-        tableView.reloadData()
+        if listContentLoaded {
+            tableView.reloadData()
+        }
         refreshArchiveIcon()
     }
 
@@ -115,14 +142,18 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if projectFilterOnly {
-                self.reloadProjectFilter()
+                if self.listContentLoaded {
+                    self.reloadProjectFilter()
+                } else {
+                    self.listNeedsRefresh = true
+                }
             } else {
-                self.reloadData()
+                self.markListDirty()
             }
         }
     }
     @objc private func memoryChanged() { refreshMemoryButton() }
-    @objc private func projectsChanged() { reloadData() }
+    @objc private func projectsChanged() { markListDirty() }
 
     func reloadData() {
         refreshArchiveIcon()

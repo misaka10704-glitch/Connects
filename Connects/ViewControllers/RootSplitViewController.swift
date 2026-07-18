@@ -12,6 +12,8 @@ final class RootSplitViewController: UIViewController {
     private let divider = UIView()
     private let chatContainer = UIView()
     private let dimView = UIView()
+    private let launchOverlay = UIView()
+    private let launchLogoView = UIImageView()
 
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarLeadingWide: NSLayoutConstraint!
@@ -24,6 +26,8 @@ final class RootSplitViewController: UIViewController {
     private var isCompactLayout = false
     private var isDrawerOpen = false
     private var lastNotifiedWidthBucket: Int = 0
+    private var didDismissLaunchOverlay = false
+    private var didPreloadChat = false
 
     /// Below this width → Slide Over / 侧拉网课模式.
     private let compactBreakpoint: CGFloat = 520
@@ -118,11 +122,8 @@ final class RootSplitViewController: UIViewController {
 
         sidebarContainer.clipsToBounds = true
         applyThemeColors()
+        setupLaunchOverlay()
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
-
-        chatNav.loadViewIfNeeded()
-        chatVC.loadViewIfNeeded()
-        chatVC.updateSidebarToggleTitle(collapsed: isSidebarCollapsed)
 
         let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleEdgePan(_:)))
         edge.edges = .left
@@ -133,6 +134,22 @@ final class RootSplitViewController: UIViewController {
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        preloadChatIfNeeded()
+        if !isSidebarCollapsed {
+            sidebarVC.ensureListLoaded()
+        }
+    }
+
+    private func preloadChatIfNeeded() {
+        guard !didPreloadChat else { return }
+        didPreloadChat = true
+        chatNav.loadViewIfNeeded()
+        chatVC.loadViewIfNeeded()
+        chatVC.updateSidebarToggleTitle(collapsed: isSidebarCollapsed)
+    }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -159,6 +176,47 @@ final class RootSplitViewController: UIViewController {
     }
 
     @objc private func themeChanged() { applyThemeColors() }
+
+    private func setupLaunchOverlay() {
+        launchOverlay.translatesAutoresizingMaskIntoConstraints = false
+        launchOverlay.backgroundColor = DSTheme.c.background
+        launchOverlay.isUserInteractionEnabled = false
+
+        launchLogoView.translatesAutoresizingMaskIntoConstraints = false
+        launchLogoView.image = UIImage(named: "Logo-120")
+        launchLogoView.contentMode = .scaleAspectFit
+        launchOverlay.addSubview(launchLogoView)
+        view.addSubview(launchOverlay)
+        view.bringSubviewToFront(launchOverlay)
+
+        NSLayoutConstraint.activate([
+            launchOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            launchOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            launchOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            launchOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            launchLogoView.centerXAnchor.constraint(equalTo: launchOverlay.centerXAnchor),
+            launchLogoView.centerYAnchor.constraint(equalTo: launchOverlay.centerYAnchor),
+            launchLogoView.widthAnchor.constraint(equalToConstant: 120),
+            launchLogoView.heightAnchor.constraint(equalToConstant: 120)
+        ])
+
+        // Safety net if chat bootstrap never reports ready.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.dismissLaunchOverlayIfNeeded()
+        }
+    }
+
+    private func dismissLaunchOverlayIfNeeded() {
+        guard !didDismissLaunchOverlay else { return }
+        didDismissLaunchOverlay = true
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut], animations: {
+            self.launchOverlay.alpha = 0
+        }, completion: { _ in
+            self.launchOverlay.isHidden = true
+            self.launchOverlay.removeFromSuperview()
+        })
+    }
 
     private func applyThemeColors() {
         let c = DSTheme.c
@@ -223,6 +281,9 @@ final class RootSplitViewController: UIViewController {
         isSidebarCollapsed.toggle()
         UserDefaults.standard.set(isSidebarCollapsed, forKey: "connects_sidebar_collapsed")
         sidebarWidthConstraint.constant = isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
+        if !isSidebarCollapsed {
+            sidebarVC.ensureListLoaded()
+        }
         UIView.animate(withDuration: 0.22) {
             self.view.layoutIfNeeded()
         }
@@ -231,6 +292,7 @@ final class RootSplitViewController: UIViewController {
 
     private func openDrawer() {
         guard isCompactLayout else { return }
+        sidebarVC.ensureListLoaded()
         isDrawerOpen = true
         dimView.isHidden = false
         sidebarLeadingCompact.constant = 0
@@ -435,5 +497,8 @@ extension RootSplitViewController: ChatViewControllerDelegate {
     func chatDidUpdateTitle(_ title: String) {}
     func chatDidRequestShare() {
         chatVC.shareCurrentMarkdown()
+    }
+    func chatDidFinishInitialLaunch() {
+        dismissLaunchOverlayIfNeeded()
     }
 }
