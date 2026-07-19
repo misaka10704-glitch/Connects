@@ -120,6 +120,32 @@ final class NativeMessageRenderView: UIView {
         invalidateIntrinsicContentSize()
     }
 
+    /// Bind a warmed layout without parsing markdown — scroll hot path only.
+    @discardableResult
+    func bindCachedLayoutIfAvailable(content: String,
+                                     width: CGFloat,
+                                     fontSize: CGFloat,
+                                     appearance: String,
+                                     colors: ThemeColors) -> CGFloat? {
+        guard let document = NativeMarkdownParser.shared.cachedDocument(content) else { return nil }
+        let style = NativeLayoutStyle(
+            width: max(width, 40),
+            bodyFontSize: fontSize,
+            appearance: appearance,
+            colors: colors
+        )
+        guard let final = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) else {
+            return nil
+        }
+        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)"
+        if requestKey != nextRequestKey {
+            requestKey = nextRequestKey
+            renderGeneration += 1
+            apply(final)
+        }
+        return final.size.height
+    }
+
     private func hydrateCachedFormulas(_ formulas: [(tex: String, display: Bool)],
                                        style: NativeLayoutStyle) {
         for formula in formulas {

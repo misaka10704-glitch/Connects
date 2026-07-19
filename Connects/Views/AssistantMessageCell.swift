@@ -910,6 +910,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         return RenderCacheStore.contentWidth(for: reference)
     }
 
+    /// `drawsAsynchronously` reduces open hitch but leaves scroll trails on iOS 12 — toggle per gesture.
+    func setNativeAsyncDrawEnabled(_ enabled: Bool) {
+        nativeRenderView.layer.drawsAsynchronously = enabled
+    }
+
     private func configureNative(message: ChatMessage,
                                  hasThinking: Bool,
                                  hasSearch: Bool = false,
@@ -919,13 +924,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                  layoutWidth: CGFloat,
                                  allowDefer: Bool = true) {
         let width = nativeLayoutWidth(for: layoutWidth)
-        let scrolling = allowDefer && cellDelegate?.messageCellShouldDeferHeavyRender(self) == true
-        // A warmed native layout binds without Markdown parsing or layout work.
-        // Keep it visible while fast-scrolling instead of replacing it with a
-        // truncated UILabel fallback, which caused blank/flashy Q↔A boundaries.
-        let hasCachedLayout = scrolling
-            && AssistantMessageLayout.hasCachedNativeLayout(for: message, layoutWidth: width)
-        if scrolling && !hasCachedLayout {
+        let scrollFrozen = allowDefer && cellDelegate?.messageCellShouldFreezeHeight(self) == true
+        if scrollFrozen {
+            let hasCachedLayout = AssistantMessageLayout.hasCachedNativeLayout(
+                for: message,
+                layoutWidth: width
+            )
             deferredNativeBind = DeferredNativeBind(
                 message: message,
                 hasThinking: hasThinking,
@@ -935,22 +939,33 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 colors: colors,
                 layoutWidth: layoutWidth
             )
-            // Plain UILabel cannot render markdown — formula-heavy study history looks blank.
             bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
             nativeMessageForRemeasure = message
             lastNativeLayoutWidth = width
-            let renderResult = nativeRenderView.configure(
-                content: message.content,
-                width: width,
-                fontSize: font,
-                appearance: SettingsManager.shared.appearanceMode.rawValue,
-                colors: colors
+            if hasCachedLayout,
+               let height = nativeRenderView.bindCachedLayoutIfAvailable(
+                   content: message.content,
+                   width: width,
+                   fontSize: font,
+                   appearance: SettingsManager.shared.appearanceMode.rawValue,
+                   colors: colors
+               ) {
+                nativeHeight.constant = height
+                nativeRenderView.isHidden = false
+                assistantLabel.isHidden = true
+                assistantLabel.text = nil
+                return
+            }
+            configurePlainFallback(
+                message: message,
+                hasThinking: hasThinking,
+                hasSearch: hasSearch,
+                hasImage: hasImage,
+                font: font,
+                colors: colors,
+                scheduleHeightNotify: false,
+                allowTruncate: cellDelegate?.messageCellShouldTruncatePlainBody(self) == true
             )
-            nativeHeight.constant = renderResult.height
-            nativeRenderView.isHidden = false
-            refreshActionChrome(for: message, streaming: false, colors: colors)
-            contentView.layoutIfNeeded()
-            cellDelegate?.messageCellDidPaintContent(self)
             return
         }
         deferredNativeBind = nil

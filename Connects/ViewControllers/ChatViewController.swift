@@ -1043,6 +1043,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
+    private func setVisibleNativeAsyncDraw(_ enabled: Bool) {
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            cell.setNativeAsyncDrawEnabled(enabled)
+        }
+    }
+
     /// Deferred native hydration waits until scroll fully stops — mid-gesture remeasure causes jumps.
     private func maybeHydrateDeferredNativeWhileScrolling() {}
 
@@ -1167,7 +1173,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                                         rows: [Int]? = nil,
                                         aggressive: Bool = false) {
         let rowList = rows ?? scrollLookaheadRows(in: messages)
-        let syncLimit = aggressive ? 10 : 1
+        let syncLimit = aggressive ? 6 : 2
         let charLimit = aggressive ? 4_000 : Self.syncPrewarmMaxChars
         var syncBatch: [ChatMessage] = []
         var asyncBatch: [ChatMessage] = []
@@ -1214,15 +1220,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             messages: messages,
             layoutWidth: layoutWidth,
             rows: lookahead,
-            aggressive: isStudyNarrowPanelActive() && readingHistory
+            aggressive: readingHistory || isStudyNarrowPanelActive()
         )
         _ = commitCachedLayoutHeights(
             messages: messages,
             layoutWidth: layoutWidth,
             rows: lookahead,
-            syncLayoutBudget: (isStudyNarrowPanelActive() && readingHistory)
-                ? min(12, lookahead.count)
-                : min(4, lookahead.count),
+            syncLayoutBudget: readingHistory
+                ? min(6, lookahead.count)
+                : (isStudyNarrowPanelActive() ? min(12, lookahead.count) : min(4, lookahead.count)),
             allowGrowCommitted: true
         )
     }
@@ -4702,6 +4708,9 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             return
         }
         if scrolling {
+            if let assistantCell = cell as? AssistantMessageCell {
+                assistantCell.setNativeAsyncDrawEnabled(false)
+            }
             rowHeights.freezeRowHeightIfNeeded(
                 for: msg,
                 row: indexPath.row,
@@ -4789,10 +4798,37 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 layoutWidth: layoutWidth,
                 rows: lookahead
             )
-            if !readingHistory {
-                prewarmScrollLookahead(messages: messages, layoutWidth: layoutWidth, rows: lookahead)
+            setVisibleNativeAsyncDraw(false)
+            scheduleAsyncLayoutPrewarm(
+                assistants: assistantMessagesAhead(in: messages, rows: lookahead),
+                layoutWidth: layoutWidth
+            )
+        }
+    }
+
+    private func assistantMessagesAhead(in messages: [ChatMessage], rows: [Int]) -> [ChatMessage] {
+        var result: [ChatMessage] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard row >= 0, row < messages.count else { continue }
+            let candidates: [ChatMessage]
+            if messages[row].role == .user, row + 1 < messages.count,
+               messages[row + 1].role == .assistant, !messages[row + 1].isStreaming {
+                candidates = [messages[row + 1]]
+            } else if messages[row].role == .assistant, !messages[row].isStreaming {
+                candidates = [messages[row]]
+            } else {
+                continue
+            }
+            for msg in candidates where seen.insert(msg.id).inserted {
+                guard !AssistantMessageLayout.hasCachedNativeLayout(
+                    for: msg,
+                    layoutWidth: currentRenderWidth()
+                ) else { continue }
+                result.append(msg)
             }
         }
+        return result
     }
 
     /// Pin visible uncommitted rows before the first drag. Avoid beginUpdates unless a visible row changes.
@@ -4876,6 +4912,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     private func performScrollHeightSettling() {
+        setVisibleNativeAsyncDraw(true)
         contextBarScrollWork?.cancel()
         if pendingPostWidthChangeSettle,
            let messages = ConversationStore.shared.currentConversation?.messages {
