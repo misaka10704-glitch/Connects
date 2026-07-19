@@ -27,16 +27,22 @@ final class ChatRowHeightResolver {
 
     var isScrollHeightFrozen: Bool { scrollFrozenRowHeights != nil }
 
-    func beginScrollHeightFreeze(messages: [ChatMessage], layoutWidth: CGFloat) {
+    /// Freeze row heights for the scroll gesture. Pass `rows` to avoid O(n) work on long threads;
+    /// rows entering the viewport can be added via `freezeRowHeightIfNeeded` while frozen.
+    func beginScrollHeightFreeze(messages: [ChatMessage],
+                                 layoutWidth: CGFloat,
+                                 rows: [Int]? = nil) {
         guard !messages.isEmpty else {
             scrollFrozenRowHeights = [:]
             return
         }
         let count = messages.count
         var map = [String: CGFloat]()
-        map.reserveCapacity(count)
-        for (row, message) in messages.enumerated() {
-            map[message.id] = rowHeight(
+        let rowList = rows ?? Array(0..<count)
+        map.reserveCapacity(rowList.count)
+        for row in rowList where row >= 0 && row < count {
+            let message = messages[row]
+            map[message.id] = unfrozenRowHeight(
                 for: message,
                 row: row,
                 messageCount: count,
@@ -46,8 +52,36 @@ final class ChatRowHeightResolver {
         scrollFrozenRowHeights = map
     }
 
+    func freezeRowHeightIfNeeded(for message: ChatMessage,
+                                 row: Int,
+                                 messageCount: Int,
+                                 layoutWidth: CGFloat) {
+        guard scrollFrozenRowHeights != nil,
+              scrollFrozenRowHeights?[message.id] == nil else { return }
+        scrollFrozenRowHeights?[message.id] = unfrozenRowHeight(
+            for: message,
+            row: row,
+            messageCount: messageCount,
+            layoutWidth: layoutWidth
+        )
+    }
+
     func endScrollHeightFreeze() {
         scrollFrozenRowHeights = nil
+    }
+
+    /// Grow the frozen row map when painted content exceeds the snapshotted height.
+    @discardableResult
+    func growFrozenRowHeightIfNeeded(messageID: String, columnHeight: CGFloat) -> Bool {
+        guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
+        let required = columnHeight + Self.cellVerticalMargin
+        let current = scrollFrozenRowHeights?[messageID] ?? 0
+        guard required > current + 0.5 else { return false }
+        scrollFrozenRowHeights?[messageID] = required
+        let prior = bestKnownColumnHeight(for: messageID)
+        committedColumnHeights[messageID] = max(prior, columnHeight)
+        committedIDs.insert(messageID)
+        return true
     }
 
     func resetForConversation(diskCache: [String: CGFloat],
@@ -220,9 +254,22 @@ final class ChatRowHeightResolver {
                    row: Int,
                    messageCount: Int,
                    layoutWidth: CGFloat) -> CGFloat {
-        if let frozen = scrollFrozenRowHeights?[message.id], frozen > 40 {
+        if let frozenMap = scrollFrozenRowHeights,
+           let frozen = frozenMap[message.id], frozen > 40 {
             return frozen
         }
+        return unfrozenRowHeight(
+            for: message,
+            row: row,
+            messageCount: messageCount,
+            layoutWidth: layoutWidth
+        )
+    }
+
+    private func unfrozenRowHeight(for message: ChatMessage,
+                                   row: Int,
+                                   messageCount: Int,
+                                   layoutWidth: CGFloat) -> CGFloat {
         if let display = displayColumnHeights[message.id], display > 40 {
             return display + Self.cellVerticalMargin
         }
@@ -431,6 +478,10 @@ final class ChatRowHeightResolver {
         let chars = max(msg.content.count, reasoningChars)
         let lines = max(1, chars / 48)
         var rough = CGFloat(36 + lines * 18)
+        let displayMathBlocks = msg.content.components(separatedBy: "$$").count / 2
+        if displayMathBlocks > 0 {
+            rough += CGFloat(displayMathBlocks) * 52
+        }
         if msg.hasImage { rough += 168 }
         if msg.hasReasoning {
             rough += reasoningExpanded
@@ -438,7 +489,7 @@ final class ChatRowHeightResolver {
         }
         if msg.hasSearchProcess || msg.hasImageTranscription { rough += 36 }
         if msg.role == .assistant && !msg.isStreaming {
-            rough += AssistantMessageLayout.actionRowHeight
+            rough += 4 + AssistantMessageLayout.actionRowHeight
         }
         if msg.hasReasoning || msg.hasSearchProcess || msg.hasImageTranscription {
             return min(max(rough, 64), 720)

@@ -81,6 +81,7 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         borderView.addGestureRecognizer(tap)
         borderView.isUserInteractionEnabled = true
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
         isAccessibilityElement = true
         accessibilityTraits = .button
 

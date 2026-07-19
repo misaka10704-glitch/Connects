@@ -31,7 +31,7 @@ final class NativeMessageLayouter {
                 style: NativeLayoutStyle,
                 renderMissingFormulas: Bool = true) -> NativeMessageLayout {
         let phase = renderMissingFormulas ? "final" : "preview"
-        let key = "native_layout_v10|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v11|\(phase)|\(document.stamp)|\(style.keySuffix)"
         if let hit = cache.object(forKey: key as NSString) {
             return hit.layout
         }
@@ -51,7 +51,7 @@ final class NativeMessageLayouter {
     }
 
     func cachedLayout(document: NativeMarkdownDocument, style: NativeLayoutStyle) -> NativeMessageLayout? {
-        let key = "native_layout_v10|final|\(document.stamp)|\(style.keySuffix)"
+        let key = "native_layout_v11|final|\(document.stamp)|\(style.keySuffix)"
         return cache.object(forKey: key as NSString)?.layout
     }
 
@@ -90,12 +90,17 @@ final class NativeMessageLayouter {
             }
         }
         return formulas.allSatisfy { tex, display in
-            NativeFormulaRenderer.shared.artifact(
+            NativeFormulaRenderer.shared.hasMemoryArtifact(
                 tex: tex,
                 fontSize: style.bodyFontSize * (display ? 1.08 : 1),
                 color: style.colors.textPrimary,
                 display: display
-            ) != nil
+            ) || NativeFormulaRenderer.shared.hasCachedArtifact(
+                tex: tex,
+                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: display
+            )
         }
     }
 
@@ -256,21 +261,13 @@ final class NativeMessageLayouter {
             case .displayMath(let tex):
                 expectReferencesList = false
                 if !renderMissingFormulas {
-                    // Preview must stay readable. Reserving blank vertical space
-                    // while iosMath warms looks like random empty lines in chat.
-                    let fallback = NSAttributedString(
-                        string: tex,
-                        attributes: baseAttributes(
-                            font: DSTheme.monoFont(size: style.bodyFontSize),
-                            color: style.colors.textPrimary
-                        )
+                    y += reserveDisplayMathPreviewHeight(
+                        tex: tex,
+                        y: y,
+                        width: width,
+                        style: style,
+                        commands: &commands
                     )
-                    let height = textHeight(fallback, width: width)
-                    commands.append(.text(fragment(
-                        fallback,
-                        frame: CGRect(x: 0, y: y, width: width, height: height)
-                    )))
-                    y += height + 10
                 } else if let formula = NativeFormulaRenderer.shared.artifact(
                     tex: tex,
                     fontSize: style.bodyFontSize * 1.08,
@@ -496,13 +493,13 @@ final class NativeMessageLayouter {
                     )
                     result.append(NSAttributedString(attachment: attachment))
                 } else {
-                    result.append(NSAttributedString(
-                        string: tex,
-                        attributes: baseAttributes(
-                            font: DSTheme.monoFont(size: font.pointSize * 0.9),
-                            color: foreground
-                        )
-                    ))
+                    appendInlineMathPreview(
+                        tex: tex,
+                        to: result,
+                        font: font,
+                        foreground: foreground,
+                        style: style
+                    )
                 }
             case .lineBreak:
                 result.append(NSAttributedString(string: "\n", attributes: baseAttributes(font: font, color: foreground)))
@@ -567,5 +564,88 @@ final class NativeMessageLayouter {
     private func ceilToPixel(_ value: CGFloat) -> CGFloat {
         let scale = UIScreen.main.scale
         return ceil(value * scale) / scale
+    }
+
+    /// Preview-phase block math: reserve final-like height without iosMath on the hot path.
+    private func reserveDisplayMathPreviewHeight(tex: String,
+                                                 y: CGFloat,
+                                                 width: CGFloat,
+                                                 style: NativeLayoutStyle,
+                                                 commands: inout [NativeDrawCommand]) -> CGFloat {
+        let fontSize = style.bodyFontSize * 1.08
+        let color = style.colors.textPrimary
+        let drawHeight: CGFloat
+        if let known = NativeFormulaRenderer.shared.knownArtifactSize(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: true
+        ) {
+            let drawWidth = min(known.width, width)
+            let scale = drawWidth / max(known.width, 1)
+            drawHeight = known.height * scale
+        } else {
+            drawHeight = NativeFormulaRenderer.estimatedRenderSize(
+                tex: tex,
+                fontSize: fontSize,
+                display: true,
+                maxWidth: width
+            ).height
+        }
+        // One-line mono hint while formulas warm — avoids multi-line TeX blowing up preview height.
+        let previewLine = tex
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipped = String(previewLine.prefix(72))
+        let hint = clipped + (previewLine.count > 72 ? "…" : "")
+        let fallback = NSAttributedString(
+            string: hint,
+            attributes: baseAttributes(
+                font: DSTheme.monoFont(size: style.bodyFontSize * 0.92),
+                color: style.colors.textSecondary.withAlphaComponent(0.88)
+            )
+        )
+        let hintHeight = min(textHeight(fallback, width: width), drawHeight)
+        commands.append(.text(fragment(
+            fallback,
+            frame: CGRect(x: 0, y: y, width: width, height: hintHeight)
+        )))
+        return max(drawHeight, hintHeight) + 18
+    }
+
+    private func appendInlineMathPreview(tex: String,
+                                         to result: NSMutableAttributedString,
+                                         font: UIFont,
+                                         foreground: UIColor,
+                                         style: NativeLayoutStyle) {
+        let fontSize = font.pointSize
+        let size: CGSize
+        if let known = NativeFormulaRenderer.shared.knownArtifactSize(
+            tex: tex,
+            fontSize: fontSize,
+            color: foreground,
+            display: false
+        ) {
+            let maxHeight = font.lineHeight * 1.32
+            let heightScale = maxHeight / max(known.height, 1)
+            let widthScale = (style.width * 0.92) / max(known.width, 1)
+            let scale = min(min(1, heightScale), widthScale)
+            size = CGSize(width: known.width * scale, height: known.height * scale)
+        } else {
+            size = NativeFormulaRenderer.estimatedRenderSize(
+                tex: tex,
+                fontSize: fontSize,
+                display: false,
+                maxWidth: style.width
+            )
+        }
+        let attachment = NSTextAttachment()
+        attachment.bounds = CGRect(
+            x: 0,
+            y: (font.capHeight - size.height) / 2 - 1,
+            width: max(size.width, fontSize * 0.5),
+            height: max(size.height, font.lineHeight * 0.9)
+        )
+        result.append(NSAttributedString(attachment: attachment))
     }
 }

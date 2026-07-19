@@ -10,6 +10,11 @@ extension Notification.Name {
 final class SettingsManager {
     static let shared = SettingsManager()
 
+    #if DEBUG
+    /// Render-audit CLI may fail to persist Keychain; keep an in-memory override.
+    static var auditKimiAPIKeyOverride: String?
+    #endif
+
     private let enabledModelsKey = "connects_enabled_models"
     private let knownModelsKey = "connects_known_models"
     private let instantDefaultMigrationKey = "connects_instant_default_v1"
@@ -227,6 +232,13 @@ final class SettingsManager {
     }
 
     func sanitizedAPIKey(for provider: AIProvider) -> String {
+        #if DEBUG
+        if provider == .kimi,
+           let override = SettingsManager.auditKimiAPIKeyOverride,
+           !override.isEmpty {
+            return Self.sanitizeKey(override)
+        }
+        #endif
         let raw: String
         switch provider {
         case .deepseek: raw = deepseekAPIKey

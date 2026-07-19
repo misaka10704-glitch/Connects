@@ -171,4 +171,28 @@ final class ConversationRenderSwitchTests: XCTestCase {
         // (120 + 8) + (240 + 8) - 300
         XCTAssertEqual(total, 76, accuracy: 0.5)
     }
+
+    func testFencedLatexDocumentStaysCodeBlock() {
+        let raw = """
+        ```latex
+        \\documentclass{article}
+        \\begin{document}
+        \\chord{Db}
+        \\end{document}
+        ```
+        """
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("```latex"))
+        XCTAssertFalse(normalized.contains("$$\\documentclass"))
+    }
+
+    func testShortFencedLatexBecomesDisplayMath() {
+        let raw = """
+        ```latex
+        \\frac{a}{b}
+        ```
+        """
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("$$\\frac{a}{b}$$"))
+    }
 }

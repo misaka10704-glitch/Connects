@@ -308,7 +308,12 @@ enum AssistantMessageLayout {
         if let cached = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
             bodyHeight = cached.size.height
         } else if allowSyncLayout {
-            let layout = NativeMessageLayouter.shared.layout(document: document, style: style)
+            let renderFormulas = formulasReady(in: document, style: style)
+            let layout = NativeMessageLayouter.shared.layout(
+                document: document,
+                style: style,
+                renderMissingFormulas: renderFormulas
+            )
             bodyHeight = layout.size.height
         } else {
             return nil
@@ -394,7 +399,7 @@ enum AssistantMessageLayout {
             || message.hasSearchProcess
             || message.hasImageTranscription
         if showActions {
-            total += actionRowHeight
+            total += 4 + actionRowHeight
         }
 
         guard total > 40 else { return nil }

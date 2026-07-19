@@ -646,6 +646,9 @@ final class StudyShellViewController: UIViewController {
             chatVC.extendedLayoutIncludesOpaqueBars = false
         }
         chatVC.refreshStudyComposerLayout()
+        if let msgs = ConversationStore.shared.currentConversation?.messages, !msgs.isEmpty {
+            chatVC.ensureBottomPinnedIfNeeded(messages: msgs)
+        }
     }
 
     /// Status bar (landscape) and seam handle (portrait) are explicit spacers — nav bar stays at y=0.
@@ -924,6 +927,35 @@ final class StudyShellViewController: UIViewController {
             userInfo: ["width": width, "compact": compact]
         )
     }
+
+#if DEBUG
+    func debugWaitForStudyCaptureReady(documentID: String, timeout: TimeInterval = 60, completion: @escaping (Bool) -> Void) {
+        let deadline = Date().addingTimeInterval(timeout)
+        func poll() {
+            if Date() > deadline {
+                completion(false)
+                return
+            }
+            bindCurrentConversation()
+            if boundDocumentID == documentID,
+               pdfReaderVC.isLoaded(documentID: documentID),
+               captureCurrentStudyPage() != nil {
+                completion(true)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: poll)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: poll)
+    }
+
+    func debugExpandChatPanel() {
+        guard isReaderVisible, isChatCollapsed else { return }
+        isChatCollapsed = false
+        styleCollapseStrip()
+        applyLayoutMode()
+        postChatWidthNotification()
+    }
+#endif
 }
 
 extension StudyShellViewController: StudyReadingContextProviding {

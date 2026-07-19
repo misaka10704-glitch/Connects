@@ -10,6 +10,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = DSTheme.c.background
         NativeRendererSelfTest.installFixtureIfRequested()
+        #if DEBUG
+        ScrollStressHarness.installFixtureIfRequested()
+        RenderAuditHarness.startIfRequested()
+        #endif
         window.rootViewController = RootSplitViewController()
         window.makeKeyAndVisible()
         self.window = window

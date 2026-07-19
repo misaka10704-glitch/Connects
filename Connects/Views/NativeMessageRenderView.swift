@@ -185,7 +185,8 @@ final class NativeMessageRenderView: UIView {
                 generation: generation
             )
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            // Yield between uncached iosMath passes — keeps A7 iPads responsive.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
                 self?.warm(
                     formulas: formulas,
                     index: nextIndex,

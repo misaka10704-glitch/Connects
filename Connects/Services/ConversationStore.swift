@@ -347,15 +347,19 @@ final class ConversationStore {
     /// Keep assistant transcription panels in sync with durable user `imageDescription`.
     func repairImageTranscriptionDisplays(for conversationID: String? = nil) {
         let targets: [Int]
-        if let conversationID = conversationID,
-           let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+        if let conversationID = conversationID {
+            guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else {
+                return
+            }
             targets = [index]
         } else {
             targets = Array(conversations.indices)
         }
         var changed = false
         for index in targets {
+            guard conversations.indices.contains(index) else { continue }
             var msgs = conversations[index].messages
+            guard msgs.count > 1 else { continue }
             var localChanged = false
             for j in 1..<msgs.count {
                 guard msgs[j].role == .assistant, msgs[j - 1].role == .user else { continue }

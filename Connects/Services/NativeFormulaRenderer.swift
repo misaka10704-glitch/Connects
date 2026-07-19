@@ -31,18 +31,13 @@ final class NativeFormulaRenderer {
             cache.setObject(Box(disk), forKey: key as NSString, cost: cost)
             return disk
         }
-        precondition(Thread.isMainThread, "iosMath rendering must run on the main thread")
+        guard Thread.isMainThread else { return nil }
         let normalizedTeX = normalizeLegacyCommands(tex)
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
         let trimmedTeX = normalizedTeX.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isBoxed = trimmedTeX.hasPrefix("\\boxed{") && trimmedTeX.hasSuffix("}")
-        let renderTeX: String
-        if isBoxed {
-            renderTeX = String(trimmedTeX.dropFirst("\\boxed{".count).dropLast())
-        } else {
-            renderTeX = trimmedTeX
-        }
+        let (innerTeX, isBoxed) = unwrapLeadingBoxed(trimmedTeX)
+        let renderTeX = innerTeX
         let boxPadding: CGFloat = isBoxed ? max(5, fontSize * 0.3) : 0
         let label = MTMathUILabel()
         label.backgroundColor = .clear
@@ -122,9 +117,10 @@ final class NativeFormulaRenderer {
         let replacements: [(String, String)] = [
             (#"\\operatorname\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
             (#"\\xrightarrow\{([^{}]*)\}"#, #"\\longrightarrow^{$1}"#),
-            // iosMath has no equation-tag layout. Preserve the number as a
-            // readable parenthesized suffix instead of rendering "tag".
-            (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#)
+            (#"\\mathrm\{flat\}"#, #"\\flat"#),
+            (#"\\mathrm\{sharp\}"#, #"\\sharp"#),
+            (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#),
+            (#"\\text\{([^{}]*)\}"#, "$1")
         ]
         for (pattern, template) in replacements {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -143,6 +139,34 @@ final class NativeFormulaRenderer {
             .replacingOccurrences(of: "\\dots", with: "\\cdots")
     }
 
+    /// Strips a leading `\boxed{…}` even when the inner expression contains nested braces.
+    private func unwrapLeadingBoxed(_ tex: String) -> (String, Bool) {
+        let prefix = "\\boxed{"
+        guard tex.hasPrefix(prefix) else { return (tex, false) }
+        var depth = 1
+        var index = tex.index(tex.startIndex, offsetBy: prefix.count)
+        let innerStart = index
+        while index < tex.endIndex {
+            switch tex[index] {
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    let inner = String(tex[innerStart..<index])
+                    let tail = String(tex[tex.index(after: index)...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard tail.isEmpty else { return (tex, false) }
+                    return (inner, true)
+                }
+            default:
+                break
+            }
+            index = tex.index(after: index)
+        }
+        return (tex, false)
+    }
+
     private func recoverUnsupportedCommand(in tex: String, error: Error) -> String? {
         let message = (error as NSError).localizedDescription
         guard let regex = try? NSRegularExpression(pattern: #"Invalid command \\([A-Za-z]+)"#),
@@ -152,8 +176,19 @@ final class NativeFormulaRenderer {
               ),
               match.numberOfRanges > 1 else { return nil }
         let command = (message as NSString).substring(with: match.range(at: 1))
+        let nonRecoverable: Set<String> = [
+            "multicolumn", "multirow", "hline", "text", "textbf", "mathbf", "color",
+            "fbox", "boxed", "begin", "end", "aligned", "array", "tag", "operatorname"
+        ]
+        if nonRecoverable.contains(command) { return nil }
         let token = "\\\(command)"
         guard let range = tex.range(of: token) else { return nil }
+        let symbolReplacements = ["flat": "\\flat", "sharp": "\\sharp"]
+        if let replacement = symbolReplacements[command] {
+            var recovered = tex
+            recovered.replaceSubrange(range, with: replacement)
+            return recovered
+        }
         let followedByGroup = range.upperBound < tex.endIndex && tex[range.upperBound] == "{"
         let replacement = followedByGroup ? "\\mathrm" : "\\mathrm{\(command)}"
         var recovered = tex
@@ -207,6 +242,45 @@ final class NativeFormulaRenderer {
               raw[stamp] != nil else { return false }
         let path = cacheDirectory().appendingPathComponent(stamp + ".png").path
         return FileManager.default.fileExists(atPath: path)
+    }
+
+    /// Memory or on-disk metadata size — never invokes iosMath (safe for layout hot paths).
+    func knownArtifactSize(tex: String,
+                           fontSize: CGFloat,
+                           color: UIColor,
+                           display: Bool,
+                           scale: CGFloat = UIScreen.main.scale) -> CGSize? {
+        let key = cacheKey(tex: tex, fontSize: fontSize, color: color, display: display, scale: scale)
+        if let box = cache.object(forKey: key as NSString) {
+            return box.artifact.size
+        }
+        let stamp = RenderCacheStore.stamp(key)
+        guard let raw = UserDefaults.standard.dictionary(forKey: Self.metadataKey) as? [String: [String: Double]],
+              let item = raw[stamp],
+              let width = item["width"],
+              let height = item["height"] else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
+
+    /// Cheap formula footprint when iosMath has not run yet (iPad Air 1 / preview layout).
+    static func estimatedRenderSize(tex: String,
+                                    fontSize: CGFloat,
+                                    display: Bool,
+                                    maxWidth: CGFloat) -> CGSize {
+        let trimmed = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if display {
+            var height = fontSize * 2.1 + 18
+            if trimmed.contains("\\frac") || trimmed.contains("\\dfrac") { height += fontSize * 1.0 }
+            if trimmed.contains("\\sum") || trimmed.contains("\\int") || trimmed.contains("\\prod") {
+                height += fontSize * 0.75
+            }
+            if trimmed.contains("\\begin{") { height += fontSize * 2.0 }
+            if trimmed.contains("\\sqrt") { height += fontSize * 0.35 }
+            let width = min(maxWidth, max(fontSize * 4, fontSize * CGFloat(max(8, min(trimmed.count, 40)))))
+            return CGSize(width: width, height: height)
+        }
+        let width = min(maxWidth * 0.92, fontSize * CGFloat(max(4, min(trimmed.count, 22))))
+        return CGSize(width: width, height: fontSize * 1.28)
     }
 
     func clearDisk() {

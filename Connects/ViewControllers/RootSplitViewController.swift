@@ -170,6 +170,9 @@ final class RootSplitViewController: UIViewController {
         chatNav.loadViewIfNeeded()
         chatVC.loadViewIfNeeded()
         syncSidebarToggleUI(collapsed: isSidebarCollapsed)
+        #if DEBUG
+        ScrollStressHarness.scheduleIfRequested(on: chatVC)
+        #endif
     }
 
     private func syncSidebarToggleUI(collapsed: Bool) {

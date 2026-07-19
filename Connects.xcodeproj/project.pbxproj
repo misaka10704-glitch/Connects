@@ -62,6 +62,11 @@
 		A10000010000000000000052 /* LaunchScreen.storyboardc in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000052 /* LaunchScreen.storyboardc */; };
 		B10000010000000000000001 /* NativeMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* NativeMarkdown.swift */; };
 		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
+		B10000010000000000000006 /* ScrollStressHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ScrollStressHarness.swift */; };
+		B10000010000000000000007 /* RenderAuditHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* RenderAuditHarness.swift */; };
+		B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* DebugAPIBootstrap.swift */; };
+		B10000010000000000000009 /* RenderAuditChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000009 /* RenderAuditChecks.swift */; };
+		B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000A /* UsageSimulationHarness.swift */; };
 		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
 		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
 		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
@@ -168,6 +173,11 @@
 		A30000010000000000000001 /* Connects.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Connects.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* NativeMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdown.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
+		B20000010000000000000006 /* ScrollStressHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollStressHarness.swift; sourceTree = "<group>"; };
+		B20000010000000000000007 /* RenderAuditHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditHarness.swift; sourceTree = "<group>"; };
+		B20000010000000000000008 /* DebugAPIBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugAPIBootstrap.swift; sourceTree = "<group>"; };
+		B20000010000000000000009 /* RenderAuditChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditChecks.swift; sourceTree = "<group>"; };
+		B2000001000000000000000A /* UsageSimulationHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageSimulationHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000003 /* NativeFormulaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormulaRenderer.swift; sourceTree = "<group>"; };
 		B20000010000000000000004 /* NativeMessageLayouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageLayouter.swift; sourceTree = "<group>"; };
 		B20000010000000000000005 /* NativeMessageRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageRenderView.swift; sourceTree = "<group>"; };
@@ -337,6 +347,11 @@
 				C2000001000000000000000C /* AgentAppearance.swift */,
 				C2000001000000000000000E /* ProjectStore.swift */,
 				B20000010000000000000002 /* NativeMarkdownParser.swift */,
+				B20000010000000000000006 /* ScrollStressHarness.swift */,
+				B20000010000000000000007 /* RenderAuditHarness.swift */,
+				B20000010000000000000008 /* DebugAPIBootstrap.swift */,
+				B20000010000000000000009 /* RenderAuditChecks.swift */,
+				B2000001000000000000000A /* UsageSimulationHarness.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
 				F20000010000000000000001 /* BackupBundleHelper.swift */,
@@ -594,6 +609,11 @@
 				A1000001000000000000001B /* PlainMarkdown.swift in Sources */,
 				B10000010000000000000001 /* NativeMarkdown.swift in Sources */,
 				B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */,
+				B10000010000000000000006 /* ScrollStressHarness.swift in Sources */,
+				B10000010000000000000007 /* RenderAuditHarness.swift in Sources */,
+				B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */,
+				B10000010000000000000009 /* RenderAuditChecks.swift in Sources */,
+				B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */,
 				B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */,
 				B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */,
 				B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */,
@@ -721,8 +741,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 2;
 			};
@@ -753,8 +773,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 2;
 			};
@@ -786,8 +806,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -818,8 +838,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
 				TARGETED_DEVICE_FAMILY = 1;
 			};

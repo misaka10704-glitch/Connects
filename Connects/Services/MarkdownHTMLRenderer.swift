@@ -235,20 +235,9 @@ enum MarkdownHTMLRenderer {
         s = s.replacingOccurrences(of: "［", with: "[")
         s = s.replacingOccurrences(of: "］", with: "]")
         s = s.replacingOccurrences(of: "＄", with: "$")
+        s = convertFencedMathBlocks(s)
         s = s.replacingOccurrences(of: "\\（", with: "\\(")
         s = s.replacingOccurrences(of: "\\）", with: "\\)")
-        if let re = try? NSRegularExpression(
-            pattern: "```(?:math|latex|tex|katex|formula|equation)(?:[ \\t]*\\n|[ \\t]+)([\\s\\S]*?)```",
-            options: [.caseInsensitive]
-        ) {
-            let range = NSRange(s.startIndex..<s.endIndex, in: s)
-            s = re.stringByReplacingMatches(
-                in: s,
-                options: [],
-                range: range,
-                withTemplate: #"\$\$$1\$\$"#
-            )
-        }
         // Other chat providers use BBCode/XML-style math wrappers.
         let wrapperPatterns = [
             #"(?is)\[(?:math|latex|tex)\](.*?)\[/(?:math|latex|tex)\]"#,
@@ -320,18 +309,67 @@ enum MarkdownHTMLRenderer {
         return s
     }
 
+    /// Only short math snippets become display math; full LaTeX documents stay fenced code.
+    private static func convertFencedMathBlocks(_ source: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "```(?:math|latex|tex|katex|formula|equation)(?:[ \\t]*\\n|[ \\t]+)([\\s\\S]*?)```",
+            options: [.caseInsensitive]
+        ) else { return source }
+        let ns = source as NSString
+        var result = source
+        let matches = regex.matches(in: source, options: [], range: NSRange(location: 0, length: ns.length))
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 1 else { continue }
+            let fullRange = match.range(at: 0)
+            let body = ns.substring(with: match.range(at: 1))
+            let replacement: String
+            if shouldTreatFencedBodyAsDisplayMath(body) {
+                replacement = "$$\(body)$$"
+            } else {
+                replacement = ns.substring(with: fullRange)
+            }
+            result = (result as NSString).replacingCharacters(in: fullRange, with: replacement)
+        }
+        return result
+    }
+
+    private static func shouldTreatFencedBodyAsDisplayMath(_ body: String) -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.count > 700 { return false }
+        if trimmed.components(separatedBy: "\n").count > 14 { return false }
+        let lower = trimmed.lowercased()
+        let documentMarkers = [
+            "\\documentclass", "\\usepackage", "\\begin{document}", "\\end{document}",
+            "\\begin{lilypond}", "\\begin{verse}", "\\begin{chorus}", "\\begin{song}",
+            "\\newcommand", "\\chord{", "\\writechord", "\\lyluatex", "\\leadsheets",
+            "\\harmony", "\\lynote", "lilypond"
+        ]
+        if documentMarkers.contains(where: { lower.contains($0) }) { return false }
+        return true
+    }
+
     private static func isBareDisplayMathStart(_ line: String) -> Bool {
-        guard line.hasPrefix("\\"),
-              !line.hasPrefix("\\["),
-              !line.hasPrefix("\\("),
-              !line.hasPrefix("\\begin{"),
-              line.range(
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("%") { return false }
+        let lower = trimmed.lowercased()
+        let excludedPrefixes = [
+            "\\documentclass", "\\usepackage", "\\begin{", "\\end{",
+            "\\newcommand", "\\chord", "\\writechord", "\\lyluatex",
+            "\\mathrm{documentclass", "\\mathrm{article}", "\\mathrm{harmony}"
+        ]
+        if excludedPrefixes.contains(where: { lower.hasPrefix($0) }) { return false }
+        guard trimmed.hasPrefix("\\"),
+              !trimmed.hasPrefix("\\["),
+              !trimmed.hasPrefix("\\("),
+              !trimmed.hasPrefix("\\begin{"),
+              trimmed.range(
                 of: #"^\\(?:boxed|displaystyle|frac|dfrac|tfrac|sum|prod|int|iint|iiint|lim|sqrt|left|operatorname)\b"#,
                 options: .regularExpression
               ) != nil else {
             return false
         }
-        return line.filter { $0 == "{" }.count == line.filter { $0 == "}" }.count
+        return trimmed.filter { $0 == "{" }.count == trimmed.filter { $0 == "}" }.count
     }
 
     private static func isBareDisplayMathContinuation(_ line: String) -> Bool {

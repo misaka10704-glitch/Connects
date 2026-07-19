@@ -8,7 +8,7 @@ enum StudyDocumentError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .fileTooLarge: return "PDF 超过 50MB，无法导入。"
+        case .fileTooLarge: return "PDF 超过 160MB，无法导入。"
         case .copyFailed: return "无法复制 PDF 到应用目录。"
         case .invalidPDF: return "不是有效的 PDF 文件。"
         }
@@ -20,7 +20,7 @@ final class StudyDocumentStore {
 
     private(set) var documents: [StudyDocument] = []
     private let pdfCache = NSCache<NSString, PDFDocument>()
-    private let maxFileBytes: Int64 = 50 * 1024 * 1024
+    private let maxFileBytes: Int64 = 160 * 1024 * 1024
     private let registryName = "registry.json"
 
     var studyRootURL: URL {
