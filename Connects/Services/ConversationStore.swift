@@ -103,11 +103,9 @@ final class ConversationStore {
     }
 
     func setShowArchived(_ value: Bool) {
+        guard showArchived != value else { return }
         showArchived = value
-        if let cur = currentConversation, cur.isArchived != value {
-            currentConversationID = visibleConversations.first?.id
-        }
-        notify()
+        notify(userInfo: ["source": "archiveFilter"])
     }
 
     func selectConversation(id: String) {
@@ -173,7 +171,6 @@ final class ConversationStore {
         conversations[index].updatedAt = Date()
         if archived && currentConversationID == id {
             showArchived = false
-            currentConversationID = visibleConversations.first?.id ?? id
         }
         save()
         notify()

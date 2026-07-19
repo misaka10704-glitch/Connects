@@ -502,7 +502,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
            previousMessageID == message.id,
            hasVisibleNativePaint,
            freezeLayout,
-           abs(preferredLayoutWidth - layoutWidth) < 1 {
+           abs(lastNativeLayoutWidth - nativeLayoutWidth(for: layoutWidth)) < 1 {
             ensureActionButtonsVisible(for: message)
             updateRenderDebugOverlay()
             return
@@ -935,34 +935,26 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 colors: colors,
                 layoutWidth: layoutWidth
             )
-            configurePlainFallback(
-                message: message,
-                hasThinking: hasThinking,
-                hasSearch: hasSearch,
-                hasImage: hasImage,
-                font: font,
-                colors: colors,
-                scheduleHeightNotify: false,
-                allowTruncate: cellDelegate?.messageCellShouldTruncatePlainBody(self) != false
+            // Plain UILabel cannot render markdown — formula-heavy study history looks blank.
+            bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
+            nativeMessageForRemeasure = message
+            lastNativeLayoutWidth = width
+            let renderResult = nativeRenderView.configure(
+                content: message.content,
+                width: width,
+                fontSize: font,
+                appearance: SettingsManager.shared.appearanceMode.rawValue,
+                colors: colors
             )
+            nativeHeight.constant = renderResult.height
+            nativeRenderView.isHidden = false
+            refreshActionChrome(for: message, streaming: false, colors: colors)
+            contentView.layoutIfNeeded()
+            cellDelegate?.messageCellDidPaintContent(self)
             return
         }
         deferredNativeBind = nil
-        assistantLabel.isHidden = true
-        assistantLabel.attributedText = nil
-        assistantLabel.text = nil
-        labelBottom.isActive = false
-        labelBottomFloor.isActive = false
-        assistantTopToRole.isActive = false
-        assistantTopToImage.isActive = false
-        assistantTopToThink.isActive = false
-        nativeTopToRole.isActive = false
-        nativeTopToImage.isActive = false
-        nativeTopToThink.isActive = false
-        nativeBottom.isActive = true
-        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
-        else if hasImage { nativeTopToImage.isActive = true }
-        else { nativeTopToRole.isActive = true }
+        bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
         nativeMessageForRemeasure = message
         lastNativeLayoutWidth = width
         let renderResult = nativeRenderView.configure(
@@ -980,6 +972,24 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         refreshActionChrome(for: message, streaming: false, colors: colors)
         contentView.layoutIfNeeded()
         cellDelegate?.messageCellDidPaintContent(self)
+    }
+
+    private func bindNativeBodyLayout(hasThinking: Bool, hasSearch: Bool, hasImage: Bool) {
+        assistantLabel.isHidden = true
+        assistantLabel.attributedText = nil
+        assistantLabel.text = nil
+        labelBottom.isActive = false
+        labelBottomFloor.isActive = false
+        assistantTopToRole.isActive = false
+        assistantTopToImage.isActive = false
+        assistantTopToThink.isActive = false
+        nativeTopToRole.isActive = false
+        nativeTopToImage.isActive = false
+        nativeTopToThink.isActive = false
+        nativeBottom.isActive = true
+        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
+        else if hasImage { nativeTopToImage.isActive = true }
+        else { nativeTopToRole.isActive = true }
     }
 
     func debugPaintKind() -> String {
@@ -1630,7 +1640,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeRenderView.onHeightChange = { [weak self] height in
             guard let self = self, !self.messageID.isEmpty else { return }
             self.nativeHeight.constant = height
-            self.scheduleMeasuredHeightNotify(for: self.messageID)
+            self.contentView.layoutIfNeeded()
+            let columnH = self.measuredContentHeight()
+            guard columnH > 40 else { return }
+            // Formula warm-up must grow frozen rows — scheduleMeasuredHeightNotify is blocked mid-gesture.
+            self.cellDelegate?.messageCell(self, didFinishStableRender: columnH, for: self.messageID)
         }
         column.addSubview(nativeRenderView)
 

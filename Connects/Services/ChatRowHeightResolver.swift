@@ -15,6 +15,10 @@ final class ChatRowHeightResolver {
     /// While set, `rowHeight` ignores display mutations (scroll geometry freeze).
     private var scrollFrozenRowHeights: [String: CGFloat]?
 
+    func frozenRowHeight(for messageID: String) -> CGFloat? {
+        scrollFrozenRowHeights?[messageID]
+    }
+
     // MARK: - Session lifecycle
 
     func clearAll() {

@@ -132,6 +132,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     @objc private func storeChanged(_ note: Notification) {
         let source = note.userInfo?["source"] as? String
         let projectFilterOnly = source == "projectFilter"
+        let archiveFilterOnly = source == "archiveFilter"
         let selectOnly = source == "select"
         if selectOnly {
             if note.userInfo?["projectFilterChanged"] as? Bool == true {
@@ -141,7 +142,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            if projectFilterOnly {
+            if projectFilterOnly || archiveFilterOnly {
                 if self.listContentLoaded {
                     self.reloadProjectFilter()
                 } else {
@@ -165,6 +166,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     }
 
     private func reloadProjectFilter() {
+        refreshArchiveIcon()
         rebuildSections()
         tableView.reloadData()
         highlightCurrentConversation()
