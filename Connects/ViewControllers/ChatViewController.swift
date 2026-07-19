@@ -69,7 +69,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var lastStreamContentBytes = -1
     private var lastStreamReasoningBytes = -1
     private var lastStreamSearchBytes = -1
+    private var lastStreamImageTranscriptionBytes = -1
     private var lastStreamPhase: SearchProcessPhase = .idle
+    private var lastStreamImageTranscriptionPhase: ImageTranscriptionPhase = .idle
     private var lastStreamProgressAt = Date()
     private var lastStreamLayoutAt = Date.distantPast
     private var streamSpinnerFrame = 0
@@ -1940,15 +1942,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             let path = IndexPath(row: row, section: 0)
             let message = messages[row]
+            let pairedUser = pairedUserMessage(forAssistantAt: row, in: messages)
             let layoutWidth = currentRenderWidth()
             let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
             UIView.performWithoutAnimation {
                 if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
-                    cell.finishChromeToggleLayout()
-                } else {
                     if isSearch {
-                        (tableView.cellForRow(at: path) as? AssistantMessageCell)?.syncSearchPresentation(with: message, layoutWidth: layoutWidth)
+                        cell.syncSearchPresentation(with: message, layoutWidth: layoutWidth, pairedUser: pairedUser)
                     }
+                    cell.finishChromeToggleLayout()
+                    if isSearch {
+                        let projected = cell.projectedColumnHeight(for: message, layoutWidth: layoutWidth)
+                        if projected > 40 {
+                            rowHeights.commit(columnHeight: projected, messageID: mid)
+                        }
+                    }
+                } else {
                     tableView.reloadRows(at: [path], with: .none)
                 }
                 remeasureRowsPreservingViewport(anchorPath: path)
@@ -2026,9 +2035,48 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @objc private func imageTranscriptionUpdated(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
-        rowHeights.clearAll()
-        tableView.reloadData()
+        ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let layoutWidth = currentRenderWidth()
+        UIView.performWithoutAnimation {
+            for (row, message) in messages.enumerated() where message.role == .assistant && message.hasImageTranscription {
+                let path = IndexPath(row: row, section: 0)
+                rowHeights.invalidate(messageID: message.id)
+                let pairedUser = pairedUserMessage(forAssistantAt: row, in: messages)
+                if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
+                    if message.isStreaming {
+                        if !cell.updateStreamingContent(message) {
+                            cell.configure(
+                                with: message,
+                                preferredHeight: nil,
+                                layoutWidth: layoutWidth,
+                                pairedUser: pairedUser
+                            )
+                        }
+                    } else {
+                        cell.syncSearchPresentation(with: message, layoutWidth: layoutWidth, pairedUser: pairedUser)
+                        if AssistantMessageLayout.isSearchExpanded(messageID: message.id) {
+                            let projected = cell.projectedColumnHeight(for: message, layoutWidth: layoutWidth)
+                            if projected > 40 {
+                                rowHeights.commit(columnHeight: projected, messageID: message.id)
+                            }
+                        }
+                    }
+                } else {
+                    tableView.reloadRows(at: [path], with: .none)
+                }
+            }
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        }
         refreshContextUsage()
+    }
+
+    private func pairedUserMessage(forAssistantAt row: Int, in messages: [ChatMessage]) -> ChatMessage? {
+        guard row > 0,
+              messages[row].role == .assistant,
+              messages[row - 1].role == .user else { return nil }
+        return messages[row - 1]
     }
 
     @objc private func retryImageTranscription(_ note: Notification) {
@@ -2044,12 +2092,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
         let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
+        let studyPagePDFText: String? = user.apiContextPrefix?.contains("[阅读上下文") == true ? "" : nil
         ImageTranscriptionCoordinator.shared.start(
             conversationID: conversation.id,
             userMessageID: user.id,
             assistantMessageID: assistantID,
             base64: base64,
-            model: model
+            model: model,
+            studyPagePDFText: studyPagePDFText
         )
     }
 
@@ -2061,21 +2111,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         stopStreamUITimer()
         // Streaming stays lightweight; completion performs one deterministic
         // native parse/layout and swaps under the cell snapshot cover.
+        ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last else { return }
         syncStreamingChrome()
         let path = IndexPath(row: messages.count - 1, section: 0)
+        let pairedUser = pairedUserMessage(forAssistantAt: path.row, in: messages)
         // Streaming reasoning is expanded and can be thousands of points tall.
         // Never seed the finished row with that transient geometry.
         rowHeights.invalidate(messageID: last.id)
         pendingHeights.removeValue(forKey: last.id)
         if let visibleCell = tableView.cellForRow(at: path) as? AssistantMessageCell,
            visibleCell.messageID == last.id {
-            if let measured = visibleCell.transitionToFinishedPlainRendering(
+            _ = visibleCell.transitionToFinishedPlainRendering(
                 last,
-                preferredHeight: rowHeights.committedColumnHeight(for: last.id)
-            ) {
-                rowHeights.commit(columnHeight: measured, messageID: last.id)
+                preferredHeight: rowHeights.committedColumnHeight(for: last.id),
+                pairedUser: pairedUser
+            )
+            let layoutWidth = currentRenderWidth()
+            let projected = visibleCell.projectedColumnHeight(for: last, layoutWidth: layoutWidth)
+            if projected > 40 {
+                rowHeights.commit(columnHeight: projected, messageID: last.id)
             }
             UIView.performWithoutAnimation {
                 tableView.beginUpdates()
@@ -2102,7 +2158,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         lastStreamContentBytes = -1
         lastStreamReasoningBytes = -1
         lastStreamSearchBytes = -1
+        lastStreamImageTranscriptionBytes = -1
         lastStreamPhase = .idle
+        lastStreamImageTranscriptionPhase = .idle
         lastStreamProgressAt = Date()
         lastStreamLayoutAt = .distantPast
         streamSpinnerFrame = 0
@@ -2133,17 +2191,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let contentBytes = last.content.utf8.count
         let reasoningBytes = last.reasoningContent.utf8.count
         let searchBytes = last.searchProcessContent.utf8.count
+        let imageTranscriptionBytes = last.imageTranscriptionContent.utf8.count
         let changed = last.id != lastStreamMessageID
             || contentBytes != lastStreamContentBytes
             || reasoningBytes != lastStreamReasoningBytes
             || searchBytes != lastStreamSearchBytes
+            || imageTranscriptionBytes != lastStreamImageTranscriptionBytes
             || last.searchProcessPhase != lastStreamPhase
+            || last.imageTranscriptionPhase != lastStreamImageTranscriptionPhase
         if changed {
             lastStreamMessageID = last.id
             lastStreamContentBytes = contentBytes
             lastStreamReasoningBytes = reasoningBytes
             lastStreamSearchBytes = searchBytes
+            lastStreamImageTranscriptionBytes = imageTranscriptionBytes
             lastStreamPhase = last.searchProcessPhase
+            lastStreamImageTranscriptionPhase = last.imageTranscriptionPhase
             lastStreamProgressAt = Date()
             let now = Date()
             // Geometry must keep up even while the user reads history; only
@@ -2181,7 +2244,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             if let cell = cell {
                 if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
-                    cell.configure(with: last, preferredHeight: rowHeights.committedColumnHeight(for: last.id), layoutWidth: currentRenderWidth())
+                    let pairedUser = pairedUserMessage(forAssistantAt: path.row, in: messages)
+                    cell.configure(
+                        with: last,
+                        preferredHeight: rowHeights.committedColumnHeight(for: last.id),
+                        layoutWidth: currentRenderWidth(),
+                        pairedUser: pairedUser
+                    )
                 }
             } else if !readingHistory,
                       path.row < tableView.numberOfRows(inSection: 0) {
@@ -2233,6 +2302,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         studyChromeMode = mode
         applyStudyChrome()
+        updateStudyInputBar()
     }
 
     func refreshStudyComposerLayout() {
@@ -2402,6 +2472,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         if conversationChanged {
             if let id = newID {
+                ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
                 switchToConversation(id: id, coldLaunch: coldLaunch)
             }
             guard newID == ConversationStore.shared.currentConversationID else {
@@ -2521,8 +2592,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let conv = ConversationStore.shared.currentConversation else { return }
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
         var items: [ConnectsMenuItem] = []
-        if let docID = conv.studyDocumentID,
-           let doc = StudyDocumentStore.shared.document(id: docID) {
+        if conv.studyDocumentID != nil,
+           let doc = StudyDocumentStore.shared.document(id: conv.studyDocumentID!) {
             items.append(ConnectsMenuItem(title: "文档：\(doc.title)", icon: .book) {})
             items.append(ConnectsMenuItem(title: "更换文档", icon: .folder) { [weak self] in
                 self?.presentStudyDocumentPicker()
@@ -2566,7 +2637,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func presentStudyDocumentPicker() {
         let picker = StudyDocumentPickerViewController()
         picker.delegate = self
-        navigationController?.pushViewController(picker, animated: true)
+        let nav = UINavigationController(rootViewController: picker)
+        nav.modalPresentationStyle = .formSheet
+        if #available(iOS 13.0, *) {
+            nav.isModalInPresentation = false
+        }
+        present(nav, animated: true)
     }
 
     private func detachStudyDocument() {
@@ -2586,11 +2662,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateStudyInputBar()
         if navigationController?.topViewController === picker {
             navigationController?.popViewController(animated: true)
+        } else {
+            picker.dismiss(animated: true)
         }
-    }
-
-    func studyDocumentPickerDidRequestImport(_ picker: StudyDocumentPickerViewController) {
-        picker.presentImportPicker(from: self)
     }
 
     private func setupNavBar() {
@@ -3119,7 +3193,62 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 self?.refreshContextUsage()
             }
         }
-        return built.messages
+        var messages = built.messages
+        applyStudyCaptureToLastUserMessage(in: &messages, conversationID: conversationID, persist: true)
+        return messages
+    }
+
+    private func isStudyPageCaptureEnabled(for conversationID: String) -> Bool {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID),
+              conv.studyDocumentID != nil else { return false }
+        if conv.studyPageCaptureEnabled { return true }
+        return conversationID == currentConversationID && inputBar.studyPageCaptureEnabled
+    }
+
+    private func studyPageCapturePayload() -> StudyPageCapture? {
+        studyContextProvider?.captureCurrentStudyPage()
+    }
+
+    private func applyStudyCaptureToLastUserMessage(
+        in messages: inout [ChatMessage],
+        conversationID: String,
+        persist: Bool
+    ) {
+        guard isStudyPageCaptureEnabled(for: conversationID),
+              let capture = studyPageCapturePayload(),
+              let idx = messages.lastIndex(where: { $0.role == .user }) else { return }
+        var msg = messages[idx]
+        let prefix = capture.apiContextPrefix()
+        let changed = msg.apiContextPrefix != prefix || msg.imageJPEGBase64 != capture.imageJPEGBase64
+        guard changed else { return }
+        msg.apiContextPrefix = prefix
+        msg.imageJPEGBase64 = capture.imageJPEGBase64
+        messages[idx] = msg
+        guard persist else { return }
+        let messageID = msg.id
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            guard let i = draft.messages.firstIndex(where: { $0.id == messageID }) else { return }
+            draft.messages[i].apiContextPrefix = prefix
+            draft.messages[i].imageJPEGBase64 = capture.imageJPEGBase64
+        }
+    }
+
+    private func notifyStudyCaptureFailure(for conversationID: String) {
+        guard conversationID == currentConversationID else { return }
+        let message: String
+        if studyContextProvider == nil {
+            message = "无法读取 PDF（学习模式未就绪）"
+        } else if ConversationStore.shared.conversation(id: conversationID)?.studyDocumentID == nil {
+            message = "当前对话未依附 PDF"
+        } else {
+            message = "无法截取当前 PDF 页"
+        }
+        navigationItem.prompt = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            if self?.navigationItem.prompt == message {
+                self?.navigationItem.prompt = nil
+            }
+        }
     }
 
     private func retryLastTurn() {
@@ -3658,9 +3787,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        if imageBase64 != nil && !conv.model.supportsVision {
-            guard ensureVisionModelIfNeeded() else { return }
-            conv = ConversationStore.shared.currentConversation ?? conv
+        let studySyncOn = isStudyPageCaptureEnabled(for: conv.id)
+        if studySyncOn || imageBase64 != nil {
+            if !conv.model.supportsVision {
+                guard ensureVisionModelIfNeeded() else { return }
+                conv = ConversationStore.shared.currentConversation ?? conv
+            }
         }
 
         let provider = conv.model.provider
@@ -3699,39 +3831,53 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                              conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
 
-        var studyPrefix: String?
-        if conv.studyPageCaptureEnabled,
-           let snippet = studyContextProvider?.captureCurrentStudyPage() {
-            if snippet.text.isEmpty {
-                if conversationID == currentConversationID {
-                    navigationItem.prompt = "当前页无可提取文字"
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                        if self?.navigationItem.prompt == "当前页无可提取文字" {
-                            self?.navigationItem.prompt = nil
-                        }
-                    }
-                }
+        let resolvedStudyCapture: StudyPageCapture?
+        if isStudyPageCaptureEnabled(for: conversationID) {
+            if let capture = studyPageCapturePayload() {
+                resolvedStudyCapture = capture
             } else {
-                studyPrefix = "[阅读上下文 · \(snippet.label)]\n\(String(snippet.text.prefix(4000)))"
+                notifyStudyCaptureFailure(for: conversationID)
+                return
             }
+        } else {
+            resolvedStudyCapture = nil
         }
 
+        let finalImage = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64
+        let studyPrefix = resolvedStudyCapture?.apiContextPrefix()
+        let trimmedUserText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
-        let displayText = text.isEmpty && imageBase64 != nil ? "[图片]" : text
+        let displayText: String
+        if !trimmedUserText.isEmpty {
+            displayText = text
+        } else if finalImage != nil {
+            displayText = resolvedStudyCapture.map { "[\($0.label)]" } ?? "[图片]"
+        } else {
+            displayText = text
+        }
         let userMsg = ChatMessage(
             role: .user,
             content: displayText,
-            imageJPEGBase64: imageBase64,
+            imageJPEGBase64: finalImage,
             apiContextPrefix: studyPrefix
         )
-        let searchOn = SettingsManager.shared.webSearchEnabled && !displayText.isEmpty && displayText != "[图片]"
+        let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
+        let hasImageAttachment = finalImage != nil && !(finalImage?.isEmpty ?? true)
+        let imageTranscriptionStatus = hasImageAttachment
+            ? (resolvedStudyCapture != nil
+                ? "正在提取页面文字（OCR），随后转写图片内容…"
+                : "正在将图片转写为文字，主回复不会等待此步骤。")
+            : ""
         let assistantMsg = ChatMessage(
             role: .assistant,
             content: "",
             reasoningContent: "",
             searchProcessContent: searchOn ? "正在结合对话上下文规划检索词…" : "",
             searchProcessPhase: searchOn ? .planning : .idle,
-            isStreaming: true
+            isStreaming: true,
+            imageTranscriptionContent: imageTranscriptionStatus,
+            imageTranscriptionPhase: hasImageAttachment ? .transcribing : .idle
         )
         let convID = conv.id
         let model = conv.model
@@ -3794,14 +3940,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // has already captured the image (or will use its finished description);
         // this independent job prepares the compact durable context for later
         // turns and drives the small status label on the companion reply.
-        if let imageBase64 = imageBase64, !imageBase64.isEmpty {
+        if let imageBase64 = finalImage, !imageBase64.isEmpty {
             let captionModel = model.supportsVision ? model : AIModelOption.preferredVision
             ImageTranscriptionCoordinator.shared.start(
                 conversationID: convID,
                 userMessageID: userMsg.id,
                 assistantMessageID: assistantMsg.id,
                 base64: imageBase64,
-                model: captionModel
+                model: captionModel,
+                studyPagePDFText: resolvedStudyCapture.map { $0.text }
             )
         }
     }
@@ -3843,7 +3990,8 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         ) as! AssistantMessageCell
         cell.cellDelegate = self
         bindImageCache(to: cell, message: msg)
-        cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
+        let pairedUser = pairedUserMessage(forAssistantAt: indexPath.row, in: messages)
+        cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth, pairedUser: pairedUser)
         return cell
     }
 
@@ -3861,6 +4009,11 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             DispatchQueue.main.async { [weak cell] in
                 guard let cell = cell, cell.messageID == msgID else { return }
                 cell.setCachedImage(img)
+                if let userCell = cell as? UserMessageCell {
+                    userCell.applyCachedImageIfNeeded()
+                } else if let assistantCell = cell as? AssistantMessageCell {
+                    assistantCell.applyCachedImageIfNeeded()
+                }
             }
         }
     }
@@ -4377,6 +4530,16 @@ extension ChatViewController: InputBarViewDelegate {
             draft.studyPageCaptureEnabled = enabled
         }
         inputBar.studyPageCaptureEnabled = enabled
+        if enabled {
+            navigationItem.prompt = "发送时将附带当前阅读页截图截图"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                if self?.navigationItem.prompt == "发送时将附带当前阅读页截图" {
+                    self?.navigationItem.prompt = nil
+                }
+            }
+        } else if navigationItem.prompt == "发送时将附带当前阅读页截图" {
+            navigationItem.prompt = nil
+        }
     }
 
     func inputBarDidTapSend(text: String, imageBase64: String?) {

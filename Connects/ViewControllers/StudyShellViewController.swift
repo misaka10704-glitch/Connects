@@ -927,10 +927,15 @@ final class StudyShellViewController: UIViewController {
 }
 
 extension StudyShellViewController: StudyReadingContextProviding {
-    func captureCurrentStudyPage() -> (label: String, text: String)? {
-        guard isReaderVisible else { return nil }
+    func captureCurrentStudyPage() -> StudyPageCapture? {
+        guard boundDocumentID != nil else { return nil }
         let label = pdfReaderVC.currentPageLabel()
-        let text = pdfReaderVC.currentPageText() ?? ""
-        return (label, text)
+        guard label != "无文档" else { return nil }
+        guard let imageJPEGBase64 = pdfReaderVC.captureCurrentPageImageJPEG() else { return nil }
+        return StudyPageCapture(
+            label: label,
+            text: pdfReaderVC.currentPageText() ?? "",
+            imageJPEGBase64: imageJPEGBase64
+        )
     }
 }

@@ -103,6 +103,7 @@
 		S10000010000000000000001 /* StudyDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000001 /* StudyDocument.swift */; };
 		S10000010000000000000002 /* StudyDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000002 /* StudyDocumentStore.swift */; };
 		S10000010000000000000003 /* StudyProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000003 /* StudyProgressStore.swift */; };
+		S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000008 /* StudyPageOCRExtractor.swift */; };
 		S10000010000000000000004 /* StudyReadingContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000004 /* StudyReadingContext.swift */; };
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
@@ -209,6 +210,7 @@
 		S20000010000000000000001 /* StudyDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocument.swift; sourceTree = "<group>"; };
 		S20000010000000000000002 /* StudyDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000003 /* StudyProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyProgressStore.swift; sourceTree = "<group>"; };
+		S20000010000000000000008 /* StudyPageOCRExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPageOCRExtractor.swift; sourceTree = "<group>"; };
 		S20000010000000000000004 /* StudyReadingContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyReadingContext.swift; sourceTree = "<group>"; };
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
@@ -342,6 +344,7 @@
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
 				S20000010000000000000003 /* StudyProgressStore.swift */,
+				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
 			);
 			path = Services;
@@ -626,6 +629,7 @@
 				S10000010000000000000001 /* StudyDocument.swift in Sources */,
 				S10000010000000000000002 /* StudyDocumentStore.swift in Sources */,
 				S10000010000000000000003 /* StudyProgressStore.swift in Sources */,
+				S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */,
 				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,
 				S10000010000000000000005 /* PDFReaderViewController.swift in Sources */,
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,

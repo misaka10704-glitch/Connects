@@ -433,6 +433,7 @@ enum ContextBuilder {
     static func estimatedChars(_ messages: [ChatMessage]) -> Int {
         messages.reduce(0) { sum, m in
             var n = m.content.count + m.reasoningContent.count
+            if let prefix = m.apiContextPrefix { n += prefix.count }
             if let img = m.imageJPEGBase64 { n += min(img.count, 40_000) }
             return sum + n + 24
         }

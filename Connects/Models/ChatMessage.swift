@@ -34,9 +34,9 @@ enum ImageTranscriptionPhase: String, Codable {
 
     var headerTitle: String {
         switch self {
-        case .idle: return "图片文字描述"
-        case .transcribing: return "正在转写图片…"
-        case .done: return "图片文字描述"
+        case .idle: return "图片转写"
+        case .transcribing: return "图片转写中…"
+        case .done: return "图片转写"
         case .failed: return "图片转写失败，可重试"
         }
     }
@@ -149,6 +149,13 @@ struct ChatMessage: Codable, Equatable {
     var hasImageTranscription: Bool {
         !imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || imageTranscriptionPhase != .idle
+    }
+
+    func imageTranscriptionDisplayText(pairedUser: ChatMessage?) -> String {
+        ImageDurableText.displayBody(
+            assistantText: imageTranscriptionContent,
+            userDescription: pairedUser?.imageDescription
+        )
     }
 
     var versionCount: Int {

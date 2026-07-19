@@ -5,7 +5,6 @@ protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarDidRefreshConversationList()
     func sidebarDidSelectConversation(id: String)
     func sidebarDidRequestNewChat()
-    func sidebarDidRequestNewStudy()
     func sidebarDidRequestSettings()
     func sidebarDidRequestMemory()
     func sidebarDidDeleteConversation(id: String)
@@ -41,7 +40,6 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     private let logoImageView = UIImageView()
     private let brandLabel = UILabel()
     private let newChatButton = UIButton(type: .system)
-    private let studyButton = UIButton(type: .system)
     private let searchField = UITextField()
     private let memoryButton = UIButton(type: .system)
     private let archiveFilterButton = UIButton(type: .system)
@@ -108,10 +106,6 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         newChatButton.tintColor = c.textPrimary
         newChatButton.backgroundColor = c.surface
         newChatButton.layer.borderColor = c.border.cgColor
-        studyButton.setTitleColor(c.textPrimary, for: .normal)
-        studyButton.tintColor = c.textPrimary
-        studyButton.backgroundColor = c.surface
-        studyButton.layer.borderColor = c.border.cgColor
         archiveFilterButton.tintColor = c.textSecondary
         settingsButton.tintColor = c.textSecondary
         settingsButton.setTitleColor(c.textSecondary, for: .normal)
@@ -421,18 +415,6 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         newChatButton.addTarget(self, action: #selector(newChatTapped), for: .touchUpInside)
         headerBar.addSubview(newChatButton)
 
-        studyButton.translatesAutoresizingMaskIntoConstraints = false
-        studyButton.setTitle("  学习", for: .normal)
-        studyButton.setImage(ActionIconFactory.image(.book, pointSize: 15), for: .normal)
-        studyButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
-        studyButton.layer.cornerRadius = 12
-        studyButton.layer.borderWidth = 1
-        studyButton.contentHorizontalAlignment = .left
-        studyButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 14)
-        studyButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 6)
-        studyButton.addTarget(self, action: #selector(studyTapped), for: .touchUpInside)
-        headerBar.addSubview(studyButton)
-
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.font = DSTheme.bodyFont(size: 14)
         searchField.layer.cornerRadius = 10
@@ -502,12 +484,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             newChatButton.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -12),
             newChatButton.heightAnchor.constraint(equalToConstant: 40),
 
-            studyButton.topAnchor.constraint(equalTo: newChatButton.bottomAnchor, constant: 8),
-            studyButton.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 12),
-            studyButton.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -12),
-            studyButton.heightAnchor.constraint(equalToConstant: 36),
-
-            searchField.topAnchor.constraint(equalTo: studyButton.bottomAnchor, constant: 10),
+            searchField.topAnchor.constraint(equalTo: newChatButton.bottomAnchor, constant: 10),
             searchField.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 12),
             searchField.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -12),
             searchField.heightAnchor.constraint(equalToConstant: 34),
@@ -546,7 +523,6 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     }
 
     @objc private func newChatTapped() { delegate?.sidebarDidRequestNewChat() }
-    @objc private func studyTapped() { delegate?.sidebarDidRequestNewStudy() }
     @objc private func settingsTapped() { delegate?.sidebarDidRequestSettings() }
     @objc private func memoryTapped() { delegate?.sidebarDidRequestMemory() }
     @objc private func archiveFilterTapped() { delegate?.sidebarDidToggleArchiveFilter() }

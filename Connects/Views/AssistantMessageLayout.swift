@@ -318,21 +318,51 @@ enum AssistantMessageLayout {
         return bodyHeight
     }
 
+    private static func resolvedSearchChromeText(for message: ChatMessage,
+                                                 pairedUser: ChatMessage?) -> String {
+        if message.hasImageTranscription {
+            return message.imageTranscriptionDisplayText(pairedUser: pairedUser)
+        }
+        return message.searchProcessContent
+    }
+
+    private static func searchChromeHeight(for message: ChatMessage,
+                                           layoutWidth: CGFloat,
+                                           pairedUser: ChatMessage?) -> CGFloat {
+        guard message.hasSearchProcess || message.hasImageTranscription else { return 0 }
+        let expanded = expandedSearchIDs.contains(message.id)
+        if !expanded { return 36 }
+        let text = resolvedSearchChromeText(for: message, pairedUser: pairedUser)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return 36 }
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        let font = UIFont.systemFont(ofSize: thinkFont)
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        let bodyH = ceil(
+            (text as NSString).boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font],
+                context: nil
+            ).height
+        )
+        return 32 + 4 + bodyH + 10
+    }
+
     static func estimatedColumnContentHeight(for message: ChatMessage,
                                              layoutWidth: CGFloat,
                                              isLastRow: Bool,
-                                             allowSyncLayout: Bool = false) -> CGFloat? {
+                                             allowSyncLayout: Bool = false,
+                                             pairedUser: ChatMessage? = nil) -> CGFloat? {
         guard message.role == .assistant, !message.isStreaming else { return nil }
         var total: CGFloat = 0
 
         if message.hasSearchProcess || message.hasImageTranscription {
-            let expanded = expandedSearchIDs.contains(message.id)
-            let searchText = message.hasImageTranscription
-                ? message.imageTranscriptionContent
-                : message.searchProcessContent
-            total += expanded
-                ? 36 + CGFloat(max(1, searchText.count / 48)) * 16
-                : 36
+            total += searchChromeHeight(
+                for: message,
+                layoutWidth: layoutWidth,
+                pairedUser: pairedUser
+            )
         }
 
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -376,18 +406,17 @@ enum AssistantMessageLayout {
     /// Must match `AssistantMessageCell.configurePlainFallback` — used during scroll so row
     /// height equals visible content (prevents scrolling through invisible padding).
     static func plainFallbackColumnContentHeight(for message: ChatMessage,
-                                                 layoutWidth: CGFloat) -> CGFloat? {
+                                                 layoutWidth: CGFloat,
+                                                 pairedUser: ChatMessage? = nil) -> CGFloat? {
         guard message.role == .assistant, !message.isStreaming else { return nil }
         var total: CGFloat = 0
 
         if message.hasSearchProcess || message.hasImageTranscription {
-            let expanded = expandedSearchIDs.contains(message.id)
-            let searchText = message.hasImageTranscription
-                ? message.imageTranscriptionContent
-                : message.searchProcessContent
-            total += expanded
-                ? 36 + CGFloat(max(1, searchText.count / 48)) * 16
-                : 36
+            total += searchChromeHeight(
+                for: message,
+                layoutWidth: layoutWidth,
+                pairedUser: pairedUser
+            )
         }
 
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)

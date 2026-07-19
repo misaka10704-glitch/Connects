@@ -48,6 +48,12 @@ final class StudyProgressStore {
         cache.removeAll()
     }
 
+    func delete(documentID: String) {
+        cache.removeValue(forKey: documentID)
+        let url = progressURL(for: documentID)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     private func progressURL(for documentID: String) -> URL {
         rootURL.appendingPathComponent("\(documentID).json")
     }

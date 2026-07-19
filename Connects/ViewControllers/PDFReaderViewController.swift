@@ -352,20 +352,58 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func currentPageText() -> String? {
-        pdfView.currentPage?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let doc = pdfView.document,
+              let index = resolvedPageIndex(),
+              let page = doc.page(at: index) else { return nil }
+        return page.string?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func currentPageLabel() -> String {
         guard let doc = pdfView.document else { return "无文档" }
-        let index: Int
-        if let page = pdfView.currentPage {
-            index = doc.index(for: page)
-        } else {
-            index = 0
-        }
+        let index = resolvedPageIndex() ?? 0
         let page = max(0, index) + 1
         let total = max(doc.pageCount, 1)
         return "第 \(page) / \(total) 页"
+    }
+
+    func captureCurrentPageImageJPEG() -> String? {
+        guard let doc = pdfView.document,
+              let index = resolvedPageIndex(),
+              let page = doc.page(at: index) else { return nil }
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 1, bounds.height > 1 else { return nil }
+
+        let maxSide: CGFloat = 1400
+        let scale = min(maxSide / max(bounds.width, bounds.height), 2.0)
+        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+
+        UIGraphicsBeginImageContextWithOptions(size, true, 1)
+        guard let ctx = UIGraphicsGetCurrentContext() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
+        UIColor.white.setFill()
+        ctx.fill(CGRect(origin: .zero, size: size))
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: size.height)
+        ctx.scaleBy(x: scale, y: -scale)
+        page.draw(with: .mediaBox, to: ctx)
+        ctx.restoreGState()
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return image.flatMap { ImageAttachmentHelper.prepareJPEGBase64(from: $0) }
+    }
+
+    private func resolvedPageIndex() -> Int? {
+        guard let doc = pdfView.document else { return nil }
+        if let page = pdfView.currentPage {
+            return doc.index(for: page)
+        }
+        if let docID = currentDocumentID,
+           let progress = StudyProgressStore.shared.progress(for: docID) {
+            return min(max(progress.pageIndex, 0), max(doc.pageCount - 1, 0))
+        }
+        return doc.pageCount > 0 ? 0 : nil
     }
 
     @objc private func pageChanged() {

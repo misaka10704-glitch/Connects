@@ -45,7 +45,8 @@ final class UserMessageCell: BaseMessageCell {
         if previousMessageID == message.id,
            freezeLayout,
            !userBubble.isHidden,
-           userLabel.text != nil || !imageViewMsg.isHidden {
+           (userLabel.text != nil || !imageViewMsg.isHidden),
+           abs(preferredLayoutWidth - layoutWidth) < 1 {
             return
         }
 
@@ -124,7 +125,10 @@ final class UserMessageCell: BaseMessageCell {
 
         userBubble.setContentHuggingPriority(.required, for: .vertical)
         userBubble.setContentCompressionResistancePriority(.required, for: .vertical)
+        userBubble.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        userBubble.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         userLabel.setContentHuggingPriority(.required, for: .vertical)
+        userLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         NSLayoutConstraint.activate([
             userTopToRole,
@@ -140,11 +144,32 @@ final class UserMessageCell: BaseMessageCell {
         userTopToImage.isActive = false
     }
 
-    private func userLabelMaxWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
+    func applyCachedImageIfNeeded() {
+        guard let image = cachedImage else { return }
+        guard imageViewMsg.image !== image || imageViewMsg.isHidden else { return }
+        imageViewMsg.image = image
+        imageViewMsg.isHidden = false
+        imageHeight.constant = 160
+        userTopToRole.isActive = false
+        userTopToImage.isActive = true
+        applyUserLayoutWidth()
+        userLabel.setNeedsLayout()
+        userLabel.invalidateIntrinsicContentSize()
+        scheduleMeasuredHeightNotify(for: messageID)
+    }
+
+    private func resolvedColumnWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
         let reference = layoutWidth ?? preferredLayoutWidth
-        let cellWidth = max(contentView.bounds.width, bounds.width, reference, 120)
-        let columnWidth = min(DSTheme.bubbleMaxWidth, max(cellWidth - 48, 120))
-        return max(columnWidth - 124, 80)
+        let columnW = column.bounds.width
+        if columnW > 1 {
+            return min(DSTheme.bubbleMaxWidth, columnW)
+        }
+        let cellW = max(contentView.bounds.width, bounds.width, reference, 120)
+        return min(DSTheme.bubbleMaxWidth, max(cellW - 48, 120))
+    }
+
+    private func userLabelMaxWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
+        max(resolvedColumnWidth(for: layoutWidth) - 124, 80)
     }
 
     private func applyUserLayoutWidth() {

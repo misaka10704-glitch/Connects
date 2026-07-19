@@ -241,6 +241,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
         studyCaptureButton.imageView?.contentMode = .scaleAspectFit
         studyCaptureButton.accessibilityLabel = "同步阅读页"
+        studyCaptureButton.accessibilityHint = "开启后，发送消息时附带当前 PDF 页文字"
         studyCaptureButton.addTarget(self, action: #selector(studyCaptureTapped), for: .touchUpInside)
         studyCaptureButton.isHidden = true
         containerView.addSubview(studyCaptureButton)
@@ -340,7 +341,12 @@ final class InputBarView: UIView, ThemeRefreshable {
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            webSearchButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
+            studyCaptureButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
+            studyCaptureButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            studyCaptureWidthConstraint!,
+            studyCaptureButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            webSearchButton.leadingAnchor.constraint(equalTo: studyCaptureButton.trailingAnchor, constant: 2),
             webSearchButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
             webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
@@ -349,11 +355,6 @@ final class InputBarView: UIView, ThemeRefreshable {
             thinkingButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
-
-            studyCaptureButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
-            studyCaptureButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
-            studyCaptureWidthConstraint!,
-            studyCaptureButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),

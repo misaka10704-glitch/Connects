@@ -112,13 +112,15 @@ final class ImageTranscriptionCoordinator {
                userMessageID: String,
                assistantMessageID: String,
                base64: String,
-               model: AIModelOption) {
+               model: AIModelOption,
+               studyPagePDFText: String? = nil) {
         guard SettingsManager.shared.hasAPIKey(for: model.provider) else {
             finish(
                 conversationID: conversationID,
                 userMessageID: userMessageID,
                 assistantMessageID: assistantMessageID,
                 generation: 0,
+                ocrText: nil,
                 result: .failure(APIClientError.missingAPIKey(model.provider.displayName)),
                 requiresActiveGeneration: false
             )
@@ -130,14 +132,92 @@ final class ImageTranscriptionCoordinator {
         generations[conversationID] = generation
         active.insert(conversationID)
         lock.unlock()
+
+        let isStudyPage = studyPagePDFText != nil
         updateAssistant(
             conversationID: conversationID,
             messageID: assistantMessageID,
             phase: .transcribing,
-            content: "正在将图片转写为文字，主回复不会等待此步骤。"
+            content: isStudyPage
+                ? "正在提取页面文字（OCR），随后转写图片内容…"
+                : "正在将图片转写为文字，主回复不会等待此步骤。"
         )
         postUpdate(conversationID)
 
+        if isStudyPage {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let ocr = StudyPageOCRExtractor.extract(
+                    pdfText: studyPagePDFText,
+                    imageBase64: base64
+                )
+                DispatchQueue.main.async {
+                    guard let self = self, self.isGenerationActive(conversationID, generation) else { return }
+                    let ocrText = ocr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !ocrText.isEmpty {
+                        self.commitOCR(
+                            conversationID: conversationID,
+                            userMessageID: userMessageID,
+                            assistantMessageID: assistantMessageID,
+                            ocrText: ocrText
+                        )
+                    }
+                    self.runVisionTranscription(
+                        conversationID: conversationID,
+                        userMessageID: userMessageID,
+                        assistantMessageID: assistantMessageID,
+                        base64: base64,
+                        model: model,
+                        generation: generation,
+                        ocrText: ocrText.isEmpty ? nil : ocrText
+                    )
+                }
+            }
+            return
+        }
+
+        runVisionTranscription(
+            conversationID: conversationID,
+            userMessageID: userMessageID,
+            assistantMessageID: assistantMessageID,
+            base64: base64,
+            model: model,
+            generation: generation,
+            ocrText: nil
+        )
+    }
+
+    private func isGenerationActive(_ conversationID: String, _ generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active.contains(conversationID) && generations[conversationID] == generation
+    }
+
+    private func commitOCR(conversationID: String,
+                           userMessageID: String,
+                           assistantMessageID: String,
+                           ocrText: String) {
+        let durable = ImageDurableText.ocrBlock(ocrText)
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { conversation in
+            if let i = conversation.messages.firstIndex(where: { $0.id == userMessageID }) {
+                conversation.messages[i].imageDescription = durable
+                clearStudyApiContextPrefix(on: &conversation.messages[i])
+            }
+            if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                conversation.messages[i].imageTranscriptionPhase = .transcribing
+                conversation.messages[i].imageTranscriptionContent =
+                    durable + "\n\n正在将图片转写为文字…"
+            }
+        }
+        postUpdate(conversationID)
+    }
+
+    private func runVisionTranscription(conversationID: String,
+                                        userMessageID: String,
+                                        assistantMessageID: String,
+                                        base64: String,
+                                        model: AIModelOption,
+                                        generation: UInt64,
+                                        ocrText: String?) {
         let prompt = ChatMessage(
             role: .user,
             content: """
@@ -151,6 +231,7 @@ final class ImageTranscriptionCoordinator {
                 userMessageID: userMessageID,
                 assistantMessageID: assistantMessageID,
                 generation: generation,
+                ocrText: ocrText,
                 result: result,
                 requiresActiveGeneration: true
             )
@@ -161,6 +242,7 @@ final class ImageTranscriptionCoordinator {
                         userMessageID: String,
                         assistantMessageID: String,
                         generation: UInt64,
+                        ocrText: String?,
                         result: Result<String, Error>,
                         requiresActiveGeneration: Bool) {
         if requiresActiveGeneration {
@@ -173,38 +255,75 @@ final class ImageTranscriptionCoordinator {
 
         switch result {
         case .success(let raw):
-            let description = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !description.isEmpty else {
-                updateAssistant(
+            let transcription = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcription.isEmpty else {
+                finalizePartial(
                     conversationID: conversationID,
-                    messageID: assistantMessageID,
-                    phase: .failed,
-                    content: "未获得可用的图片文字描述。点此可重试。"
+                    userMessageID: userMessageID,
+                    assistantMessageID: assistantMessageID,
+                    ocrText: ocrText,
+                    failureMessage: "未获得可用的图片转写。点此可重试。"
                 )
-                postUpdate(conversationID)
                 return
             }
+            let durable = ImageDurableText.merge(ocr: ocrText, transcription: transcription)
             ConversationStore.shared.updateConversationQuietly(id: conversationID) { conversation in
                 if let i = conversation.messages.firstIndex(where: { $0.id == userMessageID }) {
-                    conversation.messages[i].imageDescription = description
-                    // The initial streaming request already captured its image
-                    // snapshot. Persist only the compact semantic form after it.
+                    conversation.messages[i].imageDescription = durable
                     conversation.messages[i].imageJPEGBase64 = nil
+                    clearStudyApiContextPrefix(on: &conversation.messages[i])
                 }
                 if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
                     conversation.messages[i].imageTranscriptionPhase = .done
-                    conversation.messages[i].imageTranscriptionContent = description
+                    conversation.messages[i].imageTranscriptionContent = durable
                 }
             }
         case .failure(let error):
-            updateAssistant(
+            finalizePartial(
                 conversationID: conversationID,
-                messageID: assistantMessageID,
-                phase: .failed,
-                content: "图片转写失败：\(error.localizedDescription)\n点此可重试。"
+                userMessageID: userMessageID,
+                assistantMessageID: assistantMessageID,
+                ocrText: ocrText,
+                failureMessage: "图片转写失败：\(error.localizedDescription)\n点此可重试。"
             )
         }
         postUpdate(conversationID)
+    }
+
+    private func finalizePartial(conversationID: String,
+                                 userMessageID: String,
+                                 assistantMessageID: String,
+                                 ocrText: String?,
+                                 failureMessage: String) {
+        let trimmedOCR = ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedOCR.isEmpty {
+            let durable = ImageDurableText.ocrBlock(trimmedOCR)
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { conversation in
+                if let i = conversation.messages.firstIndex(where: { $0.id == userMessageID }) {
+                    conversation.messages[i].imageDescription = durable
+                    conversation.messages[i].imageJPEGBase64 = nil
+                    clearStudyApiContextPrefix(on: &conversation.messages[i])
+                }
+                if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                    conversation.messages[i].imageTranscriptionPhase = .done
+                    conversation.messages[i].imageTranscriptionContent =
+                        durable + "\n\n（图片转写未完成）"
+                }
+            }
+            return
+        }
+        updateAssistant(
+            conversationID: conversationID,
+            messageID: assistantMessageID,
+            phase: .failed,
+            content: failureMessage
+        )
+    }
+
+    private func clearStudyApiContextPrefix(on message: inout ChatMessage) {
+        guard let prefix = message.apiContextPrefix,
+              prefix.contains("[阅读上下文") else { return }
+        message.apiContextPrefix = nil
     }
 
     private func updateAssistant(conversationID: String,

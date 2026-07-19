@@ -332,6 +332,57 @@ final class ConversationStore {
         notify()
     }
 
+    func detachStudyDocument(documentID: String) {
+        var changed = false
+        for i in conversations.indices where conversations[i].studyDocumentID == documentID {
+            conversations[i].studyDocumentID = nil
+            conversations[i].studyPageCaptureEnabled = false
+            changed = true
+        }
+        guard changed else { return }
+        save()
+        notify()
+    }
+
+    /// Keep assistant transcription panels in sync with durable user `imageDescription`.
+    func repairImageTranscriptionDisplays(for conversationID: String? = nil) {
+        let targets: [Int]
+        if let conversationID = conversationID,
+           let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+            targets = [index]
+        } else {
+            targets = Array(conversations.indices)
+        }
+        var changed = false
+        for index in targets {
+            var msgs = conversations[index].messages
+            var localChanged = false
+            for j in 1..<msgs.count {
+                guard msgs[j].role == .assistant, msgs[j - 1].role == .user else { continue }
+                let user = msgs[j - 1]
+                let display = msgs[j].imageTranscriptionDisplayText(pairedUser: user)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !display.isEmpty else { continue }
+                if display != msgs[j].imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    msgs[j].imageTranscriptionContent = display
+                    localChanged = true
+                }
+                if msgs[j].imageTranscriptionPhase == .idle
+                    || msgs[j].imageTranscriptionPhase == .transcribing {
+                    msgs[j].imageTranscriptionPhase = .done
+                    localChanged = true
+                }
+            }
+            if localChanged {
+                conversations[index].messages = msgs
+                changed = true
+            }
+        }
+        guard changed else { return }
+        save()
+        notify()
+    }
+
     /// Append streaming tokens to the last streaming assistant message of any conversation.
     func appendStreamTokens(conversationID: String, reasoning: String, content: String) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }

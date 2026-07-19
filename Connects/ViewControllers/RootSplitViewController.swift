@@ -2,7 +2,7 @@ import UIKit
 
 /// Root shell: chat/study is always full-bleed; conversation list is a left-edge overlay drawer
 /// (compact Slide Over and wide iPad use the same logic).
-final class RootSplitViewController: UIViewController, UIDocumentPickerDelegate {
+final class RootSplitViewController: UIViewController {
     private let sidebarVC = SidebarViewController()
     private let chatNav: UINavigationController
     private let chatVC = ChatViewController()
@@ -28,7 +28,6 @@ final class RootSplitViewController: UIViewController, UIDocumentPickerDelegate 
     private var lastNotifiedWidthBucket: Int = 0
     private var didDismissLaunchOverlay = false
     private var didPreloadChat = false
-    private var pendingStudyConversationID: String?
     private var studySessionActive = false
 
     /// Below this width → Slide Over / 侧拉网课模式.
@@ -457,44 +456,6 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
         closeDrawer(animated: true)
-    }
-
-    func sidebarDidRequestNewStudy() {
-        let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
-        let conv = ConversationStore.shared.createConversation(model: model)
-        presentStudyImport(for: conv.id)
-        closeDrawer()
-    }
-
-    private func presentStudyImport(for conversationID: String) {
-        pendingStudyConversationID = conversationID
-        let picker = UIDocumentPickerViewController(documentTypes: ["com.adobe.pdf"], in: .import)
-        picker.delegate = self
-        picker.allowsMultipleSelection = false
-        present(picker, animated: true)
-    }
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let conversationID = pendingStudyConversationID, let url = urls.first else { return }
-        pendingStudyConversationID = nil
-        do {
-            let doc = try StudyDocumentStore.shared.importPDF(from: url)
-            ConversationStore.shared.updateConversation(id: conversationID) { draft in
-                draft.studyDocumentID = doc.id
-                if draft.title == "新对话" {
-                    draft.title = String(doc.title.prefix(40))
-                }
-            }
-            chatVC.reloadChat()
-        } catch {
-            let alert = UIAlertController(title: "导入失败", message: error.localizedDescription, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .default))
-            present(alert, animated: true)
-        }
-    }
-
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        pendingStudyConversationID = nil
     }
 
     func sidebarDidRequestNewChat() {

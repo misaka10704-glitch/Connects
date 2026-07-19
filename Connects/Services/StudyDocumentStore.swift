@@ -121,6 +121,18 @@ final class StudyDocumentStore {
         notify()
     }
 
+    func delete(documentID: String) {
+        guard let index = documents.firstIndex(where: { $0.id == documentID }) else { return }
+        documents.remove(at: index)
+        pdfCache.removeObject(forKey: documentID as NSString)
+        let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        StudyProgressStore.shared.delete(documentID: documentID)
+        ConversationStore.shared.detachStudyDocument(documentID: documentID)
+        saveRegistry()
+        notify()
+    }
+
     func reloadAfterBackupImport() {
         pdfCache.removeAllObjects()
         loadRegistry()

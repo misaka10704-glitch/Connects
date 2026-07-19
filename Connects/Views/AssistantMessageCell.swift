@@ -72,6 +72,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var cachedSearchText = ""
     private var cachedSearchTitleCore = ""
     private var cachedImageActivity = false
+    private var cachedImageTranscriptionPhase: ImageTranscriptionPhase = .idle
+    private var pairedUserMessage: ChatMessage?
     private var cachedThinkingFontSize: CGFloat = 14
     private var cachedThemeColors: ThemeColors?
     private var preferredLayoutWidth: CGFloat = 0
@@ -296,8 +298,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         thinkingHeader.setTitle(title, for: .normal)
     }
 
-    func syncSearchPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
+    func syncSearchPresentation(with message: ChatMessage, layoutWidth: CGFloat, pairedUser: ChatMessage? = nil) {
         guard messageID == message.id else { return }
+        if let pairedUser = pairedUser {
+            pairedUserMessage = pairedUser
+        }
         preferredLayoutWidth = layoutWidth
         let c = DSTheme.c
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
@@ -305,11 +310,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedThemeColors = c
         let imageActivity = message.hasImageTranscription
         let search = (imageActivity
-            ? message.imageTranscriptionContent
+            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
             : message.searchProcessContent
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         cachedSearchText = search
         cachedImageActivity = imageActivity
+        cachedImageTranscriptionPhase = message.imageTranscriptionPhase
         hasSearch = message.hasSearchProcess || imageActivity
         guard hasSearch else { return }
         searchExpanded = AssistantMessageLayout.isSearchExpanded(messageID: message.id)
@@ -368,6 +374,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             return
         }
         messageID = ""
+        pairedUserMessage = nil
         streamingPresentation = false
         heightNotifyWork?.cancel()
         heightNotifyWork = nil
@@ -409,6 +416,29 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedImage = image
     }
 
+    func applyCachedImageIfNeeded() {
+        guard let image = cachedImage else { return }
+        guard imageViewMsg.image !== image || imageViewMsg.isHidden else { return }
+        imageViewMsg.image = image
+        imageViewMsg.isHidden = false
+        imageHeight.constant = 160
+        scheduleMeasuredHeightNotify(for: messageID)
+    }
+
+    /// Row-height authority when UITableView is still clipping the expanded chrome.
+    func projectedColumnHeight(for message: ChatMessage, layoutWidth: CGFloat) -> CGFloat {
+        if let estimated = AssistantMessageLayout.estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: false,
+            allowSyncLayout: true,
+            pairedUser: pairedUserMessage
+        ), estimated > 40 {
+            return estimated
+        }
+        return measuredColumnHeight()
+    }
+
     func refreshRenderDebugOverlay() {
         updateRenderDebugOverlay()
     }
@@ -437,7 +467,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat) {
+        configure(with: message, preferredHeight: preferredHeight, layoutWidth: layoutWidth, pairedUser: nil)
+    }
+
+    func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat, pairedUser: ChatMessage?) {
         let previousMessageID = messageID
+        pairedUserMessage = pairedUser
         let freezeLayout = cellDelegate?.messageCellShouldFreezeHeight(self) == true
         messageID = message.id
         preferredLayoutWidth = layoutWidth
@@ -449,7 +484,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if !message.isStreaming,
            previousMessageID == message.id,
            hasVisibleNativePaint,
-           freezeLayout {
+           freezeLayout,
+           abs(preferredLayoutWidth - layoutWidth) < 1 {
             updateRenderDebugOverlay()
             return
         }
@@ -613,11 +649,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let imageActivity = message.hasImageTranscription
         imageTranscriptionFailed = imageActivity && message.imageTranscriptionPhase == .failed
         let search = (imageActivity
-            ? message.imageTranscriptionContent
+            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
             : message.searchProcessContent
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         cachedSearchText = search
         cachedImageActivity = imageActivity
+        cachedImageTranscriptionPhase = message.imageTranscriptionPhase
         hasSearch = message.hasSearchProcess || imageActivity
         if hasSearch {
             let liveImageActivity = imageActivity && message.imageTranscriptionPhase == .transcribing
@@ -759,10 +796,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchBody.attributedText = nil
         searchBody.textColor = colors.textSecondary
         searchBody.font = UIFont.systemFont(ofSize: thinkFont)
-        searchBody.text = cachedSearchText.isEmpty ? cachedSearchTitleCore : cachedSearchText
+        let body = cachedSearchText.isEmpty ? cachedSearchTitleCore : cachedSearchText
+        searchBody.text = body
         if expanded {
             searchBody.isHidden = false
         }
+    }
+
+    func measuredColumnHeight() -> CGFloat {
+        contentView.layoutIfNeeded()
+        return column.bounds.height
     }
 
     private func applySearchLayoutWidth() {
@@ -1017,11 +1060,21 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             && message.imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !message.hasImageTranscription
         let thinkEmpty = message.reasoningContent.isEmpty
+        let imageActivity = message.hasImageTranscription
+        let wantsSearchChrome = message.hasSearchProcess || imageActivity
         guard messageID == message.id,
-              message.isStreaming,
-              !assistantLabel.isHidden,
+              message.isStreaming else {
+            return false
+        }
+        if wantsSearchChrome && searchBox.isHidden {
+            return false
+        }
+        if !thinkEmpty && thinkingBox.isHidden {
+            return false
+        }
+        guard !assistantLabel.isHidden,
               (thinkingBox.isHidden == thinkEmpty),
-              (searchBox.isHidden == searchEmpty) else {
+              (searchBox.isHidden == !wantsSearchChrome) else {
             return false
         }
         streamingPresentation = true
@@ -1033,7 +1086,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if !searchBox.isHidden {
             let imageActivity = message.hasImageTranscription
             let search = (imageActivity
-                ? message.imageTranscriptionContent
+                ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
                 : message.searchProcessContent
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             searchBody.attributedText = nil
@@ -1087,7 +1140,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let c = DSTheme.c
         let imageActivity = message.hasImageTranscription
         let search = (imageActivity
-            ? message.imageTranscriptionContent
+            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
             : message.searchProcessContent
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         if !search.isEmpty {
@@ -1113,9 +1166,21 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     @discardableResult
-    func transitionToFinishedPlainRendering(_ message: ChatMessage, preferredHeight: CGFloat?) -> CGFloat? {
+    func transitionToFinishedPlainRendering(_ message: ChatMessage,
+                                            preferredHeight: CGFloat?,
+                                            pairedUser: ChatMessage? = nil) -> CGFloat? {
         guard messageID == message.id,
               !message.isStreaming else { return nil }
+        if let pairedUser = pairedUser {
+            pairedUserMessage = pairedUser
+        }
+        if message.hasImageTranscription {
+            let display = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !display.isEmpty, !ImageDurableText.isStatusOnly(display) {
+                AssistantMessageLayout.setSearchExpanded(true, messageID: message.id)
+            }
+        }
         let cover = contentView.snapshotView(afterScreenUpdates: false)
         if let cover = cover {
             cover.frame = contentView.bounds
@@ -1123,10 +1188,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             cover.isUserInteractionEnabled = false
             contentView.addSubview(cover)
         }
-        configure(with: message, preferredHeight: preferredHeight, layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth())
+        configure(
+            with: message,
+            preferredHeight: preferredHeight,
+            layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth(),
+            pairedUser: pairedUserMessage
+        )
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
-        let measured = column.bounds.height
+        let layoutWidth = preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth()
+        let measured = projectedColumnHeight(for: message, layoutWidth: layoutWidth)
         if let cover = cover {
             UIView.animate(
                 withDuration: 0.12,
@@ -1400,6 +1471,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let chevron = searchExpanded ? "▾" : "▸"
         searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
         finishChromeToggleLayout()
+        if searchExpanded {
+            scheduleMeasuredHeightNotify(for: messageID)
+        }
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsSearchToggle"),
             object: nil,
