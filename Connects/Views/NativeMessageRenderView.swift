@@ -259,6 +259,12 @@ final class NativeMessageRenderView: UIView {
         return result
     }
 
+    /// Painted layout height — may be less than the constraint constant while rows settle.
+    var paintedLayoutHeight: CGFloat? {
+        guard let layout = layout, layout.size.height > 0 else { return nil }
+        return layout.size.height
+    }
+
     override var intrinsicContentSize: CGSize {
         layout?.size ?? CGSize(width: UIView.noIntrinsicMetric, height: 0)
     }

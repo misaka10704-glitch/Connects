@@ -1021,7 +1021,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   !msg.isStreaming else { continue }
             cell.ensureActionButtonsVisible(for: msg)
         }
-        _ = syncVisibleRowHeightsToPaint(messages: messages)
+        _ = syncVisibleRowHeightsToPaint(messages: messages, allowShrink: true)
     }
 
     /// Reveal action chrome as soon as the finger lifts or during deceleration (throttled).
@@ -2811,15 +2811,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         pendingHeights.removeValue(forKey: last.id)
         if let visibleCell = tableView.cellForRow(at: path) as? AssistantMessageCell,
            visibleCell.messageID == last.id {
-            _ = visibleCell.transitionToFinishedPlainRendering(
+            let measured = visibleCell.transitionToFinishedPlainRendering(
                 last,
                 preferredHeight: rowHeights.committedColumnHeight(for: last.id),
                 pairedUser: pairedUser
             )
-            let layoutWidth = currentRenderWidth()
-            let projected = visibleCell.projectedColumnHeight(for: last, layoutWidth: layoutWidth)
-            if projected > 40 {
-                rowHeights.commit(columnHeight: projected, messageID: last.id)
+            if let measured = measured, measured > 40 {
+                rowHeights.commitMeasured(columnHeight: measured, messageID: last.id, allowShrink: true)
             }
             UIView.performWithoutAnimation {
                 tableView.beginUpdates()
@@ -5139,11 +5137,12 @@ extension ChatViewController: MessageCellDelegate {
               let messages = ConversationStore.shared.currentConversation?.messages,
               let msg = messages.first(where: { $0.id == assistant.messageID }),
               msg.role == .assistant, !msg.isStreaming else { return }
+        let allowShrink = pendingOpenAtBottom || suppressHeightRemeasure
         if readingHistory {
             _ = syncRowHeightToPaint(cell: assistant, message: msg, allowShrink: false)
             return
         }
-        guard syncRowHeightToPaint(cell: assistant, message: msg) else { return }
+        guard syncRowHeightToPaint(cell: assistant, message: msg, allowShrink: allowShrink) else { return }
         UIView.performWithoutAnimation {
             tableView.beginUpdates()
             tableView.endUpdates()

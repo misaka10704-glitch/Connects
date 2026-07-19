@@ -797,11 +797,29 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         )
     }
 
+    /// Pin native body height to the painted layout so action chrome sits flush under text.
+    @discardableResult
+    private func syncNativeBodyHeightToLayout() -> Bool {
+        guard !nativeRenderView.isHidden else { return false }
+        guard let painted = nativeRenderView.paintedLayoutHeight, painted > 1 else { return false }
+        let target = ceil(painted)
+        guard abs(nativeHeight.constant - target) > 0.5 else { return false }
+        nativeHeight.constant = target
+        return true
+    }
+
+    private func reconcileColumnBottomPinIfNeeded() {
+        contentView.layoutIfNeeded()
+        let slack = contentView.bounds.height - column.bounds.height - ChatRowHeightResolver.cellContentInset * 2
+        columnBottomPin.priority = slack > 8 ? UILayoutPriority(250) : UILayoutPriority(999)
+    }
+
     /// Force-show 复制/重跑/分叉 on the open path (ignores chrome-key short-circuit).
     /// Row-height clipping is fixed by the host; this guarantees the buttons exist in-layout.
     func ensureActionButtonsVisible(for message: ChatMessage) {
         guard messageID.isEmpty || messageID == message.id else { return }
         guard Self.shouldShowActionButtons(for: message, streaming: message.isStreaming) else { return }
+        syncNativeBodyHeightToLayout()
         let pager = message.showsVersionPager
         lastActionRowSignature = ""
         lastChromeActionKey = ""
@@ -951,6 +969,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                    colors: colors
                ) {
                 nativeHeight.constant = height
+                syncNativeBodyHeightToLayout()
                 nativeRenderView.isHidden = false
                 assistantLabel.isHidden = true
                 assistantLabel.text = nil
@@ -980,6 +999,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             colors: colors
         )
         nativeHeight.constant = renderResult.height
+        syncNativeBodyHeightToLayout()
         nativeRenderView.isHidden = false
         if !renderResult.isProvisional {
             scheduleMeasuredHeightNotify(for: message.id)
@@ -1272,10 +1292,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth(),
             pairedUser: pairedUserMessage
         )
+        syncNativeBodyHeightToLayout()
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
-        let layoutWidth = preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth()
-        let measured = projectedColumnHeight(for: message, layoutWidth: layoutWidth)
+        let measured = measuredColumnHeight()
         if let cover = cover {
             UIView.animate(
                 withDuration: 0.12,
@@ -1359,6 +1379,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 )
             }
         }
+        reconcileColumnBottomPinIfNeeded()
         updateRenderDebugOverlay()
         // Width remasure is owned by ChatVC (rotation / Slide Over) — not here.
         // layoutSubviews fires constantly while scrolling and was causing height thrash.
