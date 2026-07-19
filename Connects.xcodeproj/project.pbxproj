@@ -35,6 +35,8 @@
 		A1000001000000000000001D /* ContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001D /* ContextBuilder.swift */; };
 		A1000001000000000000001E /* ContextCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001E /* ContextCompactor.swift */; };
 		A1000001000000000000001F /* ContextUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001F /* ContextUsageView.swift */; };
+		F10000010000000000000004 /* ContextUsageRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000004 /* ContextUsageRingView.swift */; };
+		F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000005 /* ContextUsageDetailViewController.swift */; };
 		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
 		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
 		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
@@ -145,6 +147,8 @@
 		A2000001000000000000001D /* ContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBuilder.swift; sourceTree = "<group>"; };
 		A2000001000000000000001E /* ContextCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCompactor.swift; sourceTree = "<group>"; };
 		A2000001000000000000001F /* ContextUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageView.swift; sourceTree = "<group>"; };
+		F20000010000000000000004 /* ContextUsageRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageRingView.swift; sourceTree = "<group>"; };
+		F20000010000000000000005 /* ContextUsageDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageDetailViewController.swift; sourceTree = "<group>"; };
 		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
 		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
 		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
@@ -369,6 +373,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000009 /* ChatViewController.swift */,
+				F20000010000000000000005 /* ContextUsageDetailViewController.swift */,
 				A2000001000000000000000A /* RootSplitViewController.swift */,
 				A2000001000000000000000B /* SettingsViewController.swift */,
 				C20000010000000000000006 /* PromptStudioViewController.swift */,
@@ -390,6 +395,7 @@
 			children = (
 				A2000001000000000000000D /* InputBarView.swift */,
 				A2000001000000000000001F /* ContextUsageView.swift */,
+				F20000010000000000000004 /* ContextUsageRingView.swift */,
 				A20000010000000000000061 /* TurnContextBarView.swift */,
 				E20000010000000000000001 /* MessageCellType.swift */,
 				E20000010000000000000002 /* BaseMessageCell.swift */,
@@ -596,6 +602,8 @@
 				A1000001000000000000001D /* ContextBuilder.swift in Sources */,
 				A1000001000000000000001E /* ContextCompactor.swift in Sources */,
 				A1000001000000000000001F /* ContextUsageView.swift in Sources */,
+				F10000010000000000000004 /* ContextUsageRingView.swift in Sources */,
+				F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */,
 				A10000010000000000000061 /* TurnContextBarView.swift in Sources */,
 				A10000010000000000000053 /* WebSearchService.swift in Sources */,
 				A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */,

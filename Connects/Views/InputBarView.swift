@@ -6,6 +6,7 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapAttach()
     func inputBarDidTapAgent()
     func inputBarDidToggleStudyCapture(_ enabled: Bool)
+    func inputBarDidTapContextUsage()
 }
 
 /// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
@@ -19,6 +20,8 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let studyCaptureButton = UIButton(type: .system)
     private let memoryButton = UIButton(type: .system)
     private let agentButton = UIButton(type: .system)
+    private let contextUsageButton = UIButton(type: .system)
+    private let contextRing = ContextUsageRingView()
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
@@ -57,6 +60,9 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     var hasAttachment: Bool { pendingImageBase64 != nil }
     var agentAnchorView: UIView { agentButton }
+    var contextUsageAnchorView: UIView { contextUsageButton }
+
+    private var contextUsageVisible = false
 
     var studyCaptureVisible = false {
         didSet {
@@ -139,6 +145,21 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateThinkingAppearance()
         updateStudyCaptureAppearance()
         updateMemoryAppearance()
+        contextRing.applyTheme()
+    }
+
+    func updateContextUsage(_ usage: ContextBuilder.Usage, visible: Bool, animated: Bool = false) {
+        contextUsageVisible = visible
+        contextUsageButton.isHidden = !visible
+        contextUsageButton.isEnabled = visible
+        contextUsageButton.alpha = visible ? 1 : 0
+        contextRing.setProgress(CGFloat(usage.ratio), animated: animated)
+        contextUsageButton.accessibilityValue = usage.percentText
+    }
+
+    func setContextUsageCompacting(_ on: Bool) {
+        contextUsageButton.isEnabled = !on && contextUsageVisible
+        contextUsageButton.accessibilityLabel = on ? "正在压缩上下文" : "上下文占用"
     }
 
     private func updateFocusBorder() {
@@ -258,6 +279,16 @@ final class InputBarView: UIView, ThemeRefreshable {
         agentButton.addTarget(self, action: #selector(agentTapped), for: .touchUpInside)
         containerView.addSubview(agentButton)
 
+        contextUsageButton.translatesAutoresizingMaskIntoConstraints = false
+        contextUsageButton.accessibilityLabel = "上下文占用"
+        contextUsageButton.accessibilityHint = "查看上下文组成与占用比例"
+        contextUsageButton.addTarget(self, action: #selector(contextUsageTapped), for: .touchUpInside)
+        contextUsageButton.isHidden = true
+        containerView.addSubview(contextUsageButton)
+
+        contextRing.translatesAutoresizingMaskIntoConstraints = false
+        contextUsageButton.addSubview(contextRing)
+
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = DSTheme.bodyFont(size: 16)
@@ -355,6 +386,17 @@ final class InputBarView: UIView, ThemeRefreshable {
             thinkingButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
+            thinkingButton.trailingAnchor.constraint(lessThanOrEqualTo: contextUsageButton.leadingAnchor, constant: -2),
+
+            contextUsageButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
+            contextUsageButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            contextUsageButton.widthAnchor.constraint(equalToConstant: btnSize),
+            contextUsageButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            contextRing.centerXAnchor.constraint(equalTo: contextUsageButton.centerXAnchor),
+            contextRing.centerYAnchor.constraint(equalTo: contextUsageButton.centerYAnchor),
+            contextRing.widthAnchor.constraint(equalToConstant: 22),
+            contextRing.heightAnchor.constraint(equalToConstant: 22),
 
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
@@ -399,6 +441,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         memoryButton.alpha = isStreaming ? 0.35 : 1
         agentButton.isEnabled = !isStreaming
         agentButton.alpha = isStreaming ? 0.35 : 1
+        contextUsageButton.isEnabled = !isStreaming && contextUsageVisible
+        contextUsageButton.alpha = (isStreaming || !contextUsageVisible) ? 0.35 : 1
         chipRemove.isEnabled = !isStreaming
         updateSendEnabled()
     }
@@ -484,6 +528,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func agentTapped() {
         delegate?.inputBarDidTapAgent()
+    }
+
+    @objc private func contextUsageTapped() {
+        delegate?.inputBarDidTapContextUsage()
     }
 
     @objc private func removePreview() {

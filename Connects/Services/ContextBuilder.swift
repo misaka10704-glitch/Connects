@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Assembles a high-signal API context (Anthropic / OpenAI style):
 /// system pin → session summary → recent verbatim turns, under a practical char budget.
@@ -454,5 +455,126 @@ enum ContextBuilder {
         if i < assembled.count, assembled[i].role == .system { i += 1 }
         guard i < assembled.count else { return }
         assembled[i] = msg
+    }
+
+    // MARK: - Usage breakdown (detail sheet)
+
+    struct Breakdown {
+        struct Item {
+            let key: String
+            let title: String
+            let chars: Int
+            let color: UIColor
+        }
+
+        let usage: Usage
+        let items: [Item]
+        let modelName: String
+        let droppedTurnCount: Int
+        let summaryActive: Bool
+    }
+
+    static func formatTokenEstimate(_ chars: Int) -> String {
+        let tokens = Double(max(0, chars)) / 2.0
+        if tokens >= 10_000 {
+            return String(format: "~%.0fK", tokens / 1000)
+        }
+        if tokens >= 1000 {
+            return String(format: "~%.1fK", tokens / 1000)
+        }
+        return String(format: "~%.0f", tokens)
+    }
+
+    static func breakdown(for conversation: Conversation) -> Breakdown {
+        let result = build(
+            from: conversation.messages,
+            model: conversation.model,
+            existingSummary: conversation.contextSummary,
+            existingThroughID: conversation.contextSummaryThroughMessageID,
+            agentPrompt: AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt,
+            memoryBackground: MemoryStore.shared.injectedBackground()
+        )
+
+        var buckets: [String: Int] = [
+            "system": 0,
+            "rules": 0,
+            "memory": 0,
+            "agent": 0,
+            "summary": 0,
+            "conversation": 0,
+            "images": 0,
+            "study": 0,
+            "webSearch": 0,
+            "otherSystem": 0
+        ]
+
+        let rules = SettingsManager.shared.trimmedUserRules
+        if !rules.isEmpty {
+            buckets["rules", default: 0] += rules.count + 2
+        }
+
+        for msg in result.messages {
+            if msg.role == .system {
+                let key = classifySystemBucket(msg.content)
+                buckets[key, default: 0] += messageCharWeight(msg, includeRules: false)
+                continue
+            }
+            if let prefix = msg.apiContextPrefix, !prefix.isEmpty {
+                buckets["study", default: 0] += prefix.count + 2
+            }
+            if let img = msg.imageJPEGBase64, !img.isEmpty {
+                buckets["images", default: 0] += min(img.count, 40_000)
+            }
+            buckets["conversation", default: 0] += msg.content.count
+                + msg.reasoningContent.count
+                + msg.searchProcessContent.count
+            if let description = msg.imageDescription {
+                buckets["conversation", default: 0] += description.count
+            }
+            buckets["conversation", default: 0] += 24
+        }
+
+        let palette: [(String, String, UIColor)] = [
+            ("system", "系统指令", UIColor(white: 0.62, alpha: 1)),
+            ("rules", "用户规则", UIColor(red: 0.55, green: 0.82, blue: 0.55, alpha: 1)),
+            ("memory", "跨会话记忆", UIColor(red: 0.95, green: 0.55, blue: 0.72, alpha: 1)),
+            ("agent", "智能体设定", UIColor(red: 0.92, green: 0.78, blue: 0.42, alpha: 1)),
+            ("summary", "对话摘要", UIColor(red: 0.92, green: 0.42, blue: 0.38, alpha: 1)),
+            ("webSearch", "联网搜索", UIColor(red: 0.35, green: 0.78, blue: 0.92, alpha: 1)),
+            ("study", "阅读页上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
+            ("images", "图片", UIColor(red: 0.45, green: 0.72, blue: 0.95, alpha: 1)),
+            ("conversation", "近期对话", UIColor(red: 0.95, green: 0.58, blue: 0.35, alpha: 1)),
+            ("otherSystem", "其他系统消息", UIColor(white: 0.48, alpha: 1))
+        ]
+
+        let items = palette.compactMap { key, title, color -> Breakdown.Item? in
+            let chars = buckets[key, default: 0]
+            guard chars > 0 else { return nil }
+            return Breakdown.Item(key: key, title: title, chars: chars, color: color)
+        }.sorted { $0.chars > $1.chars }
+
+        return Breakdown(
+            usage: result.usage,
+            items: items,
+            modelName: conversation.model.displayName,
+            droppedTurnCount: result.droppedCount,
+            summaryActive: result.summary != nil
+        )
+    }
+
+    private static func classifySystemBucket(_ content: String) -> String {
+        if content.hasPrefix("[Cross-session user memory]") { return "memory" }
+        if content.hasPrefix("[Selected user agent]") { return "agent" }
+        if content.hasPrefix("[Earlier conversation summary") { return "summary" }
+        if content.hasPrefix("[Web search context]") { return "webSearch" }
+        if content.contains("You are a precise, context-aware assistant") { return "system" }
+        return "otherSystem"
+    }
+
+    private static func messageCharWeight(_ msg: ChatMessage, includeRules: Bool) -> Int {
+        var n = msg.content.count + msg.reasoningContent.count + 24
+        if includeRules, let prefix = msg.apiContextPrefix { n += prefix.count }
+        if let img = msg.imageJPEGBase64 { n += min(img.count, 40_000) }
+        return n
     }
 }

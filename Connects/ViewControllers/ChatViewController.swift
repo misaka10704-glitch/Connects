@@ -20,7 +20,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let turnContextBar = TurnContextBarView()
     private let inputBar = InputBarView()
-    private let contextUsageView = ContextUsageView()
     private let modelButton = UIButton(type: .custom)
     private let emptyTitleLabel = UILabel()
     private let emptySubtitleLabel = UILabel()
@@ -56,6 +55,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var contextBarWork: DispatchWorkItem?
     private var contextUsageWork: DispatchWorkItem?
     private var contextUsageCache: [String: ContextBuilder.Usage] = [:]
+    private var contextBreakdownCache: [String: ContextBuilder.Breakdown] = [:]
     private var userTurnRowsCache: (
         conversationID: String?,
         messageCount: Int,
@@ -1636,6 +1636,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
+    /// Tail configure + bottom pin + action chrome on the open critical path (no coalesce wait).
+    private func primeOpenBottomPresentation(messages: [ChatMessage], layoutWidth: CGFloat) {
+        guard !messages.isEmpty else { return }
+        UIView.performWithoutAnimation {
+            forceSnapOpenToBottom(messages)
+            if let tailID = tailAssistantMessageID(in: messages),
+               let row = messages.firstIndex(where: { $0.id == tailID }),
+               row < tableView.numberOfRows(inSection: 0),
+               let tail = messages.first(where: { $0.id == tailID }),
+               let cell = tableView.cellForRow(at: IndexPath(row: row, section: 0)) as? AssistantMessageCell {
+                let preferred = rowHeights.displayColumnHeight(for: tail.id)
+                    ?? rowHeights.committedColumnHeight(for: tail.id)
+                cell.configureForOpenBottom(
+                    with: tail,
+                    preferredHeight: preferred,
+                    layoutWidth: layoutWidth
+                )
+            }
+            showVisibleActionChrome(messages: messages)
+            tableView.layoutIfNeeded()
+            snapTableContentOffsetToBottom()
+        }
+    }
+
     /// One bottom pin for open/settle — uses scrollToRow so tail materializes even with short estimates.
     private func pinOpenViewportToBottom(_ messages: [ChatMessage]) {
         guard !messages.isEmpty else { return }
@@ -1674,9 +1698,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         tableView.alpha = 1
         tableView.isHidden = false
+        // UITableView preserves contentOffset across reload — reset before swapping transcripts.
+        let topY = -tableView.adjustedContentInset.top
+        tableView.setContentOffset(CGPoint(x: 0, y: topY), animated: false)
         tableView.reloadData()
         tableView.layoutIfNeeded()
-        ensureBottomPinnedIfNeeded(messages: messages)
+        primeOpenBottomPresentation(messages: messages, layoutWidth: layoutWidth)
         scheduleCoalescedOpenUpgrade()
     }
 
@@ -2171,7 +2198,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self.updateTitleFromConversation()
             self.refreshSwitchChromeImmediate()
             if self.stickToBottom, !messages.isEmpty {
-                self.ensureBottomPinnedIfNeeded(messages: messages)
+                self.primeOpenBottomPresentation(messages: messages, layoutWidth: layoutWidth)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self = self,
@@ -2524,7 +2551,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         navigationController?.view.backgroundColor = c.background
         setNeedsStatusBarAppearanceUpdate()
         inputBar.applyTheme()
-        contextUsageView.applyTheme()
         if reloadMessages {
             reloadTablePreservingViewport()
         }
@@ -3401,10 +3427,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func setupInputBar() {
-        contextUsageView.translatesAutoresizingMaskIntoConstraints = false
-        contextUsageView.delegate = self
-        view.addSubview(contextUsageView)
-
         inputBar.translatesAutoresizingMaskIntoConstraints = false
         inputBar.delegate = self
         view.addSubview(inputBar)
@@ -3419,18 +3441,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         inputSideInsetConstraint = inputWidthFill
         let inputWidthMax = inputBar.widthAnchor.constraint(lessThanOrEqualToConstant: DSTheme.contentMaxWidth)
 
-        let usageWidthFill = contextUsageView.widthAnchor.constraint(equalTo: inputBar.widthAnchor)
-        usageWidthFill.priority = UILayoutPriority(999)
-
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: turnContextBar.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: contextUsageView.topAnchor),
-
-            contextUsageView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            usageWidthFill,
-            contextUsageView.bottomAnchor.constraint(equalTo: inputBar.topAnchor, constant: -2),
+            tableView.bottomAnchor.constraint(equalTo: inputBar.topAnchor, constant: -4),
 
             inputBar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             inputWidthFill,
@@ -3443,10 +3458,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func refreshContextUsage(animated: Bool = false) {
         guard let conv = ConversationStore.shared.currentConversation else {
             contextUsageWork?.cancel()
-            contextUsageView.setCompacting(false)
-            contextUsageView.update(
-                usage: ContextBuilder.Usage(usedChars: 0, budgetChars: 1),
-                forceVisible: false,
+            inputBar.setContextUsageCompacting(false)
+            inputBar.updateContextUsage(
+                ContextBuilder.Usage(usedChars: 0, budgetChars: 1),
+                visible: false,
                 animated: false
             )
             return
@@ -3456,17 +3471,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let visible = ContextBuilder.shouldShowUsage(for: conv)
         let compacting = ContextCompactor.isCompacting(convID)
         let immediate = contextUsageCache[convID] ?? ContextBuilder.quickUsageEstimate(for: conv)
-        contextUsageView.setCompacting(compacting)
-        contextUsageView.update(usage: immediate, forceVisible: visible, animated: false)
+        inputBar.setContextUsageCompacting(compacting)
+        inputBar.updateContextUsage(immediate, visible: visible, animated: false)
 
         contextUsageWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            let usage = ContextBuilder.usage(for: conv)
+            let breakdown = ContextBuilder.breakdown(for: conv)
             DispatchQueue.main.async {
                 guard let self = self, convID == self.currentConversationID else { return }
-                self.contextUsageCache[convID] = usage
-                self.contextUsageView.setCompacting(ContextCompactor.isCompacting(convID))
-                self.contextUsageView.update(usage: usage, forceVisible: visible, animated: animated)
+                self.contextUsageCache[convID] = breakdown.usage
+                self.contextBreakdownCache[convID] = breakdown
+                self.inputBar.setContextUsageCompacting(ContextCompactor.isCompacting(convID))
+                self.inputBar.updateContextUsage(
+                    breakdown.usage,
+                    visible: visible,
+                    animated: animated
+                )
             }
         }
         contextUsageWork = work
@@ -3477,13 +3497,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = ConversationStore.shared.currentConversationID else { return }
         guard let conv = ConversationStore.shared.currentConversation else { return }
         let usage = ContextBuilder.usage(for: conv)
-        contextUsageView.update(
-            usage: usage,
-            forceVisible: ContextBuilder.shouldShowUsage(for: conv),
+        inputBar.updateContextUsage(
+            usage,
+            visible: ContextBuilder.shouldShowUsage(for: conv),
             animated: false
         )
         guard usage.shouldAutoCompact else { return }
-        contextUsageView.setCompacting(true)
+        inputBar.setContextUsageCompacting(true)
         ContextCompactor.compactIfNeeded(conversationID: id, force: false) { [weak self] did in
             self?.refreshContextUsage()
             if did {
@@ -3509,7 +3529,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @objc private func contextCompactionFinished(_ note: Notification) {
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID else { return }
-        contextUsageView.setCompacting(false)
+        inputBar.setContextUsageCompacting(false)
         refreshContextUsage()
     }
 
@@ -3562,7 +3582,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             emptyContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             emptyContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            emptyContainer.bottomAnchor.constraint(equalTo: contextUsageView.topAnchor),
+            emptyContainer.bottomAnchor.constraint(equalTo: inputBar.topAnchor),
 
             emptyTitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
             emptyTitleLabel.centerYAnchor.constraint(equalTo: emptyContainer.centerYAnchor, constant: -36),
@@ -3578,7 +3598,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             chips.bottomAnchor.constraint(lessThanOrEqualTo: emptyContainer.bottomAnchor, constant: -12)
         ])
 
-        view.bringSubviewToFront(contextUsageView)
         view.bringSubviewToFront(inputBar)
     }
 
@@ -4460,14 +4479,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let usage = ContextBuilder.usage(for: conv)
         let intendedConversationID = conv.id
         if usage.shouldAutoCompact {
-            contextUsageView.setCompacting(true)
+            inputBar.setContextUsageCompacting(true)
             // Capture and clear now. If the user switches chats while compacting,
             // the callback must neither erase the new chat's draft nor redirect
             // this send to whichever conversation happens to be visible.
             inputBar.clearText()
             ContextCompactor.compactIfNeeded(conversationID: intendedConversationID, force: true) { [weak self] _ in
                 guard let self = self else { return }
-                self.contextUsageView.setCompacting(false)
+                self.inputBar.setContextUsageCompacting(false)
                 if self.currentConversationID == intendedConversationID {
                     self.refreshContextUsage()
                 }
@@ -4647,6 +4666,16 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         cell.cellDelegate = self
         bindImageCache(to: cell, message: msg)
         let pairedUser = pairedUserMessage(forAssistantAt: indexPath.row, in: messages)
+        if (pendingOpenAtBottom || suppressHeightRemeasure),
+           !msg.isStreaming,
+           isTailAssistantMessage(msg.id) {
+            cell.configureForOpenBottom(
+                with: msg,
+                preferredHeight: preferred,
+                layoutWidth: layoutWidth
+            )
+            return cell
+        }
         cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth, pairedUser: pairedUser)
         return cell
     }
@@ -4703,8 +4732,12 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
            let typedCell = cell as? MessageCellType {
             typedCell.refreshRenderDebugOverlay()
         }
-        // Open: no sync markdown prewarm on willDisplay.
+        // Open: tail paint + action chrome are handled synchronously on the switch path.
         if pendingOpenAtBottom || suppressHeightRemeasure {
+            if msg.role == .assistant,
+               let assistantCell = cell as? AssistantMessageCell {
+                assistantCell.ensureActionButtonsVisible(for: msg)
+            }
             return
         }
         if scrolling {
@@ -5122,7 +5155,7 @@ extension ChatViewController: MessageCellDelegate {
     }
 
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool {
-        if pendingOpenAtBottom || suppressHeightRemeasure { return false }
+        if pendingOpenAtBottom || suppressHeightRemeasure { return true }
         if readingHistory { return true }
         if tableView.isDragging { return false }
         if tableView.isDecelerating { return false }
@@ -5431,28 +5464,48 @@ extension ChatViewController: InputBarViewDelegate {
             DispatchQueue.main.async(execute: show)
         }
     }
-}
 
-extension ChatViewController: ContextUsageViewDelegate {
-    func contextUsageViewDidTapCompact(_ view: ContextUsageView) {
-        guard let id = currentConversationID else { return }
-        if StreamManager.shared.isRunning(id) {
+    func inputBarDidTapContextUsage() {
+        guard let conv = ConversationStore.shared.currentConversation else { return }
+        let breakdown = contextBreakdownCache[conv.id] ?? ContextBuilder.breakdown(for: conv)
+        contextBreakdownCache[conv.id] = breakdown
+        contextUsageCache[conv.id] = breakdown.usage
+
+        let detail = ContextUsageDetailViewController(breakdown: breakdown)
+        detail.setCompacting(ContextCompactor.isCompacting(conv.id))
+        detail.onCompact = { [weak self, weak detail] in
+            self?.compactContextFromDetail(conversationID: conv.id, detail: detail)
+        }
+
+        let nav = UINavigationController(rootViewController: detail)
+        nav.modalPresentationStyle = .formSheet
+        nav.preferredContentSize = CGSize(width: 420, height: 520)
+        present(nav, animated: true)
+    }
+
+    private func compactContextFromDetail(conversationID: String,
+                                          detail: ContextUsageDetailViewController?) {
+        if StreamManager.shared.isRunning(conversationID) {
             showAlert(title: "正在生成", message: "请先停止或等待回复完成，再压缩上下文。")
             return
         }
-        contextUsageView.setCompacting(true)
-        ContextCompactor.compactIfNeeded(conversationID: id, force: true) { [weak self] did in
-            self?.contextUsageView.setCompacting(false)
-            self?.refreshContextUsage()
+        inputBar.setContextUsageCompacting(true)
+        detail?.setCompacting(true)
+        ContextCompactor.compactIfNeeded(conversationID: conversationID, force: true) { [weak self] did in
+            guard let self = self else { return }
+            self.inputBar.setContextUsageCompacting(false)
+            self.refreshContextUsage()
             if did {
-                self?.navigationItem.prompt = "已压缩上下文"
+                self.navigationItem.prompt = "已压缩上下文"
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
                     if self?.navigationItem.prompt == "已压缩上下文" {
                         self?.navigationItem.prompt = nil
                     }
                 }
+                detail?.dismiss(animated: true)
             } else {
-                self?.showAlert(title: "无需压缩", message: "当前上下文占用不高，或已在压缩中。")
+                detail?.setCompacting(false)
+                self.showAlert(title: "无需压缩", message: "当前上下文占用不高，或已在压缩中。")
             }
         }
     }
