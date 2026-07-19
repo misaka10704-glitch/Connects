@@ -512,8 +512,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func invalidateHeightsForWidthChange(immediate: Bool) {
         // Root can calculate its initial split constraints before this child is
         // attached to a window. Defer table work until UIKit has real geometry.
-        guard tableView.window != nil else { return }
-        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        guard tableView.window != nil, isTableLayoutCommitted(),
+              let messages = renderedConversationMessages() else { return }
         let visible = tableView.indexPathsForVisibleRows ?? []
         viewportScrollAnchor = captureViewportScrollAnchor()
         let frozenAnchor = viewportScrollAnchorPath()
@@ -962,6 +962,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         formulaRemeasureWork = nil
         studyRelayoutWork?.cancel()
         studyRelayoutWork = nil
+        widthInvalidateWork?.cancel()
+        widthInvalidateWork = nil
         pendingReadingHistoryFormulaSync = false
         visibleNativeHydrationInProgress = false
         StableRichRenderer.shared.cancelPendingJobs()
@@ -988,6 +990,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             && openID != nil
             && openID == renderedConversationID
             && openID == currentConversationID
+    }
+
+    /// UITableView mutations are unsafe while the store selection differs from the rendered transcript.
+    private func isTableLayoutCommitted() -> Bool {
+        guard let rendered = renderedConversationID else { return false }
+        return rendered == currentConversationID
+    }
+
+    private func renderedConversationMessages() -> [ChatMessage]? {
+        guard isTableLayoutCommitted(),
+              let id = renderedConversationID,
+              let conv = ConversationStore.shared.conversation(id: id) else { return nil }
+        return conv.messages
+    }
+
+    private func tableMatchesMessages(_ messages: [ChatMessage]) -> Bool {
+        guard isTableLayoutCommitted(), tableView.window != nil else { return false }
+        return tableView.numberOfRows(inSection: 0) == messages.count
     }
 
     private func enqueueOpenTailWork(generation: UInt,
@@ -1073,7 +1093,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func openTailHasSubstantialPaint(in messages: [ChatMessage]) -> Bool {
-        guard let tailID = tailAssistantMessageID(in: messages),
+        guard tableMatchesMessages(messages),
+              let tailID = tailAssistantMessageID(in: messages),
               let row = messages.firstIndex(where: { $0.id == tailID }),
               row < tableView.numberOfRows(inSection: 0),
               let tail = messages.first(where: { $0.id == tailID }),
@@ -1162,7 +1183,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Pin viewport to the latest turn using resolver heights + UITableView contentSize.
     private func pinOpenViewportToBottom(_ messages: [ChatMessage], layoutWidth: CGFloat? = nil) {
-        guard !messages.isEmpty, tableView.bounds.height > 1 else { return }
+        guard tableMatchesMessages(messages), tableView.bounds.height > 1 else { return }
         let width = layoutWidth ?? currentRenderWidth()
         stickToBottom = true
         readingHistory = false
@@ -1188,7 +1209,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func tailActionChromeOverlapsInputBar(messages: [ChatMessage]) -> Bool {
-        guard let tailID = tailAssistantMessageID(in: messages),
+        guard tableMatchesMessages(messages),
+              let tailID = tailAssistantMessageID(in: messages),
               let row = messages.firstIndex(where: { $0.id == tailID }),
               row < tableView.numberOfRows(inSection: 0),
               let cell = tableView.cellForRow(at: IndexPath(row: row, section: 0)) as? AssistantMessageCell,
@@ -1201,8 +1223,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Grow tail row + pin until action chrome clears the input bar — runs while alpha is still 0.
     private func finalizeOpenBottomViewport(messages: [ChatMessage], layoutWidth: CGFloat) {
-        guard !messages.isEmpty else { return }
+        guard tableMatchesMessages(messages) else { return }
         for _ in 0..<2 {
+            guard tableMatchesMessages(messages) else { return }
             showOpenTailActionChromeIfAligned(messages: messages, layoutWidth: layoutWidth)
             if let tailID = tailAssistantMessageID(in: messages),
                let tail = messages.first(where: { $0.id == tailID }),
@@ -1226,7 +1249,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Shared bottom pin + tail action chrome — study width/orientation changes use the same path as chat open.
     private func reconcileBottomViewportIfNeeded(messages: [ChatMessage], layoutWidth: CGFloat) {
-        guard stickToBottom, !isViewportPinned(), tableView.window != nil else { return }
+        guard tableMatchesMessages(messages), stickToBottom, !isViewportPinned() else { return }
         UIView.performWithoutAnimation {
             pinOpenViewportToBottom(messages, layoutWidth: layoutWidth)
             finalizeOpenBottomViewport(messages: messages, layoutWidth: layoutWidth)
@@ -1235,6 +1258,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Force visible assistant rows to repaint at the current study/chat panel width.
     private func repaintVisibleAssistantsAtLayoutWidth(messages: [ChatMessage], layoutWidth: CGFloat) {
+        guard tableMatchesMessages(messages) else { return }
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard let path = tableView.indexPath(for: cell),
                   path.row < messages.count else { continue }
@@ -1973,7 +1997,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Tail configure + bottom pin + action chrome on the open critical path (no coalesce wait).
     private func primeOpenBottomPresentation(messages: [ChatMessage], layoutWidth: CGFloat) {
-        guard !messages.isEmpty else { return }
+        guard tableMatchesMessages(messages) else { return }
         UIView.performWithoutAnimation {
             pinOpenViewportToBottom(messages, layoutWidth: layoutWidth)
             if let tailID = tailAssistantMessageID(in: messages),
@@ -2036,8 +2060,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Re-pin after study chrome / width / deferred layout when we should open at the latest turn.
     func ensureBottomPinnedIfNeeded(messages: [ChatMessage]? = nil) {
-        guard stickToBottom, !isViewportPinned() else { return }
-        let msgs = messages ?? ConversationStore.shared.currentConversation?.messages
+        guard stickToBottom, !isViewportPinned(), isTableLayoutCommitted() else { return }
+        let msgs = messages ?? renderedConversationMessages()
         guard let msgs = msgs, !msgs.isEmpty, tableView.window != nil else { return }
         let layoutWidth = currentRenderWidth()
         if isStudySessionActive() {
@@ -2121,7 +2145,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// After first paint: light visible pin + async history warm. Cancellable — must not block switching.
     private func settleOpenConversation(messages: [ChatMessage], layoutWidth: CGFloat) {
-        guard !messages.isEmpty,
+        guard tableMatchesMessages(messages),
               !tableView.isDragging,
               !tableView.isDecelerating else { return }
         let visible = tableView.indexPathsForVisibleRows ?? []
@@ -2975,7 +2999,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             updateTitleFromConversation()
             updateModelButton()
             updateAgentButton()
-            updateStudyInputBar()
             updateEmptyState()
             syncStreamingChrome()
             DispatchQueue.main.async { [weak self] in
@@ -2983,6 +3006,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 if let id = targetID, id != self.renderedConversationID {
                     self.switchToConversation(id: id)
                 }
+                self.updateStudyInputBar()
                 self.finishConversationSwitchChrome(layoutWidth: layoutWidth)
             }
             return
@@ -3401,7 +3425,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             scheduleRelayoutForStudyPanel()
             DispatchQueue.main.async { [weak self] in
                 guard let self = self,
-                      let messages = ConversationStore.shared.currentConversation?.messages,
+                      self.isTableLayoutCommitted(),
+                      let messages = self.renderedConversationMessages(),
                       !messages.isEmpty else { return }
                 self.reconcileBottomViewportIfNeeded(
                     messages: messages,
@@ -3419,7 +3444,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             bottomConstraint?.constant = restingComposerBottomConstant()
         }
         view.layoutIfNeeded()
-        guard let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty else { return }
+        guard let messages = renderedConversationMessages(), !messages.isEmpty else { return }
         reconcileBottomViewportIfNeeded(messages: messages, layoutWidth: currentRenderWidth())
     }
 
