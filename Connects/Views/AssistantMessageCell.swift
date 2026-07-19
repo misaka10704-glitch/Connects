@@ -219,7 +219,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             streaming: false,
             lightweightBodies: true
         )
-        ensureActionButtonsVisible(for: message)
+        ensureActionButtonsVisible(for: message, requireBodyAlignment: true)
         updateRenderDebugOverlay()
     }
 
@@ -263,7 +263,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             streaming: false,
             lightweightBodies: true
         )
-        ensureActionButtonsVisible(for: message)
+        ensureActionButtonsVisible(for: message, requireBodyAlignment: true)
         updateRenderDebugOverlay()
     }
 
@@ -797,6 +797,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         )
     }
 
+    /// True when the native body constraint matches the painted layout height.
+    var isNativeBodyHeightAligned: Bool {
+        guard !nativeRenderView.isHidden else { return true }
+        guard let painted = nativeRenderView.paintedLayoutHeight, painted > 1 else { return false }
+        return abs(nativeHeight.constant - ceil(painted)) <= 1.5
+    }
+
     /// Pin native body height to the painted layout so action chrome sits flush under text.
     @discardableResult
     private func syncNativeBodyHeightToLayout() -> Bool {
@@ -816,10 +823,19 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     /// Force-show 复制/重跑/分叉 on the open path (ignores chrome-key short-circuit).
     /// Row-height clipping is fixed by the host; this guarantees the buttons exist in-layout.
-    func ensureActionButtonsVisible(for message: ChatMessage) {
-        guard messageID.isEmpty || messageID == message.id else { return }
-        guard Self.shouldShowActionButtons(for: message, streaming: message.isStreaming) else { return }
+    @discardableResult
+    func ensureActionButtonsVisible(for message: ChatMessage,
+                                    requireBodyAlignment: Bool = false) -> Bool {
+        guard messageID.isEmpty || messageID == message.id else { return false }
+        guard Self.shouldShowActionButtons(for: message, streaming: message.isStreaming) else {
+            showActions(false)
+            return false
+        }
         syncNativeBodyHeightToLayout()
+        if requireBodyAlignment, !nativeRenderView.isHidden, !isNativeBodyHeightAligned {
+            showActions(false)
+            return false
+        }
         let pager = message.showsVersionPager
         lastActionRowSignature = ""
         lastChromeActionKey = ""
@@ -835,6 +851,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
         cellDelegate?.messageCellDidPaintContent(self)
+        return true
     }
 
     /// True when finished-message action chrome is on and laid out.

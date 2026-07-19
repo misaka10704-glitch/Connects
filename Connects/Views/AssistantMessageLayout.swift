@@ -71,6 +71,32 @@ enum AssistantMessageLayout {
         }
     }
 
+    /// One sync parse + layout for the open tail — preview when formulas are still warming.
+    @discardableResult
+    static func prewarmOpenTailLayoutSync(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {
+        guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
+            return false
+        }
+        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
+        let style = NativeLayoutStyle(
+            width: width,
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+        let document = NativeMarkdownParser.shared.parse(message.content)
+        if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil {
+            return true
+        }
+        let renderFormulas = formulasReady(in: document, style: style)
+        _ = NativeMessageLayouter.shared.layout(
+            document: document,
+            style: style,
+            renderMissingFormulas: renderFormulas
+        )
+        return NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil
+    }
+
     /// Serial queue for markdown parse + layout warm (Chatto-style off-main sizing).
     static let layoutPrewarmQueue = DispatchQueue(label: "com.connects.layout.prewarm", qos: .userInitiated)
     private static let switchPrewarmGenerationLock = NSLock()
