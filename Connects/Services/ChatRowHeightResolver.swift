@@ -74,6 +74,17 @@ final class ChatRowHeightResolver {
         scrollFrozenRowHeights = nil
     }
 
+    /// Write frozen row heights back into committed/display so unfreeze does not remount a different geometry.
+    func commitFrozenHeightsBeforeUnfreeze() {
+        guard let frozen = scrollFrozenRowHeights else { return }
+        for (id, rowH) in frozen where rowH > 40 {
+            let column = max(40, rowH - Self.cellVerticalMargin)
+            committedColumnHeights[id] = column
+            committedIDs.insert(id)
+            displayColumnHeights[id] = column
+        }
+    }
+
     /// Pin frozen height to the painted column (visible rows at gesture start — no cache inflation).
     func pinFrozenRowHeight(messageID: String, columnHeight: CGFloat) {
         guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return }
