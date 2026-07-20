@@ -86,7 +86,8 @@ final class ChatRowHeightResolver {
         guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
         let required = columnHeight + Self.cellVerticalMargin
         let current = scrollFrozenRowHeights?[messageID] ?? 0
-        guard required > current + 0.5 else { return false }
+        // Ignore sub-4pt noise — frequent beginUpdates mid-scroll hitch QA-edge feel.
+        guard required > current + 4 else { return false }
         scrollFrozenRowHeights?[messageID] = required
         let prior = bestKnownColumnHeight(for: messageID)
         committedColumnHeights[messageID] = max(prior, columnHeight)

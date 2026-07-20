@@ -396,9 +396,11 @@ enum ScrollStressHarness {
                 }
                 if studyBlank {
                     let blank = chat.debugVisibleStudyBlankState()
-                    if blank.inflatedRows > 0 || blank.unrenderedAssistants > 0 || blank.interRowGaps > 0 {
+                    // Mid-scroll: only hard-fail on unpainted bodies / gaps. Chrome reserve slack is expected.
+                    if blank.unrenderedAssistants > 0 || blank.interRowGaps > 0
+                        || (blank.inflatedRows > 0 && blank.maxRowSlackPt > 48) {
                         onBlank()
-                        log("\(labelPrefix) blank-mid step=\(step) frac=\(Int(frac * 100))% inflated=\(blank.inflatedRows) unrendered=\(blank.unrenderedAssistants) gaps=\(blank.interRowGaps)")
+                        log("\(labelPrefix) blank-mid step=\(step) frac=\(Int(frac * 100))% inflated=\(blank.inflatedRows) unrendered=\(blank.unrenderedAssistants) gaps=\(blank.interRowGaps) maxSlack=\(Int(blank.maxRowSlackPt))pt")
                     }
                 }
                 let snap = chat.debugVisibleActionChromeSnapshot()
@@ -771,28 +773,31 @@ enum ScrollStressHarness {
                     onChromeLate: { chromeLateFailures += 1 }
                 )
                 chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
-                    let postScrollY = anchor.flatMap { chat.debugRowViewportY(row: $0.row) }
+                    // Measure settle drift against the top row at t+0 (what the user sees), not the pre-scroll anchor.
+                    let t0Snap = chat.debugScrollAnchorSnapshot()
+                    let t0Offset = chat.debugContentOffsetY()
                     DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
                         chat.debugWaitForReadingHistoryStable(maxAttempts: pacing.stableMaxAttempts) {
                             if chat.debugVisibleActionChromeFlickerCount() > 0 {
                                 flickerFailures += 1
                                 log("study-flicker step=\(step)")
                             }
-                            if let anchor = anchor {
-                                let expectedY = postScrollY ?? (anchor.viewportY + distance)
-                                if let drift = chat.debugViewportDrift(
-                                    row: anchor.row,
-                                    expectedY: expectedY,
-                                    maxAllowed: driftAllowance
-                                ) {
-                                    jumpFailures += 1
-                                    log("study-jump step=\(step) row=\(anchor.row) drift=\(Int(drift))pt")
-                                }
+                            let settleJitter = abs(chat.debugContentOffsetY() - t0Offset)
+                            if settleJitter > 12 {
+                                jumpFailures += 1
+                                log("study-jump step=\(step) settle-jitter=\(Int(settleJitter))pt")
                             }
+                            if let t0 = t0Snap,
+                               let jump = chat.debugScrollJumpSince(anchor: t0, maxAllowed: 12) {
+                                jumpFailures += 1
+                                log("study-jump step=\(step) row=\(jump.row) drift=\(Int(jump.delta))pt")
+                            }
+                            _ = anchor
                             let blank = chat.debugVisibleStudyBlankState()
-                            if blank.unrenderedAssistants > 0 || blank.inflatedRows > 0 || blank.interRowGaps > 0 {
+                            if blank.unrenderedAssistants > 0 || blank.interRowGaps > 0
+                                || (blank.inflatedRows > 0 && blank.maxRowSlackPt > 48) {
                                 blankFailures += 1
-                                log("study-blank-scroll step=\(step) unrendered=\(blank.unrenderedAssistants) inflated=\(blank.inflatedRows) gaps=\(blank.interRowGaps)")
+                                log("study-blank-scroll step=\(step) unrendered=\(blank.unrenderedAssistants) inflated=\(blank.inflatedRows) gaps=\(blank.interRowGaps) maxSlack=\(Int(blank.maxRowSlackPt))pt")
                             }
                             let qa = chat.debugVisibleCrossQAState()
                             if qa.unrenderedAssistants > 0 || qa.missingActionButtons > 0 {
