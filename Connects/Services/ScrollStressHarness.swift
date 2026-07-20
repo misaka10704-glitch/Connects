@@ -8,6 +8,7 @@ import UIKit
 /// Diverse: `-ScrollStressDiverse` — mixed chat + first-open + matrix in one launch.
 /// First-open QA edge: `-ScrollStressFirstOpen` — cold open + micro scroll at user-bubble edges.
 /// First bubble: `-ScrollStressFirstBubble` — study-landscape scroll until first user bubble at top edge.
+/// Relaunch QA jitter: `-ScrollStressRelaunchQA` — multi-conversation cold opens + first QA-edge micro-drift.
 /// Ultra switch: `-ScrollStressUltraSwitch` — cold open + mid-scroll width/study toggles (use with UltraSlow).
 /// Study bug path: `-ScrollStressStudyFixture -ScrollStressStudy` (narrow panel + reasoning + 卷积公式).
 /// Matrix path: `-ScrollStressStudyFixture -ScrollStressMatrix -ScrollStressSlow` (portrait/landscape chat + PDF).
@@ -46,6 +47,9 @@ enum ScrollStressHarness {
     private static var firstBubbleMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressFirstBubble")
     }
+    private static var relaunchQAMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressRelaunchQA")
+    }
     private static var mixedPacingMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressMixedPacing")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressDiverse")
@@ -62,7 +66,7 @@ enum ScrollStressHarness {
 
     static func installFixtureIfRequested() {
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
-            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || diverseMode)) {
+            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || relaunchQAMode || diverseMode)) {
             installStudyFixture()
             return
         }
@@ -99,6 +103,7 @@ enum ScrollStressHarness {
             || ultraSwitchMode
             || firstOpenMode
             || firstBubbleMode
+            || relaunchQAMode
             || diverseMode else { return }
         guard !didSchedule else { return }
         didSchedule = true
@@ -106,6 +111,13 @@ enum ScrollStressHarness {
             log("scheduled diverse stress (fast+ultra mixed: chat → first-open → matrix)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 runDiverse(on: chat)
+            }
+            return
+        }
+        if relaunchQAMode {
+            log("scheduled relaunch QA jitter stress (multi-conversation cold opens)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runRelaunchQA(on: chat)
             }
             return
         }
@@ -1105,6 +1117,158 @@ enum ScrollStressHarness {
         if exitOnFinish { exit(pass ? 0 : 1) }
     }
 
+    // MARK: - Relaunch QA jitter (multi-conversation cold opens + first QA cross)
+
+    private static func installRelaunchConversations(count: Int = 3, turns: Int = 8) -> [String] {
+        let store = ConversationStore.shared
+        var ids: [String] = []
+        for i in 1...count {
+            let conv = store.createConversation()
+            store.updateCurrentQuietly { conversation in
+                conversation.title = "首开抖动压测 #\(i) \(turns)轮"
+                conversation.messages.removeAll()
+                for turn in 1...turns {
+                    conversation.messages.append(ChatMessage(
+                        role: .user,
+                        content: "问题 \(turn)：请推导方差公式、写出期望与方差的关系，并给出一个数值例子。"
+                    ))
+                    conversation.messages.append(ChatMessage(
+                        role: .assistant,
+                        content: mathHeavyAssistantBody(turn: turn),
+                        reasoningContent: turn.isMultiple(of: 2) ? "先展开期望，再用独立同分布假设。" : "",
+                        isStreaming: false
+                    ))
+                }
+            }
+            ids.append(conv.id)
+        }
+        log("installed \(count) relaunch conversations × \(turns) turns")
+        return ids
+    }
+
+    private static func runRelaunchQA(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        let conversationIDs = installRelaunchConversations()
+        let metrics = MatrixMetrics()
+        let modes: [(name: String, width: CGFloat, study: Bool)] = [
+            ("chat-portrait", portraitChatTableWidth, false),
+            ("chat-landscape", fullChatTableWidth, false),
+            ("study-portrait", portraitChatTableWidth, true),
+            ("study-landscape", studyPanelTableWidth, true)
+        ]
+        let reopenPasses = 2
+
+        func runMode(_ modeIndex: Int) {
+            guard modeIndex < modes.count else {
+                finishMatrix(chat: chat, metrics: metrics, label: "relaunch QA jitter")
+                return
+            }
+            let mode = modes[modeIndex]
+            log("relaunch mode \(modeIndex + 1)/\(modes.count): \(mode.name)")
+
+            func runConversation(_ convIndex: Int) {
+                guard convIndex < conversationIDs.count else {
+                    runMode(modeIndex + 1)
+                    return
+                }
+                let cid = conversationIDs[convIndex]
+                ConversationStore.shared.selectConversation(id: cid)
+                chat.reloadChat()
+
+                func setupChrome(_ done: @escaping () -> Void) {
+                    if mode.study {
+                        if mode.width <= studyPanelTableWidth + 1 {
+                            chat.setStudyChrome(.none)
+                            chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth, completion: done)
+                            }
+                        } else {
+                            chat.debugEnterStudyPortraitPanel(tableWidth: mode.width, completion: done)
+                        }
+                    } else {
+                        chat.setStudyChrome(.none)
+                        chat.debugSimulateLayoutWidthChange(tableWidth: mode.width, completion: done)
+                    }
+                }
+
+                func runReopen(_ pass: Int) {
+                    guard pass < reopenPasses else {
+                        runConversation(convIndex + 1)
+                        return
+                    }
+                    let phase = "\(mode.name)-c\(convIndex + 1)-open\(pass + 1)"
+                    setupChrome {
+                        chat.debugWaitForStudyRelayoutStable {
+                            chat.debugSimulateColdOpen {
+                                runFirstQACrossJitter(
+                                    chat: chat,
+                                    phase: phase,
+                                    studyBlank: mode.study,
+                                    metrics: metrics
+                                ) {
+                                    runReopen(pass + 1)
+                                }
+                            }
+                        }
+                    }
+                }
+                runReopen(0)
+            }
+            runConversation(0)
+        }
+        runMode(0)
+    }
+
+    /// Cold-open first QA-edge scroll with tight t+0 → t+settle micro-drift checks.
+    private static func runFirstQACrossJitter(chat: ChatViewController,
+                                              phase: String,
+                                              studyBlank: Bool,
+                                              metrics: MatrixMetrics,
+                                              completion: @escaping () -> Void) {
+        let distance = min(chat.debugSuggestedQAEdgeScrollDelta() ?? 72, 96)
+        let anchor = chat.debugScrollAnchorSnapshot()
+        let offset0 = chat.debugContentOffsetY()
+        log("\(phase) first-qa dist=\(Int(distance)) offset=\(Int(offset0))")
+        chat.debugSimulateSlowScrollUp(distance: distance, duration: 0.18) {
+            let t0Anchor = chat.debugScrollAnchorSnapshot()
+            let t0Offset = chat.debugContentOffsetY()
+            let edge = chat.debugVisibleQAEdgeState()
+            log("\(phase) t+0 topUsers=\(edge.userRowsAtTopEdge) offset=\(Int(t0Offset))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                chat.debugWaitForReadingHistoryStable(maxAttempts: 120) {
+                    let t1Offset = chat.debugContentOffsetY()
+                    let settleJitter = abs(t1Offset - t0Offset)
+                    if settleJitter > 8 {
+                        metrics.jumpFailures += 1
+                        log("\(phase) settle-jitter \(Int(settleJitter))pt (offset \(Int(t0Offset))→\(Int(t1Offset)))")
+                    }
+                    if let t0 = t0Anchor,
+                       let jump = chat.debugScrollJumpSince(anchor: t0, maxAllowed: 10) {
+                        metrics.jumpFailures += 1
+                        log("\(phase) row-jitter row=\(jump.row) drift=\(Int(jump.delta))pt")
+                    }
+                    if let a0 = anchor {
+                        let expectedY = a0.viewportY + distance
+                        if let drift = chat.debugViewportDrift(row: a0.row, expectedY: expectedY, maxAllowed: 18) {
+                            metrics.jumpFailures += 1
+                            log("\(phase) jump row=\(a0.row) drift=\(Int(drift))pt")
+                        }
+                    }
+                    auditMatrixFrame(
+                        chat: chat,
+                        metrics: metrics,
+                        phase: phase,
+                        step: 0,
+                        label: "t+settle",
+                        studyBlank: studyBlank,
+                        checkRender: true
+                    )
+                    completion()
+                }
+            }
+        }
+    }
+
     // MARK: - First user bubble at top (study-landscape anchor regression)
 
     private static func runFirstBubble(on chat: ChatViewController) {
@@ -1361,6 +1525,8 @@ enum ScrollStressHarness {
             )
             chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
                 auditEdge("t+0")
+                let t0Offset = chat.debugContentOffsetY()
+                let t0RowAnchor = chat.debugScrollAnchorSnapshot()
                 schedulePostScrollSamples(
                     chat: chat,
                     pacing: pacing,
@@ -1392,6 +1558,16 @@ enum ScrollStressHarness {
                                 metrics.jumpFailures += 1
                                 log("\(phase) jump step=\(step) row=\(anchor.row) drift=\(Int(drift))pt")
                             }
+                        }
+                        let settleJitter = abs(chat.debugContentOffsetY() - t0Offset)
+                        if settleJitter > 8 {
+                            metrics.jumpFailures += 1
+                            log("\(phase) settle-jitter step=\(step) \(Int(settleJitter))pt")
+                        }
+                        if let t0 = t0RowAnchor,
+                           let jump = chat.debugScrollJumpSince(anchor: t0, maxAllowed: 10) {
+                            metrics.jumpFailures += 1
+                            log("\(phase) row-jitter step=\(step) row=\(jump.row) drift=\(Int(jump.delta))pt")
                         }
                         step += 1
                         next()
