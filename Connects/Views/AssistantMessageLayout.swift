@@ -362,10 +362,10 @@ enum AssistantMessageLayout {
                                            pairedUser: ChatMessage?) -> CGFloat {
         guard message.hasSearchProcess || message.hasImageTranscription else { return 0 }
         let expanded = expandedSearchIDs.contains(message.id)
-        if !expanded { return 36 }
+        if !expanded { return 40 }
         let text = resolvedSearchChromeText(for: message, pairedUser: pairedUser)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return 36 }
+        guard !text.isEmpty else { return 40 }
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
         let font = UIFont.systemFont(ofSize: thinkFont)
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
@@ -401,21 +401,24 @@ enum AssistantMessageLayout {
             let expanded = expandedThinkingIDs.contains(message.id)
             total += expanded
                 ? 28 + CGFloat(max(1, reasoning.count / 48)) * 16
-                : 36
+                : 40
         }
 
         if message.hasImage {
             total += 168
         }
 
+        let chromeBeforeBody = total
         if let body = seedableContentHeight(
             for: message,
             layoutWidth: layoutWidth,
             reserveActionRow: false,
             allowSyncLayout: allowSyncLayout
         ), body > 0 {
+            if chromeBeforeBody > 0 { total += 10 }
             total += body
         } else if !message.content.isEmpty {
+            if chromeBeforeBody > 0 { total += 10 }
             let lines = max(1, message.content.count / 48)
             total += CGFloat(36 + lines * 18)
         }
@@ -455,7 +458,7 @@ enum AssistantMessageLayout {
             let expanded = expandedThinkingIDs.contains(message.id)
             total += expanded
                 ? 28 + CGFloat(max(1, reasoning.count / 48)) * 16
-                : 36
+                : 40
         }
 
         if message.hasImage {

@@ -10,9 +10,11 @@ final class NativeMessageRenderView: UIView {
     var onHeightChange: ((CGFloat) -> Void)?
     /// Return true when a host view controller handled the link internally.
     var onLinkTap: ((URL) -> Bool)?
+    private let bitmapView = UIImageView()
     private(set) var layout: NativeMessageLayout?
     private var layoutKey: String?
     private var requestKey: String?
+    private var rasterKey: String?
     private var renderGeneration = 0
 
     override init(frame: CGRect) {
@@ -28,10 +30,14 @@ final class NativeMessageRenderView: UIView {
     private func setup() {
         isOpaque = false
         backgroundColor = .clear
-        contentMode = .redraw
         isUserInteractionEnabled = true
-        // First paint of long replies can hitch the scroll thread; async draw helps iOS 12.
-        layer.drawsAsynchronously = true
+        clipsToBounds = true
+        layer.drawsAsynchronously = false
+        bitmapView.contentMode = .top
+        bitmapView.clipsToBounds = true
+        bitmapView.isUserInteractionEnabled = false
+        bitmapView.backgroundColor = .clear
+        addSubview(bitmapView)
     }
 
     @discardableResult
@@ -115,8 +121,9 @@ final class NativeMessageRenderView: UIView {
         renderGeneration += 1
         requestKey = nil
         layoutKey = nil
+        rasterKey = nil
         layout = nil
-        setNeedsDisplay()
+        bitmapView.image = nil
         invalidateIntrinsicContentSize()
     }
 
@@ -168,8 +175,40 @@ final class NativeMessageRenderView: UIView {
         guard layoutKey != result.key else { return }
         layoutKey = result.key
         layout = result
-        setNeedsDisplay()
         invalidateIntrinsicContentSize()
+        publishRasterizedBitmap()
+    }
+
+    /// Rasterize once per layout key — UIImageView stays fixed height; scroll never repaints.
+    private func publishRasterizedBitmap() {
+        guard let layout = layout,
+              layout.size.width > 0.5,
+              layout.size.height > 0.5 else {
+            bitmapView.image = nil
+            rasterKey = nil
+            return
+        }
+        guard rasterKey != layout.key else { return }
+        rasterKey = layout.key
+        let size = layout.size
+        let scale = UIScreen.main.scale
+        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        defer { UIGraphicsEndImageContext() }
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        draw(layout: layout, in: context, clipRect: CGRect(origin: .zero, size: size))
+        guard let cgImage = UIGraphicsGetImageFromCurrentImageContext()?.cgImage else { return }
+        bitmapView.image = UIImage(cgImage: cgImage, scale: scale, orientation: .up)
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let layout = layout else {
+            bitmapView.frame = .zero
+            return
+        }
+        let painted = layout.size
+        bitmapView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: painted.height)
     }
 
     private func warm(formulas: [(tex: String, display: Bool)],
@@ -211,7 +250,6 @@ final class NativeMessageRenderView: UIView {
                 generation: generation
             )
         } else {
-            // Yield between uncached iosMath passes — keeps A7 iPads responsive.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
                 self?.warm(
                     formulas: formulas,
@@ -259,7 +297,6 @@ final class NativeMessageRenderView: UIView {
         return result
     }
 
-    /// Painted layout height — may be less than the constraint constant while rows settle.
     var paintedLayoutHeight: CGFloat? {
         guard let layout = layout, layout.size.height > 0 else { return nil }
         return layout.size.height
@@ -273,29 +310,27 @@ final class NativeMessageRenderView: UIView {
         layout?.size ?? .zero
     }
 
-    override func draw(_ rect: CGRect) {
-        guard let layout = layout,
-              let context = UIGraphicsGetCurrentContext() else { return }
+    private func draw(layout: NativeMessageLayout, in context: CGContext, clipRect: CGRect) {
         context.saveGState()
-        context.clip(to: rect)
+        context.clip(to: clipRect)
         for command in layout.commands {
             switch command {
             case .text(let fragment):
-                guard fragment.frame.intersects(rect) else { continue }
+                guard fragment.frame.intersects(clipRect) else { continue }
                 fragment.attributedText.draw(
                     with: fragment.frame,
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     context: nil
                 )
             case .image(let image, let frame):
-                guard frame.intersects(rect) else { continue }
+                guard frame.intersects(clipRect) else { continue }
                 image.draw(in: frame)
             case .fill(let frame, let color, let radius):
-                guard frame.intersects(rect) else { continue }
+                guard frame.intersects(clipRect) else { continue }
                 color.setFill()
                 UIBezierPath(roundedRect: frame, cornerRadius: radius).fill()
             case .stroke(let frame, let color, let width):
-                guard frame.intersects(rect) else { continue }
+                guard frame.intersects(clipRect) else { continue }
                 color.setStroke()
                 let path = UIBezierPath(rect: frame.insetBy(dx: width / 2, dy: width / 2))
                 path.lineWidth = width
@@ -307,7 +342,7 @@ final class NativeMessageRenderView: UIView {
                     width: abs(end.x - start.x) + width * 2,
                     height: abs(end.y - start.y) + width * 2
                 )
-                guard bounds.intersects(rect) else { continue }
+                guard bounds.intersects(clipRect) else { continue }
                 color.setStroke()
                 let path = UIBezierPath()
                 path.move(to: start)

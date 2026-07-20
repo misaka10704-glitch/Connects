@@ -63,6 +63,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var nativeTopToThink: NSLayoutConstraint!
     private var nativeBottom: NSLayoutConstraint!
     private var columnBottomPin: NSLayoutConstraint!
+    /// Action chrome overlays contentView bottom — not in column stack (avoids body jump on icon restore).
+    private var actionRowBottomToContent: NSLayoutConstraint!
+    private var actionGapFromColumn: NSLayoutConstraint!
+    private var columnBottomToNative: NSLayoutConstraint!
+    private var columnBottomToLabel: NSLayoutConstraint!
 
     private var heightNotifyWork: DispatchWorkItem?
     private var hasThinking = false
@@ -144,7 +149,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         actionRow.alpha = 1
         styleActionIcons(cachedThemeColors ?? DSTheme.c)
         lastChromeActionKey = "\(message.id)|true|\(pager)|\(message.versionIndex)|\(message.versions.count)"
-        contentView.layoutIfNeeded()
         return true
     }
 
@@ -190,7 +194,31 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         preferredLayoutWidth = layoutWidth
         configuredPreferredHeight = preferredHeight
         guard message.role == .assistant, !message.isStreaming else { return }
-        if hasVisibleNativePaint { return }
+        primeFinishedActionChromeSlot(for: message)
+        if Self.shouldShowActionButtons(for: message, streaming: false),
+           !hasVisibleActionButtons {
+            paintActionIconsWithoutLayout(for: message, colors: DSTheme.c)
+        }
+        if hasVisibleNativePaint {
+            if !assistantChromeMatches(message) {
+                let c = DSTheme.c
+                let thinkFont = SettingsManager.shared.chatThinkingFontSize
+                applyAssistantChrome(
+                    message: message,
+                    colors: c,
+                    thinkFont: thinkFont,
+                    streaming: false,
+                    lightweightBodies: true,
+                    refreshActions: false
+                )
+                bindNativeBodyLayout(
+                    hasThinking: hasThinking,
+                    hasSearch: hasSearch,
+                    hasImage: !imageViewMsg.isHidden
+                )
+            }
+            return
+        }
         paintOpenHistoryBody(with: message, layoutWidth: layoutWidth)
     }
 
@@ -232,6 +260,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             updateRenderDebugOverlay()
             return
         }
+        applyAssistantChrome(
+            message: message,
+            colors: c,
+            thinkFont: thinkFont,
+            streaming: false,
+            lightweightBodies: true,
+            refreshActions: false
+        )
         paintOpenNativeBody(
             message: message,
             hasThinking: hasThinking,
@@ -241,14 +277,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             colors: c,
             layoutWidth: layoutWidth
         )
-        applyAssistantChrome(
-            message: message,
-            colors: c,
-            thinkFont: thinkFont,
-            streaming: false,
-            lightweightBodies: true
-        )
-        ensureActionButtonsVisible(for: message, requireBodyAlignment: true)
+        if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) != false {
+            ensureActionButtonsVisible(for: message, requireBodyAlignment: true)
+        } else {
+            refreshActionChrome(for: message, streaming: false, colors: c)
+        }
         updateRenderDebugOverlay()
     }
 
@@ -276,6 +309,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             colors: c,
             layoutWidth: layoutWidth
         )
+        applyAssistantChrome(
+            message: message,
+            colors: c,
+            thinkFont: thinkFont,
+            streaming: false,
+            lightweightBodies: true
+        )
         paintOpenNativeBody(
             message: message,
             hasThinking: hasThinking,
@@ -284,13 +324,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             font: font,
             colors: c,
             layoutWidth: layoutWidth
-        )
-        applyAssistantChrome(
-            message: message,
-            colors: c,
-            thinkFont: thinkFont,
-            streaming: false,
-            lightweightBodies: true
         )
         ensureActionButtonsVisible(for: message, requireBodyAlignment: true)
         updateRenderDebugOverlay()
@@ -304,7 +337,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                      font: CGFloat,
                                      colors: ThemeColors,
                                      layoutWidth: CGFloat) {
-        let priorAsync = nativeRenderView.layer.drawsAsynchronously
+        let scrollFrozen = cellDelegate?.messageCellShouldFreezeHeight(self) == true
         nativeRenderView.layer.drawsAsynchronously = false
         configureNative(
             message: message,
@@ -314,12 +347,28 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             font: font,
             colors: colors,
             layoutWidth: layoutWidth,
-            allowDefer: false
+            allowDefer: scrollFrozen
         )
+        if scrollFrozen {
+            return
+        }
         contentView.setNeedsLayout()
         contentView.layoutIfNeeded()
         nativeRenderView.layer.displayIfNeeded()
-        nativeRenderView.layer.drawsAsynchronously = priorAsync
+    }
+
+    /// Keep 复制/重跑/分叉 visible on committed rows while scroll-frozen — no layoutIfNeeded.
+    func showCommittedActionIconsDuringScroll(for message: ChatMessage) {
+        guard message.id == messageID || messageID.isEmpty else { return }
+        guard Self.shouldShowActionButtons(for: message, streaming: false) else { return }
+        guard hasVisibleBodyPaint else { return }
+        guard !hasVisibleActionButtons else { return }
+        paintActionIconsWithoutLayout(for: message, colors: cachedThemeColors ?? DSTheme.c)
+    }
+
+    /// Scroll-frozen row entering view: bind cached native + chrome without full configure teardown.
+    func primeFrozenScrollAssistant(with message: ChatMessage, layoutWidth: CGFloat) {
+        configureWhileScrolling(message: message, layoutWidth: layoutWidth)
     }
 
     func syncThinkingPresentation(with message: ChatMessage, layoutWidth: CGFloat) {
@@ -540,13 +589,32 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         guard message.role == .assistant else { return }
 
+        if !message.isStreaming {
+            primeFinishedActionChromeSlot(for: message)
+        }
+
         // Same row already painted native: skip teardown — kills Q↔A re-render flash.
         if !message.isStreaming,
            previousMessageID == message.id,
            hasVisibleNativePaint,
            freezeLayout,
            abs(lastNativeLayoutWidth - nativeLayoutWidth(for: layoutWidth)) < 1 {
-            // No chrome/thinking relayout mid-gesture — prevents label shift and clip flash.
+            if !assistantChromeMatches(message) {
+                let thinkFont = SettingsManager.shared.chatThinkingFontSize
+                applyAssistantChrome(
+                    message: message,
+                    colors: DSTheme.c,
+                    thinkFont: thinkFont,
+                    streaming: false,
+                    lightweightBodies: true,
+                    refreshActions: false
+                )
+                bindNativeBodyLayout(
+                    hasThinking: hasThinking,
+                    hasSearch: hasSearch,
+                    hasImage: !imageViewMsg.isHidden
+                )
+            }
             updateRenderDebugOverlay()
             return
         }
@@ -655,6 +723,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func configureWhileScrolling(message: ChatMessage, layoutWidth: CGFloat) {
         streamingPresentation = false
         studyContentLeadingGutter = cellDelegate?.messageCellStudyContentLeadingGutter() ?? 0
+        primeFinishedActionChromeSlot(for: message)
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
@@ -671,18 +740,32 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             imageHeight.constant = 0
         }
 
-        applyAssistantChrome(
-            message: message,
-            colors: c,
-            thinkFont: thinkFont,
-            streaming: false,
-            lightweightBodies: true,
-            refreshActions: false
-        )
-
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         hasSearch = message.hasSearchProcess || message.hasImageTranscription
+
+        if hasVisibleNativePaint,
+           nativeMessageForRemeasure?.id == message.id,
+           assistantChromeMatches(message),
+           abs(lastNativeLayoutWidth - nativeLayoutWidth(for: layoutWidth)) < 1 {
+            if Self.shouldShowActionButtons(for: message, streaming: false) {
+                paintActionIconsWithoutLayout(for: message, colors: c)
+            }
+            return
+        }
+
+        if assistantChromeMatches(message) {
+            applyThinkingLayoutWidth()
+        } else {
+            applyAssistantChrome(
+                message: message,
+                colors: c,
+                thinkFont: thinkFont,
+                streaming: false,
+                lightweightBodies: true,
+                refreshActions: false
+            )
+        }
 
         deferredNativeBind = DeferredNativeBind(
             message: message,
@@ -704,7 +787,31 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: layoutWidth,
             allowDefer: true
         )
-        refreshActionChrome(for: message, streaming: false, colors: c)
+        if Self.shouldShowActionButtons(for: message, streaming: false) {
+            paintActionIconsWithoutLayout(for: message, colors: c)
+        }
+    }
+
+    private func assistantChromeMatches(_ message: ChatMessage) -> Bool {
+        let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wantsThinking = !think.isEmpty
+        let wantsSearch = message.hasSearchProcess || message.hasImageTranscription
+        guard hasThinking == wantsThinking, hasSearch == wantsSearch else { return false }
+        if wantsThinking {
+            let expanded = AssistantMessageLayout.isThinkingExpanded(messageID: message.id)
+            guard thinkingExpanded == expanded,
+                  cachedReasoningText == think,
+                  !thinkingBox.isHidden else { return false }
+        } else if !thinkingBox.isHidden {
+            return false
+        }
+        if wantsSearch {
+            let expanded = AssistantMessageLayout.isSearchExpanded(messageID: message.id)
+            guard searchExpanded == expanded, !searchBox.isHidden else { return false }
+        } else if !searchBox.isHidden {
+            return false
+        }
+        return true
     }
 
     private func applyAssistantChrome(message: ChatMessage,
@@ -714,7 +821,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                       lightweightBodies: Bool = false,
                                       refreshActions: Bool = true) {
         let imageActivity = message.hasImageTranscription
-        imageTranscriptionFailed = imageActivity && message.imageTranscriptionPhase == .failed
         let search = (imageActivity
             ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
             : message.searchProcessContent
@@ -810,6 +916,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 if cellDelegate?.messageCellShouldDeferActionChromeUntilBodyPaint(self) == true {
                     reserveActionChromeHeightOnly()
                     lastChromeActionKey = "\(message.id)|scroll|deferred"
+                } else if hasVisibleBodyPaint {
+                    paintActionIconsWithoutLayout(for: message, colors: c)
+                    lastChromeActionKey = "\(message.id)|scroll|icons"
                 } else {
                     reserveActionChromeSpace()
                     lastChromeActionKey = "\(message.id)|scroll|reserved"
@@ -847,6 +956,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         )
     }
 
+    /// Reserve 28pt action slot before body paint — actionHeight 0→28 was shifting native text via nativeBottom.
+    private func primeFinishedActionChromeSlot(for message: ChatMessage) {
+        guard Self.shouldShowActionButtons(for: message, streaming: false) else { return }
+        if actionHeight.constant < Self.actionRowVisibleHeight - 0.5 {
+            actionHeight.constant = Self.actionRowVisibleHeight
+        }
+        actionRow.isHidden = false
+    }
+
     /// True when the native body constraint matches the painted layout height.
     var isNativeBodyHeightAligned: Bool {
         guard !nativeRenderView.isHidden else { return true }
@@ -866,14 +984,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private func reconcileColumnBottomPinIfNeeded() {
-        contentView.layoutIfNeeded()
-        // Never squash the column into an underestimated UITableView row — that
-        // clips action chrome and makes measuredContentHeight lie to the host.
+        guard cellDelegate?.messageCellShouldFreezeHeight(self) != true else { return }
         columnBottomPin.priority = UILayoutPriority(250)
     }
 
-    /// Constraint-sum height before UITableView row compression.
-    private func intrinsicColumnContentHeight() -> CGFloat {
+    /// Constraint-sum column stack height (excludes overlay action row).
+    private func intrinsicColumnStackHeight() -> CGFloat {
         var total: CGFloat = 0
         if !imageViewMsg.isHidden, imageHeight.constant > 0.5 {
             total += imageHeight.constant
@@ -886,9 +1002,19 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             if total > 0, !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
                 total += 10
             }
+        } else if !searchBox.isHidden, searchHeaderH.constant > 0.5 {
+            total += searchTop.constant + searchHeaderH.constant
+            if total > 0, !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                total += 10
+            }
         }
         if !thinkingBox.isHidden, thinkingBoxH.constant > 0.5 {
             total += thinkingBoxH.constant
+            if total > 0, !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                total += 10
+            }
+        } else if !thinkingBox.isHidden, thinkingHeaderH.constant > 0.5 {
+            total += thinkingTop.constant + thinkingHeaderH.constant
             if total > 0, !nativeRenderView.isHidden || !assistantLabel.isHidden {
                 total += 10
             }
@@ -902,11 +1028,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             ).height
             if labelH > 0.5 { total += labelH }
         }
-        if !actionRow.isHidden, actionHeight.constant > 0.5 {
-            if total > 0 { total += 4 }
-            total += actionHeight.constant
-        }
         return total
+    }
+
+    /// Column + overlay action gap — matches contentView Auto Layout.
+    private func paintedStackHeight() -> CGFloat {
+        var h = column.bounds.height
+        if h < 1 {
+            h = intrinsicColumnStackHeight()
+        }
+        guard !actionRow.isHidden, actionHeight.constant > 0.5 else { return h }
+        return h + 4 + actionHeight.constant
     }
 
     /// Force-show 复制/重跑/分叉 on the open path (ignores chrome-key short-circuit).
@@ -919,35 +1051,30 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             showActions(false)
             return false
         }
+        primeFinishedActionChromeSlot(for: message)
+        let c = cachedThemeColors ?? DSTheme.c
+        if requireBodyAlignment,
+           !nativeRenderView.isHidden,
+           !isNativeBodyHeightAligned {
+            syncNativeBodyHeightToLayout()
+            if !isNativeBodyHeightAligned {
+                paintActionIconsWithoutLayout(for: message, colors: c)
+                return hasVisibleActionButtons
+            }
+        }
+        paintActionIconsWithoutLayout(for: message, colors: c)
         if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) == false {
-            refreshActionChrome(
-                for: message,
-                streaming: message.isStreaming,
-                colors: cachedThemeColors ?? DSTheme.c
-            )
-            return false
+            return hasVisibleActionButtons
         }
         syncNativeBodyHeightToLayout()
-        if requireBodyAlignment, !nativeRenderView.isHidden, !isNativeBodyHeightAligned {
-            showActions(false)
-            return false
-        }
-        let pager = message.showsVersionPager
-        lastActionRowSignature = ""
-        lastChromeActionKey = ""
-        showActions(
-            true,
-            versionText: pager ? message.versionPagerText : nil,
-            canPrev: pager && message.versionIndex > 0,
-            canNext: pager && message.versionIndex < message.versions.count - 1
-        )
-        actionRow.alpha = 1
-        styleActionIcons(cachedThemeColors ?? DSTheme.c)
-        lastChromeActionKey = "\(message.id)|true|\(pager)|\(message.versionIndex)|\(message.versions.count)"
-        contentView.setNeedsLayout()
-        contentView.layoutIfNeeded()
+        lastChromeActionKey = chromeKey(for: message, showAct: true)
         cellDelegate?.messageCellDidPaintContent(self)
         return true
+    }
+
+    private func chromeKey(for message: ChatMessage, showAct: Bool) -> String {
+        let pager = message.showsVersionPager
+        return "\(message.id)|\(showAct)|\(pager)|\(message.versionIndex)|\(message.versions.count)"
     }
 
     /// True when finished-message action chrome is on and laid out.
@@ -998,7 +1125,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     func measuredColumnHeight() -> CGFloat {
         contentView.layoutIfNeeded()
-        return column.bounds.height
+        return paintedStackHeight()
     }
 
     private func applySearchLayoutWidth() {
@@ -1059,9 +1186,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         return RenderCacheStore.contentWidth(for: reference)
     }
 
-    /// `drawsAsynchronously` reduces open hitch but leaves scroll trails on iOS 12 — toggle per gesture.
-    func setNativeAsyncDrawEnabled(_ enabled: Bool) {
-        nativeRenderView.layer.drawsAsynchronously = enabled
+    /// Flatten native bitmap while scrolling on iOS 12 — reduces compositor shimmer.
+    func setNativeScrollRasterization(_ enabled: Bool) {
+        nativeRenderView.layer.drawsAsynchronously = false
+        if #available(iOS 13, *) {
+            nativeRenderView.layer.shouldRasterize = false
+            return
+        }
+        nativeRenderView.layer.shouldRasterize = enabled
+        if enabled {
+            nativeRenderView.layer.rasterizationScale = UIScreen.main.scale
+        }
     }
 
     private func configureNative(message: ChatMessage,
@@ -1079,6 +1214,24 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 for: message,
                 layoutWidth: width
             )
+            if hasCachedLayout,
+               let height = nativeRenderView.bindCachedLayoutIfAvailable(
+                   content: message.content,
+                   width: width,
+                   fontSize: font,
+                   appearance: SettingsManager.shared.appearanceMode.rawValue,
+                   colors: colors
+               ) {
+                bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
+                nativeMessageForRemeasure = message
+                lastNativeLayoutWidth = width
+                nativeHeight.constant = ceil(height)
+                nativeRenderView.isHidden = false
+                assistantLabel.isHidden = true
+                assistantLabel.text = nil
+                assistantLabel.attributedText = nil
+                return
+            }
             deferredNativeBind = DeferredNativeBind(
                 message: message,
                 hasThinking: hasThinking,
@@ -1091,31 +1244,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
             nativeMessageForRemeasure = message
             lastNativeLayoutWidth = width
-            if hasCachedLayout,
-               let height = nativeRenderView.bindCachedLayoutIfAvailable(
-                   content: message.content,
-                   width: width,
-                   fontSize: font,
-                   appearance: SettingsManager.shared.appearanceMode.rawValue,
-                   colors: colors
-               ) {
-                nativeHeight.constant = height
-                syncNativeBodyHeightToLayout()
-                nativeRenderView.isHidden = false
-                assistantLabel.isHidden = true
-                assistantLabel.text = nil
-                return
-            }
-            configurePlainFallback(
-                message: message,
-                hasThinking: hasThinking,
-                hasSearch: hasSearch,
-                hasImage: hasImage,
-                font: font,
-                colors: colors,
-                scheduleHeightNotify: false,
-                allowTruncate: cellDelegate?.messageCellShouldTruncatePlainBody(self) == true
-            )
+            hideNativeRender()
+            assistantLabel.isHidden = true
+            assistantLabel.text = nil
+            assistantLabel.attributedText = nil
             return
         }
         deferredNativeBind = nil
@@ -1152,7 +1284,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeTopToRole.isActive = false
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
-        nativeBottom.isActive = true
+        nativeBottom.isActive = false
+        columnBottomToLabel.isActive = false
+        columnBottomToNative.isActive = true
         if hasThinking || hasSearch { nativeTopToThink.isActive = true }
         else if hasImage { nativeTopToImage.isActive = true }
         else { nativeTopToRole.isActive = true }
@@ -1186,6 +1320,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantLabel.isHidden = false
         labelBottom.isActive = true
         labelBottomFloor.isActive = true
+        columnBottomToNative.isActive = false
+        columnBottomToLabel.isActive = true
         assistantTopToRole.isActive = false
         assistantTopToImage.isActive = false
         assistantTopToThink.isActive = false
@@ -1215,11 +1351,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Column content height used for UITableView self-sizing.
     func measuredContentHeight() -> CGFloat {
         contentView.layoutIfNeeded()
-        let laidOut = column.bounds.height
-        let intrinsic = intrinsicColumnContentHeight()
-        // Only override when UITableView is compressing the column (clip risk).
-        if intrinsic > laidOut + 2 { return intrinsic }
-        return laidOut
+        return paintedStackHeight()
     }
 
     private func scheduleMeasuredHeightNotify(for messageID: String,
@@ -1231,7 +1363,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             guard let self = self, self.messageID == id else { return }
             self.contentView.setNeedsLayout()
             self.contentView.layoutIfNeeded()
-            let height = self.column.bounds.height
+            let height = self.measuredContentHeight()
             guard height > 40 else { return }
             self.cellDelegate?.messageCell(self, didFinishStableRender: height, for: id)
         }
@@ -1282,6 +1414,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeTopToImage?.isActive = false
         nativeTopToThink?.isActive = false
         nativeBottom?.isActive = false
+        columnBottomToNative?.isActive = false
     }
 
     /// Updates the already-bound streaming view without resetting constraints,
@@ -1490,6 +1623,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        contentView.bringSubviewToFront(actionRow)
         let w = max(column.bounds.width, 1)
         if abs(assistantLabel.preferredMaxLayoutWidth - w) > 0.5 {
             assistantLabel.preferredMaxLayoutWidth = w
@@ -1554,6 +1688,20 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         "\(on)|\(versionText ?? "")|\(canPrev)|\(canNext)"
     }
 
+    private func paintActionIconsWithoutLayout(for message: ChatMessage, colors: ThemeColors) {
+        primeFinishedActionChromeSlot(for: message)
+        actionRow.alpha = 1
+        let pager = message.showsVersionPager
+        showActions(
+            true,
+            versionText: pager ? message.versionPagerText : nil,
+            canPrev: pager && message.versionIndex > 0,
+            canNext: pager && message.versionIndex < message.versions.count - 1
+        )
+        styleActionIcons(colors)
+        lastChromeActionKey = "\(message.id)|true|\(pager)|\(message.versionIndex)|\(message.versions.count)"
+    }
+
     /// Hold action-row height during scroll; paint icons only when the row won't clip them.
     private func reserveActionChromeHeightOnly() {
         if actionHeight.constant < Self.actionRowVisibleHeight - 0.5 {
@@ -1578,6 +1726,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         actionRow.isHidden = false
         if hasVisibleActionButtons {
             actionRow.alpha = 1
+            return
+        }
+        // Scroll-freeze: height slot only — layoutIfNeeded here shoves QA body + leaves button flash.
+        if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) == false {
+            reserveActionChromeHeightOnly()
             return
         }
         contentView.setNeedsLayout()
@@ -1618,12 +1771,18 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if signature == lastActionRowSignature,
            actionRow.isHidden == !on,
            abs(actionHeight.constant - (on ? Self.actionRowVisibleHeight : 0)) < 0.5 {
-            return
+            // Height-only scroll reserve matches signature but leaves icons hidden.
+            if !(on && !hasVisibleActionButtons) {
+                return
+            }
         }
         lastActionRowSignature = signature
         actionRow.isHidden = !on
-        actionHeight.constant = on ? Self.actionRowVisibleHeight : 0
-        actionRow.alpha = on ? 1 : 1
+        let targetHeight = on ? Self.actionRowVisibleHeight : 0
+        if abs(actionHeight.constant - targetHeight) > 0.5 {
+            actionHeight.constant = targetHeight
+        }
+        actionRow.alpha = 1
         copyButton.isHidden = !on
         retryButton.isHidden = !on
         forkButton.isHidden = !on
@@ -1859,18 +2018,28 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeRenderView.isHidden = true
         nativeRenderView.onHeightChange = { [weak self] height in
             guard let self = self, !self.messageID.isEmpty else { return }
-            self.nativeHeight.constant = height
+            let target = ceil(height)
+            let scrollFrozen = self.cellDelegate?.messageCellShouldFreezeHeight(self) == true
+            if scrollFrozen {
+                var columnH = self.paintedStackHeight()
+                if !self.nativeRenderView.isHidden {
+                    columnH = columnH - self.nativeHeight.constant + target
+                }
+                guard columnH > 40 else { return }
+                self.cellDelegate?.messageCell(self, didFinishStableRender: columnH, for: self.messageID)
+                return
+            }
+            self.nativeHeight.constant = target
             self.contentView.layoutIfNeeded()
             let columnH = self.measuredContentHeight()
             guard columnH > 40 else { return }
-            // Formula warm-up must grow frozen rows — scheduleMeasuredHeightNotify is blocked mid-gesture.
             self.cellDelegate?.messageCell(self, didFinishStableRender: columnH, for: self.messageID)
         }
         column.addSubview(nativeRenderView)
 
         actionRow.translatesAutoresizingMaskIntoConstraints = false
         actionRow.isHidden = true
-        column.addSubview(actionRow)
+        contentView.addSubview(actionRow)
 
         versionCluster.translatesAutoresizingMaskIntoConstraints = false
         versionCluster.axis = .horizontal
@@ -1944,9 +2113,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeTopToImage = nativeRenderView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         nativeTopToThink = nativeRenderView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
         nativeBottom = nativeRenderView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
-        labelBottom = assistantLabel.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
+        columnBottomToNative = column.bottomAnchor.constraint(equalTo: nativeRenderView.bottomAnchor)
+        columnBottomToLabel = column.bottomAnchor.constraint(equalTo: assistantLabel.bottomAnchor)
+        labelBottom = assistantLabel.bottomAnchor.constraint(equalTo: column.bottomAnchor)
         labelBottom.priority = UILayoutPriority(750)
-        labelBottomFloor = actionRow.topAnchor.constraint(greaterThanOrEqualTo: assistantLabel.bottomAnchor, constant: 4)
+        labelBottomFloor = column.bottomAnchor.constraint(greaterThanOrEqualTo: assistantLabel.bottomAnchor)
 
         assistantLabel.setContentHuggingPriority(.required, for: .vertical)
         searchBox.setContentHuggingPriority(.required, for: .vertical)
@@ -1957,9 +2128,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         // Never stretch the column to fill an oversized UITableView estimate.
         let inset = ChatRowHeightResolver.cellContentInset
-        let columnBottomPin = contentView.bottomAnchor.constraint(equalTo: column.bottomAnchor, constant: inset)
+        let columnBottomPin = contentView.bottomAnchor.constraint(
+            greaterThanOrEqualTo: column.bottomAnchor,
+            constant: inset
+        )
         columnBottomPin.priority = UILayoutPriority(250)
         self.columnBottomPin = columnBottomPin
+        actionRowBottomToContent = actionRow.bottomAnchor.constraint(
+            equalTo: contentView.bottomAnchor,
+            constant: -inset
+        )
+        actionGapFromColumn = actionRow.topAnchor.constraint(equalTo: column.bottomAnchor, constant: 4)
 
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: inset),
@@ -2015,11 +2194,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             nativeRenderView.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             nativeRenderView.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             nativeHeight,
-            nativeBottom,
 
+            actionRowBottomToContent,
+            actionGapFromColumn,
             actionRow.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             actionRow.trailingAnchor.constraint(equalTo: column.trailingAnchor),
-            actionRow.bottomAnchor.constraint(equalTo: column.bottomAnchor),
             actionHeight
         ])
         // Default inactive pair ends — configure() enables the right set
@@ -2029,6 +2208,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
         nativeBottom.isActive = false
+        columnBottomToNative.isActive = false
+        columnBottomToLabel.isActive = false
         assistantTopToRole.isActive = false
         // Pre-draw glyphs once so first configure never waits on icon factory.
         styleActionIcons(DSTheme.c)

@@ -7,7 +7,7 @@ import UIKit
 /// Mixed: `-ScrollStressMixedPacing` — alternate fast fling + ultra-slow steps each run.
 /// Diverse: `-ScrollStressDiverse` — mixed chat + first-open + matrix in one launch.
 /// First-open QA edge: `-ScrollStressFirstOpen` — cold open + micro scroll at user-bubble edges.
-/// First bubble: `-ScrollStressFirstBubble` — study-landscape scroll until first user bubble at top edge.
+/// Bubble wiggle: `-ScrollStressBubbleWiggle` — oscillate near assistant bubble after first QA edge.
 /// Relaunch QA jitter: `-ScrollStressRelaunchQA` — multi-conversation cold opens + first QA-edge micro-drift.
 /// Ultra switch: `-ScrollStressUltraSwitch` — cold open + mid-scroll width/study toggles (use with UltraSlow).
 /// Study bug path: `-ScrollStressStudyFixture -ScrollStressStudy` (narrow panel + reasoning + 卷积公式).
@@ -47,6 +47,9 @@ enum ScrollStressHarness {
     private static var firstBubbleMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressFirstBubble")
     }
+    private static var bubbleWiggleMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressBubbleWiggle")
+    }
     private static var relaunchQAMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressRelaunchQA")
     }
@@ -66,7 +69,7 @@ enum ScrollStressHarness {
 
     static func installFixtureIfRequested() {
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
-            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || relaunchQAMode || diverseMode)) {
+            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || bubbleWiggleMode || relaunchQAMode || diverseMode)) {
             installStudyFixture()
             return
         }
@@ -103,6 +106,7 @@ enum ScrollStressHarness {
             || ultraSwitchMode
             || firstOpenMode
             || firstBubbleMode
+            || bubbleWiggleMode
             || relaunchQAMode
             || diverseMode else { return }
         guard !didSchedule else { return }
@@ -118,6 +122,13 @@ enum ScrollStressHarness {
             log("scheduled relaunch QA jitter stress (multi-conversation cold opens)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 runRelaunchQA(on: chat)
+            }
+            return
+        }
+        if bubbleWiggleMode {
+            log("scheduled bubble-wiggle history scroll test")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runBubbleWiggle(on: chat)
             }
             return
         }
@@ -1269,6 +1280,53 @@ enum ScrollStressHarness {
                         checkRender: true
                     )
                     completion()
+                }
+            }
+        }
+    }
+
+    // MARK: - Bubble wiggle near assistant (history reading)
+
+    private static func runBubbleWiggle(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        let metrics = MatrixMetrics()
+        let phase = "bubble-wiggle-history"
+        log("\(phase): scroll to first QA edge then oscillate near assistant bubble")
+        chat.debugPersistHeightCacheForCurrentWidth()
+        chat.debugPinToBottom {
+            chat.debugSimulateColdOpen {
+                guard let firstUser = chat.debugFirstUserRowIndex() else {
+                    log("FAIL \(phase): no user rows")
+                    exit(1)
+                    return
+                }
+                let assistantRow = firstUser + 1
+                chat.debugScrollUntilFirstUserAtTopEdge { reached in
+                    guard reached else {
+                        log("FAIL \(phase): did not reach first user at top")
+                        exit(1)
+                        return
+                    }
+                    let anchor = chat.debugScrollAnchorSnapshot()
+                    let assistantY0 = chat.debugRowViewportY(row: assistantRow)
+                    log("\(phase): pre-wiggle assistantY=\(assistantY0.map { Int($0) } ?? -1) offset=\(Int(chat.debugContentOffsetY()))")
+                    chat.debugSimulateBubbleWiggle(amplitude: 60, halfCycles: 4, halfDuration: 0.16) {
+                        chat.debugWaitForReadingHistoryStable(maxAttempts: 160) {
+                            if let anchor = anchor,
+                               let jump = chat.debugScrollJumpSince(anchor: anchor, maxAllowed: 20) {
+                                metrics.jumpFailures += 1
+                                log("\(phase) anchor-jump row=\(jump.row) drift=\(Int(jump.delta))pt t+settle")
+                            }
+                            if let y0 = assistantY0,
+                               let y1 = chat.debugRowViewportY(row: assistantRow),
+                               abs(y1 - y0) > 22 {
+                                metrics.jumpFailures += 1
+                                log("\(phase) assistant reposition \(Int(y0))→\(Int(y1))pt t+settle")
+                            }
+                            finishMatrix(chat: chat, metrics: metrics, label: phase)
+                        }
+                    }
                 }
             }
         }

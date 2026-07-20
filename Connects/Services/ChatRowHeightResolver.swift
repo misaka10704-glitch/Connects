@@ -14,6 +14,11 @@ final class ChatRowHeightResolver {
     private var displayColumnHeights: [String: CGFloat] = [:]
     /// While set, `rowHeight` ignores display mutations (scroll geometry freeze).
     private var scrollFrozenRowHeights: [String: CGFloat]?
+    /// Queued column heights — applied once at history settle so heightForRowAt stays stable while wiggling.
+    private var deferredFrozenRowGrows: [String: CGFloat]?
+    private var deferFrozenMapLiveUpdates = false
+    /// Rows pinned at finger-down — ignore paint-driven grows while wiggling near bubble edge.
+    private var gesturePinnedFrozenIDs = Set<String>()
 
     func frozenRowHeight(for messageID: String) -> CGFloat? {
         scrollFrozenRowHeights?[messageID]
@@ -35,11 +40,16 @@ final class ChatRowHeightResolver {
     /// rows entering the viewport can be added via `freezeRowHeightIfNeeded` while frozen.
     func beginScrollHeightFreeze(messages: [ChatMessage],
                                  layoutWidth: CGFloat,
-                                 rows: [Int]? = nil) {
+                                 rows: [Int]? = nil,
+                                 deferLiveFrozenMapUpdates: Bool = false) {
         guard !messages.isEmpty else {
             scrollFrozenRowHeights = [:]
+            deferredFrozenRowGrows = deferLiveFrozenMapUpdates ? [:] : nil
+            deferFrozenMapLiveUpdates = deferLiveFrozenMapUpdates
             return
         }
+        deferFrozenMapLiveUpdates = deferLiveFrozenMapUpdates
+        deferredFrozenRowGrows = deferLiveFrozenMapUpdates ? [:] : nil
         let count = messages.count
         var map = [String: CGFloat]()
         let rowList = rows ?? Array(0..<count)
@@ -72,6 +82,57 @@ final class ChatRowHeightResolver {
 
     func endScrollHeightFreeze() {
         scrollFrozenRowHeights = nil
+        deferredFrozenRowGrows = nil
+        deferFrozenMapLiveUpdates = false
+        gesturePinnedFrozenIDs.removeAll()
+    }
+
+    func setGesturePinnedFrozenMessages(_ ids: Set<String>) {
+        gesturePinnedFrozenIDs = ids
+    }
+
+    func addGesturePinnedFrozenMessages(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        gesturePinnedFrozenIDs.formUnion(ids)
+    }
+
+    func isGesturePinnedFrozenMessage(_ messageID: String) -> Bool {
+        gesturePinnedFrozenIDs.contains(messageID)
+    }
+
+    /// Drop queued grows — light settle keeps finger geometry; async formula sync catches up later.
+    func discardDeferredFrozenRowGrows() {
+        deferredFrozenRowGrows = nil
+        deferFrozenMapLiveUpdates = false
+    }
+
+    /// Merge deferred grows into the live frozen map before settle remeasure.
+    @discardableResult
+    func applyDeferredFrozenRowGrows(minSlack: CGFloat = 1, skipPinned: Bool = false) -> Bool {
+        guard let pending = deferredFrozenRowGrows, scrollFrozenRowHeights != nil else { return false }
+        var changed = false
+        for (id, column) in pending where column > 40 {
+            if skipPinned, gesturePinnedFrozenIDs.contains(id) { continue }
+            let required = column + Self.cellVerticalMargin
+            let current = scrollFrozenRowHeights?[id] ?? 0
+            guard required > current + minSlack else { continue }
+            scrollFrozenRowHeights?[id] = required
+            let prior = bestKnownColumnHeight(for: id)
+            committedColumnHeights[id] = max(prior, column)
+            committedIDs.insert(id)
+            changed = true
+        }
+        deferredFrozenRowGrows = nil
+        return changed
+    }
+
+    /// End history gesture freeze — apply queued grows then allow live map updates for settle.
+    @discardableResult
+    func beginFrozenHistorySettle(minDeferredSlack: CGFloat = 48, skipPinnedDeferred: Bool = true) -> Bool {
+        let changed = applyDeferredFrozenRowGrows(minSlack: minDeferredSlack, skipPinned: skipPinnedDeferred)
+        deferFrozenMapLiveUpdates = false
+        deferredFrozenRowGrows = nil
+        return changed
     }
 
     /// Write frozen row heights back into committed/display so unfreeze does not remount a different geometry.
@@ -97,12 +158,22 @@ final class ChatRowHeightResolver {
         guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
         let required = columnHeight + Self.cellVerticalMargin
         let current = scrollFrozenRowHeights?[messageID] ?? 0
-        // Ignore sub-4pt noise — frequent beginUpdates mid-scroll hitch QA-edge feel.
-        guard required > current + 4 else { return false }
-        scrollFrozenRowHeights?[messageID] = required
+        let deferred = deferredFrozenRowGrows?[messageID].map { $0 + Self.cellVerticalMargin } ?? 0
+        let effective = max(current, deferred)
+        guard required > effective + 4 else { return false }
         let prior = bestKnownColumnHeight(for: messageID)
         committedColumnHeights[messageID] = max(prior, columnHeight)
         committedIDs.insert(messageID)
+        if deferFrozenMapLiveUpdates {
+            if gesturePinnedFrozenIDs.contains(messageID) {
+                return false
+            }
+            var pending = deferredFrozenRowGrows ?? [:]
+            pending[messageID] = max(pending[messageID] ?? 0, columnHeight)
+            deferredFrozenRowGrows = pending
+            return true
+        }
+        scrollFrozenRowHeights?[messageID] = required
         return true
     }
 
@@ -521,9 +592,9 @@ final class ChatRowHeightResolver {
         if msg.hasImage { rough += 168 }
         if msg.hasReasoning {
             rough += reasoningExpanded
-                ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 16) : 36
+                ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 16) : 40
         }
-        if msg.hasSearchProcess || msg.hasImageTranscription { rough += 36 }
+        if msg.hasSearchProcess || msg.hasImageTranscription { rough += 40 }
         if msg.role == .assistant && !msg.isStreaming {
             rough += 4 + AssistantMessageLayout.actionRowHeight
         }
