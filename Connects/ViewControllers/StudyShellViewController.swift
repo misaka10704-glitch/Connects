@@ -272,6 +272,7 @@ final class StudyShellViewController: UIViewController {
                 self.updateChatPanelShadowPath()
             }
             self.pdfReaderVC.finishShellRotation(using: pdfSnapshot)
+            self.syncStudyOverlayChrome()
             self.postChatWidthNotification()
             self.bringChromeToFront()
         })
@@ -302,6 +303,8 @@ final class StudyShellViewController: UIViewController {
                 self.bringChromeToFront()
             }
             pdfReaderVC.finishShellRotation(using: pdfSnapshot)
+            syncStudyOverlayChrome()
+            postChatWidthNotification()
         }
 
         guard isReaderVisible, !isHandlingRotation else { return }
@@ -429,8 +432,9 @@ final class StudyShellViewController: UIViewController {
 
     private func bringChromeToFront() {
         guard isReaderVisible else { return }
-        view.bringSubviewToFront(chatHost)
+        // Handle sits on the seam; chat panel stays above so it never covers action chrome.
         view.bringSubviewToFront(collapseStrip)
+        view.bringSubviewToFront(chatHost)
     }
 
     private func syncChatPanelChrome() {
@@ -769,8 +773,8 @@ final class StudyShellViewController: UIViewController {
             view.addSubview(chatHost)
             chatHost.translatesAutoresizingMaskIntoConstraints = false
         }
-        view.bringSubviewToFront(chatHost)
         view.bringSubviewToFront(collapseStrip)
+        view.bringSubviewToFront(chatHost)
     }
 
     private func ensureChatNavInHost() {

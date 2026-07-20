@@ -34,6 +34,8 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellDidPaintContent(_ cell: MessageCellType)
     /// When true, prepareForReuse keeps native paint (open height updates).
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool
+    /// Landscape study split: shift bubble right so action chrome clears the seam handle.
+    func messageCellStudyContentLeadingGutter() -> CGFloat
 }
 
 extension MessageCellDelegate {
@@ -43,6 +45,7 @@ extension MessageCellDelegate {
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool { true }
     func messageCellDidPaintContent(_ cell: MessageCellType) {}
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool { false }
+    func messageCellStudyContentLeadingGutter() -> CGFloat { 0 }
     func messageCell(_ cell: MessageCellType, didFinishStableRender height: CGFloat, for messageID: String) {}
 }
 

@@ -33,6 +33,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     private var columnWidthFill: NSLayoutConstraint!
     private var columnWidthMax: NSLayoutConstraint!
+    private var columnCenterX: NSLayoutConstraint!
+    /// Extra left bias in landscape study split — keeps action chrome off the seam handle.
+    var studyContentLeadingGutter: CGFloat = 0 {
+        didSet { applyColumnContentGutter() }
+    }
     private var imageHeight: NSLayoutConstraint!
     private var actionHeight: NSLayoutConstraint!
     private var copyLeadingToRow: NSLayoutConstraint!
@@ -135,6 +140,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     func configureForOpenBottom(with message: ChatMessage,
                                 preferredHeight: CGFloat?,
                                 layoutWidth: CGFloat) {
+        studyContentLeadingGutter = cellDelegate?.messageCellStudyContentLeadingGutter() ?? 0
         messageID = message.id
         preferredLayoutWidth = layoutWidth
         configuredPreferredHeight = preferredHeight
@@ -157,6 +163,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     func configureForOpenHistory(with message: ChatMessage,
                                  preferredHeight: CGFloat?,
                                  layoutWidth: CGFloat) {
+        studyContentLeadingGutter = cellDelegate?.messageCellStudyContentLeadingGutter() ?? 0
         messageID = message.id
         preferredLayoutWidth = layoutWidth
         configuredPreferredHeight = preferredHeight
@@ -348,6 +355,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
     }
 
+    func needsNativeRepaint(at layoutWidth: CGFloat) -> Bool {
+        guard hasVisibleNativePaint else { return false }
+        return abs(lastNativeLayoutWidth - nativeLayoutWidth(for: layoutWidth)) > 1
+    }
+
     func ensureNativeLayoutWidth(_ layoutWidth: CGFloat) {
         guard !nativeRenderView.isHidden,
               let message = nativeMessageForRemeasure,
@@ -472,7 +484,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: bind.layoutWidth,
             allowDefer: false
         )
-        ensureActionButtonsVisible(for: bind.message)
+        if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) != false {
+            ensureActionButtonsVisible(for: bind.message)
+        } else {
+            refreshActionChrome(
+                for: bind.message,
+                streaming: false,
+                colors: bind.colors
+            )
+        }
         if !suppressHeightNotify {
             scheduleMeasuredHeightNotify(for: messageID)
         }
@@ -491,6 +511,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let previousMessageID = messageID
         pairedUserMessage = pairedUser
         let freezeLayout = cellDelegate?.messageCellShouldFreezeHeight(self) == true
+        studyContentLeadingGutter = cellDelegate?.messageCellStudyContentLeadingGutter() ?? 0
         messageID = message.id
         preferredLayoutWidth = layoutWidth
         configuredPreferredHeight = preferredHeight
@@ -503,7 +524,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
            hasVisibleNativePaint,
            freezeLayout,
            abs(lastNativeLayoutWidth - nativeLayoutWidth(for: layoutWidth)) < 1 {
-            ensureActionButtonsVisible(for: message)
+            // No chrome/thinking relayout mid-gesture — prevents label shift and clip flash.
             updateRenderDebugOverlay()
             return
         }
@@ -611,6 +632,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Lightweight path for UITableView reuse while the finger is down.
     private func configureWhileScrolling(message: ChatMessage, layoutWidth: CGFloat) {
         streamingPresentation = false
+        studyContentLeadingGutter = cellDelegate?.messageCellStudyContentLeadingGutter() ?? 0
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
@@ -817,8 +839,46 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     private func reconcileColumnBottomPinIfNeeded() {
         contentView.layoutIfNeeded()
-        let slack = contentView.bounds.height - column.bounds.height - ChatRowHeightResolver.cellContentInset * 2
-        columnBottomPin.priority = slack > 8 ? UILayoutPriority(250) : UILayoutPriority(999)
+        // Never squash the column into an underestimated UITableView row — that
+        // clips action chrome and makes measuredContentHeight lie to the host.
+        columnBottomPin.priority = UILayoutPriority(250)
+    }
+
+    /// Constraint-sum height before UITableView row compression.
+    private func intrinsicColumnContentHeight() -> CGFloat {
+        var total: CGFloat = 0
+        if !imageViewMsg.isHidden, imageHeight.constant > 0.5 {
+            total += imageHeight.constant
+            if !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                total += 10
+            }
+        }
+        if !searchBox.isHidden, searchBoxH.constant > 0.5 {
+            total += searchBoxH.constant
+            if total > 0, !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                total += 10
+            }
+        }
+        if !thinkingBox.isHidden, thinkingBoxH.constant > 0.5 {
+            total += thinkingBoxH.constant
+            if total > 0, !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                total += 10
+            }
+        }
+        if !nativeRenderView.isHidden, nativeHeight.constant > 0.5 {
+            total += nativeHeight.constant
+        } else if !assistantLabel.isHidden {
+            let width = max(column.bounds.width, 1)
+            let labelH = assistantLabel.sizeThatFits(
+                CGSize(width: width, height: .greatestFiniteMagnitude)
+            ).height
+            if labelH > 0.5 { total += labelH }
+        }
+        if !actionRow.isHidden, actionHeight.constant > 0.5 {
+            if total > 0 { total += 4 }
+            total += actionHeight.constant
+        }
+        return total
     }
 
     /// Force-show 复制/重跑/分叉 on the open path (ignores chrome-key short-circuit).
@@ -829,6 +889,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard messageID.isEmpty || messageID == message.id else { return false }
         guard Self.shouldShowActionButtons(for: message, streaming: message.isStreaming) else {
             showActions(false)
+            return false
+        }
+        if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) == false {
+            refreshActionChrome(
+                for: message,
+                streaming: message.isStreaming,
+                colors: cachedThemeColors ?? DSTheme.c
+            )
             return false
         }
         syncNativeBodyHeightToLayout()
@@ -866,6 +934,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard hasVisibleActionButtons else { return nil }
         contentView.layoutIfNeeded()
         return actionRow.convert(actionRow.bounds, to: tableView).minY - tableView.contentOffset.y
+    }
+
+    func isActionChromeClipped(in tableView: UITableView, at path: IndexPath) -> Bool {
+        guard hasVisibleActionButtons,
+              let actionTop = debugActionRowViewportY(in: tableView) else { return false }
+        let rowFrame = tableView.rectForRow(at: path)
+        let actionBottom = actionTop + Self.actionRowVisibleHeight
+        let rowBottom = rowFrame.maxY - tableView.contentOffset.y
+        return actionBottom > rowBottom + 1.5
     }
 
     private func populateSearchBody(expanded: Bool,
@@ -1101,7 +1178,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Column content height used for UITableView self-sizing.
     func measuredContentHeight() -> CGFloat {
         contentView.layoutIfNeeded()
-        return column.bounds.height
+        let laidOut = column.bounds.height
+        let intrinsic = intrinsicColumnContentHeight()
+        // Only override when UITableView is compressing the column (clip risk).
+        if intrinsic > laidOut + 2 { return intrinsic }
+        return laidOut
     }
 
     private func scheduleMeasuredHeightNotify(for messageID: String,
@@ -1347,6 +1428,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         // Row geometry does not need to follow the 25 fps text clock. A slower
         // cadence keeps self-sizing table passes from blocking token painting.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+    }
+
+    private func applyColumnContentGutter() {
+        let gutter = max(studyContentLeadingGutter, 0)
+        columnCenterX.constant = gutter / 2
+        columnWidthFill.constant = -(48 + gutter)
     }
 
     private func applyAssistantLayoutWidth() {
@@ -1754,6 +1841,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         columnWidthFill = column.widthAnchor.constraint(equalTo: contentView.widthAnchor, constant: -48)
         columnWidthFill.priority = UILayoutPriority(999)
         columnWidthMax = column.widthAnchor.constraint(lessThanOrEqualToConstant: DSTheme.bubbleMaxWidth)
+        columnCenterX = column.centerXAnchor.constraint(equalTo: contentView.centerXAnchor)
         imageHeight = imageViewMsg.heightAnchor.constraint(equalToConstant: 0)
         actionHeight = actionRow.heightAnchor.constraint(equalToConstant: 0)
         searchHeaderH = searchHeader.heightAnchor.constraint(equalToConstant: 0)
@@ -1790,13 +1878,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         // Never stretch the column to fill an oversized UITableView estimate.
         let inset = ChatRowHeightResolver.cellContentInset
         let columnBottomPin = contentView.bottomAnchor.constraint(equalTo: column.bottomAnchor, constant: inset)
-        columnBottomPin.priority = UILayoutPriority(999)
+        columnBottomPin.priority = UILayoutPriority(250)
         self.columnBottomPin = columnBottomPin
 
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: inset),
             columnBottomPin,
-            column.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            columnCenterX,
             columnWidthFill,
             columnWidthMax,
 

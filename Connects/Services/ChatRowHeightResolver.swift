@@ -74,6 +74,12 @@ final class ChatRowHeightResolver {
         scrollFrozenRowHeights = nil
     }
 
+    /// Pin frozen height to the painted column (visible rows at gesture start — no cache inflation).
+    func pinFrozenRowHeight(messageID: String, columnHeight: CGFloat) {
+        guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return }
+        scrollFrozenRowHeights?[messageID] = columnHeight + Self.cellVerticalMargin
+    }
+
     /// Grow the frozen row map when painted content exceeds the snapshotted height.
     @discardableResult
     func growFrozenRowHeightIfNeeded(messageID: String, columnHeight: CGFloat) -> Bool {

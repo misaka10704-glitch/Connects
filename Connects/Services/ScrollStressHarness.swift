@@ -150,6 +150,11 @@ enum ScrollStressHarness {
                     log("FAIL \(chromeShiftFailures) action-chrome position shifts in \(totalSteps) steps")
                 }
             }
+            fflush(stderr)
+            exit(
+                jumpFailures == 0 && renderFailures == 0 && clipFailures == 0
+                    && chromeLateFailures == 0 && chromeShiftFailures == 0 ? 0 : 1
+            )
         }
 
         func sampleChrome(step: Int, label: String, baseline: [Int: CGFloat]?) {
@@ -191,10 +196,6 @@ enum ScrollStressHarness {
             }
             simulate {
                 let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
-                sampleChrome(step: step, label: "t+0", baseline: nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
-                    sampleChrome(step: step, label: "t+48ms", baseline: nil)
-                }
                 func checkAfterSettle() {
                     if let anchor = anchor {
                         let expectedY = anchor.viewportY + distance
@@ -217,13 +218,23 @@ enum ScrollStressHarness {
                     step += 1
                     next()
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
-                    if mathHeavyMode {
-                        chat.debugWaitForReadingHistoryStable(completion: checkAfterSettle)
-                    } else {
-                        checkAfterSettle()
+                func checkMidScroll() {
+                    let clipped = chat.debugVisibleRowClipCount()
+                    if clipped > 0 {
+                        clipFailures += 1
+                        log("clip-early step=\(step) rows=\(clipped) at t+0")
+                    }
+                    sampleChrome(step: step, label: "t+0", baseline: nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
+                        sampleChrome(step: step, label: "t+48ms", baseline: nil)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
+                        chat.debugWaitForReadingHistoryStable(maxAttempts: 80) {
+                            checkAfterSettle()
+                        }
                     }
                 }
+                checkMidScroll()
             }
         }
         next()
@@ -262,18 +273,10 @@ enum ScrollStressHarness {
                     log("FAIL study: missing fixture (need -ScrollStressStudyFixture)")
                     return
                 }
-                let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming }
-                let fullWidth = chat.debugLayoutContentWidth()
-                log("phase A full-width prewarm w=\(Int(fullWidth)) assistants=\(assistants.count)")
-                AssistantMessageLayout.prewarmLayouts(
-                    for: assistants,
-                    targetWidth: fullWidth,
-                    layoutLimit: assistants.count
-                )
-                chat.debugSeedCommittedHeightsFromLayoutCache()
+                // Warm path: full-width chat then open PDF side panel (stale bucket → blank rows).
                 chat.debugPersistHeightCacheForCurrentWidth()
+                log("phase enter study panel warm w=\(Int(studyPanelTableWidth))")
                 chat.debugPinToBottom {
-                    log("phase B enter study panel w=\(Int(studyPanelTableWidth))")
                     chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
                         chat.debugWaitForStudyRelayoutStable {
                             runStudyBlankCheck(on: chat)
@@ -295,10 +298,23 @@ enum ScrollStressHarness {
             blankFailures += 1
             log("study-blank inflatedRows=\(blank.inflatedRows) maxSlack=\(Int(blank.maxRowSlackPt))pt")
         }
+        if blank.interRowGaps > 0 {
+            blankFailures += 1
+            log("study-blank interRowGaps=\(blank.interRowGaps) maxGap=\(Int(blank.maxInterRowGapPt))pt")
+        }
         let qa = chat.debugVisibleCrossQAState()
         if qa.unrenderedAssistants > 0 {
             blankFailures += 1
             log("study-blank native-missing=\(qa.unrenderedAssistants)")
+        }
+        let clipped = chat.debugVisibleRowClipCount()
+        if clipped > 0 {
+            blankFailures += 1
+            log("study-blank clip=\(clipped)")
+        }
+        if qa.missingActionButtons > 0 {
+            blankFailures += 1
+            log("study-blank missingActions=\(qa.missingActionButtons)")
         }
         if blankFailures > 0 {
             log("FAIL study blank check (\(blankFailures) issues)")
@@ -320,6 +336,7 @@ enum ScrollStressHarness {
             let totalSteps = 8
             var jumpFailures = 0
             var renderFailures = 0
+            var clipFailures = 0
             var blankFailures = priorBlankFailures
             let settleMs: TimeInterval = 0.85
             let driftAllowance: CGFloat = 52
@@ -327,15 +344,16 @@ enum ScrollStressHarness {
             func finish() {
                 chat.debugClearLayoutWidthOverride()
                 chat.setStudyChrome(.none)
-                if blankFailures == 0, jumpFailures == 0, renderFailures == 0 {
+                if blankFailures == 0, jumpFailures == 0, renderFailures == 0, clipFailures == 0 {
                     log("PASS study stress blank+scroll (\(totalSteps) steps)")
                 } else {
                     if blankFailures > 0 { log("FAIL study blank (\(blankFailures) phases)") }
                     if jumpFailures > 0 { log("FAIL study scroll jumps \(jumpFailures)/\(totalSteps)") }
                     if renderFailures > 0 { log("FAIL study render \(renderFailures)/\(totalSteps)") }
+                    if clipFailures > 0 { log("FAIL study clip \(clipFailures)/\(totalSteps)") }
                 }
                 fflush(stderr)
-                exit(blankFailures == 0 && jumpFailures == 0 && renderFailures == 0 ? 0 : 1)
+                exit(blankFailures == 0 && jumpFailures == 0 && renderFailures == 0 && clipFailures == 0 ? 0 : 1)
             }
 
             func next() {
@@ -363,14 +381,19 @@ enum ScrollStressHarness {
                                 }
                             }
                             let blank = chat.debugVisibleStudyBlankState()
-                            if blank.unrenderedAssistants > 0 || blank.inflatedRows > 0 {
+                            if blank.unrenderedAssistants > 0 || blank.inflatedRows > 0 || blank.interRowGaps > 0 {
                                 blankFailures += 1
-                                log("study-blank-scroll step=\(step) unrendered=\(blank.unrenderedAssistants) inflated=\(blank.inflatedRows)")
+                                log("study-blank-scroll step=\(step) unrendered=\(blank.unrenderedAssistants) inflated=\(blank.inflatedRows) gaps=\(blank.interRowGaps)")
                             }
                             let qa = chat.debugVisibleCrossQAState()
                             if qa.unrenderedAssistants > 0 || qa.missingActionButtons > 0 {
                                 renderFailures += 1
                                 log("study-render step=\(step) unrendered=\(qa.unrenderedAssistants) missingActions=\(qa.missingActionButtons)")
+                            }
+                            let clipped = chat.debugVisibleRowClipCount()
+                            if clipped > 0 {
+                                clipFailures += 1
+                                log("study-clip step=\(step) rows=\(clipped)")
                             }
                             step += 1
                             next()
