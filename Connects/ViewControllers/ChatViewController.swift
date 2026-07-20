@@ -95,6 +95,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Top visible row + viewport delta — stable remeasure anchor while reading history.
     private var viewportScrollAnchor: (row: Int, deltaY: CGFloat)?
     private var scrollSettleWork: DispatchWorkItem?
+    private var scrollFreezeGeometryWork: DispatchWorkItem?
+    private var isSyncingFrozenAssistantGeometry = false
+    private var scrollGestureGeometryFinished = false
     private var pinnedRemeasureWork: DispatchWorkItem?
     private var jumpAnchorWork: DispatchWorkItem?
     private var heightCacheSaveWork: DispatchWorkItem?
@@ -233,6 +236,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var didNotifyInitialLaunch = false
     private var isPerformingColdLaunchOpen = false
     private static let coldLaunchLayoutProbeRows = 4
+    /// Bottom-open → first upward scroll: collapse inflated estimates before height freeze.
+    private var needsFirstHistoryScrollPrep = false
+    /// One-shot after entering study panel or cold-open in study — not every study scroll.
+    private var pendingStudyFirstScrollPrep = false
+
+    private var needsPendingScrollPrep: Bool {
+        needsFirstHistoryScrollPrep || pendingStudyFirstScrollPrep
+    }
+    private var nativeHydrationScrollWork: DispatchWorkItem?
     private static let switchLayoutProbeTailRows = 4
 
     override func viewWillAppear(_ animated: Bool) {
@@ -436,6 +448,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         prewarmVisibleRichReplies(for: layoutWidth)
         pendingPostWidthChangeSettle = true
+        if isStudyNarrowPanelActive() {
+            pendingStudyFirstScrollPrep = true
+        }
         _ = immediate
     }
 
@@ -835,6 +850,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         idlePrewarmWork?.cancel()
         idlePrewarmWork = nil
         scrollSettleWork?.cancel()
+        scrollFreezeGeometryWork?.cancel()
+        scrollFreezeGeometryWork = nil
         scrollSettleWork = nil
         pinnedRemeasureWork?.cancel()
         pinnedRemeasureWork = nil
@@ -1238,6 +1255,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         _ = syncRowHeightToPaint(cell: cell, message: tail, allowShrink: true)
     }
 
+    /// First-open rows: sync-layout probe before UITableView allocates the row frame.
+    private func pregrowFrozenAssistantRowIfNeeded(for message: ChatMessage,
+                                                   row: Int,
+                                                   messageCount: Int,
+                                                   layoutWidth: CGFloat) {
+        guard rowHeights.isScrollHeightFrozen,
+              message.role == .assistant,
+              !message.isStreaming,
+              !rowHeights.isCommitted(message.id) else { return }
+        let column = AssistantMessageLayout.estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: row == messageCount - 1,
+            allowSyncLayout: false
+        ) ?? AssistantMessageLayout.plainFallbackColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth
+        )
+        guard let column, column > 40 else { return }
+        _ = rowHeights.growFrozenRowHeightIfNeeded(messageID: message.id, columnHeight: column)
+    }
+
     /// Grow frozen row map from layout cache — safe mid-scroll (no beginUpdates).
     @discardableResult
     private func seedFrozenRowHeightsFromCache(messages: [ChatMessage],
@@ -1270,12 +1309,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         for case let cell as MessageCellType in tableView.visibleCells {
             guard let msg = messages.first(where: { $0.id == cell.messageID }),
                   !msg.isStreaming else { continue }
+            if let assistant = cell as? AssistantMessageCell, msg.role == .assistant {
+                _ = assistant.ensureActionButtonsVisible(for: msg)
+                assistant.contentView.layoutIfNeeded()
+            }
             var columnH = cell.measuredContentHeight()
             if let assistant = cell as? AssistantMessageCell, msg.role == .assistant {
                 columnH = max(columnH, assistant.projectedColumnHeight(for: msg, layoutWidth: layoutWidth))
             }
             guard columnH > 40 else { continue }
             rowHeights.pinFrozenRowHeight(messageID: msg.id, columnHeight: columnH)
+        }
+    }
+
+    /// Paint deferred action icons after row height catches up (scroll-freeze path).
+    private func revealDeferredActionChromeOnVisibleAssistants(messages: [ChatMessage]) {
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            guard let path = tableView.indexPath(for: cell),
+                  path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            _ = cell.revealReservedActionChromeIfRoom(for: msg)
         }
     }
 
@@ -1310,7 +1364,69 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    /// Show action buttons without growing rows — avoids beginUpdates jitter while scrolling.
+    /// Grow frozen rows while the finger is down — Air 1–slow scroll exposes clip if we only fix at gesture end.
+    private func scheduleFrozenAssistantGeometrySync() {
+        guard rowHeights.isScrollHeightFrozen else { return }
+        guard tableView.isDragging || tableView.isDecelerating else { return }
+        guard scrollFreezeGeometryWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.scrollFreezeGeometryWork = nil
+            self.syncVisibleFrozenAssistantGeometryDuringScroll()
+        }
+        scrollFreezeGeometryWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func syncVisibleFrozenAssistantGeometryDuringScroll() {
+        guard rowHeights.isScrollHeightFrozen,
+              !isSyncingFrozenAssistantGeometry,
+              let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        isSyncingFrozenAssistantGeometry = true
+        defer { isSyncingFrozenAssistantGeometry = false }
+        let layoutWidth = currentRenderWidth()
+        var changed = false
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            guard let path = tableView.indexPath(for: cell),
+                  path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            cell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
+            cell.contentView.layoutIfNeeded()
+            let columnH = max(
+                cell.measuredContentHeight(),
+                cell.projectedColumnHeight(for: msg, layoutWidth: layoutWidth)
+            )
+            guard columnH > 40 else { continue }
+            if rowHeights.growFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: columnH) {
+                changed = true
+            }
+        }
+        let paths = (tableView.indexPathsForVisibleRows ?? []).filter { path in
+            path.row < messages.count && messages[path.row].role == .assistant
+        }
+        if changed, !paths.isEmpty {
+            let anchorPath = viewportScrollAnchorPath()
+            let anchorY = anchorPath.map { path in
+                tableView.rectForRow(at: path).minY - tableView.contentOffset.y
+            }
+            UIView.performWithoutAnimation {
+                tableView.beginUpdates()
+                tableView.endUpdates()
+                tableView.layoutIfNeeded()
+                if let path = anchorPath, let y = anchorY {
+                    let target = tableView.rectForRow(at: path).minY - y
+                    let minOffset = -tableView.adjustedContentInset.top
+                    let maxOffset = max(
+                        minOffset,
+                        tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+                    )
+                    tableView.contentOffset.y = min(max(target, minOffset), maxOffset)
+                }
+            }
+        }
+        revealDeferredActionChromeOnVisibleAssistants(messages: messages)
+    }
     private func revealActionChromeIfBodyPainted(messages: [ChatMessage]) {
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard let path = tableView.indexPath(for: cell),
@@ -1325,8 +1441,228 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    /// Deferred native hydration waits until scroll fully stops — mid-gesture remeasure causes jumps.
-    private func maybeHydrateDeferredNativeWhileScrolling() {}
+    /// Rows whose heights must be true before the first history scroll freeze.
+    private func firstHistoryScrollPrepRows(in messages: [ChatMessage]) -> [Int] {
+        let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
+        guard !visible.isEmpty else { return Array(0..<messages.count) }
+        let minVisible = visible.min() ?? 0
+        let maxVisible = visible.max() ?? minVisible
+        let tailPad = Self.turnPrewarmCount * 2 + 4
+        var rows = Set<Int>()
+        if minVisible > 0 {
+            rows.formUnion(0..<minVisible)
+        }
+        rows.formUnion(visible)
+        let tailStart = max(0, maxVisible - tailPad)
+        if tailStart < messages.count {
+            rows.formUnion(tailStart..<messages.count)
+        }
+        return rows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+    }
+
+    /// Collapse committed heights that dwarf layout-cache estimates (off-screen inflated rows).
+    @discardableResult
+    private func shrinkInflatedCommittedRows(messages: [ChatMessage],
+                                             rows: [Int],
+                                             layoutWidth: CGFloat,
+                                             slackThreshold: CGFloat? = nil) -> Bool {
+        let threshold = slackThreshold ?? (isStudyNarrowPanelActive() ? 12 : 24)
+        var changed = false
+        let count = messages.count
+        for row in rows {
+            guard row >= 0, row < count else { continue }
+            let msg = messages[row]
+            guard !msg.isStreaming else { continue }
+            let known = rowHeights.bestKnownColumnHeight(for: msg.id)
+            guard known > 40 else { continue }
+            let estimated: CGFloat?
+            if msg.role == .user {
+                estimated = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+                    for: msg,
+                    layoutWidth: layoutWidth
+                )
+            } else if msg.role == .assistant {
+                let allowSync = AssistantMessageLayout.hasCachedNativeLayout(
+                    for: msg,
+                    layoutWidth: layoutWidth
+                )
+                estimated = AssistantMessageLayout.estimatedColumnContentHeight(
+                    for: msg,
+                    layoutWidth: layoutWidth,
+                    isLastRow: row == count - 1,
+                    allowSyncLayout: allowSync
+                )
+            } else {
+                continue
+            }
+            guard let est = estimated, est > 40, known > est + threshold else { continue }
+            rowHeights.commitMeasured(columnHeight: est, messageID: msg.id, allowShrink: true)
+            changed = true
+        }
+        return changed
+    }
+
+    /// First-open / study-first scroll: hydrate deferred native while the finger is still down.
+    private func maybeHydrateDeferredNativeWhileScrolling() {
+        guard rowHeights.isScrollHeightFrozen else { return }
+        guard tableView.isDragging || tableView.isDecelerating else { return }
+        guard isStudyNarrowPanelActive() || needsPendingScrollPrep else { return }
+        guard nativeHydrationScrollWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.nativeHydrationScrollWork = nil
+            guard self.rowHeights.isScrollHeightFrozen,
+                  self.tableView.isDragging || self.tableView.isDecelerating else { return }
+            guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+            let budget = self.needsPendingScrollPrep ? 2 : (self.isStudyNarrowPanelActive() ? 2 : 1)
+            if self.hydrateVisibleDeferredNativeCells(maxCount: budget) {
+                self.scheduleFrozenAssistantGeometrySync()
+            }
+            guard self.isStudyNarrowPanelActive() || self.needsPendingScrollPrep else { return }
+            self.paintVisibleBlankAssistantsIfNeeded(
+                messages: messages,
+                layoutWidth: self.currentRenderWidth()
+            )
+            if self.needsPendingScrollPrep {
+                return
+            }
+            if self.isStudyNarrowPanelActive() {
+                self.applyTurnWindowPrewarm(
+                    around: self.lookaheadAnchorRows(in: messages),
+                    allowSync: true,
+                    syncCharLimit: 1_400
+                )
+            }
+        }
+        nativeHydrationScrollWork = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    /// Collapse cheap tail estimates and paint visible rows before the first history freeze.
+    private func prepareFirstHistoryScrollFromOpen(messages: [ChatMessage], layoutWidth: CGFloat) {
+        let prepRows = firstHistoryScrollPrepRows(in: messages)
+        guard !prepRows.isEmpty else { return }
+        let anchorPath = viewportScrollAnchorPath()
+        let anchorY = anchorPath.map { path in
+            tableView.rectForRow(at: path).minY - tableView.contentOffset.y
+        }
+        if let path = anchorPath, let y = anchorY {
+            pendingScrollSettleAnchor = (path, y)
+        }
+        rowHeights.rebuildDisplayHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            throughRow: prepRows.max(),
+            layoutProbeTailRows: messages.count
+        )
+        prewarmScrollLookahead(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            rows: prepRows,
+            aggressive: true,
+            syncLimit: min(prepRows.count, isStudyNarrowPanelActive() ? 24 : 18)
+        )
+        _ = commitCachedLayoutHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            rows: prepRows,
+            syncLayoutBudget: min(prepRows.count, isStudyNarrowPanelActive() ? 24 : 18),
+            allowGrowCommitted: true,
+            allowShrinkCommitted: true
+        )
+        _ = shrinkInflatedCommittedRows(
+            messages: messages,
+            rows: prepRows,
+            layoutWidth: layoutWidth,
+            slackThreshold: isStudyNarrowPanelActive() ? 10 : 20
+        )
+        paintVisibleBlankAssistantsIfNeeded(messages: messages, layoutWidth: layoutWidth)
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            if cell.hasPendingDeferredNativeRender {
+                cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
+            }
+        }
+        _ = shrinkInflatedVisibleRows(
+            messages: messages,
+            slackThreshold: isStudyNarrowPanelActive() ? 12 : 32
+        )
+        _ = syncVisibleRowHeightsToPaint(messages: messages, allowShrink: true, allowTableUpdates: false)
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            tableView.layoutIfNeeded()
+            if let path = anchorPath, let y = anchorY {
+                remeasureRowsPreservingViewport(
+                    anchorPath: path,
+                    preferSavedViewportAnchor: true,
+                    fixedViewportY: y
+                )
+            }
+        }
+        viewportScrollAnchor = captureViewportScrollAnchor()
+    }
+
+    /// Study panel first scroll: rebind narrow-width heights for visible + lookahead only.
+    private func prepareStudyFirstScrollFromOpen(messages: [ChatMessage], layoutWidth: CGFloat) {
+        let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
+        let lookahead = scrollLookaheadRowsPrioritized(in: messages)
+        let prepRows = Array(Set(visible + lookahead)).sorted()
+        guard !prepRows.isEmpty else { return }
+        let anchorPath = viewportScrollAnchorPath()
+        let anchorY = anchorPath.map { path in
+            tableView.rectForRow(at: path).minY - tableView.contentOffset.y
+        }
+        if let path = anchorPath, let y = anchorY {
+            pendingScrollSettleAnchor = (path, y)
+        }
+        let assistants = prepRows.compactMap { row -> ChatMessage? in
+            guard row < messages.count else { return nil }
+            let msg = messages[row]
+            return msg.role == .assistant && !msg.isStreaming ? msg : nil
+        }
+        if !assistants.isEmpty {
+            AssistantMessageLayout.prewarmLayouts(
+                for: assistants,
+                targetWidth: layoutWidth,
+                layoutLimit: min(assistants.count, 10)
+            )
+        }
+        _ = commitCachedLayoutHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            rows: prepRows,
+            syncLayoutBudget: min(10, prepRows.count),
+            allowGrowCommitted: true,
+            allowShrinkCommitted: true
+        )
+        _ = shrinkInflatedCommittedRows(
+            messages: messages,
+            rows: prepRows,
+            layoutWidth: layoutWidth,
+            slackThreshold: 10
+        )
+        paintVisibleBlankAssistantsIfNeeded(messages: messages, layoutWidth: layoutWidth)
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            if cell.hasPendingDeferredNativeRender {
+                cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
+            }
+        }
+        _ = shrinkInflatedVisibleRows(messages: messages, slackThreshold: 12)
+        _ = syncVisibleRowHeightsToPaint(messages: messages, allowShrink: true, allowTableUpdates: false)
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+            tableView.layoutIfNeeded()
+            if let path = anchorPath, let y = anchorY {
+                remeasureRowsPreservingViewport(
+                    anchorPath: path,
+                    preferSavedViewportAnchor: true,
+                    fixedViewportY: y
+                )
+            }
+        }
+        viewportScrollAnchor = captureViewportScrollAnchor()
+    }
 
     /// Grow committed/display heights when painted cells exceed frozen row geometry.
     @discardableResult
@@ -1461,9 +1797,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func prewarmScrollLookahead(messages: [ChatMessage],
                                         layoutWidth: CGFloat,
                                         rows: [Int]? = nil,
-                                        aggressive: Bool = false) {
+                                        aggressive: Bool = false,
+                                        syncLimit: Int? = nil) {
         let rowList = rows ?? scrollLookaheadRows(in: messages)
-        let syncLimit = aggressive ? 6 : 2
+        let resolvedSyncLimit = syncLimit ?? (aggressive ? 6 : 2)
         let charLimit = aggressive ? 4_000 : Self.syncPrewarmMaxChars
         var syncBatch: [ChatMessage] = []
         var asyncBatch: [ChatMessage] = []
@@ -1482,7 +1819,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 if AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: layoutWidth) {
                     continue
                 }
-                if msg.content.count <= charLimit, syncBatch.count < syncLimit {
+                if msg.content.count <= charLimit, syncBatch.count < resolvedSyncLimit {
                     syncBatch.append(msg)
                 } else {
                     asyncBatch.append(msg)
@@ -1519,9 +1856,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             messages: messages,
             layoutWidth: layoutWidth,
             rows: lookahead,
-            syncLayoutBudget: readingHistory
-                ? min(6, lookahead.count)
-                : (isStudyNarrowPanelActive() ? min(12, lookahead.count) : min(4, lookahead.count)),
+            syncLayoutBudget: needsFirstHistoryScrollPrep
+                ? min(18, lookahead.count)
+                : (readingHistory
+                    ? min(6, lookahead.count)
+                    : (isStudyNarrowPanelActive() ? min(12, lookahead.count) : min(4, lookahead.count))),
             allowGrowCommitted: true
         )
     }
@@ -1592,7 +1931,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     grew = true
                 }
             }
-            item.cell.ensureActionButtonsVisible(for: msg)
+            if !rowHeights.isCommitted(msg.id) {
+                item.cell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
+            } else if !item.cell.revealReservedActionChromeIfRoom(for: msg) {
+                _ = item.cell.ensureActionButtonsVisible(for: msg)
+            }
         }
         if grew, readingHistory {
             pendingReadingHistoryFormulaSync = true
@@ -1658,6 +2001,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             budget = 8
         } else if tableView.isDecelerating, !tableView.isDragging {
             budget = 3
+        } else if tableView.isDragging {
+            if needsPendingScrollPrep {
+                budget = 2
+            } else if isStudyNarrowPanelActive() {
+                budget = 2
+            } else {
+                budget = 1
+            }
         } else {
             budget = 1
         }
@@ -1771,8 +2122,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             guard let self = self, self.isViewportPinned() else { return }
             let anchorPath = self.historyScrollAnchorPath()
             self.remeasureRowsPreservingViewport(anchorPath: anchorPath)
-            if let row = self.contextUserIndex {
-                self.applyUserBubbleScrollAnchor(at: row, animated: false)
+            // Only re-pin after an explicit turn jump — manual history scroll must keep finger position.
+            if let pinned = self.pinnedJumpUserRow {
+                self.applyUserBubbleScrollAnchor(at: pinned, animated: false)
             }
         }
         pinnedRemeasureWork = work
@@ -1821,6 +2173,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 )
             }
             cell.ensureActionButtonsVisible(for: msg)
+            _ = cell.revealReservedActionChromeIfRoom(for: msg)
             let measured = cell.measuredContentHeight()
             if measured > 40 {
                 rowHeights.commitMeasured(
@@ -1999,6 +2352,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         tableView.alpha = 1
         releaseOpenInteractionLock()
         openBottomStickActive = tailActionChromeOverlapsInputBar(messages: messages)
+        needsFirstHistoryScrollPrep = true
         scheduleCoalescedOpenUpgrade()
     }
 
@@ -3379,6 +3733,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         studyChromeMode = mode
         applyStudyChrome()
         updateStudyInputBar()
+        if mode == .documentReader || mode == .portraitPanel {
+            pendingStudyFirstScrollPrep = true
+        }
         if mode != .none {
             scheduleInvalidateHeightsForWidthChange()
             DispatchQueue.main.async { [weak self] in
@@ -5048,6 +5405,22 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         let layoutWidth = currentRenderWidth()
         let preferred = rowHeights.displayColumnHeight(for: msg.id)
             ?? rowHeights.committedColumnHeight(for: msg.id)
+        if rowHeights.isScrollHeightFrozen {
+            ensureFrozenRowHeightFromCache(
+                for: msg,
+                row: indexPath.row,
+                messageCount: messages.count,
+                layoutWidth: layoutWidth
+            )
+            if msg.role == .assistant, !msg.isStreaming {
+                pregrowFrozenAssistantRowIfNeeded(
+                    for: msg,
+                    row: indexPath.row,
+                    messageCount: messages.count,
+                    layoutWidth: layoutWidth
+                )
+            }
+        }
         if msg.role == .user {
             let cell = tableView.dequeueReusableCell(
                 withIdentifier: MessageCellReuseID.user,
@@ -5076,6 +5449,17 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             return cell
         }
         cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth, pairedUser: pairedUser)
+        if rowHeights.isScrollHeightFrozen,
+           needsPendingScrollPrep,
+           !msg.isStreaming,
+           !msg.content.isEmpty,
+           !cell.hasVisibleBodyPaint {
+            cell.configureForOpenHistory(
+                with: msg,
+                preferredHeight: preferred,
+                layoutWidth: layoutWidth
+            )
+        }
         return cell
     }
 
@@ -5174,8 +5558,30 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                     messageCount: messages.count,
                     layoutWidth: layoutWidth
                 )
+                if let assistantCell = cell as? AssistantMessageCell {
+                    if needsPendingScrollPrep,
+                       !msg.content.isEmpty,
+                       !assistantCell.hasVisibleBodyPaint {
+                        assistantCell.configureForOpenHistory(
+                            with: msg,
+                            preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
+                            layoutWidth: layoutWidth
+                        )
+                    }
+                    if !rowHeights.isCommitted(msg.id) {
+                        assistantCell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
+                    } else {
+                        _ = assistantCell.ensureActionButtonsVisible(for: msg)
+                    }
+                    scheduleFrozenAssistantGeometrySync()
+                } else {
+                    scheduleFrozenAssistantGeometrySync()
+                }
             }
-            applyTurnWindowPrewarm(around: [indexPath.row], allowSync: false)
+            applyTurnWindowPrewarm(
+                around: [indexPath.row],
+                allowSync: needsPendingScrollPrep && isStudyNarrowPanelActive()
+            )
             return
         }
         scheduleUpdateTurnContextBar()
@@ -5228,6 +5634,11 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         scrollSettleWork?.cancel()
+        scrollFreezeGeometryWork?.cancel()
+        scrollFreezeGeometryWork = nil
+        nativeHydrationScrollWork?.cancel()
+        nativeHydrationScrollWork = nil
+        scrollGestureGeometryFinished = false
         formulaRemeasureWork?.cancel()
         formulaRemeasureWork = nil
         pendingReadingHistoryFormulaSync = false
@@ -5243,8 +5654,18 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         heightWork?.cancel()
         if let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty {
             let layoutWidth = currentRenderWidth()
+            let prepRows = needsFirstHistoryScrollPrep
+                ? firstHistoryScrollPrepRows(in: messages)
+                : []
+            if pendingStudyFirstScrollPrep {
+                prepareStudyFirstScrollFromOpen(messages: messages, layoutWidth: layoutWidth)
+            } else if needsFirstHistoryScrollPrep {
+                prepareFirstHistoryScrollFromOpen(messages: messages, layoutWidth: layoutWidth)
+            }
             let visibleRows = Set((tableView.indexPathsForVisibleRows ?? []).map(\.row))
-            let lookahead = scrollLookaheadRowsPrioritized(in: messages)
+            let lookahead = needsFirstHistoryScrollPrep
+                ? prepRows
+                : scrollLookaheadRowsPrioritized(in: messages)
             quickCommitVisibleHeights(messages: messages, allowTableUpdates: false)
             prepareScrollGestureHeights(
                 messages: messages,
@@ -5262,6 +5683,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 assistants: assistantMessagesAhead(in: messages, rows: lookahead),
                 layoutWidth: layoutWidth
             )
+            syncVisibleFrozenAssistantGeometryDuringScroll()
         }
     }
 
@@ -5328,6 +5750,9 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             scrollBiasUp = y < lastScrollOffsetY
         }
         lastScrollOffsetY = y
+        if rowHeights.isScrollHeightFrozen {
+            scheduleFrozenAssistantGeometrySync()
+        }
         maybeHydrateDeferredNativeWhileScrolling()
     }
 
@@ -5347,7 +5772,17 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 
     /// Grow frozen rows and reserve action chrome before async settle — avoids t+0 clip flash.
     private func finishScrollGestureRowGeometry() {
+        guard !scrollGestureGeometryFinished else { return }
+        scrollGestureGeometryFinished = true
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        if readingHistory,
+           rowHeights.isScrollHeightFrozen,
+           pendingScrollSettleAnchor == nil,
+           let path = viewportScrollAnchorPath() {
+            tableView.layoutIfNeeded()
+            let y = tableView.rectForRow(at: path).minY - tableView.contentOffset.y
+            pendingScrollSettleAnchor = (path, y)
+        }
         let layoutWidth = currentRenderWidth()
         var changed = false
         for case let cell as AssistantMessageCell in tableView.visibleCells {
@@ -5377,10 +5812,22 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 tableView.layoutIfNeeded()
             }
         }
+        if readingHistory, let stored = pendingScrollSettleAnchor {
+            remeasureRowsPreservingViewport(
+                anchorPath: stored.path,
+                preferSavedViewportAnchor: true,
+                fixedViewportY: stored.viewportY
+            )
+            if let messages = ConversationStore.shared.currentConversation?.messages {
+                revealDeferredActionChromeOnVisibleAssistants(messages: messages)
+            }
+        }
     }
 
     private func scheduleScrollHeightSettling() {
         scrollSettleWork?.cancel()
+        scrollFreezeGeometryWork?.cancel()
+        scrollFreezeGeometryWork = nil
         let work = DispatchWorkItem { [weak self] in
             self?.performScrollHeightSettling()
         }
@@ -5400,8 +5847,8 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     private func performScrollHeightSettling() {
         setVisibleNativeAsyncDraw(true)
         contextBarScrollWork?.cancel()
-        let frozenAnchor = viewportScrollAnchorPath()
-        let settleViewportY: CGFloat? = {
+        let frozenAnchor = pendingScrollSettleAnchor?.path ?? viewportScrollAnchorPath()
+        let settleViewportY: CGFloat? = pendingScrollSettleAnchor?.viewportY ?? {
             guard let path = frozenAnchor else { return nil }
             tableView.layoutIfNeeded()
             return tableView.rectForRow(at: path).minY - tableView.contentOffset.y
@@ -5425,10 +5872,18 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
            !messages.isEmpty {
             repairVisibleAssistantRowClips(messages: messages)
             revealActionChromeIfBodyPainted(messages: messages)
-        }
-        if readingHistory, let path = frozenAnchor, let y = settleViewportY {
-            pendingScrollSettleAnchor = (path, y)
-        } else {
+            if let path = frozenAnchor, let y = settleViewportY {
+                pendingScrollSettleAnchor = (path, y)
+                remeasureRowsPreservingViewport(
+                    anchorPath: path,
+                    preferSavedViewportAnchor: true,
+                    fixedViewportY: y
+                )
+                revealDeferredActionChromeOnVisibleAssistants(messages: messages)
+            } else if frozenAnchor == nil {
+                pendingScrollSettleAnchor = nil
+            }
+        } else if readingHistory, frozenAnchor == nil {
             pendingScrollSettleAnchor = nil
         }
         if let messages = ConversationStore.shared.currentConversation?.messages,
@@ -5444,17 +5899,12 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             applyUserQuestionPinnedToTop(at: pinned, animated: false)
             let path = IndexPath(row: pinned, section: 0)
             viewportScrollAnchor = (pinned, tableView.rectForRow(at: path).minY - tableView.contentOffset.y)
-        } else {
-            if readingHistory {
-                refreshViewportScrollAnchorForCurrentRow()
-            } else {
-                viewportScrollAnchor = captureViewportScrollAnchor()
-            }
+        } else if !readingHistory {
+            viewportScrollAnchor = captureViewportScrollAnchor()
         }
         if wasFrozen, !readingHistory {
             remeasureRowsPreservingViewport(anchorPath: frozenAnchor, preferSavedViewportAnchor: true)
         } else if wasFrozen, readingHistory {
-            refreshViewportScrollAnchorForCurrentRow()
             scheduleVisibleDeferredNativeHydration()
             return
         }
@@ -5495,7 +5945,7 @@ extension ChatViewController: UITableViewDataSourcePrefetching {
         if scrolling {
             applyTurnWindowPrewarm(
                 around: indexPaths.map(\.row),
-                allowSync: isStudyNarrowPanelActive()
+                allowSync: needsPendingScrollPrep && isStudyNarrowPanelActive()
             )
             return
         }
@@ -5624,7 +6074,12 @@ extension ChatViewController: MessageCellDelegate {
               msg.role == .assistant, !msg.isStreaming else { return }
         let allowShrink = isOpenPresentationActive()
         if readingHistory {
-            _ = syncRowHeightToPaint(cell: assistant, message: msg, allowShrink: false)
+            let grew = syncRowHeightToPaint(cell: assistant, message: msg, allowShrink: false)
+            if grew {
+                scheduleFrozenAssistantGeometrySync()
+            } else {
+                _ = assistant.revealReservedActionChromeIfRoom(for: msg)
+            }
             return
         }
         guard syncRowHeightToPaint(cell: assistant, message: msg, allowShrink: allowShrink) else { return }
@@ -5655,6 +6110,33 @@ extension ChatViewController: MessageCellDelegate {
         if tableView.isDragging { return false }
         if tableView.isDecelerating { return false }
         return true
+    }
+
+    func messageCellRowHasRoomForActionChrome(_ cell: MessageCellType) -> Bool {
+        guard let path = tableView.indexPath(for: cell) else { return true }
+        let rowFrame = tableView.rectForRow(at: path)
+        cell.contentView.layoutIfNeeded()
+        let required = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
+        return required <= rowFrame.height + 2.5
+    }
+
+    func messageCellShouldDeferActionChromeUntilBodyPaint(_ cell: MessageCellType) -> Bool {
+        guard let assistant = cell as? AssistantMessageCell,
+              let messages = ConversationStore.shared.currentConversation?.messages,
+              let msg = messages.first(where: { $0.id == assistant.messageID }),
+              msg.role == .assistant,
+              !msg.isStreaming else { return false }
+        let scrolling = rowHeights.isScrollHeightFrozen
+            || tableView.isDragging
+            || tableView.isDecelerating
+        guard scrolling else { return false }
+        return !rowHeights.isCommitted(msg.id) && !assistant.hasVisibleBodyPaint
+    }
+
+    private func clearFirstHistoryScrollPrepIfNeeded() {
+        needsFirstHistoryScrollPrep = false
+        pendingStudyFirstScrollPrep = false
+        isPerformingColdLaunchOpen = false
     }
 
     private func scheduleFormulaHeightSyncWhileReading() {
@@ -5704,6 +6186,8 @@ extension ChatViewController: MessageCellDelegate {
         if let cid = renderedConversationID {
             storePersistedHeights(rowHeights.exportPersistable(), for: cid)
         }
+        revealDeferredActionChromeOnVisibleAssistants(messages: messages)
+        clearFirstHistoryScrollPrepIfNeeded()
     }
 
     private func commitReadingHistoryRowGrowth(for message: ChatMessage,
@@ -6020,6 +6504,90 @@ extension ChatViewController {
         let viewportY: CGFloat
     }
 
+    struct DebugQAEdgeState {
+        let userRowsAtTopEdge: [Int]
+        let userRowsAtBottomEdge: [Int]
+        let assistantRowsNearUserEdge: [Int]
+        let uncommittedAssistantsNearEdge: Int
+    }
+
+    /// User bubbles straddling the viewport band — QA switch stress signal.
+    func debugVisibleQAEdgeState(edgeBand: CGFloat = 52) -> DebugQAEdgeState {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else {
+            return DebugQAEdgeState(
+                userRowsAtTopEdge: [],
+                userRowsAtBottomEdge: [],
+                assistantRowsNearUserEdge: [],
+                uncommittedAssistantsNearEdge: 0
+            )
+        }
+        let topLimit = tableView.adjustedContentInset.top + edgeBand
+        let bottomLimit = tableView.bounds.height - tableView.adjustedContentInset.bottom - edgeBand
+        var topUsers: [Int] = []
+        var bottomUsers: [Int] = []
+        var nearAssistants: [Int] = []
+        var uncommittedNearEdge = 0
+        for path in tableView.indexPathsForVisibleRows ?? [] {
+            guard path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            let frame = tableView.rectForRow(at: path)
+            let minY = frame.minY - tableView.contentOffset.y
+            let maxY = frame.maxY - tableView.contentOffset.y
+            let nearTop = minY < topLimit && maxY > topLimit - edgeBand
+            let nearBottom = maxY > bottomLimit && minY < bottomLimit + edgeBand
+            if msg.role == .user {
+                if nearTop { topUsers.append(path.row) }
+                if nearBottom { bottomUsers.append(path.row) }
+            } else if msg.role == .assistant, !msg.isStreaming, (nearTop || nearBottom) {
+                nearAssistants.append(path.row)
+                if !rowHeights.isCommitted(msg.id) { uncommittedNearEdge += 1 }
+            }
+        }
+        return DebugQAEdgeState(
+            userRowsAtTopEdge: topUsers,
+            userRowsAtBottomEdge: bottomUsers,
+            assistantRowsNearUserEdge: nearAssistants,
+            uncommittedAssistantsNearEdge: uncommittedNearEdge
+        )
+    }
+
+    /// Small scroll-up delta that moves the next user bubble into the edge band (QA crossing).
+    func debugSuggestedQAEdgeScrollDelta(maxScan: CGFloat = 220, edgeBand: CGFloat = 52) -> CGFloat? {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return nil }
+        let topLimit = tableView.adjustedContentInset.top + edgeBand
+        let step: CGFloat = 8
+        var offset = tableView.contentOffset.y
+        let minY = -tableView.adjustedContentInset.top
+        let saved = offset
+        var best: CGFloat?
+        var scan: CGFloat = 0
+        while scan < maxScan {
+            offset = max(minY, saved - scan)
+            tableView.contentOffset.y = offset
+            tableView.layoutIfNeeded()
+            let edge = debugVisibleQAEdgeState(edgeBand: edgeBand)
+            if !edge.userRowsAtTopEdge.isEmpty || !edge.userRowsAtBottomEdge.isEmpty {
+                best = scan
+                break
+            }
+            for path in tableView.indexPathsForVisibleRows ?? [] {
+                guard path.row < messages.count, messages[path.row].role == .user else { continue }
+                let frame = tableView.rectForRow(at: path)
+                let minY = frame.minY - tableView.contentOffset.y
+                if minY > topLimit + 4, minY < topLimit + edgeBand + 80 {
+                    best = scan
+                    break
+                }
+            }
+            if best != nil { break }
+            scan += step
+        }
+        tableView.contentOffset.y = saved
+        tableView.layoutIfNeeded()
+        guard let best, best > 4 else { return nil }
+        return best
+    }
+
     struct DebugScrollJump {
         let row: Int
         let delta: CGFloat
@@ -6059,6 +6627,45 @@ extension ChatViewController {
         return cell.convert(cell.bounds, to: tableView).minY - tableView.contentOffset.y
     }
 
+    func debugFirstUserRowIndex() -> Int? {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return nil }
+        return messages.firstIndex(where: { $0.role == .user })
+    }
+
+    /// Scroll up in chunks until the first user bubble straddles the top edge band.
+    func debugScrollUntilFirstUserAtTopEdge(maxSteps: Int = 48,
+                                            stepDistance: CGFloat = 140,
+                                            completion: @escaping (Bool) -> Void) {
+        guard let firstUser = debugFirstUserRowIndex() else {
+            completion(false)
+            return
+        }
+        var step = 0
+        func attempt() {
+            let edge = debugVisibleQAEdgeState()
+            if edge.userRowsAtTopEdge.contains(firstUser) {
+                completion(true)
+                return
+            }
+            guard step < maxSteps else {
+                completion(false)
+                return
+            }
+            step += 1
+            let minY = -tableView.adjustedContentInset.top
+            let remaining = tableView.contentOffset.y - minY
+            let distance = min(stepDistance, max(0, remaining))
+            guard distance > 4 else {
+                completion(edge.userRowsAtTopEdge.contains(firstUser))
+                return
+            }
+            debugSimulateSlowScrollUp(distance: distance, duration: 0.28) {
+                attempt()
+            }
+        }
+        attempt()
+    }
+
     func debugSimulateScrollUp(distance: CGFloat, completion: @escaping () -> Void) {
         debugSimulateSlowScrollUp(distance: distance, duration: 0.32, completion: completion)
     }
@@ -6083,10 +6690,10 @@ extension ChatViewController {
             let eased = 1 - pow(1 - t, 3)
             let y = startY + (targetY - startY) * eased
             self.tableView.contentOffset = CGPoint(x: 0, y: y)
+            self.scrollViewDidScroll(self.tableView)
             if frame >= steps {
                 timer.invalidate()
                 self.scrollViewDidEndDragging(self.tableView, willDecelerate: false)
-                self.scrollViewDidEndDecelerating(self.tableView)
                 completion()
             }
         }
@@ -6114,10 +6721,16 @@ extension ChatViewController {
                 || msg.hasSearchProcess
                 || msg.hasImageTranscription
             guard hasBody else { continue }
-            if !cell.hasVisibleActionButtons {
+            let chromeOK = rowHeights.isScrollHeightFrozen
+                ? cell.hasAccommodatedActionChrome
+                : cell.hasVisibleActionButtons
+            if !chromeOK {
                 missing += 1
             } else if let y = cell.debugActionRowViewportY(in: tableView) {
                 positions[path.row] = y
+            } else if rowHeights.isScrollHeightFrozen, cell.hasReservedActionChromeSpace {
+                let rowFrame = tableView.rectForRow(at: path)
+                positions[path.row] = rowFrame.maxY - tableView.contentOffset.y - AssistantMessageLayout.actionRowHeight
             }
         }
         return DebugActionChromeSnapshot(missingButtons: missing, buttonViewportY: positions)
@@ -6224,6 +6837,64 @@ extension ChatViewController {
         guard let cid = renderedConversationID else { return }
         storePersistedHeights(rowHeights.exportPersistable(), for: cid)
         saveHeightCaches()
+    }
+
+    /// Simulate first-open: no persisted heights, no layout cache, reload at bottom.
+    func debugSimulateColdOpen(completion: @escaping () -> Void) {
+        guard let cid = renderedConversationID ?? currentConversationID,
+              let messages = ConversationStore.shared.currentConversation?.messages else {
+            completion()
+            return
+        }
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
+        PlainMarkdown.clearCache()
+        ChatViewController.clearTransientRenderCaches()
+        rowHeights.clearAll()
+        pendingHeights.removeAll()
+        storePersistedHeights([:], for: cid)
+        RenderCacheStore.clearHeights()
+        let layoutWidth = currentRenderWidth()
+        rowHeights.resetForConversation(
+            diskCache: [:],
+            messages: messages,
+            layoutWidth: layoutWidth,
+            layoutProbeTailRows: messages.count
+        )
+        isPerformingColdLaunchOpen = true
+        if studyChromeMode != .none {
+            pendingStudyFirstScrollPrep = true
+        } else {
+            needsFirstHistoryScrollPrep = true
+        }
+        readingHistory = false
+        stickToBottom = true
+        viewportPinnedByUser = false
+        tableView.reloadData()
+        tableView.layoutIfNeeded()
+        scrollToLastRowReliable(messages)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                completion()
+                return
+            }
+            self.tableView.layoutIfNeeded()
+            completion()
+        }
+    }
+
+    /// Visible assistant rows with action chrome in partial-hide flicker state.
+    func debugVisibleActionChromeFlickerCount() -> Int {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return 0 }
+        var flicker = 0
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            guard let path = tableView.indexPath(for: cell),
+                  path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            if cell.isActionChromeFlickering { flicker += 1 }
+        }
+        return flicker
     }
 
     struct DebugStudyBlankState {
@@ -6393,7 +7064,10 @@ extension ChatViewController {
             if !cell.hasVisibleNativePaint {
                 unrendered += 1
             }
-            if !cell.hasVisibleActionButtons {
+            let chromeOK = rowHeights.isScrollHeightFrozen
+                ? cell.hasAccommodatedActionChrome
+                : cell.hasVisibleActionButtons
+            if !chromeOK {
                 missingActions += 1
             }
         }

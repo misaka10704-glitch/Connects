@@ -30,6 +30,10 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellShouldTruncatePlainBody(_ cell: MessageCellType) -> Bool
     /// When false, defer action-row layoutIfNeeded until body paint (open critical path).
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool
+    /// False while UITableView row height still clips the painted action chrome.
+    func messageCellRowHasRoomForActionChrome(_ cell: MessageCellType) -> Bool
+    /// First-open / uncommitted rows: keep action chrome hidden until body pixels exist.
+    func messageCellShouldDeferActionChromeUntilBodyPaint(_ cell: MessageCellType) -> Bool
     /// Body (+ action chrome) finished painting — host may grow frozen row height.
     func messageCellDidPaintContent(_ cell: MessageCellType)
     /// When true, prepareForReuse keeps native paint (open height updates).
@@ -43,6 +47,8 @@ extension MessageCellDelegate {
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldTruncatePlainBody(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldLayoutActionChromeNow(_ cell: MessageCellType) -> Bool { true }
+    func messageCellRowHasRoomForActionChrome(_ cell: MessageCellType) -> Bool { true }
+    func messageCellShouldDeferActionChromeUntilBodyPaint(_ cell: MessageCellType) -> Bool { false }
     func messageCellDidPaintContent(_ cell: MessageCellType) {}
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool { false }
     func messageCellStudyContentLeadingGutter() -> CGFloat { 0 }

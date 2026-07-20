@@ -122,8 +122,30 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard message.id == messageID || messageID.isEmpty else { return }
         guard Self.shouldShowActionButtons(for: message, streaming: false) else { return }
         guard hasVisibleBodyPaint else { return }
-        guard !hasVisibleActionButtons else { return }
+        if hasVisibleActionButtons { return }
+        if revealReservedActionChromeIfRoom(for: message) { return }
         refreshActionChrome(for: message, streaming: false, colors: cachedThemeColors ?? DSTheme.c)
+    }
+
+    /// Paint reserved action icons once the host row is tall enough — avoids clip-then-shift.
+    @discardableResult
+    func revealReservedActionChromeIfRoom(for message: ChatMessage) -> Bool {
+        guard message.id == messageID || messageID.isEmpty else { return false }
+        guard Self.shouldShowActionButtons(for: message, streaming: false) else { return false }
+        guard hasReservedActionChromeSpace, !hasVisibleActionButtons else { return false }
+        guard cellDelegate?.messageCellRowHasRoomForActionChrome(self) != false else { return false }
+        let pager = message.showsVersionPager
+        showActions(
+            true,
+            versionText: pager ? message.versionPagerText : nil,
+            canPrev: pager && message.versionIndex > 0,
+            canNext: pager && message.versionIndex < message.versions.count - 1
+        )
+        actionRow.alpha = 1
+        styleActionIcons(cachedThemeColors ?? DSTheme.c)
+        lastChromeActionKey = "\(message.id)|true|\(pager)|\(message.versionIndex)|\(message.versions.count)"
+        contentView.layoutIfNeeded()
+        return true
     }
 
     /// Open critical path: force sync native — never leave empty/plain on first frame.
@@ -682,6 +704,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: layoutWidth,
             allowDefer: true
         )
+        refreshActionChrome(for: message, streaming: false, colors: c)
     }
 
     private func applyAssistantChrome(message: ChatMessage,
@@ -775,7 +798,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     /// Keep 复制/重跑/分叉 on the first paint (including snap-hold early returns).
-    private func refreshActionChrome(for message: ChatMessage,
+    func refreshActionChrome(for message: ChatMessage,
                                      streaming: Bool? = nil,
                                      colors: ThemeColors? = nil) {
         let isStreaming = streaming ?? message.isStreaming
@@ -784,8 +807,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let layoutNow = cellDelegate?.messageCellShouldLayoutActionChromeNow(self) != false
         if !layoutNow {
             if showAct {
-                reserveActionChromeSpace()
-                lastChromeActionKey = "\(message.id)|scroll|reserved"
+                if cellDelegate?.messageCellShouldDeferActionChromeUntilBodyPaint(self) == true {
+                    reserveActionChromeHeightOnly()
+                    lastChromeActionKey = "\(message.id)|scroll|deferred"
+                } else {
+                    reserveActionChromeSpace()
+                    lastChromeActionKey = "\(message.id)|scroll|reserved"
+                }
             } else if !actionRow.isHidden || actionHeight.constant > 0.5 {
                 showActions(false, versionText: nil, canPrev: false, canNext: false)
                 lastChromeActionKey = "\(message.id)|scroll|hidden"
@@ -928,6 +956,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             && copyButton.image(for: .normal) != nil
             && !copyButton.isHidden
             && actionRow.alpha > 0.1
+    }
+
+    /// Scroll-freeze path: row holds action-row height (icons may be pre-painted).
+    var hasReservedActionChromeSpace: Bool {
+        !actionRow.isHidden && actionHeight.constant >= Self.actionRowVisibleHeight - 0.5
+    }
+
+    var hasAccommodatedActionChrome: Bool {
+        hasVisibleActionButtons || hasReservedActionChromeSpace
     }
 
     func debugActionRowViewportY(in tableView: UITableView) -> CGFloat? {
@@ -1517,13 +1554,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         "\(on)|\(versionText ?? "")|\(canPrev)|\(canNext)"
     }
 
-    /// Hold action-row height during scroll without painting icons (prevents settle pop-in).
-    private func reserveActionChromeSpace() {
+    /// Hold action-row height during scroll; paint icons only when the row won't clip them.
+    private func reserveActionChromeHeightOnly() {
         if actionHeight.constant < Self.actionRowVisibleHeight - 0.5 {
             actionHeight.constant = Self.actionRowVisibleHeight
         }
         actionRow.isHidden = false
-        actionRow.alpha = 0.02
         copyButton.isHidden = true
         retryButton.isHidden = true
         forkButton.isHidden = true
@@ -1531,6 +1567,50 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         versionPrevButton.isHidden = true
         versionNextButton.isHidden = true
         versionLabel.isHidden = true
+        actionRow.alpha = 1
+        lastActionRowSignature = actionSignature(on: true, versionText: nil, canPrev: false, canNext: false)
+    }
+
+    private func reserveActionChromeSpace() {
+        if actionHeight.constant < Self.actionRowVisibleHeight - 0.5 {
+            actionHeight.constant = Self.actionRowVisibleHeight
+        }
+        actionRow.isHidden = false
+        if hasVisibleActionButtons {
+            actionRow.alpha = 1
+            return
+        }
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        guard cellDelegate?.messageCellRowHasRoomForActionChrome(self) != false else {
+            copyButton.isHidden = true
+            retryButton.isHidden = true
+            forkButton.isHidden = true
+            versionCluster.isHidden = true
+            versionPrevButton.isHidden = true
+            versionNextButton.isHidden = true
+            versionLabel.isHidden = true
+            actionRow.alpha = 1
+            lastActionRowSignature = actionSignature(on: true, versionText: nil, canPrev: false, canNext: false)
+            return
+        }
+        let c = cachedThemeColors ?? DSTheme.c
+        copyButton.isHidden = false
+        retryButton.isHidden = false
+        forkButton.isHidden = false
+        versionCluster.isHidden = true
+        versionPrevButton.isHidden = true
+        versionNextButton.isHidden = true
+        versionLabel.isHidden = true
+        actionRow.alpha = 1
+        styleActionIcons(c)
+        lastActionRowSignature = actionSignature(on: true, versionText: nil, canPrev: false, canNext: false)
+    }
+
+    /// Partial hide (alpha≈0) while row still allocates chrome — scroll flicker signal.
+    var isActionChromeFlickering: Bool {
+        guard !actionRow.isHidden, actionHeight.constant >= Self.actionRowVisibleHeight - 0.5 else { return false }
+        return !hasVisibleActionButtons && actionRow.alpha < 0.9
     }
 
     private func showActions(_ on: Bool, versionText: String? = nil, canPrev: Bool = false, canNext: Bool = false) {

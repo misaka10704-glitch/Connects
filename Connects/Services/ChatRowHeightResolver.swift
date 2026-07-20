@@ -94,6 +94,20 @@ final class ChatRowHeightResolver {
         return true
     }
 
+    /// Collapse an inflated frozen row when painted content is shorter than the snapshotted height.
+    @discardableResult
+    func shrinkFrozenRowHeightIfNeeded(messageID: String, columnHeight: CGFloat) -> Bool {
+        guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
+        let required = columnHeight + Self.cellVerticalMargin
+        let current = scrollFrozenRowHeights?[messageID] ?? 0
+        guard current > required + 8 else { return false }
+        scrollFrozenRowHeights?[messageID] = required
+        committedColumnHeights[messageID] = columnHeight
+        committedIDs.insert(messageID)
+        displayColumnHeights[messageID] = columnHeight
+        return true
+    }
+
     func resetForConversation(diskCache: [String: CGFloat],
                               messages: [ChatMessage],
                               layoutWidth: CGFloat,

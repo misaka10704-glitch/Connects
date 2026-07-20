@@ -3,6 +3,12 @@ import UIKit
 #if DEBUG
 /// Developer-only scroll stress: multi-turn fixture + automated up-scroll through Q&A pairs.
 /// Launch args: `-ScrollStressFixture`, `-ScrollStressTest`, optional `-ScrollStressSlow` (iPad-like pacing).
+/// Ultra: `-ScrollStressUltraSlow` — Air 1–class pacing with mid-scroll sampling (implies slow).
+/// Mixed: `-ScrollStressMixedPacing` — alternate fast fling + ultra-slow steps each run.
+/// Diverse: `-ScrollStressDiverse` — mixed chat + first-open + matrix in one launch.
+/// First-open QA edge: `-ScrollStressFirstOpen` — cold open + micro scroll at user-bubble edges.
+/// First bubble: `-ScrollStressFirstBubble` — study-landscape scroll until first user bubble at top edge.
+/// Ultra switch: `-ScrollStressUltraSwitch` — cold open + mid-scroll width/study toggles (use with UltraSlow).
 /// Study bug path: `-ScrollStressStudyFixture -ScrollStressStudy` (narrow panel + reasoning + 卷积公式).
 /// Matrix path: `-ScrollStressStudyFixture -ScrollStressMatrix -ScrollStressSlow` (portrait/landscape chat + PDF).
 enum ScrollStressHarness {
@@ -13,6 +19,9 @@ enum ScrollStressHarness {
     private static let fullChatTableWidth: CGFloat = 1024
     private static let portraitChatTableWidth: CGFloat = 768
     private static let studyPanelTableWidth: CGFloat = 408
+    private static var ultraSlowMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressUltraSlow")
+    }
     private static var mathHeavyMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressMathHeavy")
     }
@@ -20,7 +29,7 @@ enum ScrollStressHarness {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy")
     }
     private static var slowMode: Bool {
-        ProcessInfo.processInfo.arguments.contains("-ScrollStressSlow")
+        ultraSlowMode || ProcessInfo.processInfo.arguments.contains("-ScrollStressSlow")
     }
     private static var rotationMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
@@ -28,10 +37,32 @@ enum ScrollStressHarness {
     private static var matrixMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressMatrix")
     }
+    private static var ultraSwitchMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressUltraSwitch")
+    }
+    private static var firstOpenMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressFirstOpen")
+    }
+    private static var firstBubbleMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressFirstBubble")
+    }
+    private static var mixedPacingMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressMixedPacing")
+            || ProcessInfo.processInfo.arguments.contains("-ScrollStressDiverse")
+    }
+    private static var diverseMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressDiverse")
+    }
+
+    private enum PacingProfile: String {
+        case fast
+        case slow
+        case ultra
+    }
 
     static func installFixtureIfRequested() {
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
-            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode)) {
+            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || diverseMode)) {
             installStudyFixture()
             return
         }
@@ -64,11 +95,43 @@ enum ScrollStressHarness {
         guard ProcessInfo.processInfo.arguments.contains("-ScrollStressTest")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy")
-            || matrixMode else { return }
+            || matrixMode
+            || ultraSwitchMode
+            || firstOpenMode
+            || firstBubbleMode
+            || diverseMode else { return }
         guard !didSchedule else { return }
         didSchedule = true
+        if diverseMode {
+            log("scheduled diverse stress (fast+ultra mixed: chat → first-open → matrix)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runDiverse(on: chat)
+            }
+            return
+        }
+        if firstBubbleMode {
+            log("scheduled first-bubble study-landscape anchor test")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runFirstBubble(on: chat)
+            }
+            return
+        }
+        if firstOpenMode {
+            log("scheduled first-open QA-edge stress\(mixedPacingMode ? " (fast+ultra mixed)" : (ultraSlowMode ? " [ultra/Air1]" : ""))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runFirstOpen(on: chat)
+            }
+            return
+        }
+        if ultraSwitchMode {
+            log("scheduled ultra switch (cold open + mid-scroll toggles)\(ultraSlowMode ? " [ultra/Air1]" : "")")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runUltraSwitch(on: chat)
+            }
+            return
+        }
         if matrixMode {
-            log("scheduled orientation matrix (chat portrait/landscape + study portrait/landscape)")
+            log("scheduled orientation matrix\(mixedPacingMode ? " (fast+ultra mixed)" : (ultraSlowMode ? " [ultra/Air1]" : ""))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 runMatrix(on: chat)
             }
@@ -88,7 +151,7 @@ enum ScrollStressHarness {
             }
             return
         }
-        log("scheduled on chat VC\(slowMode ? " (slow/iPad pacing)" : "")\(mathHeavyMode ? " (math-heavy)" : "")")
+        log("scheduled on chat VC\(mixedPacingMode ? " (fast+ultra mixed)" : (ultraSlowMode ? " (ultra/Air1 pacing)" : (slowMode ? " (slow/iPad pacing)" : "")))\(mathHeavyMode ? " (math-heavy)" : "")")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             run(on: chat)
         }
@@ -98,6 +161,257 @@ enum ScrollStressHarness {
         let line = "\(logTag) \(message)\n"
         fputs(line, stderr)
         fflush(stderr)
+    }
+
+    // MARK: - Pacing profiles (fast fling + ultra-slow observation)
+
+    private enum ScrollDistanceStyle {
+        case chat
+        case matrix
+        case qaEdge
+    }
+
+    private static func profileForStep(_ step: Int) -> PacingProfile {
+        if mixedPacingMode {
+            return step.isMultiple(of: 2) ? .fast : .ultra
+        }
+        if ultraSlowMode { return .ultra }
+        if slowMode { return .slow }
+        return .fast
+    }
+
+    private static func scrollDistance(step: Int, profile: PacingProfile, style: ScrollDistanceStyle) -> CGFloat {
+        switch style {
+        case .chat, .matrix:
+            switch profile {
+            case .fast:
+                return step.isMultiple(of: 3) ? 340 : (step.isMultiple(of: 2) ? 260 : 180)
+            case .ultra:
+                return step.isMultiple(of: 3) ? 200 : (step.isMultiple(of: 2) ? 140 : 90)
+            case .slow:
+                return step.isMultiple(of: 3) ? 200 : (step.isMultiple(of: 2) ? 140 : 90)
+            }
+        case .qaEdge:
+            let fallback: CGFloat = step.isMultiple(of: 3) ? 72 : (step.isMultiple(of: 2) ? 48 : 36)
+            switch profile {
+            case .fast: return fallback * 2.2
+            case .ultra: return fallback * 1.15
+            case .slow: return fallback
+            }
+        }
+    }
+
+    private static func pacingSuffix(_ profile: PacingProfile? = nil) -> String {
+        if mixedPacingMode { return " [mixed fast+ultra]" }
+        if let profile = profile, profile == .fast { return " [fast]" }
+        if ultraSlowMode { return " [ultra]" }
+        if slowMode { return " [slow]" }
+        return ""
+    }
+
+    // MARK: - Air 1–class pacing (ultra-slow exposes mid-scroll clip/shift/blank)
+
+    private struct ScrollPacing {
+        let scrollDuration: TimeInterval
+        let settleMs: TimeInterval
+        let midScrollFractions: [CGFloat]
+        let postScrollSampleMs: [TimeInterval]
+        let driftAllowance: CGFloat
+        let stableMaxAttempts: Int
+        let chromeShiftTolerance: CGFloat
+
+        static func forProfile(_ profile: PacingProfile,
+                               mathHeavy: Bool,
+                               studyBlank: Bool = false) -> ScrollPacing {
+            switch profile {
+            case .fast:
+                return ScrollPacing(
+                    scrollDuration: studyBlank ? 0.14 : 0.11,
+                    settleMs: studyBlank ? 0.48 : 0.42,
+                    midScrollFractions: [],
+                    postScrollSampleMs: [0.024, 0.072, 0.14, 0.24],
+                    driftAllowance: mathHeavy ? (studyBlank ? 64 : 56) : (studyBlank ? 58 : 48),
+                    stableMaxAttempts: 140,
+                    chromeShiftTolerance: 10
+                )
+            case .ultra:
+                if studyBlank {
+                    return ScrollPacing(
+                        scrollDuration: 6.4,
+                        settleMs: 4.4,
+                        midScrollFractions: [0.14, 0.3, 0.46, 0.62, 0.78, 0.9],
+                        postScrollSampleMs: [0.05, 0.12, 0.25, 0.5, 1.0, 1.8, 2.8],
+                        driftAllowance: 58,
+                        stableMaxAttempts: 300,
+                        chromeShiftTolerance: 12
+                    )
+                }
+                return ScrollPacing(
+                    scrollDuration: mathHeavy ? 5.8 : 5.8,
+                    settleMs: 4.0,
+                    midScrollFractions: [0.12, 0.28, 0.44, 0.58, 0.72, 0.86],
+                    postScrollSampleMs: [0.04, 0.08, 0.16, 0.28, 0.45, 0.7, 1.1, 1.8, 2.6],
+                    driftAllowance: mathHeavy ? 54 : 46,
+                    stableMaxAttempts: 280,
+                    chromeShiftTolerance: 12
+                )
+            case .slow:
+                return ScrollPacing(
+                    scrollDuration: studyBlank ? 1.6 : 1.85,
+                    settleMs: studyBlank ? 1.0 : (mathHeavy ? 2.4 : 1.15),
+                    midScrollFractions: [],
+                    postScrollSampleMs: [0.048],
+                    driftAllowance: mathHeavy ? 48 : 36,
+                    stableMaxAttempts: 80,
+                    chromeShiftTolerance: 8
+                )
+            }
+        }
+
+        static func chat(mathHeavy: Bool) -> ScrollPacing {
+            if mixedPacingMode {
+                return forProfile(.ultra, mathHeavy: mathHeavy)
+            }
+            if ultraSlowMode {
+                return ScrollPacing(
+                    scrollDuration: 5.8,
+                    settleMs: 4.0,
+                    midScrollFractions: [0.12, 0.28, 0.44, 0.58, 0.72, 0.86],
+                    postScrollSampleMs: [0.04, 0.08, 0.16, 0.28, 0.45, 0.7, 1.1, 1.8, 2.6],
+                    driftAllowance: mathHeavy ? 54 : 46,
+                    stableMaxAttempts: 280,
+                    chromeShiftTolerance: 12
+                )
+            }
+            if slowMode {
+                return ScrollPacing(
+                    scrollDuration: 1.85,
+                    settleMs: mathHeavy ? 2.4 : 1.15,
+                    midScrollFractions: [],
+                    postScrollSampleMs: [0.048],
+                    driftAllowance: mathHeavy ? 48 : 36,
+                    stableMaxAttempts: 80,
+                    chromeShiftTolerance: 8
+                )
+            }
+            return ScrollPacing(
+                scrollDuration: 0.32,
+                settleMs: mathHeavy ? 1.6 : 0.72,
+                midScrollFractions: [],
+                postScrollSampleMs: [],
+                driftAllowance: mathHeavy ? 48 : 36,
+                stableMaxAttempts: 80,
+                chromeShiftTolerance: 8
+            )
+        }
+
+        static func study() -> ScrollPacing {
+            if mixedPacingMode {
+                return forProfile(.ultra, mathHeavy: true, studyBlank: true)
+            }
+            if ultraSlowMode {
+                return ScrollPacing(
+                    scrollDuration: 6.2,
+                    settleMs: 4.2,
+                    midScrollFractions: [0.15, 0.32, 0.5, 0.68, 0.84],
+                    postScrollSampleMs: [0.05, 0.12, 0.25, 0.5, 1.0, 1.8, 2.8],
+                    driftAllowance: 56,
+                    stableMaxAttempts: 300,
+                    chromeShiftTolerance: 12
+                )
+            }
+            return ScrollPacing(
+                scrollDuration: slowMode ? 1.6 : 0.55,
+                settleMs: slowMode ? 1.0 : 0.85,
+                midScrollFractions: [],
+                postScrollSampleMs: [],
+                driftAllowance: 52,
+                stableMaxAttempts: 120,
+                chromeShiftTolerance: 8
+            )
+        }
+
+        static func matrix(studyBlank: Bool) -> ScrollPacing {
+            if mixedPacingMode {
+                return forProfile(.ultra, mathHeavy: true, studyBlank: studyBlank)
+            }
+            let base = chat(mathHeavy: true)
+            if ultraSlowMode {
+                return ScrollPacing(
+                    scrollDuration: studyBlank ? 6.4 : 5.8,
+                    settleMs: studyBlank ? 4.4 : 4.0,
+                    midScrollFractions: studyBlank
+                        ? [0.14, 0.3, 0.46, 0.62, 0.78, 0.9]
+                        : [0.12, 0.28, 0.44, 0.6, 0.76, 0.88],
+                    postScrollSampleMs: base.postScrollSampleMs,
+                    driftAllowance: studyBlank ? 58 : 46,
+                    stableMaxAttempts: base.stableMaxAttempts,
+                    chromeShiftTolerance: base.chromeShiftTolerance
+                )
+            }
+            return ScrollPacing(
+                scrollDuration: slowMode ? 1.6 : 0.45,
+                settleMs: slowMode ? 1.0 : 0.72,
+                midScrollFractions: [],
+                postScrollSampleMs: [0.048],
+                driftAllowance: studyBlank ? 52 : 40,
+                stableMaxAttempts: 100,
+                chromeShiftTolerance: 8
+            )
+        }
+    }
+
+    private static func scheduleMidScrollSamples(chat: ChatViewController,
+                                                 pacing: ScrollPacing,
+                                                 scrollDuration: TimeInterval,
+                                                 step: Int,
+                                                 labelPrefix: String,
+                                                 studyBlank: Bool,
+                                                 onClip: @escaping () -> Void,
+                                                 onBlank: @escaping () -> Void,
+                                                 onChromeLate: @escaping () -> Void,
+                                                 onFlicker: @escaping () -> Void,
+                                                 baseline: [Int: CGFloat]?) {
+        guard !pacing.midScrollFractions.isEmpty else { return }
+        _ = baseline
+        for frac in pacing.midScrollFractions {
+            let delay = scrollDuration * Double(frac) + 0.14
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                let flicker = chat.debugVisibleActionChromeFlickerCount()
+                if flicker > 0 {
+                    onFlicker()
+                    log("\(labelPrefix) flicker-mid step=\(step) frac=\(Int(frac * 100))% rows=\(flicker)")
+                }
+                if studyBlank {
+                    let blank = chat.debugVisibleStudyBlankState()
+                    if blank.inflatedRows > 0 || blank.unrenderedAssistants > 0 || blank.interRowGaps > 0 {
+                        onBlank()
+                        log("\(labelPrefix) blank-mid step=\(step) frac=\(Int(frac * 100))% inflated=\(blank.inflatedRows) unrendered=\(blank.unrenderedAssistants) gaps=\(blank.interRowGaps)")
+                    }
+                }
+                let snap = chat.debugVisibleActionChromeSnapshot()
+                if snap.missingButtons > 0 {
+                    onChromeLate()
+                    log("\(labelPrefix) chrome-mid step=\(step) frac=\(Int(frac * 100))% missing=\(snap.missingButtons)")
+                }
+            }
+        }
+    }
+
+    private static func schedulePostScrollSamples(chat: ChatViewController,
+                                                  pacing: ScrollPacing,
+                                                  step: Int,
+                                                  labelPrefix: String,
+                                                  onChromeLate: @escaping () -> Void) {
+        for ms in pacing.postScrollSampleMs {
+            DispatchQueue.main.asyncAfter(deadline: .now() + ms) {
+                let snap = chat.debugVisibleActionChromeSnapshot()
+                if snap.missingButtons > 0 {
+                    onChromeLate()
+                    log("\(labelPrefix) chrome-late step=\(step) t+\(Int(ms * 1000))ms missing=\(snap.missingButtons)")
+                }
+            }
+        }
     }
 
     private static func run(on chat: ChatViewController) {
@@ -121,31 +435,31 @@ enum ScrollStressHarness {
         }
     }
 
-    private static func runScrollSteps(on chat: ChatViewController) {
+    private static func runScrollSteps(on chat: ChatViewController,
+                                       exitOnFinish: Bool = true,
+                                       completion: ((Bool) -> Void)? = nil) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               messages.count >= turnCount * 2 - 2 else {
             log("FAIL missing fixture (need -ScrollStressFixture, \(turnCount) turns)")
+            completion?(false)
+            if exitOnFinish { exit(1) }
             return
         }
-        log("begin \(messages.count) messages, \(turnCount) turns")
+        log("begin \(messages.count) messages, \(turnCount) turns\(pacingSuffix())")
         var step = 0
-        let totalSteps = slowMode ? 16 : 28
+        let totalSteps = mixedPacingMode ? 14 : (ultraSlowMode ? 12 : (slowMode ? 16 : 28))
         var jumpFailures = 0
         var renderFailures = 0
         var clipFailures = 0
         var chromeLateFailures = 0
         var chromeShiftFailures = 0
-        // iosMath warms formulas asynchronously — allow extra settle for math-heavy fixture.
-        let settleMs: TimeInterval = {
-            if mathHeavyMode { return slowMode ? 2.4 : 1.6 }
-            return slowMode ? 1.15 : 0.72
-        }()
-        let driftAllowance: CGFloat = mathHeavyMode ? 48 : 36
+        var flickerFailures = 0
 
         func finish() {
-            if jumpFailures == 0, renderFailures == 0, clipFailures == 0,
-               chromeLateFailures == 0, chromeShiftFailures == 0 {
-                log("PASS completed \(totalSteps) scroll steps")
+            let pass = jumpFailures == 0 && renderFailures == 0 && clipFailures == 0
+                && chromeLateFailures == 0 && chromeShiftFailures == 0 && flickerFailures == 0
+            if pass {
+                log("PASS completed \(totalSteps) scroll steps\(pacingSuffix())")
             } else {
                 if jumpFailures > 0 {
                     log("FAIL \(jumpFailures) viewport jumps in \(totalSteps) steps")
@@ -162,17 +476,18 @@ enum ScrollStressHarness {
                 if chromeShiftFailures > 0 {
                     log("FAIL \(chromeShiftFailures) action-chrome position shifts in \(totalSteps) steps")
                 }
+                if flickerFailures > 0 {
+                    log("FAIL \(flickerFailures) action-chrome flicker events in \(totalSteps) steps")
+                }
             }
             fflush(stderr)
-            exit(
-                jumpFailures == 0 && renderFailures == 0 && clipFailures == 0
-                    && chromeLateFailures == 0 && chromeShiftFailures == 0 ? 0 : 1
-            )
+            completion?(pass)
+            if exitOnFinish { exit(pass ? 0 : 1) }
         }
 
-        func sampleChrome(step: Int, label: String, baseline: [Int: CGFloat]?) {
+        func sampleChrome(step: Int, label: String, baseline: [Int: CGFloat]?, pacing: ScrollPacing) {
             let snap = chat.debugVisibleActionChromeSnapshot()
-            if label == "t+48ms" {
+            if label.hasPrefix("t+") && label != "t+settle" {
                 if snap.missingButtons > 0 {
                     chromeLateFailures += 1
                     log("chrome-late step=\(step) missing=\(snap.missingButtons) at \(label)")
@@ -181,7 +496,7 @@ enum ScrollStressHarness {
             if let baseline = baseline, !snap.buttonViewportY.isEmpty {
                 for (row, y0) in baseline {
                     guard let y1 = snap.buttonViewportY[row] else { continue }
-                    if abs(y1 - y0) > 8 {
+                    if abs(y1 - y0) > pacing.chromeShiftTolerance {
                         chromeShiftFailures += 1
                         log("chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt \(label)")
                     }
@@ -194,21 +509,46 @@ enum ScrollStressHarness {
                 finish()
                 return
             }
+            let profile = profileForStep(step)
+            let pacing = mixedPacingMode
+                ? ScrollPacing.forProfile(profile, mathHeavy: mathHeavyMode)
+                : ScrollPacing.chat(mathHeavy: mathHeavyMode)
+            let settleMs = pacing.settleMs
+            let driftAllowance = pacing.driftAllowance
+            if mixedPacingMode || ultraSlowMode {
+                let distancePreview = scrollDistance(step: step, profile: profile, style: .chat)
+                log("chat-\(profile.rawValue) step=\(step + 1)/\(totalSteps) dist=\(Int(distancePreview)) dur=\(String(format: "%.2f", pacing.scrollDuration))s")
+            }
             let anchor = chat.debugScrollAnchorSnapshot()
             _ = chat.debugContentOffsetY()
-            let distance: CGFloat = slowMode
-                ? (step.isMultiple(of: 3) ? 200 : (step.isMultiple(of: 2) ? 140 : 90))
-                : (step.isMultiple(of: 3) ? 280 : (step.isMultiple(of: 2) ? 180 : 120))
-            let scrollDuration: TimeInterval = slowMode ? 1.85 : 0.32
+            let distance = scrollDistance(step: step, profile: profile, style: .chat)
+            let scrollDuration = pacing.scrollDuration
             let simulate: (@escaping () -> Void) -> Void = { done in
-                if slowMode {
-                    chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration, completion: done)
-                } else {
-                    chat.debugSimulateScrollUp(distance: distance, completion: done)
-                }
+                chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration, completion: done)
             }
+            let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+            scheduleMidScrollSamples(
+                chat: chat,
+                pacing: pacing,
+                scrollDuration: scrollDuration,
+                step: step,
+                labelPrefix: "chat",
+                studyBlank: false,
+                onClip: { clipFailures += 1 },
+                onBlank: {},
+                onChromeLate: { chromeLateFailures += 1 },
+                onFlicker: { flickerFailures += 1 },
+                baseline: baselineBefore
+            )
             simulate {
                 let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                schedulePostScrollSamples(
+                    chat: chat,
+                    pacing: pacing,
+                    step: step,
+                    labelPrefix: "chat",
+                    onChromeLate: { chromeLateFailures += 1 }
+                )
                 func checkAfterSettle() {
                     if let anchor = anchor {
                         let expectedY = anchor.viewportY + distance
@@ -227,22 +567,31 @@ enum ScrollStressHarness {
                         clipFailures += 1
                         log("clip step=\(step) rows=\(clipped)")
                     }
-                    sampleChrome(step: step, label: "t+settle", baseline: baseline)
+                    if chat.debugVisibleActionChromeFlickerCount() > 0 {
+                        flickerFailures += 1
+                        log("flicker step=\(step) t+settle")
+                    }
+                    sampleChrome(step: step, label: "t+settle", baseline: baseline, pacing: pacing)
                     step += 1
                     next()
                 }
                 func checkMidScroll() {
-                    let clipped = chat.debugVisibleRowClipCount()
-                    if clipped > 0 {
-                        clipFailures += 1
-                        log("clip-early step=\(step) rows=\(clipped) at t+0")
+                    let sampleEarly = profile == .fast || pacing.midScrollFractions.isEmpty
+                    if sampleEarly {
+                        let clipped = chat.debugVisibleRowClipCount()
+                        if clipped > 0 {
+                            clipFailures += 1
+                            log("clip-early step=\(step) profile=\(profile.rawValue) rows=\(clipped) at t+0")
+                        }
                     }
-                    sampleChrome(step: step, label: "t+0", baseline: nil)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
-                        sampleChrome(step: step, label: "t+48ms", baseline: nil)
+                    sampleChrome(step: step, label: "t+0", baseline: nil, pacing: pacing)
+                    if sampleEarly {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
+                            sampleChrome(step: step, label: "t+48ms", baseline: nil, pacing: pacing)
+                        }
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
-                        chat.debugWaitForReadingHistoryStable(maxAttempts: 80) {
+                        chat.debugWaitForReadingHistoryStable(maxAttempts: pacing.stableMaxAttempts) {
                             checkAfterSettle()
                         }
                     }
@@ -346,27 +695,36 @@ enum ScrollStressHarness {
         log("phase C study scroll from tail to row \(targetRow) (\(studyTurnCount) formula turns)")
         chat.debugScrollToRow(messages.count - 1) {
             var step = 0
-            let totalSteps = 8
+            let pacing = ScrollPacing.study()
+            let totalSteps = ultraSlowMode ? 10 : 8
             var jumpFailures = 0
             var renderFailures = 0
             var clipFailures = 0
             var blankFailures = priorBlankFailures
-            let settleMs: TimeInterval = 0.85
-            let driftAllowance: CGFloat = 52
+            var chromeLateFailures = 0
+            var chromeShiftFailures = 0
+            var flickerFailures = 0
+            let settleMs = pacing.settleMs
+            let driftAllowance = pacing.driftAllowance
 
             func finish() {
                 chat.debugClearLayoutWidthOverride()
                 chat.setStudyChrome(.none)
-                if blankFailures == 0, jumpFailures == 0, renderFailures == 0, clipFailures == 0 {
-                    log("PASS study stress blank+scroll (\(totalSteps) steps)")
+                if blankFailures == 0, jumpFailures == 0, renderFailures == 0, clipFailures == 0,
+                   chromeLateFailures == 0, chromeShiftFailures == 0, flickerFailures == 0 {
+                    log("PASS study stress blank+scroll (\(totalSteps) steps)\(ultraSlowMode ? " [ultra]" : "")")
                 } else {
                     if blankFailures > 0 { log("FAIL study blank (\(blankFailures) phases)") }
                     if jumpFailures > 0 { log("FAIL study scroll jumps \(jumpFailures)/\(totalSteps)") }
                     if renderFailures > 0 { log("FAIL study render \(renderFailures)/\(totalSteps)") }
                     if clipFailures > 0 { log("FAIL study clip \(clipFailures)/\(totalSteps)") }
+                    if chromeLateFailures > 0 { log("FAIL study chrome-late \(chromeLateFailures)") }
+                    if chromeShiftFailures > 0 { log("FAIL study chrome-shift \(chromeShiftFailures)") }
+                    if flickerFailures > 0 { log("FAIL study flicker \(flickerFailures)") }
                 }
                 fflush(stderr)
-                exit(blankFailures == 0 && jumpFailures == 0 && renderFailures == 0 && clipFailures == 0 ? 0 : 1)
+                exit(blankFailures == 0 && jumpFailures == 0 && renderFailures == 0 && clipFailures == 0
+                    && chromeLateFailures == 0 && chromeShiftFailures == 0 && flickerFailures == 0 ? 0 : 1)
             }
 
             func next() {
@@ -378,10 +736,36 @@ enum ScrollStressHarness {
                 fflush(stderr)
                 let anchor = chat.debugScrollAnchorSnapshot()
                 let distance: CGFloat = step.isMultiple(of: 3) ? 220 : (step.isMultiple(of: 2) ? 160 : 110)
-                chat.debugSimulateSlowScrollUp(distance: distance, duration: 0.55) {
+                let scrollDuration = pacing.scrollDuration
+                let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                scheduleMidScrollSamples(
+                    chat: chat,
+                    pacing: pacing,
+                    scrollDuration: scrollDuration,
+                    step: step,
+                    labelPrefix: "study",
+                    studyBlank: true,
+                    onClip: { clipFailures += 1 },
+                    onBlank: { blankFailures += 1 },
+                    onChromeLate: { chromeLateFailures += 1 },
+                    onFlicker: { flickerFailures += 1 },
+                    baseline: baselineBefore
+                )
+                schedulePostScrollSamples(
+                    chat: chat,
+                    pacing: pacing,
+                    step: step,
+                    labelPrefix: "study",
+                    onChromeLate: { chromeLateFailures += 1 }
+                )
+                chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
                     let postScrollY = anchor.flatMap { chat.debugRowViewportY(row: $0.row) }
                     DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
-                        chat.debugWaitForReadingHistoryStable(maxAttempts: 120) {
+                        chat.debugWaitForReadingHistoryStable(maxAttempts: pacing.stableMaxAttempts) {
+                            if chat.debugVisibleActionChromeFlickerCount() > 0 {
+                                flickerFailures += 1
+                                log("study-flicker step=\(step)")
+                            }
                             if let anchor = anchor {
                                 let expectedY = postScrollY ?? (anchor.viewportY + distance)
                                 if let drift = chat.debugViewportDrift(
@@ -427,6 +811,7 @@ enum ScrollStressHarness {
         var blankFailures = 0
         var chromeLateFailures = 0
         var chromeShiftFailures = 0
+        var flickerFailures = 0
     }
 
     private static func auditMatrixFrame(chat: ChatViewController,
@@ -435,7 +820,8 @@ enum ScrollStressHarness {
                                          step: Int,
                                          label: String,
                                          studyBlank: Bool,
-                                         checkRender: Bool) {
+                                         checkRender: Bool,
+                                         checkClip: Bool = true) {
         if studyBlank && checkRender {
             let blank = chat.debugVisibleStudyBlankState()
             if blank.unrenderedAssistants > 0 || blank.inflatedRows > 0 || blank.interRowGaps > 0 {
@@ -450,23 +836,35 @@ enum ScrollStressHarness {
                 log("\(phase) render \(label) step=\(step) unrendered=\(qa.unrenderedAssistants) missingActions=\(qa.missingActionButtons)")
             }
         }
-        let clipped = chat.debugVisibleRowClipCount()
-        if clipped > 0 {
-            metrics.clipFailures += 1
-            log("\(phase) clip \(label) step=\(step) rows=\(clipped)")
+        if checkClip {
+            let clipped = chat.debugVisibleRowClipCount()
+            if clipped > 0 {
+                metrics.clipFailures += 1
+                log("\(phase) clip \(label) step=\(step) rows=\(clipped)")
+            }
+        }
+        let flicker = chat.debugVisibleActionChromeFlickerCount()
+        if flicker > 0 && checkRender {
+            metrics.flickerFailures += 1
+            log("\(phase) flicker \(label) step=\(step) rows=\(flicker)")
         }
     }
 
-    private static func runMatrix(on chat: ChatViewController) {
+    private static func runMatrix(on chat: ChatViewController,
+                                  metrics: MatrixMetrics? = nil,
+                                  exitOnFinish: Bool = true,
+                                  completion: ((Bool) -> Void)? = nil) {
+        let metrics = metrics ?? MatrixMetrics()
         chat.loadViewIfNeeded()
         chat.reloadChat()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             guard let messages = ConversationStore.shared.currentConversation?.messages,
                   messages.count >= studyTurnCount * 2 else {
                 log("FAIL matrix: missing fixture (need -ScrollStressStudyFixture)")
-                exit(1)
+                completion?(false)
+                if exitOnFinish { exit(1) }
+                return
             }
-            var metrics = MatrixMetrics()
             let phases: [(name: String, width: CGFloat, studyBlank: Bool, steps: Int, setup: (@escaping () -> Void) -> Void)] = [
                 (
                     "chat-portrait",
@@ -537,7 +935,7 @@ enum ScrollStressHarness {
 
             func runPhase(_ index: Int) {
                 guard index < phases.count else {
-                    finishMatrix(chat: chat, metrics: metrics)
+                    finishMatrix(chat: chat, metrics: metrics, exitOnFinish: exitOnFinish, completion: completion)
                     return
                 }
                 let phase = phases[index]
@@ -574,19 +972,51 @@ enum ScrollStressHarness {
                                              metrics: MatrixMetrics,
                                              completion: @escaping () -> Void) {
         var step = 0
-        let settleMs: TimeInterval = slowMode ? 1.0 : 0.72
-        let driftAllowance: CGFloat = studyBlank ? 52 : 40
+        let phaseSteps = mixedPacingMode
+            ? max(steps, studyBlank ? 12 : 10)
+            : (ultraSlowMode ? max(steps, studyBlank ? 10 : 8) : steps)
 
         func next() {
-            guard step < steps else {
+            guard step < phaseSteps else {
                 completion()
                 return
             }
+            let profile = profileForStep(step)
+            let pacing = mixedPacingMode
+                ? ScrollPacing.forProfile(profile, mathHeavy: true, studyBlank: studyBlank)
+                : ScrollPacing.matrix(studyBlank: studyBlank)
+            let settleMs = pacing.settleMs
+            let driftAllowance = pacing.driftAllowance
+            if mixedPacingMode || ultraSlowMode {
+                let distancePreview = scrollDistance(step: step, profile: profile, style: .matrix)
+                log("\(phase)-\(profile.rawValue) step=\(step + 1)/\(phaseSteps) dist=\(Int(distancePreview)) dur=\(String(format: "%.2f", pacing.scrollDuration))s")
+            }
             let anchor = chat.debugScrollAnchorSnapshot()
-            let distance: CGFloat = step.isMultiple(of: 3) ? 200 : (step.isMultiple(of: 2) ? 140 : 90)
-            let duration: TimeInterval = slowMode ? 1.6 : 0.45
-            chat.debugSimulateSlowScrollUp(distance: distance, duration: duration) {
+            let distance = scrollDistance(step: step, profile: profile, style: .matrix)
+            let scrollDuration = pacing.scrollDuration
+            let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+            scheduleMidScrollSamples(
+                chat: chat,
+                pacing: pacing,
+                scrollDuration: scrollDuration,
+                step: step,
+                labelPrefix: phase,
+                studyBlank: studyBlank,
+                onClip: { metrics.clipFailures += 1 },
+                onBlank: { metrics.blankFailures += 1 },
+                onChromeLate: { metrics.chromeLateFailures += 1 },
+                onFlicker: { metrics.flickerFailures += 1 },
+                baseline: baselineBefore
+            )
+            chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
                 let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                schedulePostScrollSamples(
+                    chat: chat,
+                    pacing: pacing,
+                    step: step,
+                    labelPrefix: phase,
+                    onChromeLate: { metrics.chromeLateFailures += 1 }
+                )
                 auditMatrixFrame(
                     chat: chat,
                     metrics: metrics,
@@ -594,17 +1024,18 @@ enum ScrollStressHarness {
                     step: step,
                     label: "t+0",
                     studyBlank: studyBlank,
-                    checkRender: false
+                    checkRender: false,
+                    checkClip: profile == .fast || pacing.midScrollFractions.isEmpty
                 )
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
                     let snap = chat.debugVisibleActionChromeSnapshot()
-                    if snap.missingButtons > 0 {
+                    if snap.missingButtons > 0 && (profile == .fast || pacing.midScrollFractions.isEmpty) {
                         metrics.chromeLateFailures += 1
-                        log("\(phase) chrome-late step=\(step) missing=\(snap.missingButtons)")
+                        log("\(phase) chrome-late step=\(step) profile=\(profile.rawValue) missing=\(snap.missingButtons)")
                     }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
-                    chat.debugWaitForReadingHistoryStable(maxAttempts: 100) {
+                    chat.debugWaitForReadingHistoryStable(maxAttempts: pacing.stableMaxAttempts) {
                         if let anchor = anchor {
                             let expectedY = anchor.viewportY + distance
                             if let drift = chat.debugViewportDrift(
@@ -629,7 +1060,7 @@ enum ScrollStressHarness {
                             let snap = chat.debugVisibleActionChromeSnapshot()
                             for (row, y0) in baseline {
                                 guard let y1 = snap.buttonViewportY[row] else { continue }
-                                if abs(y1 - y0) > 8 {
+                                if abs(y1 - y0) > pacing.chromeShiftTolerance {
                                     metrics.chromeShiftFailures += 1
                                     log("\(phase) chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt")
                                 }
@@ -644,13 +1075,22 @@ enum ScrollStressHarness {
         next()
     }
 
-    private static func finishMatrix(chat: ChatViewController, metrics: MatrixMetrics) {
+    private static func finishMatrix(chat: ChatViewController,
+                                     metrics: MatrixMetrics,
+                                     label: String? = nil,
+                                     exitOnFinish: Bool = true,
+                                     completion: ((Bool) -> Void)? = nil) {
         chat.debugClearLayoutWidthOverride()
         chat.setStudyChrome(.none)
         let failed = metrics.jumpFailures + metrics.renderFailures + metrics.clipFailures
             + metrics.blankFailures + metrics.chromeLateFailures + metrics.chromeShiftFailures
-        if failed == 0 {
-            log("PASS orientation matrix (chat + study portrait/landscape)")
+            + metrics.flickerFailures
+        let suite = label ?? (firstOpenMode
+            ? "first-open QA-edge (portrait/landscape chat + study)"
+            : "orientation matrix (chat + study portrait/landscape)")
+        let pass = failed == 0
+        if pass {
+            log("PASS \(suite)\(pacingSuffix())")
         } else {
             if metrics.blankFailures > 0 { log("FAIL matrix blank \(metrics.blankFailures)") }
             if metrics.jumpFailures > 0 { log("FAIL matrix jumps \(metrics.jumpFailures)") }
@@ -658,9 +1098,465 @@ enum ScrollStressHarness {
             if metrics.clipFailures > 0 { log("FAIL matrix clip \(metrics.clipFailures)") }
             if metrics.chromeLateFailures > 0 { log("FAIL matrix chrome-late \(metrics.chromeLateFailures)") }
             if metrics.chromeShiftFailures > 0 { log("FAIL matrix chrome-shift \(metrics.chromeShiftFailures)") }
+            if metrics.flickerFailures > 0 { log("FAIL matrix flicker \(metrics.flickerFailures)") }
         }
         fflush(stderr)
-        exit(failed == 0 ? 0 : 1)
+        completion?(pass)
+        if exitOnFinish { exit(pass ? 0 : 1) }
+    }
+
+    // MARK: - First user bubble at top (study-landscape anchor regression)
+
+    private static func runFirstBubble(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        let metrics = MatrixMetrics()
+        let phase = "first-bubble-study-landscape"
+        log("\(phase): cold open + scroll to first user bubble at top edge")
+        chat.debugPersistHeightCacheForCurrentWidth()
+        chat.debugPinToBottom {
+            chat.setStudyChrome(.none)
+            chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                chat.debugPersistHeightCacheForCurrentWidth()
+                chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
+                    chat.debugWaitForStudyRelayoutStable {
+                        chat.debugSimulateColdOpen {
+                            guard let firstUser = chat.debugFirstUserRowIndex() else {
+                                log("FAIL \(phase): no user rows")
+                                exit(1)
+                                return
+                            }
+                            log("\(phase): firstUserRow=\(firstUser) offset=\(Int(chat.debugContentOffsetY()))")
+                            chat.debugScrollUntilFirstUserAtTopEdge { reached in
+                                guard reached else {
+                                    log("FAIL \(phase): did not reach first user at top edge")
+                                    exit(1)
+                                    return
+                                }
+                                let edge = chat.debugVisibleQAEdgeState()
+                                log("\(phase): reached topUsers=\(edge.userRowsAtTopEdge) nearAssistants=\(edge.assistantRowsNearUserEdge)")
+                                let userY = chat.debugRowViewportY(row: firstUser)
+                                let assistantY = chat.debugRowViewportY(row: firstUser + 1)
+                                log("\(phase): t+0 userY=\(userY.map { Int($0) } ?? -1) assistantY=\(assistantY.map { Int($0) } ?? -1)")
+                                let anchor = chat.debugScrollAnchorSnapshot()
+                                // Micro QA-edge steps while first user straddles top — reproduces manual overshoot settle.
+                                chat.debugSimulateSlowScrollUp(distance: 28, duration: 0.22) {
+                                    let microUserY = chat.debugRowViewportY(row: firstUser)
+                                    let microAssistantY = chat.debugRowViewportY(row: firstUser + 1)
+                                    log("\(phase): micro userY=\(microUserY.map { Int($0) } ?? -1) assistantY=\(microAssistantY.map { Int($0) } ?? -1)")
+                                    chat.debugWaitForReadingHistoryStable {
+                                        if let anchor = anchor,
+                                           let jump = chat.debugScrollJumpSince(anchor: anchor, maxAllowed: 24) {
+                                            metrics.jumpFailures += 1
+                                            log("\(phase) jump row=\(jump.row) drift=\(Int(jump.delta))pt t+settle")
+                                        }
+                                        if let userY0 = userY,
+                                           let userY1 = chat.debugRowViewportY(row: firstUser),
+                                           abs(userY1 - userY0) > 20 {
+                                            metrics.jumpFailures += 1
+                                            log("\(phase) user-bubble reposition \(Int(userY0))→\(Int(userY1))pt t+settle")
+                                        }
+                                        if firstUser + 1 < (ConversationStore.shared.currentConversation?.messages.count ?? 0),
+                                           let assistantY0 = assistantY,
+                                           let assistantY1 = chat.debugRowViewportY(row: firstUser + 1),
+                                           assistantY1 - assistantY0 > 18 {
+                                            metrics.jumpFailures += 1
+                                            log("\(phase) assistant-body snap +\(Int(assistantY1 - assistantY0))pt t+settle (into 正文)")
+                                        }
+                                        auditMatrixFrame(
+                                            chat: chat,
+                                            metrics: metrics,
+                                            phase: phase,
+                                            step: 0,
+                                            label: "t+settle",
+                                            studyBlank: true,
+                                            checkRender: true
+                                        )
+                                        finishMatrix(
+                                            chat: chat,
+                                            metrics: metrics,
+                                            label: "first-bubble study-landscape"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - First-open QA edge (cold open + micro scroll at user-bubble boundaries)
+
+    private static func runFirstOpen(on chat: ChatViewController,
+                                     metrics: MatrixMetrics? = nil,
+                                     exitOnFinish: Bool = true,
+                                     completion: ((Bool) -> Void)? = nil) {
+        let metrics = metrics ?? MatrixMetrics()
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        let pacing = ScrollPacing.chat(mathHeavy: true)
+
+        let phases: [(name: String, width: CGFloat, studyBlank: Bool, setup: (@escaping () -> Void) -> Void)] = [
+            (
+                "cold-chat-portrait",
+                portraitChatTableWidth,
+                false,
+                { done in
+                    chat.setStudyChrome(.none)
+                    chat.debugSimulateLayoutWidthChange(tableWidth: portraitChatTableWidth) {
+                        chat.debugSimulateColdOpen(completion: done)
+                    }
+                }
+            ),
+            (
+                "cold-chat-landscape",
+                fullChatTableWidth,
+                false,
+                { done in
+                    chat.debugPersistHeightCacheForCurrentWidth()
+                    chat.setStudyChrome(.none)
+                    chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                        chat.debugSimulateColdOpen(completion: done)
+                    }
+                }
+            ),
+            (
+                "cold-study-portrait",
+                portraitChatTableWidth,
+                true,
+                { done in
+                    chat.debugPersistHeightCacheForCurrentWidth()
+                    chat.debugPinToBottom {
+                        chat.debugEnterStudyPortraitPanel(tableWidth: portraitChatTableWidth) {
+                            chat.debugWaitForStudyRelayoutStable {
+                                chat.debugSimulateColdOpen(completion: done)
+                            }
+                        }
+                    }
+                }
+            ),
+            (
+                "cold-study-landscape",
+                studyPanelTableWidth,
+                true,
+                { done in
+                    chat.debugPersistHeightCacheForCurrentWidth()
+                    chat.debugPinToBottom {
+                        chat.setStudyChrome(.none)
+                        chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                            chat.debugPersistHeightCacheForCurrentWidth()
+                            chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
+                                chat.debugWaitForStudyRelayoutStable {
+                                    chat.debugSimulateColdOpen(completion: done)
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        ]
+
+        func runPhase(_ index: Int) {
+            guard index < phases.count else {
+                finishMatrix(chat: chat, metrics: metrics, exitOnFinish: exitOnFinish, completion: completion)
+                return
+            }
+            let phase = phases[index]
+            log("first-open phase \(index + 1)/\(phases.count): \(phase.name) w=\(Int(phase.width))")
+            phase.setup {
+                auditMatrixFrame(
+                    chat: chat,
+                    metrics: metrics,
+                    phase: phase.name,
+                    step: -1,
+                    label: "cold-entry",
+                    studyBlank: phase.studyBlank,
+                    checkRender: true
+                )
+                runFirstOpenQAEdgeSteps(
+                    chat: chat,
+                    phase: phase.name,
+                    studyBlank: phase.studyBlank,
+                    pacing: pacing,
+                    metrics: metrics
+                ) {
+                    runPhase(index + 1)
+                }
+            }
+        }
+        runPhase(0)
+    }
+
+    private static func runFirstOpenQAEdgeSteps(chat: ChatViewController,
+                                                phase: String,
+                                                studyBlank: Bool,
+                                                pacing fallbackPacing: ScrollPacing,
+                                                metrics: MatrixMetrics,
+                                                completion: @escaping () -> Void) {
+        let maxSteps = mixedPacingMode ? 16 : (ultraSlowMode ? 14 : 8)
+        var step = 0
+
+        func auditEdge(_ label: String) {
+            let edge = chat.debugVisibleQAEdgeState()
+            if !edge.userRowsAtTopEdge.isEmpty || !edge.userRowsAtBottomEdge.isEmpty {
+                log("\(phase) qa-edge \(label) step=\(step) topUsers=\(edge.userRowsAtTopEdge) bottomUsers=\(edge.userRowsAtBottomEdge) nearAssistants=\(edge.assistantRowsNearUserEdge) uncommitted=\(edge.uncommittedAssistantsNearEdge)")
+            }
+            auditMatrixFrame(
+                chat: chat,
+                metrics: metrics,
+                phase: phase,
+                step: step,
+                label: label,
+                studyBlank: studyBlank,
+                checkRender: true
+            )
+            let snap = chat.debugVisibleActionChromeSnapshot()
+            if snap.missingButtons > 0 {
+                metrics.chromeLateFailures += 1
+                log("\(phase) chrome-late \(label) step=\(step) missing=\(snap.missingButtons)")
+            }
+        }
+
+        func next() {
+            guard step < maxSteps else {
+                completion()
+                return
+            }
+            let profile = profileForStep(step)
+            let pacing = mixedPacingMode
+                ? ScrollPacing.forProfile(profile, mathHeavy: true, studyBlank: studyBlank)
+                : fallbackPacing
+            let suggested = chat.debugSuggestedQAEdgeScrollDelta()
+            let fallbackDistance = scrollDistance(step: step, profile: profile, style: .qaEdge)
+            let distanceCap: CGFloat = profile == .fast ? 160 : (profile == .ultra ? 96 : 120)
+            let distance = min(suggested ?? fallbackDistance, distanceCap)
+            if mixedPacingMode || ultraSlowMode {
+                log("\(phase)-\(profile.rawValue) qa step=\(step + 1)/\(maxSteps) dist=\(Int(distance)) dur=\(String(format: "%.2f", pacing.scrollDuration))s")
+            }
+            let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+            let anchor = chat.debugScrollAnchorSnapshot()
+            let scrollDuration: TimeInterval
+            switch profile {
+            case .fast:
+                scrollDuration = 0.12
+            case .ultra:
+                scrollDuration = pacing.scrollDuration * 0.55
+            case .slow:
+                scrollDuration = pacing.scrollDuration * 0.4
+            }
+            scheduleMidScrollSamples(
+                chat: chat,
+                pacing: pacing,
+                scrollDuration: scrollDuration,
+                step: step,
+                labelPrefix: "\(phase)-qa",
+                studyBlank: studyBlank,
+                onClip: { metrics.clipFailures += 1 },
+                onBlank: { metrics.blankFailures += 1 },
+                onChromeLate: { metrics.chromeLateFailures += 1 },
+                onFlicker: { metrics.flickerFailures += 1 },
+                baseline: baseline
+            )
+            chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
+                auditEdge("t+0")
+                schedulePostScrollSamples(
+                    chat: chat,
+                    pacing: pacing,
+                    step: step,
+                    labelPrefix: "\(phase)-qa",
+                    onChromeLate: { metrics.chromeLateFailures += 1 }
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + pacing.settleMs) {
+                    chat.debugWaitForReadingHistoryStable(maxAttempts: pacing.stableMaxAttempts) {
+                        auditEdge("t+settle")
+                        if !baseline.isEmpty {
+                            for (row, y0) in baseline {
+                                guard let y1 = chat.debugVisibleActionChromeSnapshot().buttonViewportY[row] else { continue }
+                                let expectedY = y0 + distance
+                                let excess = abs(y1 - expectedY)
+                                if excess > pacing.chromeShiftTolerance {
+                                    metrics.chromeShiftFailures += 1
+                                    log("\(phase) chrome-shift step=\(step) row=\(row) excess=\(Int(excess))pt t+settle")
+                                }
+                            }
+                        }
+                        if let anchor = anchor {
+                            let expectedY = anchor.viewportY + distance
+                            if let drift = chat.debugViewportDrift(
+                                row: anchor.row,
+                                expectedY: expectedY,
+                                maxAllowed: pacing.driftAllowance
+                            ) {
+                                metrics.jumpFailures += 1
+                                log("\(phase) jump step=\(step) row=\(anchor.row) drift=\(Int(drift))pt")
+                            }
+                        }
+                        step += 1
+                        next()
+                    }
+                }
+            }
+        }
+        next()
+    }
+
+    // MARK: - Diverse (mixed fast+ultra: chat → first-open → matrix)
+
+    private static func installMathHeavyChatFixture() {
+        let store = ConversationStore.shared
+        store.updateCurrentQuietly { conversation in
+            conversation.title = "公式压测 实数完备性 \(turnCount)轮"
+            conversation.messages.removeAll()
+            for turn in 1...turnCount {
+                conversation.messages.append(ChatMessage(
+                    role: .user,
+                    content: userQuestion(turn: turn)
+                ))
+                conversation.messages.append(ChatMessage(
+                    role: .assistant,
+                    content: mathHeavyAssistantBody(turn: turn),
+                    reasoningContent: turn.isMultiple(of: 2) ? "先展开期望，再用独立同分布假设，最后代入具体数字。" : "",
+                    isStreaming: false
+                ))
+            }
+        }
+        log("installed \(turnCount)-turn math-heavy chat fixture")
+    }
+
+    private static func runDiverse(on chat: ChatViewController) {
+        log("diverse phase 1/3: mixed chat scroll (math-heavy)")
+        installMathHeavyChatFixture()
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if let messages = ConversationStore.shared.currentConversation?.messages {
+                let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming }
+                let width = chat.debugLayoutContentWidth()
+                log("prewarming \(assistants.count) math-heavy assistant layouts")
+                AssistantMessageLayout.prewarmLayouts(
+                    for: assistants,
+                    targetWidth: width,
+                    layoutLimit: assistants.count
+                )
+                chat.debugSeedCommittedHeightsFromLayoutCache()
+            }
+            runScrollSteps(on: chat, exitOnFinish: false) { chatPass in
+                log("diverse phase 2/3: mixed first-open QA-edge")
+                installStudyFixture()
+                chat.reloadChat()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    runFirstOpen(on: chat, exitOnFinish: false) { firstOpenPass in
+                        log("diverse phase 3/3: mixed orientation matrix")
+                        installStudyFixture()
+                        chat.reloadChat()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                            runMatrix(on: chat, exitOnFinish: false) { matrixPass in
+                                chat.debugClearLayoutWidthOverride()
+                                chat.setStudyChrome(.none)
+                                let pass = chatPass && firstOpenPass && matrixPass
+                                if pass {
+                                    log("PASS diverse stress suite (chat + first-open + matrix)\(pacingSuffix())")
+                                } else {
+                                    log("FAIL diverse stress suite chat=\(chatPass ? "ok" : "FAIL") firstOpen=\(firstOpenPass ? "ok" : "FAIL") matrix=\(matrixPass ? "ok" : "FAIL")")
+                                }
+                                fflush(stderr)
+                                exit(pass ? 0 : 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Ultra switch (cold open + mid-scroll width/study toggles)
+
+    private static func runUltraSwitch(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        let metrics = MatrixMetrics()
+
+        func finish() {
+            finishMatrix(chat: chat, metrics: metrics)
+        }
+
+        func scroll(_ phase: String, steps: Int, studyBlank: Bool, then: @escaping () -> Void) {
+            runMatrixScrollPhase(
+                chat: chat,
+                phase: phase,
+                steps: steps,
+                studyBlank: studyBlank,
+                metrics: metrics,
+                completion: then
+            )
+        }
+
+        log("ultra-switch phase 1/5: cold-open chat scroll")
+        chat.debugSimulateColdOpen {
+            scroll("cold-open-chat", steps: 6, studyBlank: false) {
+                log("ultra-switch phase 2/5: portrait chat + mid width toggle")
+                chat.setStudyChrome(.none)
+                chat.debugSimulateLayoutWidthChange(tableWidth: portraitChatTableWidth) {
+                    scroll("chat-portrait-pre", steps: 2, studyBlank: false) {
+                        let pacing = ScrollPacing.chat(mathHeavy: true)
+                        chat.debugSimulateSlowScrollUp(distance: 100, duration: pacing.scrollDuration * 0.45) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + pacing.scrollDuration * 0.3) {
+                                chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                    scroll("chat-landscape-post-toggle", steps: 4, studyBlank: false) {
+                                        log("ultra-switch phase 3/5: cold-open study narrow")
+                                        chat.debugSimulateColdOpen {
+                                            chat.debugPinToBottom {
+                                                chat.setStudyChrome(.none)
+                                                chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                                    chat.debugPersistHeightCacheForCurrentWidth()
+                                                    chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
+                                                        chat.debugWaitForStudyRelayoutStable {
+                                                            scroll("cold-study-landscape", steps: 6, studyBlank: true) {
+                                                                log("ultra-switch phase 4/5: study portrait↔landscape mid-scroll")
+                                                                chat.debugPersistHeightCacheForCurrentWidth()
+                                                                chat.debugEnterStudyPortraitPanel(tableWidth: portraitChatTableWidth) {
+                                                                    chat.debugWaitForStudyRelayoutStable {
+                                                                        scroll("study-portrait", steps: 2, studyBlank: true) {
+                                                                            chat.debugSimulateSlowScrollUp(distance: 90, duration: pacing.scrollDuration * 0.4) {
+                                                                                DispatchQueue.main.asyncAfter(deadline: .now() + pacing.scrollDuration * 0.25) {
+                                                                                    chat.setStudyChrome(.none)
+                                                                                    chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                                                                        chat.debugPersistHeightCacheForCurrentWidth()
+                                                                                        chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
+                                                                                            chat.debugWaitForStudyRelayoutStable {
+                                                                                                scroll("study-landscape-toggle", steps: 4, studyBlank: true) {
+                                                                                                    log("ultra-switch phase 5/5: exit study cold scroll")
+                                                                                                    chat.debugSimulateColdOpen {
+                                                                                                        chat.setStudyChrome(.none)
+                                                                                                        chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                                                                                            scroll("cold-chat-return", steps: 4, studyBlank: false, then: finish)
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static func studyUserQuestion(turn: Int) -> String {
