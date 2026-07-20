@@ -4,12 +4,14 @@ import UIKit
 /// Developer-only scroll stress: multi-turn fixture + automated up-scroll through Q&A pairs.
 /// Launch args: `-ScrollStressFixture`, `-ScrollStressTest`, optional `-ScrollStressSlow` (iPad-like pacing).
 /// Study bug path: `-ScrollStressStudyFixture -ScrollStressStudy` (narrow panel + reasoning + 卷积公式).
+/// Matrix path: `-ScrollStressStudyFixture -ScrollStressMatrix -ScrollStressSlow` (portrait/landscape chat + PDF).
 enum ScrollStressHarness {
     private static let logTag = "[ConnectsScrollStress]"
     private static var didSchedule = false
     private static let turnCount = 20
     private static let studyTurnCount = 10
     private static let fullChatTableWidth: CGFloat = 1024
+    private static let portraitChatTableWidth: CGFloat = 768
     private static let studyPanelTableWidth: CGFloat = 408
     private static var mathHeavyMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressMathHeavy")
@@ -23,10 +25,13 @@ enum ScrollStressHarness {
     private static var rotationMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
     }
+    private static var matrixMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressMatrix")
+    }
 
     static func installFixtureIfRequested() {
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
-            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && studyMode) {
+            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode)) {
             installStudyFixture()
             return
         }
@@ -58,9 +63,17 @@ enum ScrollStressHarness {
     static func scheduleIfRequested(on chat: ChatViewController) {
         guard ProcessInfo.processInfo.arguments.contains("-ScrollStressTest")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
-            || ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy") else { return }
+            || ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy")
+            || matrixMode else { return }
         guard !didSchedule else { return }
         didSchedule = true
+        if matrixMode {
+            log("scheduled orientation matrix (chat portrait/landscape + study portrait/landscape)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                runMatrix(on: chat)
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy") {
             log("scheduled study-panel stress (blank + narrow math scroll)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -405,6 +418,251 @@ enum ScrollStressHarness {
         }
     }
 
+    // MARK: - Orientation matrix (pure chat + study PDF, portrait ↔ landscape)
+
+    private final class MatrixMetrics {
+        var jumpFailures = 0
+        var renderFailures = 0
+        var clipFailures = 0
+        var blankFailures = 0
+        var chromeLateFailures = 0
+        var chromeShiftFailures = 0
+    }
+
+    private static func auditMatrixFrame(chat: ChatViewController,
+                                         metrics: MatrixMetrics,
+                                         phase: String,
+                                         step: Int,
+                                         label: String,
+                                         studyBlank: Bool,
+                                         checkRender: Bool) {
+        if studyBlank && checkRender {
+            let blank = chat.debugVisibleStudyBlankState()
+            if blank.unrenderedAssistants > 0 || blank.inflatedRows > 0 || blank.interRowGaps > 0 {
+                metrics.blankFailures += 1
+                log("\(phase) blank \(label) step=\(step) unrendered=\(blank.unrenderedAssistants) inflated=\(blank.inflatedRows) gaps=\(blank.interRowGaps)")
+            }
+        }
+        if checkRender {
+            let qa = chat.debugVisibleCrossQAState()
+            if qa.unrenderedAssistants > 0 || qa.missingActionButtons > 0 {
+                metrics.renderFailures += 1
+                log("\(phase) render \(label) step=\(step) unrendered=\(qa.unrenderedAssistants) missingActions=\(qa.missingActionButtons)")
+            }
+        }
+        let clipped = chat.debugVisibleRowClipCount()
+        if clipped > 0 {
+            metrics.clipFailures += 1
+            log("\(phase) clip \(label) step=\(step) rows=\(clipped)")
+        }
+    }
+
+    private static func runMatrix(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            guard let messages = ConversationStore.shared.currentConversation?.messages,
+                  messages.count >= studyTurnCount * 2 else {
+                log("FAIL matrix: missing fixture (need -ScrollStressStudyFixture)")
+                exit(1)
+            }
+            var metrics = MatrixMetrics()
+            let phases: [(name: String, width: CGFloat, studyBlank: Bool, steps: Int, setup: (@escaping () -> Void) -> Void)] = [
+                (
+                    "chat-portrait",
+                    portraitChatTableWidth,
+                    false,
+                    6,
+                    { done in
+                        chat.setStudyChrome(.none)
+                        chat.debugSimulateLayoutWidthChange(tableWidth: portraitChatTableWidth, completion: done)
+                    }
+                ),
+                (
+                    "chat-landscape",
+                    fullChatTableWidth,
+                    false,
+                    6,
+                    { done in
+                        chat.debugPersistHeightCacheForCurrentWidth()
+                        chat.setStudyChrome(.none)
+                        chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth, completion: done)
+                    }
+                ),
+                (
+                    "study-portrait",
+                    portraitChatTableWidth,
+                    true,
+                    6,
+                    { done in
+                        chat.debugPersistHeightCacheForCurrentWidth()
+                        chat.debugPinToBottom {
+                            chat.debugEnterStudyPortraitPanel(tableWidth: portraitChatTableWidth) {
+                                chat.debugWaitForStudyRelayoutStable(completion: done)
+                            }
+                        }
+                    }
+                ),
+                (
+                    "study-landscape",
+                    studyPanelTableWidth,
+                    true,
+                    8,
+                    { done in
+                        chat.debugPersistHeightCacheForCurrentWidth()
+                        chat.debugPinToBottom {
+                            // Warm path: full-width chat before narrow PDF panel (stale heights → blank rows).
+                            chat.setStudyChrome(.none)
+                            chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                                chat.debugPersistHeightCacheForCurrentWidth()
+                                chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
+                                    chat.debugWaitForStudyRelayoutStable(completion: done)
+                                }
+                            }
+                        }
+                    }
+                ),
+                (
+                    "chat-landscape-return",
+                    fullChatTableWidth,
+                    false,
+                    4,
+                    { done in
+                        chat.debugPersistHeightCacheForCurrentWidth()
+                        chat.setStudyChrome(.none)
+                        chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth, completion: done)
+                    }
+                )
+            ]
+
+            func runPhase(_ index: Int) {
+                guard index < phases.count else {
+                    finishMatrix(chat: chat, metrics: metrics)
+                    return
+                }
+                let phase = phases[index]
+                log("matrix phase \(index + 1)/\(phases.count): \(phase.name) w=\(Int(phase.width))")
+                phase.setup {
+                    auditMatrixFrame(
+                        chat: chat,
+                        metrics: metrics,
+                        phase: phase.name,
+                        step: -1,
+                        label: "entry",
+                        studyBlank: phase.studyBlank,
+                        checkRender: true
+                    )
+                    runMatrixScrollPhase(
+                        chat: chat,
+                        phase: phase.name,
+                        steps: phase.steps,
+                        studyBlank: phase.studyBlank,
+                        metrics: metrics
+                    ) {
+                        runPhase(index + 1)
+                    }
+                }
+            }
+            runPhase(0)
+        }
+    }
+
+    private static func runMatrixScrollPhase(chat: ChatViewController,
+                                             phase: String,
+                                             steps: Int,
+                                             studyBlank: Bool,
+                                             metrics: MatrixMetrics,
+                                             completion: @escaping () -> Void) {
+        var step = 0
+        let settleMs: TimeInterval = slowMode ? 1.0 : 0.72
+        let driftAllowance: CGFloat = studyBlank ? 52 : 40
+
+        func next() {
+            guard step < steps else {
+                completion()
+                return
+            }
+            let anchor = chat.debugScrollAnchorSnapshot()
+            let distance: CGFloat = step.isMultiple(of: 3) ? 200 : (step.isMultiple(of: 2) ? 140 : 90)
+            let duration: TimeInterval = slowMode ? 1.6 : 0.45
+            chat.debugSimulateSlowScrollUp(distance: distance, duration: duration) {
+                let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                auditMatrixFrame(
+                    chat: chat,
+                    metrics: metrics,
+                    phase: phase,
+                    step: step,
+                    label: "t+0",
+                    studyBlank: studyBlank,
+                    checkRender: false
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.048) {
+                    let snap = chat.debugVisibleActionChromeSnapshot()
+                    if snap.missingButtons > 0 {
+                        metrics.chromeLateFailures += 1
+                        log("\(phase) chrome-late step=\(step) missing=\(snap.missingButtons)")
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + settleMs) {
+                    chat.debugWaitForReadingHistoryStable(maxAttempts: 100) {
+                        if let anchor = anchor {
+                            let expectedY = anchor.viewportY + distance
+                            if let drift = chat.debugViewportDrift(
+                                row: anchor.row,
+                                expectedY: expectedY,
+                                maxAllowed: driftAllowance
+                            ) {
+                                metrics.jumpFailures += 1
+                                log("\(phase) jump step=\(step) row=\(anchor.row) drift=\(Int(drift))pt")
+                            }
+                        }
+                        auditMatrixFrame(
+                            chat: chat,
+                            metrics: metrics,
+                            phase: phase,
+                            step: step,
+                            label: "t+settle",
+                            studyBlank: studyBlank,
+                            checkRender: true
+                        )
+                        if !baseline.isEmpty {
+                            let snap = chat.debugVisibleActionChromeSnapshot()
+                            for (row, y0) in baseline {
+                                guard let y1 = snap.buttonViewportY[row] else { continue }
+                                if abs(y1 - y0) > 8 {
+                                    metrics.chromeShiftFailures += 1
+                                    log("\(phase) chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt")
+                                }
+                            }
+                        }
+                        step += 1
+                        next()
+                    }
+                }
+            }
+        }
+        next()
+    }
+
+    private static func finishMatrix(chat: ChatViewController, metrics: MatrixMetrics) {
+        chat.debugClearLayoutWidthOverride()
+        chat.setStudyChrome(.none)
+        let failed = metrics.jumpFailures + metrics.renderFailures + metrics.clipFailures
+            + metrics.blankFailures + metrics.chromeLateFailures + metrics.chromeShiftFailures
+        if failed == 0 {
+            log("PASS orientation matrix (chat + study portrait/landscape)")
+        } else {
+            if metrics.blankFailures > 0 { log("FAIL matrix blank \(metrics.blankFailures)") }
+            if metrics.jumpFailures > 0 { log("FAIL matrix jumps \(metrics.jumpFailures)") }
+            if metrics.renderFailures > 0 { log("FAIL matrix render \(metrics.renderFailures)") }
+            if metrics.clipFailures > 0 { log("FAIL matrix clip \(metrics.clipFailures)") }
+            if metrics.chromeLateFailures > 0 { log("FAIL matrix chrome-late \(metrics.chromeLateFailures)") }
+            if metrics.chromeShiftFailures > 0 { log("FAIL matrix chrome-shift \(metrics.chromeShiftFailures)") }
+        }
+        fflush(stderr)
+        exit(failed == 0 ? 0 : 1)
+    }
+
     private static func studyUserQuestion(turn: Int) -> String {
         if turn == 1 {
             return "冲激信号有什么性质?"
@@ -502,6 +760,8 @@ enum ScrollStressHarness {
                     log("FAIL \(postScrollShiftFailures) chrome jitter after post-rotation scroll")
                 }
             }
+            fflush(stderr)
+            exit(clipFailures == 0 && chromeFailures == 0 && postScrollShiftFailures == 0 ? 0 : 1)
         }
 
         func next() {

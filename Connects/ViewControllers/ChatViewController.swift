@@ -6291,6 +6291,12 @@ extension ChatViewController {
         debugSimulateLayoutWidthChange(tableWidth: tableWidth, completion: completion)
     }
 
+    /// Enter study portrait overlay (full-width chat above PDF).
+    func debugEnterStudyPortraitPanel(tableWidth: CGFloat, completion: @escaping () -> Void) {
+        setStudyChrome(.portraitPanel)
+        debugSimulateLayoutWidthChange(tableWidth: tableWidth, completion: completion)
+    }
+
     func debugWaitForStudyRelayoutStable(completion: @escaping () -> Void) {
         func tick(_ attempt: Int) {
             guard attempt < 400 else {
