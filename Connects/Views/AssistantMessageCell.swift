@@ -561,7 +561,19 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 return
             }
             if let frozenColumn = frozenColumn {
-                let finalHeight = AssistantMessageLayout.exactColumnContentHeight(
+                // `hasCachedNativeLayout` above already confirmed native is what will actually
+                // paint here — use the native-only height, not `exactColumnContentHeight`'s
+                // `max(native, plain)`. The plain-text term measures raw markdown/LaTeX source as
+                // plain text (far taller than the compact rendered formula for math-heavy
+                // content) and is irrelevant once we know native, not plain, is about to bind;
+                // comparing against that inflated value made this gate reject fits that were
+                // actually fine, permanently stalling the row in deferred/plain.
+                let finalHeight = AssistantMessageLayout.estimatedColumnContentHeight(
+                    for: bind.message,
+                    layoutWidth: width,
+                    isLastRow: false,
+                    allowSyncLayout: false
+                ) ?? AssistantMessageLayout.exactColumnContentHeight(
                     for: bind.message,
                     layoutWidth: width,
                     isLastRow: false,
@@ -1254,7 +1266,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             // exact — no need to bind-then-undo.
             var fitsFrozenBox = true
             if hasCachedLayout, let frozenColumn = frozenColumn {
-                let finalHeight = AssistantMessageLayout.exactColumnContentHeight(
+                // Same reasoning as `applyDeferredNativeRenderIfNeeded`: `hasCachedLayout` already
+                // confirms native is about to bind, so measure against the native-only height —
+                // `exactColumnContentHeight`'s `max(native, plain)` over-counts the raw-markdown
+                // plain-text estimate for a fallback paint that isn't going to happen here.
+                let finalHeight = AssistantMessageLayout.estimatedColumnContentHeight(
+                    for: message,
+                    layoutWidth: width,
+                    isLastRow: false,
+                    allowSyncLayout: false
+                ) ?? AssistantMessageLayout.exactColumnContentHeight(
                     for: message,
                     layoutWidth: width,
                     isLastRow: false,

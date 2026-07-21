@@ -319,6 +319,23 @@ enum AssistantMessageLayout {
             renderMissingFormulas(in: document, style: style)
             _ = NativeMessageLayouter.shared.layout(document: document, style: style, renderMissingFormulas: true)
         }
+        // Formulas are now rendered and the native layout is cached for this exact width, so this
+        // row is guaranteed to paint via `configureNative` — never the plain-text fallback. Use the
+        // native-only estimate rather than `exactColumnContentHeight`'s `max(native, plain)`:
+        // `plainFallbackColumnContentHeight` measures the *raw* markdown/LaTeX source as plain
+        // text, which commonly wraps to far more lines than the compact rendered formula. Taking
+        // that max here would over-reserve for a fallback paint that can't happen, and — because
+        // committed heights only ever grow, never shrink — that permanently leaves a visible gap
+        // above the action row.
+        if let native = estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: isLastRow,
+            allowSyncLayout: true,
+            pairedUser: pairedUser
+        ) {
+            return native
+        }
         return exactColumnContentHeight(
             for: message,
             layoutWidth: layoutWidth,

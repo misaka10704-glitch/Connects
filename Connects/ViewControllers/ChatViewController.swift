@@ -1312,11 +1312,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         readingHistory = false
         viewportPinnedByUser = false
         tableView.layoutIfNeeded()
-        let last = IndexPath(row: messages.count - 1, section: 0)
-        if last.row < tableView.numberOfRows(inSection: 0) {
-            tableView.scrollToRow(at: last, at: .bottom, animated: false)
-        }
-        tableView.layoutIfNeeded()
+        // `scrollToRow(at:at:.bottom,animated:false)` used to run here to force-load the tail
+        // row before measuring. Dropped: `tableView.contentSize` already reflects every row's
+        // height from the delegate (heightForRowAt) whether or not that row is dequeued/visible,
+        // so this call bought nothing but risk. Calling it synchronously right after
+        // `beginUpdates()/endUpdates()` inside a rotation/width-change transition's animation
+        // transaction (`invalidateHeightsForWidthChange` -> `reconcileBottomViewportIfNeeded`) hit
+        // an uncaught NSException inside UIKitCore on iOS 12 (crash: EXC_CRASH/SIGABRT with the
+        // exception raised from this call site) — the manual `snapTableContentOffsetToBottom()` +
+        // targetY computation right below already pins to bottom independent of it.
         snapTableContentOffsetToBottom()
         let inset = tableView.adjustedContentInset
         let contentMaxY = max(
@@ -2788,14 +2792,26 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 // not itself resize real geometry). Committing at the wrong width here permanently
                 // mismatches what `configureNative`'s box-fit gate will check against.
                 let width = item.cell.effectiveNativeLayoutWidth(for: currentRenderWidth())
-                if AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: width),
-                   let exact = AssistantMessageLayout.exactColumnContentHeight(
-                       for: msg,
-                       layoutWidth: width,
-                       isLastRow: item.row == messages.count - 1,
-                       allowSyncLayout: false
-                   ) {
-                    measured = max(measured, exact)
+                if AssistantMessageLayout.hasCachedNativeLayout(for: msg, layoutWidth: width) {
+                    // `hasCachedNativeLayout` confirms native (not plain) is what will paint once
+                    // the box is grown — prefer the native-only height over
+                    // `exactColumnContentHeight`'s `max(native, plain)`, which over-counts the
+                    // raw-markdown/LaTeX plain-text estimate for a fallback that won't happen and
+                    // would grow the box (and shift the viewport) more than actually needed.
+                    let exact = AssistantMessageLayout.estimatedColumnContentHeight(
+                        for: msg,
+                        layoutWidth: width,
+                        isLastRow: item.row == messages.count - 1,
+                        allowSyncLayout: false
+                    ) ?? AssistantMessageLayout.exactColumnContentHeight(
+                        for: msg,
+                        layoutWidth: width,
+                        isLastRow: item.row == messages.count - 1,
+                        allowSyncLayout: false
+                    )
+                    if let exact = exact {
+                        measured = max(measured, exact)
+                    }
                 }
             }
             if measured > 40 {
