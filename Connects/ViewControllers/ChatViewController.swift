@@ -7974,13 +7974,7 @@ extension ChatViewController: InputBarViewDelegate {
     }
 }
 
-#if DEBUG
 extension ChatViewController {
-    struct DebugScrollAnchor {
-        let row: Int
-        let viewportY: CGFloat
-    }
-
     struct DebugQAEdgeState {
         let userRowsAtTopEdge: [Int]
         let userRowsAtBottomEdge: [Int]
@@ -7988,7 +7982,7 @@ extension ChatViewController {
         let uncommittedAssistantsNearEdge: Int
     }
 
-    /// User bubbles straddling the viewport band — QA switch stress signal.
+    /// User bubbles straddling the viewport band — used by scroll repair and stress harness.
     func debugVisibleQAEdgeState(edgeBand: CGFloat = 52) -> DebugQAEdgeState {
         guard let messages = ConversationStore.shared.currentConversation?.messages else {
             return DebugQAEdgeState(
@@ -8026,6 +8020,41 @@ extension ChatViewController {
             assistantRowsNearUserEdge: nearAssistants,
             uncommittedAssistantsNearEdge: uncommittedNearEdge
         )
+    }
+
+    /// Visible assistant rows whose action chrome extends past the allocated row frame.
+    func debugVisibleRowClipCount() -> Int {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return 0 }
+        var clipped = 0
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            guard let path = tableView.indexPath(for: cell),
+                  path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            let rowFrame = tableView.rectForRow(at: path)
+            if cell.hasVisibleActionButtons,
+               let actionTop = cell.debugActionRowViewportY(in: tableView) {
+                let actionBottom = actionTop + AssistantMessageLayout.actionRowHeight
+                let rowBottom = rowFrame.maxY - tableView.contentOffset.y
+                if actionBottom > rowBottom + 2 {
+                    clipped += 1
+                    continue
+                }
+            }
+            let contentH = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
+            if contentH > rowFrame.height + 6 {
+                clipped += 1
+            }
+        }
+        return clipped
+    }
+}
+
+#if DEBUG
+extension ChatViewController {
+    struct DebugScrollAnchor {
+        let row: Int
+        let viewportY: CGFloat
     }
 
     /// Small scroll-up delta that moves the next user bubble into the edge band (QA crossing).
@@ -8547,33 +8576,6 @@ extension ChatViewController {
         tableView.scrollToRow(at: path, at: .middle, animated: false)
         tableView.layoutIfNeeded()
         DispatchQueue.main.async(execute: completion)
-    }
-
-    /// Visible assistant rows whose action chrome extends past the allocated row frame.
-    func debugVisibleRowClipCount() -> Int {
-        guard let messages = ConversationStore.shared.currentConversation?.messages else { return 0 }
-        var clipped = 0
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            guard let path = tableView.indexPath(for: cell),
-                  path.row < messages.count else { continue }
-            let msg = messages[path.row]
-            guard msg.role == .assistant, !msg.isStreaming else { continue }
-            let rowFrame = tableView.rectForRow(at: path)
-            if cell.hasVisibleActionButtons,
-               let actionTop = cell.debugActionRowViewportY(in: tableView) {
-                let actionBottom = actionTop + AssistantMessageLayout.actionRowHeight
-                let rowBottom = rowFrame.maxY - tableView.contentOffset.y
-                if actionBottom > rowBottom + 2 {
-                    clipped += 1
-                    continue
-                }
-            }
-            let contentH = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
-            if contentH > rowFrame.height + 6 {
-                clipped += 1
-            }
-        }
-        return clipped
     }
 
     struct DebugVisibleCrossQAState {
