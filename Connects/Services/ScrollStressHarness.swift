@@ -12,6 +12,7 @@ import UIKit
 /// Ultra switch: `-ScrollStressUltraSwitch` — cold open + mid-scroll width/study toggles (use with UltraSlow).
 /// Study bug path: `-ScrollStressStudyFixture -ScrollStressStudy` (narrow panel + reasoning + 卷积公式).
 /// Matrix path: `-ScrollStressStudyFixture -ScrollStressMatrix -ScrollStressSlow` (portrait/landscape chat + PDF).
+/// Shell landscape: `-ScrollStressStudyFixture -ScrollStressStudyLandscape -ScrollStressSlow` (real StudyShell + rotation).
 enum ScrollStressHarness {
     private static let logTag = "[ConnectsScrollStress]"
     private static var didSchedule = false
@@ -20,6 +21,8 @@ enum ScrollStressHarness {
     private static let fullChatTableWidth: CGFloat = 1024
     private static let portraitChatTableWidth: CGFloat = 768
     private static let studyPanelTableWidth: CGFloat = 408
+    private static let ipadLandscapeShellSize = CGSize(width: 1024, height: 768)
+    private static let ipadPortraitShellSize = CGSize(width: 768, height: 1024)
     private static var ultraSlowMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressUltraSlow")
     }
@@ -34,6 +37,9 @@ enum ScrollStressHarness {
     }
     private static var rotationMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
+    }
+    private static var studyLandscapeShellMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyLandscape")
     }
     private static var matrixMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressMatrix")
@@ -69,7 +75,7 @@ enum ScrollStressHarness {
 
     static func installFixtureIfRequested() {
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
-            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || bubbleWiggleMode || relaunchQAMode || diverseMode)) {
+            || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || studyLandscapeShellMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || bubbleWiggleMode || relaunchQAMode || diverseMode)) {
             installStudyFixture()
             return
         }
@@ -102,6 +108,7 @@ enum ScrollStressHarness {
         guard ProcessInfo.processInfo.arguments.contains("-ScrollStressTest")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy")
+            || studyLandscapeShellMode
             || matrixMode
             || ultraSwitchMode
             || firstOpenMode
@@ -150,6 +157,13 @@ enum ScrollStressHarness {
             log("scheduled ultra switch (cold open + mid-scroll toggles)\(ultraSlowMode ? " [ultra/Air1]" : "")")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 runUltraSwitch(on: chat)
+            }
+            return
+        }
+        if studyLandscapeShellMode {
+            log("scheduled study-shell landscape stress (real StudyShell + portrait↔landscape)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                runStudyLandscapeShell(on: chat)
             }
             return
         }
@@ -625,6 +639,113 @@ enum ScrollStressHarness {
             }
         }
         next()
+    }
+
+    // MARK: - Study shell landscape (real StudyShell layout, not table-width override)
+
+    private static func studyShell(from chat: ChatViewController) -> StudyShellViewController? {
+        chat.studyContextProvider as? StudyShellViewController
+    }
+
+    private static func runStudyLandscapeShell(on chat: ChatViewController) {
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        chat.debugClearLayoutWidthOverride()
+        chat.setStudyChrome(.none)
+
+        guard let shell = studyShell(from: chat) else {
+            log("FAIL study-shell: missing StudyShellViewController")
+            exit(1)
+            return
+        }
+
+        let doc: StudyDocument
+        do {
+            doc = try StudyDocumentStore.shared.debugEnsureScrollStressDocument()
+        } catch {
+            log("FAIL study-shell: could not create PDF (\(error.localizedDescription))")
+            exit(1)
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            chat.debugAttachStudyDocument(documentID: doc.id)
+            shell.debugWaitForStudyCaptureReady(documentID: doc.id, timeout: 60) { ready in
+                guard ready else {
+                    log("FAIL study-shell: PDF reader not ready")
+                    exit(1)
+                    return
+                }
+                shell.debugExpandChatPanel()
+                runStudyShellOrientationPhases(on: chat, shell: shell)
+            }
+        }
+    }
+
+    private static func runStudyShellOrientationPhases(on chat: ChatViewController,
+                                                     shell: StudyShellViewController) {
+        let metrics = MatrixMetrics()
+        let phases: [(name: String, size: CGSize, steps: Int)] = [
+            ("shell-landscape", ipadLandscapeShellSize, 8),
+            ("shell-portrait", ipadPortraitShellSize, 6),
+            ("shell-landscape-return", ipadLandscapeShellSize, 8)
+        ]
+
+        func runPhase(_ index: Int) {
+            guard index < phases.count else {
+                shell.debugClearShellBoundsOverride()
+                finishMatrix(
+                    chat: chat,
+                    metrics: metrics,
+                    label: "study-shell landscape (StudyShell portrait↔landscape)",
+                    exitOnFinish: true
+                )
+                return
+            }
+            let phase = phases[index]
+            log("study-shell phase \(index + 1)/\(phases.count): \(phase.name) \(Int(phase.size.width))×\(Int(phase.size.height))")
+            shell.debugSimulateShellBounds(phase.size) {
+                let panelW = shell.debugChatPanelWidth()
+                let expectedLandscapeW = phase.size.width * 0.4
+                if phase.size.width > phase.size.height {
+                    if abs(panelW - expectedLandscapeW) > 80 {
+                        metrics.blankFailures += 1
+                        log("\(phase.name) layout panelW=\(Int(panelW)) expected≈\(Int(expectedLandscapeW))")
+                    }
+                    if shell.debugIsPortraitShell() {
+                        metrics.blankFailures += 1
+                        log("\(phase.name) layout expected landscape shell, got portrait")
+                    }
+                } else if !shell.debugIsPortraitShell() {
+                    metrics.blankFailures += 1
+                    log("\(phase.name) layout expected portrait shell, got landscape")
+                }
+
+                chat.debugPinToBottom {
+                    chat.debugWaitForStudyRelayoutStable {
+                        auditMatrixFrame(
+                            chat: chat,
+                            metrics: metrics,
+                            phase: phase.name,
+                            step: -1,
+                            label: "entry",
+                            studyBlank: true,
+                            checkRender: true
+                        )
+                        runMatrixScrollPhase(
+                            chat: chat,
+                            phase: phase.name,
+                            steps: phase.steps,
+                            studyBlank: true,
+                            metrics: metrics
+                        ) {
+                            runPhase(index + 1)
+                        }
+                    }
+                }
+            }
+        }
+        runPhase(0)
     }
 
     // MARK: - Study panel (blank gap + narrow multi-formula scroll)

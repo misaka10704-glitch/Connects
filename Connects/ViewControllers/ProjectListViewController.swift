@@ -8,6 +8,8 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
     private var cards: [UIView] = []
     private var footerLabels: [UILabel] = []
     private var nameFields: [String: UITextField] = [:]
+    private var colorButtonsByProject: [String: [UIButton]] = [:]
+    private var suppressNextReload = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -45,6 +47,7 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
             $0.textColor = c.textPrimary
             $0.tintColor = c.accent
         }
+        colorButtonsByProject.keys.forEach { updateColorSelection(projectID: $0) }
     }
 
     @objc private func themeChanged() { applyTheme() }
@@ -54,12 +57,17 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
     }
 
     @objc private func reload() {
+        if suppressNextReload {
+            suppressNextReload = false
+            return
+        }
         buildForm()
         applyTheme()
     }
 
     private func buildForm() {
         nameFields.removeAll()
+        colorButtonsByProject.removeAll()
         sectionLabels.removeAll()
         cards.removeAll()
         footerLabels.removeAll()
@@ -122,30 +130,46 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
         nameField.text = project.name
         nameField.placeholder = "项目名称"
         nameField.delegate = self
-        nameField.tag = project.colorPreset
         nameField.accessibilityIdentifier = project.id
         nameFields[project.id] = nameField
         stack.addArrangedSubview(nameField)
 
+        let colorScroll = UIScrollView()
+        colorScroll.showsHorizontalScrollIndicator = false
+        colorScroll.translatesAutoresizingMaskIntoConstraints = false
+        colorScroll.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
         let colorRow = UIStackView()
+        colorRow.axis = .horizontal
         colorRow.spacing = 8
         colorRow.alignment = .center
+        colorRow.translatesAutoresizingMaskIntoConstraints = false
+        colorScroll.addSubview(colorRow)
+        NSLayoutConstraint.activate([
+            colorRow.leadingAnchor.constraint(equalTo: colorScroll.leadingAnchor),
+            colorRow.trailingAnchor.constraint(equalTo: colorScroll.trailingAnchor),
+            colorRow.topAnchor.constraint(equalTo: colorScroll.topAnchor),
+            colorRow.bottomAnchor.constraint(equalTo: colorScroll.bottomAnchor),
+            colorRow.heightAnchor.constraint(equalTo: colorScroll.heightAnchor)
+        ])
+
+        var colorButtons: [UIButton] = []
         for preset in AgentAppearancePreset.all {
             let button = UIButton(type: .custom)
             button.tag = preset.index
             button.backgroundColor = preset.color
-            button.layer.cornerRadius = 14
+            button.layer.cornerRadius = 15
             button.layer.borderWidth = 2
-            button.layer.borderColor = (preset.index == project.colorPreset
-                ? DSTheme.c.textPrimary
-                : UIColor.clear).cgColor
             button.accessibilityIdentifier = project.id
             button.addTarget(self, action: #selector(colorTapped(_:)), for: .touchUpInside)
-            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
+            colorButtons.append(button)
             colorRow.addArrangedSubview(button)
         }
-        stack.addArrangedSubview(colorRow)
+        colorButtonsByProject[project.id] = colorButtons
+        updateColorSelection(projectID: project.id, selected: project.colorPreset)
+        stack.addArrangedSubview(colorScroll)
 
         let count = ConversationStore.shared.conversationCount(inProject: project.id)
         let meta = UILabel()
@@ -209,7 +233,20 @@ final class ProjectSettingsViewController: UIViewController, ThemeRefreshable, U
         guard let id = sender.accessibilityIdentifier,
               var project = ProjectStore.shared.project(id: id) else { return }
         project.colorPreset = sender.tag
+        suppressNextReload = true
         ProjectStore.shared.upsert(project)
+        updateColorSelection(projectID: id, selected: sender.tag)
+    }
+
+    private func updateColorSelection(projectID: String, selected: Int? = nil) {
+        let selectedIndex = selected ?? ProjectStore.shared.project(id: projectID)?.colorPreset
+        guard let index = selectedIndex else { return }
+        let borderColor = DSTheme.c.textPrimary.cgColor
+        for button in colorButtonsByProject[projectID] ?? [] {
+            let isSelected = button.tag == index
+            button.layer.borderColor = (isSelected ? borderColor : UIColor.clear.cgColor)
+            button.transform = isSelected ? CGAffineTransform(scaleX: 1.12, y: 1.12) : .identity
+        }
     }
 
     @objc private func deleteTapped(_ sender: UIButton) {

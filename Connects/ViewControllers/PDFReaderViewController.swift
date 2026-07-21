@@ -4,13 +4,20 @@ import PDFKit
 final class PDFReaderViewController: UIViewController {
     private let topBar = UIView()
     private let sidebarButton = UIButton(type: .system)
+    private let contentsButton = UIButton(type: .system)
     private let pdfView = PDFView()
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let pageLabel = UILabel()
+    private let contentsPanelHost = UIView()
+    private let contentsVC = PDFContentsViewController()
     private var progressWorkItem: DispatchWorkItem?
     private var currentDocumentID: String?
     private var loadGeneration: UInt = 0
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
+    private var contentsPanelWidth: NSLayoutConstraint!
+    private var contentsPanelTrailing: NSLayoutConstraint!
+    private var isContentsPanelVisible = false
+    private let contentsPanelWidthConstant: CGFloat = 300
     private var lastLayoutSize: CGSize = .zero
     private var isRestoringViewport = false
     private var isShellRotating = false
@@ -34,6 +41,13 @@ final class PDFReaderViewController: UIViewController {
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
         sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+
+        contentsButton.translatesAutoresizingMaskIntoConstraints = false
+        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
+        contentsButton.tintColor = DSTheme.c.textSecondary
+        contentsButton.accessibilityLabel = "目录与书签"
+        contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
+        topBar.addSubview(contentsButton)
 
         pdfView.translatesAutoresizingMaskIntoConstraints = false
         pdfView.autoScales = true
@@ -64,8 +78,13 @@ final class PDFReaderViewController: UIViewController {
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
             pageLabel.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
-            pageLabel.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
+            pageLabel.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
             pageLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+
+            contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
+            contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            contentsButton.widthAnchor.constraint(equalToConstant: 40),
+            contentsButton.heightAnchor.constraint(equalToConstant: 40),
 
             pdfView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -75,6 +94,9 @@ final class PDFReaderViewController: UIViewController {
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
+
+        installContentsPanel()
+        syncContentsOverlayZOrder()
 
         NotificationCenter.default.addObserver(
             self,
@@ -161,12 +183,118 @@ final class PDFReaderViewController: UIViewController {
         onToggleSidebar?()
     }
 
+    @objc private func contentsTapped() {
+        if isContentsPanelVisible {
+            setContentsPanelVisible(false, animated: true)
+        } else {
+            refreshContentsPanel()
+            setContentsPanelVisible(true, animated: true)
+        }
+    }
+
     @objc private func themeChanged() {
         view.backgroundColor = DSTheme.c.background
         topBar.backgroundColor = DSTheme.c.background
         pdfView.backgroundColor = DSTheme.c.background
         pageLabel.textColor = DSTheme.c.textSecondary
         sidebarButton.tintColor = DSTheme.c.textSecondary
+        contentsButton.tintColor = DSTheme.c.textSecondary
+        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+    }
+
+    private func installContentsPanel() {
+        contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
+        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
+        contentsPanelHost.layer.shadowOpacity = 0.12
+        contentsPanelHost.layer.shadowRadius = 8
+        contentsPanelHost.layer.shadowOffset = CGSize(width: -2, height: 0)
+        contentsPanelHost.layer.borderWidth = 1.0 / UIScreen.main.scale
+        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.isHidden = true
+        view.addSubview(contentsPanelHost)
+
+        addChild(contentsVC)
+        contentsVC.view.translatesAutoresizingMaskIntoConstraints = false
+        contentsPanelHost.addSubview(contentsVC.view)
+        contentsVC.didMove(toParent: self)
+
+        contentsVC.onSelectDestination = { [weak self] destination in
+            guard let self = self else { return }
+            self.pdfView.go(to: destination)
+            self.setContentsPanelVisible(false, animated: true)
+            self.updatePageLabel()
+            self.scheduleProgressSave()
+        }
+        contentsVC.onSelectPageIndex = { [weak self] pageIndex in
+            guard let self = self,
+                  let document = self.pdfView.document,
+                  let page = document.page(at: pageIndex) else { return }
+            self.pdfView.go(to: page)
+            self.setContentsPanelVisible(false, animated: true)
+            self.updatePageLabel()
+            self.scheduleProgressSave()
+        }
+        contentsVC.currentPageIndexProvider = { [weak self] in
+            guard let self = self, let doc = self.pdfView.document, let page = self.pdfView.currentPage else {
+                return 0
+            }
+            return doc.index(for: page)
+        }
+        contentsVC.currentPageLabelProvider = { [weak self] in
+            self?.currentPageLabel() ?? ""
+        }
+
+        contentsPanelWidth = contentsPanelHost.widthAnchor.constraint(equalToConstant: contentsPanelWidthConstant)
+        contentsPanelTrailing = contentsPanelHost.trailingAnchor.constraint(
+            equalTo: view.trailingAnchor,
+            constant: contentsPanelWidthConstant
+        )
+
+        NSLayoutConstraint.activate([
+            contentsPanelHost.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            contentsPanelHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentsPanelWidth,
+            contentsPanelTrailing,
+
+            contentsVC.view.topAnchor.constraint(equalTo: contentsPanelHost.topAnchor),
+            contentsVC.view.leadingAnchor.constraint(equalTo: contentsPanelHost.leadingAnchor),
+            contentsVC.view.trailingAnchor.constraint(equalTo: contentsPanelHost.trailingAnchor),
+            contentsVC.view.bottomAnchor.constraint(equalTo: contentsPanelHost.bottomAnchor)
+        ])
+    }
+
+    private func refreshContentsPanel() {
+        contentsVC.document = pdfView.document
+        contentsVC.documentID = currentDocumentID
+        contentsVC.reloadData()
+    }
+
+    private func syncContentsOverlayZOrder() {
+        view.bringSubviewToFront(contentsPanelHost)
+        view.bringSubviewToFront(topBar)
+        view.bringSubviewToFront(spinner)
+    }
+
+    private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
+        isContentsPanelVisible = visible
+        if visible {
+            syncContentsOverlayZOrder()
+        }
+        contentsPanelHost.isHidden = false
+        contentsPanelTrailing.constant = visible ? 0 : contentsPanelWidthConstant
+        let updates = {
+            self.view.layoutIfNeeded()
+        }
+        if animated {
+            UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut], animations: updates) { _ in
+                self.contentsPanelHost.isHidden = !visible
+            }
+        } else {
+            updates()
+            contentsPanelHost.isHidden = !visible
+        }
     }
 
     func load(documentID: String, completion: ((Bool) -> Void)? = nil) {
@@ -196,6 +324,7 @@ final class PDFReaderViewController: UIViewController {
                 }
                 self.pdfView.document = document
                 self.updatePageLabel()
+                self.refreshContentsPanelIfVisible()
                 completion?(true)
             }
         }
@@ -344,6 +473,7 @@ final class PDFReaderViewController: UIViewController {
     func clearDocument() {
         loadGeneration &+= 1
         saveReadingProgressNow()
+        setContentsPanelVisible(false, animated: false)
         currentDocumentID = nil
         pdfView.document = nil
         pageLabel.text = nil
@@ -408,8 +538,14 @@ final class PDFReaderViewController: UIViewController {
 
     @objc private func pageChanged() {
         updatePageLabel()
+        refreshContentsPanelIfVisible()
         scheduleProgressSave()
         onPageChanged?()
+    }
+
+    private func refreshContentsPanelIfVisible() {
+        guard isContentsPanelVisible else { return }
+        refreshContentsPanel()
     }
 
     @objc private func scaleChanged() {

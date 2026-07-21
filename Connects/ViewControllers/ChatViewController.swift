@@ -458,6 +458,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             // Portrait→landscape study: off-screen rows keep stale wide heights → blank gaps.
             let lookahead = scrollLookaheadRowsPrioritized(in: messages)
             commitRows.formUnion(lookahead)
+            if studyChromeMode == .portraitPanel {
+                // Full-width portrait panel: remeasure entire thread after leaving narrow landscape.
+                commitRows.formUnion(0..<messages.count)
+            }
             if let minV = visibleRows.min(), minV > 0 {
                 let above = max(0, minV - Self.turnPrewarmCount * 4)
                 commitRows.formUnion(above..<minV)
@@ -648,8 +652,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func sessionPersistedHeights(for conversationID: String) -> [String: CGFloat] {
         ensureHeightCacheLoaded(for: conversationID)
-        // Narrow study panel must not bootstrap from full-width buckets — that leaves tall blank rows.
-        if isStudyNarrowPanelActive() {
+        // Narrow side panel and portrait bottom overlay are width-sensitive — never bootstrap
+        // from the other study geometry (narrow → portrait caused tall blank rows).
+        if isStudyNarrowPanelActive() || studyChromeMode == .portraitPanel {
             return exactPersistedHeights(for: conversationID)
         }
         return persistedHeights(for: conversationID)
@@ -3394,6 +3399,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             tableView.reloadData()
             tableView.layoutIfNeeded()
             tableView.isHidden = true
+            tableView.alpha = 1
             return
         }
         pendingOpenAtBottom = true
@@ -4870,6 +4876,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         reconcileBottomViewportIfNeeded(messages: messages, layoutWidth: currentRenderWidth())
     }
 
+    /// StudyShell portrait↔landscape or panel resize — always remeasure + re-pin when tail-sticky.
+    func relayoutForStudyShellGeometryChange(messages: [ChatMessage]? = nil) {
+        guard isViewLoaded, studyChromeMode != .none, tableView.window != nil else { return }
+        let msgs = messages ?? renderedConversationMessages()
+        guard let msgs = msgs, !msgs.isEmpty else { return }
+        layoutWidthBucket = widthBucket(for: tableView.bounds.width)
+        pendingStudyFirstScrollPrep = true
+        if isTableLayoutCommitted() {
+            invalidateHeightsForWidthChange(immediate: true)
+        } else {
+            scheduleInvalidateHeightsForWidthChange()
+        }
+        guard stickToBottom, !isViewportPinned() else { return }
+        UIView.performWithoutAnimation {
+            guard self.tableView.window != nil else { return }
+            self.reconcileBottomViewportIfNeeded(messages: msgs, layoutWidth: self.currentRenderWidth())
+            self.tableView.layoutIfNeeded()
+            self.scrollToLastRowReliable(msgs)
+            self.revealVisibleActionChrome(messages: msgs)
+            _ = self.syncVisibleRowHeightsToPaint(messages: msgs, allowShrink: true)
+            self.eagerPreparePendingHistoryHeightsAtBottom()
+        }
+    }
+
     func dismissComposerKeyboard() {
         guard isViewLoaded else { return }
         view.endEditing(true)
@@ -4928,7 +4958,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard ConversationStore.shared.currentConversationID == id else { return }
         cancelOpenPipeline()
         guard let conv = ConversationStore.shared.conversation(id: id) else { return }
-        tableView.alpha = 0
+        if !conv.messages.isEmpty {
+            tableView.alpha = 0
+        }
 
         if let oldID = renderedConversationID {
             storePersistedHeights(rowHeights.exportPersistable(), for: oldID)
@@ -5475,6 +5507,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyContainer.backgroundColor = c.background
         emptyContainer.isHidden = !empty
         tableView.isHidden = empty
+        if !empty {
+            tableView.alpha = 1
+        }
         if empty {
             contextUserIndex = nil
             turnContextBar.update(question: nil, visible: false)

@@ -128,6 +128,7 @@ final class StudyDocumentStore {
         let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
         try? FileManager.default.removeItem(at: folder)
         StudyProgressStore.shared.delete(documentID: documentID)
+        PDFBookmarkStore.shared.delete(documentID: documentID)
         ConversationStore.shared.detachStudyDocument(documentID: documentID)
         saveRegistry()
         notify()
@@ -177,4 +178,41 @@ final class StudyDocumentStore {
     private func notify() {
         NotificationCenter.default.post(name: .studyDocumentsDidUpdate, object: nil)
     }
+
+#if DEBUG
+  private static let scrollStressPDFTitle = "ScrollStressHarness"
+
+    /// One-page PDF for shell-level study stress (landscape panel + rotation).
+    @discardableResult
+    func debugEnsureScrollStressDocument() throws -> StudyDocument {
+        if let existing = documents.first(where: { $0.title == Self.scrollStressPDFTitle }) {
+            touch(documentID: existing.id)
+            return existing
+        }
+        let docID = UUID().uuidString
+        let relative = "\(docID)/original.pdf"
+        let folder = studyRootURL.appendingPathComponent(docID, isDirectory: true)
+        let dest = studyRootURL.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let pdf = PDFDocument()
+        pdf.insert(PDFPage(), at: 0)
+        guard pdf.write(to: dest) else {
+            throw StudyDocumentError.invalidPDF
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: dest.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        let doc = StudyDocument(
+            id: docID,
+            title: Self.scrollStressPDFTitle,
+            localRelativePath: relative,
+            contentFingerprint: "scroll-stress-\(docID)",
+            fileSize: size,
+            lastOpenedAt: Date()
+        )
+        documents.insert(doc, at: 0)
+        saveRegistry()
+        notify()
+        return doc
+    }
+#endif
 }

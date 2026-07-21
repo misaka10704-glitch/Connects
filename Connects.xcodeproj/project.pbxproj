@@ -115,6 +115,8 @@
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
 		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
+		S10000010000000000000009 /* PDFContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000009 /* PDFContentsViewController.swift */; };
+		S10000010000000000000010 /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* PDFBookmarkStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -229,6 +231,8 @@
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000009 /* PDFContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentsViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000010 /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -363,6 +367,7 @@
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
 				S20000010000000000000003 /* StudyProgressStore.swift */,
+				S20000010000000000000010 /* PDFBookmarkStore.swift */,
 				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
 			);
@@ -386,6 +391,7 @@
 				S20000010000000000000005 /* PDFReaderViewController.swift */,
 				S20000010000000000000006 /* StudyShellViewController.swift */,
 				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
+				S20000010000000000000009 /* PDFContentsViewController.swift */,
 			);
 			path = ViewControllers;
 			sourceTree = "<group>";
@@ -662,6 +668,8 @@
 				S10000010000000000000005 /* PDFReaderViewController.swift in Sources */,
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
 				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
+				S10000010000000000000009 /* PDFContentsViewController.swift in Sources */,
+				S10000010000000000000010 /* PDFBookmarkStore.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
