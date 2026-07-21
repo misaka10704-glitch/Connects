@@ -544,6 +544,32 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     func applyDeferredNativeRenderIfNeeded(suppressHeightNotify: Bool = false) {
         guard let bind = deferredNativeBind, bind.message.id == messageID else { return }
+        // Fixed-box paint: while frozen OR in `readingHistory` (record-only growth, see
+        // `messageCellFrozenColumnHeight`) the reserved box owns the geometry. Paint native into
+        // that box but never notify a height change — a plain->native upgrade must not reflow.
+        let frozen = cellDelegate?.messageCellShouldFreezeHeight(self) == true
+        let frozenColumn = cellDelegate?.messageCellFrozenColumnHeight(self)
+        if frozen || frozenColumn != nil {
+            // `configureNative(allowDefer: false)` below takes the LIVE render branch — it does
+            // not gate on the reserved box and does not care whether the cached layout is final.
+            // Enforce the same native-fits-box invariant here so a deferred upgrade can never
+            // clip, and never render formulas / lay out uncached native mid-freeze: only apply
+            // when a formula-final layout is already cached AND it fits. Otherwise leave the
+            // deferred bind queued (stay plain) and retry on a later hydration pass.
+            let width = nativeLayoutWidth(for: bind.layoutWidth)
+            guard AssistantMessageLayout.hasCachedNativeLayout(for: bind.message, layoutWidth: width) else {
+                return
+            }
+            if let frozenColumn = frozenColumn {
+                let finalHeight = AssistantMessageLayout.exactColumnContentHeight(
+                    for: bind.message,
+                    layoutWidth: width,
+                    isLastRow: false,
+                    allowSyncLayout: false
+                ) ?? 0
+                guard frozenColumn + 0.5 >= finalHeight else { return }
+            }
+        }
         deferredNativeBind = nil
         configureNative(
             message: bind.message,
@@ -564,7 +590,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 colors: bind.colors
             )
         }
-        if !suppressHeightNotify {
+        if !suppressHeightNotify, !frozen {
             scheduleMeasuredHeightNotify(for: messageID)
         }
     }
@@ -767,16 +793,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             )
         }
 
-        deferredNativeBind = DeferredNativeBind(
-            message: message,
-            hasThinking: hasThinking,
-            hasSearch: hasSearch,
-            hasImage: hasImage,
-            font: font,
-            colors: c,
-            layoutWidth: layoutWidth
-        )
-        // Warm native cache: bind cached layout (no sync layout). Cold cache: plain text body.
+        deferredNativeBind = nil
+        // configureNative owns deferredNativeBind — do not pre-set (leaks past cache-hit bind).
         configureNative(
             message: message,
             hasThinking: hasThinking,
@@ -1172,6 +1190,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
     }
 
+    /// Public bridge so height-committing code (`ChatViewController.commitCachedLayoutHeights` et al.)
+    /// can commit exact heights at the SAME width this cell will actually bind native content at.
+    /// Without this, a visible cell's live `column.bounds.width` can diverge from whatever width the
+    /// controller believes is current (e.g. mid layout-width transition, or a debug/test width
+    /// override that does not itself resize real geometry) — the controller then commits an "exact"
+    /// height for width A while the cell paints at width B, and under history exact-authority nothing
+    /// ever reconciles the two: the box-fit gate declines native forever (looks like "never renders").
+    func effectiveNativeLayoutWidth(for layoutWidth: CGFloat) -> CGFloat {
+        nativeLayoutWidth(for: layoutWidth)
+    }
+
     private func nativeLayoutWidth(for layoutWidth: CGFloat? = nil) -> CGFloat {
         let reference = max(layoutWidth ?? preferredLayoutWidth, 120)
         // Host passes content width already. Prefer live column once laid out.
@@ -1186,17 +1215,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         return RenderCacheStore.contentWidth(for: reference)
     }
 
-    /// Flatten native bitmap while scrolling on iOS 12 — reduces compositor shimmer.
+    /// Scroll-time rasterize disabled — iOS 12 shouldRasterize jitters text on Air 1.
     func setNativeScrollRasterization(_ enabled: Bool) {
         nativeRenderView.layer.drawsAsynchronously = false
-        if #available(iOS 13, *) {
-            nativeRenderView.layer.shouldRasterize = false
-            return
-        }
-        nativeRenderView.layer.shouldRasterize = enabled
-        if enabled {
-            nativeRenderView.layer.rasterizationScale = UIScreen.main.scale
-        }
+        nativeRenderView.layer.shouldRasterize = false
+        _ = enabled
     }
 
     private func configureNative(message: ChatMessage,
@@ -1208,13 +1231,38 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                  layoutWidth: CGFloat,
                                  allowDefer: Bool = true) {
         let width = nativeLayoutWidth(for: layoutWidth)
-        let scrollFrozen = allowDefer && cellDelegate?.messageCellShouldFreezeHeight(self) == true
+        // `readingHistory` growth notifications are record-only (see `commitReadingHistoryRowGrowth`)
+        // whether or not a scroll gesture happens to be active right now — so the box-fit gate
+        // must apply any time `messageCellFrozenColumnHeight` reports a reserved box, not only
+        // while `messageCellShouldFreezeHeight` is true. Otherwise a plain `cellForRowAt` at rest
+        // (no gesture) takes the LIVE render branch below, paints taller-than-box native content,
+        // and clips forever since nothing will resize the row to match (the truncation bug).
+        let frozenColumn = allowDefer ? cellDelegate?.messageCellFrozenColumnHeight(self) : nil
+        let scrollFrozen = allowDefer
+            && (cellDelegate?.messageCellShouldFreezeHeight(self) == true || frozenColumn != nil)
         if scrollFrozen {
             let hasCachedLayout = AssistantMessageLayout.hasCachedNativeLayout(
                 for: message,
                 layoutWidth: width
             )
-            if hasCachedLayout,
+            // Hard native-fits-box gate: a cached (formula-final) layout is only safe to bind
+            // when the reserved box already accommodates its height. If the box is too short
+            // (outran precompute), binding would still clip — stay plain instead of painting a
+            // truncated bitmap; the row upgrades to native once it is exact+warm.
+            // `exactColumnContentHeight(allowSyncLayout: false)` reads the SAME cached layout
+            // `bindCachedLayoutIfAvailable` would use, so this check is side-effect free and
+            // exact — no need to bind-then-undo.
+            var fitsFrozenBox = true
+            if hasCachedLayout, let frozenColumn = frozenColumn {
+                let finalHeight = AssistantMessageLayout.exactColumnContentHeight(
+                    for: message,
+                    layoutWidth: width,
+                    isLastRow: false,
+                    allowSyncLayout: false
+                ) ?? 0
+                fitsFrozenBox = frozenColumn + 0.5 >= finalHeight
+            }
+            if hasCachedLayout, fitsFrozenBox,
                let height = nativeRenderView.bindCachedLayoutIfAvailable(
                    content: message.content,
                    width: width,
@@ -1222,6 +1270,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                    appearance: SettingsManager.shared.appearanceMode.rawValue,
                    colors: colors
                ) {
+                deferredNativeBind = nil
                 bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
                 nativeMessageForRemeasure = message
                 lastNativeLayoutWidth = width
@@ -1241,13 +1290,19 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 colors: colors,
                 layoutWidth: layoutWidth
             )
-            bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
+            // Full plain — never empty shell (matches plainFallback freeze height).
+            configurePlainFallback(
+                message: message,
+                hasThinking: hasThinking,
+                hasSearch: hasSearch,
+                hasImage: hasImage,
+                font: font,
+                colors: colors,
+                scheduleHeightNotify: false,
+                allowTruncate: false
+            )
             nativeMessageForRemeasure = message
             lastNativeLayoutWidth = width
-            hideNativeRender()
-            assistantLabel.isHidden = true
-            assistantLabel.text = nil
-            assistantLabel.attributedText = nil
             return
         }
         deferredNativeBind = nil
@@ -1341,7 +1396,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             scheduleMeasuredHeightNotify(for: message.id)
         }
         refreshActionChrome(for: message, streaming: false, colors: colors)
-        contentView.layoutIfNeeded()
+        // Mid-scroll freeze: row height comes from the freeze map — skip sync layoutIfNeeded hitch.
+        if cellDelegate?.messageCellShouldFreezeHeight(self) == true {
+            setNeedsLayout()
+        } else {
+            contentView.layoutIfNeeded()
+        }
         cellDelegate?.messageCellDidPaintContent(self)
     }
 
