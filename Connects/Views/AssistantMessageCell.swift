@@ -44,6 +44,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var copyLeadingToPager: NSLayoutConstraint!
     private var thinkingHeaderH: NSLayoutConstraint!
     private var thinkingBoxH: NSLayoutConstraint!
+    private var thinkingBodyH: NSLayoutConstraint!
     private var thinkingToHeader: NSLayoutConstraint!
     private var thinkingToBody: NSLayoutConstraint!
     private var searchHeaderH: NSLayoutConstraint!
@@ -76,6 +77,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var searchExpanded = false
     private var imageTranscriptionFailed = false
     private var streamingPresentation = false
+    /// Live「思考中」preview uses a fixed 3-line slot so the row does not bob.
+    private var thinkingLivePreviewMode = false
     /// Native markdown can be configured before UITableView assigns its final
     /// width when switching chats. Keep the source for one deferred remeasure.
     private var cachedReasoningText = ""
@@ -379,19 +382,25 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedThinkingFontSize = thinkFont
         cachedThemeColors = c
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        cachedReasoningText = think
+        cachedReasoningText = message.reasoningContent
         hasThinking = !think.isEmpty
         guard hasThinking else { return }
         thinkingExpanded = AssistantMessageLayout.isThinkingExpanded(messageID: message.id)
         populateThinkingBody(
             expanded: thinkingExpanded,
-            streaming: message.isStreaming,
+            streaming: message.isStreaming || streamingPresentation,
             colors: c,
             thinkFont: thinkFont
         )
         setThinking(visible: true, expanded: thinkingExpanded)
-        let title = thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考"
+        let title: String
+        if message.isStreaming || streamingPresentation {
+            title = thinkingExpanded ? "▾  思考中…" : "▸  思考中…"
+        } else {
+            title = thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考"
+        }
         thinkingHeader.setTitle(title, for: .normal)
+        thinkingHeader.isEnabled = !(message.isStreaming || streamingPresentation)
     }
 
     func syncSearchPresentation(with message: ChatMessage, layoutWidth: CGFloat, pairedUser: ChatMessage? = nil) {
@@ -424,6 +433,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         setSearch(visible: true, expanded: searchExpanded)
         let chevron = searchExpanded ? "▾" : "▸"
         searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
+        searchHeader.isEnabled = !(message.isStreaming || streamingPresentation)
     }
 
     func needsNativeRepaint(at layoutWidth: CGFloat) -> Bool {
@@ -677,8 +687,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             hideNativeRender()
             applyAssistantLayoutWidth()
             assistantLabel.isHidden = false
-            labelBottom.isActive = true
-            labelBottomFloor.isActive = true
+            // Hug content — never stretch the empty body into the UITableView's
+            // allocated/estimated frame. That fill-loop scrolled tags off-screen
+            // on first turn ("完全空白") and left a giant gap after finish.
+            pinPlainBodyToColumnContent()
             setContentTops(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
             if message.content.isEmpty && !hasThinking && !hasSearch {
                 assistantLabel.attributedText = nil
@@ -830,14 +842,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedImageTranscriptionPhase = message.imageTranscriptionPhase
         hasSearch = message.hasSearchProcess || imageActivity
         if hasSearch {
-            let liveImageActivity = imageActivity && message.imageTranscriptionPhase == .transcribing
             let liveSearchActivity = !imageActivity && streaming && message.searchProcessPhase != .done
-            let liveActivity = liveImageActivity || liveSearchActivity
-            if liveActivity {
-                searchExpanded = true
-            } else {
-                searchExpanded = AssistantMessageLayout.isSearchExpanded(messageID: message.id)
-            }
+            // Streaming: always collapsed. Expand only after the turn finishes.
+            searchExpanded = streaming
+                ? false
+                : AssistantMessageLayout.isSearchExpanded(messageID: message.id)
             if imageActivity {
                 cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
             } else {
@@ -850,6 +859,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             let chevron = searchExpanded ? "▾" : "▸"
             searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
             searchHeader.setTitleColor(colors.textSecondary, for: .normal)
+            searchHeader.isEnabled = !streaming
             searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
             searchBox.layer.borderWidth = 0
         } else {
@@ -857,17 +867,23 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
 
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        cachedReasoningText = think
+        cachedReasoningText = message.reasoningContent
         cachedThinkingFontSize = thinkFont
         cachedThemeColors = colors
         hasThinking = !think.isEmpty
         if hasThinking {
-            if streaming {
-                thinkingExpanded = true
-            } else {
-                thinkingExpanded = AssistantMessageLayout.isThinkingExpanded(messageID: message.id)
-            }
-            if lightweightBodies {
+            // Streaming: keep full expand locked, but show a short live preview
+            // under the tag so the turn does not look frozen.
+            thinkingExpanded = streaming
+                ? false
+                : AssistantMessageLayout.isThinkingExpanded(messageID: message.id)
+            if streaming, message.content.isEmpty {
+                applyThinkingLivePreview(
+                    reasoning: message.reasoningContent,
+                    colors: colors,
+                    thinkFont: thinkFont
+                )
+            } else if lightweightBodies {
                 applyThinkingLayoutWidth()
                 if thinkingExpanded {
                     thinkingBody.attributedText = nil
@@ -878,6 +894,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                     thinkingBody.attributedText = nil
                     thinkingBody.text = nil
                 }
+                setThinking(visible: true, expanded: thinkingExpanded)
             } else {
                 populateThinkingBody(
                     expanded: thinkingExpanded,
@@ -885,13 +902,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                     colors: colors,
                     thinkFont: thinkFont
                 )
+                setThinking(visible: true, expanded: thinkingExpanded)
             }
-            setThinking(visible: true, expanded: thinkingExpanded)
             let title = streaming && message.content.isEmpty
-                ? (thinkingExpanded ? "▾  思考中…" : "▸  思考中…")
+                ? "▸  思考中…"
                 : (thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考")
             thinkingHeader.setTitle(title, for: .normal)
             thinkingHeader.setTitleColor(colors.textSecondary, for: .normal)
+            thinkingHeader.isEnabled = !streaming
             thinkingBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
             thinkingBox.layer.borderWidth = 0
         } else {
@@ -974,7 +992,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     /// Pin native body height to the painted layout so action chrome sits flush under text.
     @discardableResult
-    private func syncNativeBodyHeightToLayout() -> Bool {
+    func syncNativeBodyHeightToLayout() -> Bool {
         guard !nativeRenderView.isHidden else { return false }
         guard let painted = nativeRenderView.paintedLayoutHeight, painted > 1 else { return false }
         let target = ceil(painted)
@@ -991,42 +1009,72 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Constraint-sum column stack height (excludes overlay action row).
     private func intrinsicColumnStackHeight() -> CGFloat {
         var total: CGFloat = 0
+        let stackWidth = max(column.bounds.width, preferredLayoutWidth, 120)
         if !imageViewMsg.isHidden, imageHeight.constant > 0.5 {
             total += imageHeight.constant
             if !nativeRenderView.isHidden || !assistantLabel.isHidden {
                 total += 10
             }
         }
-        if !searchBox.isHidden, searchBoxH.constant > 0.5 {
-            total += searchBoxH.constant
-            if total > 0, !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
-                total += 10
+        if !searchBox.isHidden {
+            let searchH: CGFloat
+            if !searchBody.isHidden {
+                let bodyW = max(stackWidth - 24, 80)
+                let bodyH = searchBody.sizeThatFits(
+                    CGSize(width: bodyW, height: .greatestFiniteMagnitude)
+                ).height
+                searchH = searchTop.constant + searchHeaderH.constant + 4 + bodyH + 10
+            } else if searchBoxH.isActive, searchBoxH.constant > 0.5 {
+                searchH = searchBoxH.constant
+            } else {
+                searchH = searchTop.constant + searchHeaderH.constant
             }
-        } else if !searchBox.isHidden, searchHeaderH.constant > 0.5 {
-            total += searchTop.constant + searchHeaderH.constant
-            if total > 0, !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
-                total += 10
+            if searchH > 0.5 {
+                total += searchH
+                if !thinkingBox.isHidden || !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                    total += 10
+                }
             }
         }
-        if !thinkingBox.isHidden, thinkingBoxH.constant > 0.5 {
-            total += thinkingBoxH.constant
-            if total > 0, !nativeRenderView.isHidden || !assistantLabel.isHidden {
-                total += 10
+        if !thinkingBox.isHidden {
+            let thinkH: CGFloat
+            // Use body visibility (live preview sets body visible while
+            // thinkingExpanded stays false until the turn finishes).
+            if !thinkingBody.isHidden {
+                let bodyH: CGFloat
+                if thinkingLivePreviewMode, thinkingBodyH.isActive {
+                    bodyH = thinkingBodyH.constant
+                } else {
+                    let bodyW = max(stackWidth - 24, 80)
+                    bodyH = thinkingBody.sizeThatFits(
+                        CGSize(width: bodyW, height: .greatestFiniteMagnitude)
+                    ).height
+                }
+                thinkH = thinkingTop.constant + thinkingHeaderH.constant + 4 + bodyH + 10
+            } else if thinkingBoxH.isActive, thinkingBoxH.constant > 0.5 {
+                thinkH = thinkingBoxH.constant
+            } else {
+                thinkH = thinkingTop.constant + thinkingHeaderH.constant
             }
-        } else if !thinkingBox.isHidden, thinkingHeaderH.constant > 0.5 {
-            total += thinkingTop.constant + thinkingHeaderH.constant
-            if total > 0, !nativeRenderView.isHidden || !assistantLabel.isHidden {
-                total += 10
+            if thinkH > 0.5 {
+                total += thinkH
+                if !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                    total += 10
+                }
             }
         }
         if !nativeRenderView.isHidden, nativeHeight.constant > 0.5 {
             total += nativeHeight.constant
         } else if !assistantLabel.isHidden {
-            let width = max(column.bounds.width, 1)
-            let labelH = assistantLabel.sizeThatFits(
-                CGSize(width: width, height: .greatestFiniteMagnitude)
-            ).height
-            if labelH > 0.5 { total += labelH }
+            let plain = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Empty UILabel still reports a line-height — skip it so collapsed
+            // thinking/search tags don't leave a phantom blank under the header.
+            if !plain.isEmpty {
+                let labelH = assistantLabel.sizeThatFits(
+                    CGSize(width: stackWidth, height: .greatestFiniteMagnitude)
+                ).height
+                if labelH > 0.5 { total += labelH }
+            }
         }
         return total
     }
@@ -1135,25 +1183,76 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
     }
 
+    /// Fixed 3-line rolling snippet under「思考中」— height stays constant so
+    /// the stream does not keep lifting / dropping the table.
+    private static let thinkingLivePreviewLineCount = 3
+    private static func thinkingLivePreview(_ reasoning: String, limit: Int = 90) -> String {
+        let trimmed = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.count <= limit { return trimmed }
+        return "…" + String(trimmed.suffix(limit))
+    }
+
+    private func thinkingLivePreviewBodyHeight(fontSize: CGFloat) -> CGFloat {
+        let font = UIFont.systemFont(ofSize: fontSize)
+        return ceil(font.lineHeight * CGFloat(Self.thinkingLivePreviewLineCount))
+    }
+
+    private func setThinkingLivePreviewMode(_ on: Bool, thinkFont: CGFloat) {
+        if on {
+            thinkingLivePreviewMode = true
+            thinkingBody.numberOfLines = Self.thinkingLivePreviewLineCount
+            thinkingBody.lineBreakMode = .byTruncatingTail
+            thinkingBodyH.constant = thinkingLivePreviewBodyHeight(fontSize: thinkFont)
+            thinkingBodyH.isActive = true
+        } else {
+            guard thinkingLivePreviewMode || thinkingBodyH.isActive else { return }
+            thinkingLivePreviewMode = false
+            thinkingBody.numberOfLines = 0
+            thinkingBody.lineBreakMode = .byWordWrapping
+            thinkingBodyH.isActive = false
+        }
+    }
+
+    private func applyThinkingLivePreview(reasoning: String,
+                                          colors: ThemeColors,
+                                          thinkFont: CGFloat,
+                                          waitingGlyph: String? = nil) {
+        let preview = Self.thinkingLivePreview(reasoning)
+        applyThinkingLayoutWidth()
+        setThinkingLivePreviewMode(true, thinkFont: thinkFont)
+        thinkingBody.attributedText = nil
+        thinkingBody.textColor = colors.textSecondary
+        thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
+        if preview.isEmpty {
+            thinkingBody.text = waitingGlyph
+        } else {
+            thinkingBody.text = waitingGlyph.map { preview + "  " + $0 } ?? preview
+        }
+        // Fixed 3-line slot under the tag; full expand stays locked until finish.
+        setThinking(visible: true, expanded: true)
+    }
+
     private func populateThinkingBody(expanded: Bool,
                                       streaming: Bool,
                                       colors: ThemeColors,
                                       thinkFont: CGFloat) {
         applyThinkingLayoutWidth()
+        setThinkingLivePreviewMode(false, thinkFont: thinkFont)
         guard expanded else {
             thinkingBody.attributedText = nil
             thinkingBody.text = nil
             return
         }
-        if streaming {
-            thinkingBody.attributedText = nil
-            thinkingBody.textColor = colors.textSecondary
-            thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
+        // Always paint the full cached reasoning. Never keep a live "…" window
+        // after the user expands a finished (or finishing) turn.
+        thinkingBody.attributedText = nil
+        thinkingBody.textColor = colors.textSecondary
+        thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
+        if streaming || cachedReasoningText.count > 4_000 {
+            // Plain UILabel — PlainMarkdown on 10k+ chars hitchs iPad Air 1.
             thinkingBody.text = cachedReasoningText
         } else if cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
-            thinkingBody.attributedText = nil
-            thinkingBody.textColor = colors.textSecondary
-            thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
             thinkingBody.text = cachedReasoningText
         } else {
             thinkingBody.attributedText = PlainMarkdown.attributed(
@@ -1351,7 +1450,54 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// Column content height used for UITableView self-sizing.
     func measuredContentHeight() -> CGFloat {
         contentView.layoutIfNeeded()
+        let intrinsic = intrinsicColumnStackHeight()
+        var intrinsicStack = intrinsic
+        if !actionRow.isHidden, actionHeight.constant > 0.5 {
+            intrinsicStack += 4 + actionHeight.constant
+        }
+        let boundsH = column.bounds.height
+        // Inflated table estimate: prefer constraint-sum (deflate).
+        if intrinsic > 1, boundsH > intrinsic + 12 {
+            return intrinsicStack
+        }
+        // Clipped row (native taller than cell frame): prefer constraint-sum
+        // (grow). Trusting painted bounds here re-committed the short preview
+        // height and left finished replies truncated mid-glyph.
+        if intrinsic > 1, intrinsic > boundsH + 4 {
+            return max(intrinsicStack, 44)
+        }
         return paintedStackHeight()
+    }
+
+    /// Constraint-sum column height ignoring the current (possibly clipped) frame.
+    func fittedColumnContentHeight() -> CGFloat {
+        var h = intrinsicColumnStackHeight()
+        if !actionRow.isHidden, actionHeight.constant > 0.5 {
+            h += 4 + actionHeight.constant
+        }
+        return max(ceil(h), 44)
+    }
+
+    /// Explicit streaming row height — avoids iOS 12 `automaticDimension` fill.
+    func fittedStreamingRowHeight() -> CGFloat {
+        contentView.layoutIfNeeded()
+        var h = intrinsicColumnStackHeight()
+        if h < 1 {
+            h = 22
+        }
+        h += ChatRowHeightResolver.cellVerticalMargin
+        if !actionRow.isHidden, actionHeight.constant > 0.5 {
+            h += 4 + actionHeight.constant
+        }
+        return max(ceil(h), 44)
+    }
+
+    /// Pin assistantLabel to column edges without stretching into spare cell space.
+    private func pinPlainBodyToColumnContent() {
+        labelBottom.isActive = false
+        labelBottomFloor.isActive = true
+        columnBottomToNative.isActive = false
+        columnBottomToLabel.isActive = true
     }
 
     private func scheduleMeasuredHeightNotify(for messageID: String,
@@ -1455,41 +1601,62 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
                 : message.searchProcessContent
             ).trimmingCharacters(in: .whitespacesAndNewlines)
+            cachedSearchText = search
+            // Live stream: keep search tag collapsed; expand after finish only.
+            searchExpanded = false
             searchBody.attributedText = nil
-            searchBody.text = search
+            searchBody.text = nil
+            setSearch(visible: true, expanded: false)
             let titleCore = imageActivity
                 ? message.imageTranscriptionPhase.headerTitle
                 : (message.searchProcessPhase != .done
                     ? message.searchProcessPhase.headerTitle
                     : SearchProcessPhase.done.headerTitle)
-            let chevron = searchExpanded ? "▾" : "▸"
-            searchHeader.setTitle("\(chevron)  \(titleCore)", for: .normal)
+            searchHeader.setTitle("▸  \(titleCore)", for: .normal)
+            searchHeader.isEnabled = false
         }
         if !thinkingBox.isHidden {
-            thinkingBody.attributedText = nil
-            // Laying out an ever-growing 10k+ character UILabel on every frame
-            // overwhelms first-generation iPad Air. During generation show a
-            // rolling window; the complete reasoning remains stored and is
-            // available after the stream finishes.
             let reasoning = message.reasoningContent
-            let liveLimit = 2_400
-            thinkingBody.text = reasoning.count > liveLimit
-                ? "…\n" + String(reasoning.suffix(liveLimit))
-                : reasoning
-            let chevron = thinkingExpanded ? "▾" : "▸"
-            thinkingHeader.setTitle(
-                content.isEmpty ? "\(chevron)  思考中…" : "\(chevron)  已深度思考",
-                for: .normal
-            )
+            // Always keep the cache in sync for post-finish expand.
+            cachedReasoningText = reasoning
+            thinkingExpanded = false
+            let colors = cachedThemeColors ?? DSTheme.c
+            let thinkFont = cachedThinkingFontSize > 0
+                ? cachedThinkingFontSize
+                : SettingsManager.shared.chatThinkingFontSize
+            if content.isEmpty {
+                applyThinkingLivePreview(
+                    reasoning: reasoning,
+                    colors: colors,
+                    thinkFont: thinkFont,
+                    waitingGlyph: nil
+                )
+                thinkingHeader.setTitle("▸  思考中…", for: .normal)
+            } else {
+                // Body started — collapse preview; full text after finish.
+                thinkingBody.attributedText = nil
+                thinkingBody.text = nil
+                setThinking(visible: true, expanded: false)
+                thinkingHeader.setTitle("▸  已深度思考", for: .normal)
+            }
+            thinkingHeader.isEnabled = false
         }
+        pinPlainBodyToColumnContent()
         if let glyph = waitingGlyph {
             if !content.isEmpty {
                 assistantLabel.text = content + "  " + glyph
-            } else if !thinkingBox.isHidden {
-                thinkingBody.text = (thinkingBody.text ?? "") + "  " + glyph
-            } else if !searchBox.isHidden {
+            } else if !thinkingBox.isHidden, content.isEmpty {
+                applyThinkingLivePreview(
+                    reasoning: message.reasoningContent,
+                    colors: cachedThemeColors ?? DSTheme.c,
+                    thinkFont: cachedThinkingFontSize > 0
+                        ? cachedThinkingFontSize
+                        : SettingsManager.shared.chatThinkingFontSize,
+                    waitingGlyph: glyph
+                )
+            } else if !searchBox.isHidden, searchExpanded {
                 searchBody.text = (searchBody.text ?? "") + "  " + glyph
-            } else {
+            } else if thinkingBox.isHidden, searchBox.isHidden {
                 assistantLabel.text = glyph
             }
         }
@@ -1519,6 +1686,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !think.isEmpty {
             thinkingHeader.setTitle(thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考", for: .normal)
+            thinkingHeader.isEnabled = true
+        }
+        if !searchBox.isHidden {
+            searchHeader.isEnabled = true
         }
         let pager = message.showsVersionPager
         showActions(
@@ -1812,11 +1983,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 thinkingToHeader.isActive = false
                 thinkingBody.isHidden = false
             } else {
+                setThinkingLivePreviewMode(false, thinkFont: cachedThinkingFontSize > 0
+                    ? cachedThinkingFontSize
+                    : SettingsManager.shared.chatThinkingFontSize)
                 thinkingBody.isHidden = true
                 thinkingToHeader.isActive = true
                 thinkingToBody.isActive = false
             }
         } else {
+            setThinkingLivePreviewMode(false, thinkFont: cachedThinkingFontSize > 0
+                ? cachedThinkingFontSize
+                : SettingsManager.shared.chatThinkingFontSize)
             thinkingBody.isHidden = true
             thinkingToHeader.isActive = false
             thinkingToBody.isActive = false
@@ -1887,18 +2064,30 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     @objc private func toggleThink() {
-        guard hasThinking else { return }
+        guard hasThinking, !streamingPresentation else { return }
         thinkingExpanded.toggle()
         if thinkingExpanded { AssistantMessageLayout.setThinkingExpanded(true, messageID: messageID) }
         else { AssistantMessageLayout.setThinkingExpanded(false, messageID: messageID) }
+        // Pull the latest store text — streaming updates kept the cache in sync
+        // while the tag stayed collapsed.
+        if let msg = ConversationStore.shared.currentConversation?.messages
+            .first(where: { $0.id == messageID }) {
+            let think = msg.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !think.isEmpty {
+                cachedReasoningText = msg.reasoningContent
+            }
+        }
         let c = cachedThemeColors ?? DSTheme.c
         populateThinkingBody(
             expanded: thinkingExpanded,
             streaming: false,
             colors: c,
-            thinkFont: cachedThinkingFontSize
+            thinkFont: cachedThinkingFontSize > 0
+                ? cachedThinkingFontSize
+                : SettingsManager.shared.chatThinkingFontSize
         )
         setThinking(visible: true, expanded: thinkingExpanded)
+        thinkingHeader.isEnabled = true
         let title = thinkingExpanded ? "▾  已深度思考" : "▸  已深度思考"
         thinkingHeader.setTitle(title, for: .normal)
         finishChromeToggleLayout()
@@ -1910,7 +2099,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     @objc private func toggleSearch() {
-        guard hasSearch else { return }
+        guard hasSearch, !streamingPresentation else { return }
         if imageTranscriptionFailed {
             NotificationCenter.default.post(
                 name: Notification.Name("ConnectsImageTranscriptionRetry"),
@@ -1928,6 +2117,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             : SettingsManager.shared.chatThinkingFontSize
         populateSearchBody(expanded: searchExpanded, colors: c, thinkFont: thinkFont)
         setSearch(visible: true, expanded: searchExpanded)
+        searchHeader.isEnabled = true
         let chevron = searchExpanded ? "▾" : "▸"
         searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
         finishChromeToggleLayout()
@@ -2005,6 +2195,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         thinkingBody.translatesAutoresizingMaskIntoConstraints = false
         thinkingBody.numberOfLines = 0
+        thinkingBody.lineBreakMode = .byWordWrapping
         thinkingBody.isHidden = true
         thinkingBox.addSubview(thinkingBody)
 
@@ -2021,17 +2212,20 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             let target = ceil(height)
             let scrollFrozen = self.cellDelegate?.messageCellShouldFreezeHeight(self) == true
             if scrollFrozen {
-                var columnH = self.paintedStackHeight()
+                var columnH = self.intrinsicColumnStackHeight()
                 if !self.nativeRenderView.isHidden {
                     columnH = columnH - self.nativeHeight.constant + target
+                }
+                if !self.actionRow.isHidden, self.actionHeight.constant > 0.5 {
+                    columnH += 4 + self.actionHeight.constant
                 }
                 guard columnH > 40 else { return }
                 self.cellDelegate?.messageCell(self, didFinishStableRender: columnH, for: self.messageID)
                 return
             }
             self.nativeHeight.constant = target
-            self.contentView.layoutIfNeeded()
-            let columnH = self.measuredContentHeight()
+            // Do not measure clipped bounds — report the post-render stack height.
+            let columnH = self.fittedColumnContentHeight()
             guard columnH > 40 else { return }
             self.cellDelegate?.messageCell(self, didFinishStableRender: columnH, for: self.messageID)
         }
@@ -2101,6 +2295,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         thinkingHeaderH = thinkingHeader.heightAnchor.constraint(equalToConstant: 0)
         thinkingBoxH = thinkingBox.heightAnchor.constraint(equalToConstant: 0)
+        thinkingBodyH = thinkingBody.heightAnchor.constraint(equalToConstant: 0)
+        thinkingBodyH.isActive = false
         thinkingTop = thinkingBox.topAnchor.constraint(equalTo: searchBox.bottomAnchor, constant: 0)
         thinkingToHeader = thinkingBox.bottomAnchor.constraint(equalTo: thinkingHeader.bottomAnchor)
         thinkingToBody = thinkingBox.bottomAnchor.constraint(equalTo: thinkingBody.bottomAnchor, constant: 10)

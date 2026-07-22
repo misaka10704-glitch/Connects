@@ -380,6 +380,25 @@ enum AssistantMessageLayout {
         return 32 + 4 + bodyH + 10
     }
 
+    /// Header + optional expanded body. Prefer real text measure — CJK `/48`
+    /// estimates under-count lines and clip「已深度思考」with trailing "…".
+    private static func estimatedThinkingChromeHeight(reasoning: String, expanded: Bool) -> CGFloat {
+        if !expanded { return 40 }
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        let font = UIFont.systemFont(ofSize: thinkFont)
+        // Match thinkingBody preferredMaxLayoutWidth ≈ bubble − padding.
+        let width = max(DSTheme.bubbleMaxWidth - 24, 80)
+        let bodyH = ceil(
+            (reasoning as NSString).boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font],
+                context: nil
+            ).height
+        )
+        return 28 + max(bodyH, 16) + 14
+    }
+
     static func estimatedColumnContentHeight(for message: ChatMessage,
                                              layoutWidth: CGFloat,
                                              isLastRow: Bool,
@@ -399,9 +418,7 @@ enum AssistantMessageLayout {
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
             let expanded = expandedThinkingIDs.contains(message.id)
-            total += expanded
-                ? 28 + CGFloat(max(1, reasoning.count / 48)) * 16
-                : 40
+            total += estimatedThinkingChromeHeight(reasoning: reasoning, expanded: expanded)
         }
 
         if message.hasImage {
@@ -456,9 +473,7 @@ enum AssistantMessageLayout {
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
             let expanded = expandedThinkingIDs.contains(message.id)
-            total += expanded
-                ? 28 + CGFloat(max(1, reasoning.count / 48)) * 16
-                : 40
+            total += estimatedThinkingChromeHeight(reasoning: reasoning, expanded: expanded)
         }
 
         if message.hasImage {

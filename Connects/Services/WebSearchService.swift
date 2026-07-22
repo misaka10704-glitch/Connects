@@ -57,8 +57,12 @@ enum WebSearchService {
     private static let maxCharsPerPage = 1800
     private static let maxDownloadBytes = 300_000
     private static let maxInjectedEvidenceChars = 8_000
-    private static let maxPlannedQueries = 4
+    private static let maxPlannedQueries = 3
     private static let minQualifiedHits = 2
+    private static let minHitScoreToKeep = 8
+    /// DuckDuckGo rate-limits under burst traffic — one SERP at a time, few retries.
+    private static let serpGate = DispatchSemaphore(value: 1)
+    private static let serpRetryLimit = 2
     private static let trustedSourceHosts = [
         "baike.baidu.com", "zhihu.com", "wikipedia.org", "douban.com",
         "thepaper.cn", "edu.cn", "cnki.net", "huxiu.com", "36kr.com", "caixin.com"
@@ -82,7 +86,10 @@ enum WebSearchService {
         "美洲", "非洲", "欧洲", "亚洲", "划分", "地球"
     ]
     private static let lowQualityHosts = [
-        "toutiao.com", "baijiahao.baidu.com", "haokan.baidu.com", "uc.cn", "ufcn.cn"
+        "toutiao.com", "baijiahao.baidu.com", "haokan.baidu.com", "uc.cn", "ufcn.cn",
+        "qsllyof.cn", "tpjpuiv.cn", "tieba.baidu.com", "calculatorsoup.com",
+        "calculator.net", "mathway.com", "theonlinecalculator.com", "web2.0calc.com",
+        "w3calc.com", "tailscale.com", "bestbuy.com"
     ]
     private static let officialTopicMarkers = [
         "政策", "法规", "条例", "国务院", "政府", "两会", "白皮书", "公文",
@@ -90,7 +97,8 @@ enum WebSearchService {
     ]
     private static let junkContentMarkers = [
         "免费观看", "高清电影", "影视大全", "在线播放", "免费在线", "电影免费",
-        "电视剧", "综艺", "动漫在线", "番剧", "种子", "磁力", "博彩", "赌博"
+        "电视剧", "综艺", "动漫在线", "番剧", "种子", "磁力", "博彩", "赌博",
+        "cosplay 视频与亚文化", "动漫频道 - 二次元", "install tailscale", "math calculator"
     ]
 
     /// Ask the model where to look up the latest user question, then search those sites.
@@ -112,14 +120,16 @@ enum WebSearchService {
         let prompt = ChatMessage(
             role: .user,
             content: """
-            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」推荐 2–\(maxPlannedQueries) 个**适合查证该问题**的网站或资料来源，并给出在每个来源内该怎么搜。
+            你是聊天应用的联网检索规划器。根据下方对话，为「最新一条用户消息」推荐 2–\(maxPlannedQueries) 个**适合查证该问题**的网站或资料来源，并给出检索词。
 
             要求：
             - 必须结合前文消解指代（如「他呢」「那这个」「为什么」），写成具体实体 / 事件 / 问题，不要原样照抄模糊追问。
+            - topic 写成 6–18 字的问题核心（保留主题词），不要整句问话。
             - 优先推荐能给出定义、历史脉络、分析或可靠讨论的来源：百度百科、维基百科、知乎、豆瓣、行业媒体、高校站点等。
+            - domain 仅表示偏好来源（应用会在开放检索结果中优先这些站），不要假设会强制 site: 检索。
             - 只有当用户明确询问政策、法规、政府文件、政务办理时，才可推荐 gov.cn / 中国政府网；文化、娱乐、亚文化、兴趣爱好、技术、生活类问题**禁止**推荐政府门户、人民网时政、中国网时政、央视时政。
-            - 每个来源的 query 必须保留问题的**主题词**（如「二次元文化」「御宅族」「ACG」），不要只剩「中国」「我国」「大陆」等国家/地理泛称，也不要把整句问法原样塞进去。
-            - **禁止**用「大陆」指代中国大陆；请写「中国」或直接写主题词（如「二次元文化」「ACG」）。地理问题除外。
+            - 每个来源的 query 必须保留问题的**主题词**（如「二次元文化」「御宅族」「ACG」），不要只剩「中国」「我国」「大陆」等国家/地理泛称。
+            - **禁止**用「大陆」指代中国大陆；请写「中国」或直接写主题词。地理问题除外。
             - 禁止推荐：免费观影/盗版资源站、影视聚合站、动漫在线播放站、下载站、购物导购。
             - 每个来源输出：
               - name：站点名称（如「百度百科」）
@@ -173,6 +183,24 @@ enum WebSearchService {
         let lock = NSLock()
         var allSources: [[Hit]] = []
         var lastError: Error?
+        let topicQuery = sanitizePlannerQuery(
+            focusTopicPhrase(plan.topic.isEmpty ? (targets.first?.query ?? "") : plan.topic),
+            topic: plan.topic
+        )
+
+        // Lean strategy: ONE open-web SERP + planner directURLs + Wikipedia.
+        // Avoid per-domain site: bursts (they hammer DuckDuckGo into 403 and
+        // Bing often ignores site: anyway). Domain prefs are applied in ranking.
+        if !topicQuery.isEmpty {
+            group.enter()
+            fetchAllEngines(query: topicQuery) { hits, error in
+                lock.lock()
+                if !hits.isEmpty { allSources.append(hits) }
+                if let error = error, lastError == nil { lastError = error }
+                lock.unlock()
+                group.leave()
+            }
+        }
 
         for target in targets {
             if let direct = normalizedDirectURL(target.directURL) {
@@ -186,13 +214,13 @@ enum WebSearchService {
                 ])
                 lock.unlock()
             }
-            let searchQuery = buildSearchQuery(for: target)
-            guard !searchQuery.isEmpty else { continue }
+        }
+
+        if !topicQuery.isEmpty {
             group.enter()
-            fetchAllEngines(query: searchQuery) { hits, error in
+            fetchWikipediaHits(queries: wikipediaQueryCandidates(from: topicQuery)) { wikiHits in
                 lock.lock()
-                if !hits.isEmpty { allSources.append(hits) }
-                if let error = error, lastError == nil { lastError = error }
+                if !wikiHits.isEmpty { allSources.append(wikiHits) }
                 lock.unlock()
                 group.leave()
             }
@@ -220,38 +248,42 @@ enum WebSearchService {
     ) {
         let topic = plan.topic.isEmpty ? targets.first?.query ?? "" : plan.topic
         let hits = qualifiedHits(from: allSources, plan: plan, targets: targets, topic: topic)
-        if hits.count < minQualifiedHits {
-            let retryTopic = focusTopicPhrase(topic)
-            let retryPlan = SearchPlan(topic: retryTopic, targets: heuristicTargets(for: retryTopic))
-            let retryTargets = Array(retryPlan.targets.prefix(maxPlannedQueries))
+        // Fail fast: retry only when completely empty — do not burn SERP quota
+        // chasing a second weak hit.
+        if hits.isEmpty {
+            let retryTopic = sanitizePlannerQuery(focusTopicPhrase(topic), topic: topic)
             let retryGroup = DispatchGroup()
             let retryLock = NSLock()
             var retrySources: [[Hit]] = []
             var retryError = lastError
-            for target in retryTargets {
-                let searchQuery = buildSearchQuery(for: target)
-                guard !searchQuery.isEmpty else { continue }
+            if !retryTopic.isEmpty {
                 retryGroup.enter()
-                fetchAllEngines(query: searchQuery) { fetched, error in
+                fetchAllEngines(query: retryTopic) { fetched, error in
                     retryLock.lock()
                     if !fetched.isEmpty { retrySources.append(fetched) }
                     if let error = error, retryError == nil { retryError = error }
                     retryLock.unlock()
                     retryGroup.leave()
                 }
+                retryGroup.enter()
+                fetchWikipediaHits(queries: wikipediaQueryCandidates(from: retryTopic)) { wiki in
+                    retryLock.lock()
+                    if !wiki.isEmpty { retrySources.append(wiki) }
+                    retryLock.unlock()
+                    retryGroup.leave()
+                }
             }
             retryGroup.notify(queue: .global(qos: .userInitiated)) {
-                var combined = allSources + retrySources
                 let mergedHits = qualifiedHits(
-                    from: combined,
-                    plan: retryPlan,
-                    targets: retryTargets,
-                    topic: retryTopic
+                    from: allSources + retrySources,
+                    plan: plan,
+                    targets: targets,
+                    topic: topic
                 )
                 deliverSearchResults(
-                    plan: mergedHits.isEmpty ? plan : retryPlan,
-                    targets: mergedHits.isEmpty ? targets : retryTargets,
-                    hits: mergedHits.isEmpty ? hits : mergedHits,
+                    plan: plan,
+                    targets: targets,
+                    hits: mergedHits,
                     lastError: retryError,
                     onStatus: onStatus,
                     completion: completion
@@ -401,18 +433,239 @@ enum WebSearchService {
     }
 
     private static func fetchAllEngines(query: String, completion: @escaping ([Hit], Error?) -> Void) {
-        fetchBingHTML(query: query) { result in
-            switch result {
-            case .success(let hits):
-                // Bing has already ranked the RSS feed. A second strict
-                // substring filter can incorrectly discard every valid
-                // Chinese result when titles paraphrase the query.
-                let usable = hits.filter { !isExcludedResultHost($0.url) }
-                completion(Array(usable.prefix(8)), nil)
-            case .failure(let error):
-                completion([], error)
+        // Serialize SERP traffic. Parallel site: bursts get DuckDuckGo 403s and
+        // leave only polluted Bing rows that fail relevance filters.
+        DispatchQueue.global(qos: .userInitiated).async {
+            serpGate.wait()
+            fetchAllEnginesUngated(query: query) { hits, error in
+                serpGate.signal()
+                completion(hits, error)
             }
         }
+    }
+
+    private static func fetchAllEnginesUngated(query: String, completion: @escaping ([Hit], Error?) -> Void) {
+        // cn.bing.com frequently returns spam / wrong-sense rows for CJK.
+        // DuckDuckGo is primary; Bing only contributes on-topic rows.
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var ddgHits: [Hit] = []
+        var bingHits: [Hit] = []
+        var lastError: Error?
+        let topicHint = openWebQuery(from: query)
+
+        group.enter()
+        fetchDuckDuckGoHTML(query: query, attempt: 1) { result in
+            lock.lock()
+            switch result {
+            case .success(let hits):
+                ddgHits = hits
+            case .failure(let error):
+                if lastError == nil { lastError = error }
+            }
+            lock.unlock()
+            group.leave()
+        }
+
+        group.enter()
+        fetchBingHTML(query: query) { result in
+            lock.lock()
+            switch result {
+            case .success(let hits):
+                bingHits = hits
+            case .failure(let error):
+                if lastError == nil { lastError = error }
+            }
+            lock.unlock()
+            group.leave()
+        }
+
+        group.notify(queue: .global(qos: .userInitiated)) {
+            let merged = mergeEngineHits(
+                primary: ddgHits,
+                secondary: bingHits,
+                topicHint: topicHint,
+                siteDomain: siteConstraint(in: query)
+            )
+            finishEngineFetch(merged, lastError: lastError, completion: completion)
+        }
+    }
+
+    private static func finishEngineFetch(
+        _ hits: [Hit],
+        lastError: Error?,
+        completion: @escaping ([Hit], Error?) -> Void
+    ) {
+        let usable = hits
+            .filter { !isExcludedResultHost($0.url) }
+            .filter { !isJunkHit($0) }
+        completion(Array(usable.prefix(8)), usable.isEmpty ? lastError : nil)
+    }
+
+    private static func mergeEngineHits(
+        primary: [Hit],
+        secondary: [Hit],
+        topicHint: String,
+        siteDomain: String?
+    ) -> [Hit] {
+        func accepted(_ hit: Hit, allowWeakPrimary: Bool) -> Bool {
+            guard !isExcludedResultHost(hit.url), !isJunkHit(hit) else { return false }
+            if let siteDomain = siteDomain, !hostMatchesDomain(hit.url, domain: siteDomain) {
+                return false
+            }
+            if topicHint.isEmpty { return true }
+            if isTopicRelevantHit(hit, topic: topicHint) { return true }
+            // Never keep off-topic Bing/secondary rows. For DDG primary only,
+            // allow encyclopedia paraphrases that already passed junk filters.
+            return allowWeakPrimary && isEncyclopediaHost(hit.url)
+        }
+
+        var out: [Hit] = []
+        var seen = Set<String>()
+        for hit in primary where accepted(hit, allowWeakPrimary: true) {
+            let key = hit.url.lowercased().isEmpty ? hit.title.lowercased() : hit.url.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            out.append(hit)
+            if out.count >= 8 { break }
+        }
+        for hit in secondary where accepted(hit, allowWeakPrimary: false) {
+            let key = hit.url.lowercased().isEmpty ? hit.title.lowercased() : hit.url.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            out.append(hit)
+            if out.count >= 10 { break }
+        }
+        return out
+    }
+
+    private static func siteConstraint(in query: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"(?i)\bsite:([^\s]+)"#),
+              let match = re.firstMatch(
+                in: query,
+                range: NSRange(query.startIndex..<query.endIndex, in: query)
+              ),
+              match.numberOfRanges >= 2,
+              let range = Range(match.range(at: 1), in: query) else {
+            return nil
+        }
+        return normalizeDomain(String(query[range]))
+    }
+
+    private static func openWebQuery(from query: String) -> String {
+        sanitizeQuery(
+            query.replacingOccurrences(
+                of: #"(?i)\bsite:[^\s]+\s*"#,
+                with: "",
+                options: .regularExpression
+            )
+        )
+    }
+
+    private static func hostMatchesDomain(_ urlString: String, domain: String) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
+        let d = domain.lowercased()
+        return host == d || host.hasSuffix("." + d)
+    }
+
+    /// MediaWiki OpenSearch — no DuckDuckGo quota, good encyclopedia anchors.
+    /// OpenSearch needs short lemmas; long planner topics return empty.
+    private static func wikipediaQueryCandidates(from topic: String) -> [String] {
+        let focused = focusTopicPhrase(topic)
+        var out: [String] = []
+        var seen = Set<String>()
+        func add(_ value: String) {
+            let term = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard term.count >= 2, term.count <= 12, seen.insert(term.lowercased()).inserted else { return }
+            out.append(term)
+        }
+        for marker in cultureTopicMarkers where focused.contains(marker) {
+            add(marker)
+        }
+        for term in distinctiveTerms(in: focused).sorted(by: { $0.count < $1.count }) {
+            add(term)
+        }
+        add(focusedSearchQuery(focused))
+        add(focused)
+        return Array(out.prefix(2))
+    }
+
+    private static func fetchWikipediaHits(queries: [String], completion: @escaping ([Hit]) -> Void) {
+        let cleaned = queries.map { sanitizeQuery($0) }.filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else {
+            completion([])
+            return
+        }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var hits: [Hit] = []
+        for query in cleaned {
+            for lang in ["zh", "en"] {
+                group.enter()
+                fetchWikipediaOpenSearch(query: query, language: lang) { rows in
+                    lock.lock()
+                    hits.append(contentsOf: rows)
+                    lock.unlock()
+                    group.leave()
+                }
+            }
+        }
+        group.notify(queue: .global(qos: .userInitiated)) {
+            var seen = Set<String>()
+            let unique = hits.filter { hit in
+                let key = hit.url.lowercased()
+                return seen.insert(key).inserted
+            }
+            completion(Array(unique.prefix(8)))
+        }
+    }
+
+    private static func fetchWikipediaHits(query: String, completion: @escaping ([Hit]) -> Void) {
+        fetchWikipediaHits(queries: wikipediaQueryCandidates(from: query), completion: completion)
+    }
+
+    private static func fetchWikipediaOpenSearch(
+        query: String,
+        language: String,
+        completion: @escaping ([Hit]) -> Void
+    ) {
+        guard let url = makeGETURL(
+            base: "https://\(language).wikipedia.org/w/api.php",
+            parameters: [
+                "action": "opensearch",
+                "search": query,
+                "limit": "5",
+                "namespace": "0",
+                "format": "json"
+            ]
+        ) else {
+            completion([])
+            return
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("ConnectsSearch/1.0", forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req) { data, response, _ in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard let data = data, (200..<300).contains(code),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [Any],
+                  json.count >= 4,
+                  let titles = json[1] as? [String],
+                  let descs = json[2] as? [String],
+                  let urls = json[3] as? [String] else {
+                completion([])
+                return
+            }
+            var out: [Hit] = []
+            for i in 0..<min(titles.count, urls.count) {
+                let title = titles[i].trimmingCharacters(in: .whitespacesAndNewlines)
+                let link = urls[i].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty, link.hasPrefix("http") else { continue }
+                let snip = i < descs.count ? descs[i] : ""
+                out.append(Hit(title: title, url: link, snippet: snip))
+            }
+            completion(out)
+        }.resume()
     }
 
     private struct SearchPlanPayload: Decodable {
@@ -1096,7 +1349,11 @@ enum WebSearchService {
 
     // MARK: - DuckDuckGo HTML
 
-    private static func fetchDuckDuckGoHTML(query: String, completion: @escaping (Result<[Hit], Error>) -> Void) {
+    private static func fetchDuckDuckGoHTML(
+        query: String,
+        attempt: Int = 1,
+        completion: @escaping (Result<[Hit], Error>) -> Void
+    ) {
         guard let url = URL(string: "https://html.duckduckgo.com/html/"),
               let body = formBody(["q": query, "kl": "cn-zh"]) else {
             completion(.failure(SearchError.network("无效搜索 URL")))
@@ -1111,15 +1368,31 @@ enum WebSearchService {
 
         URLSession.shared.dataTask(with: req) { data, response, error in
             if let error = error {
+                if attempt < serpRetryLimit {
+                    let delay = Double(attempt) * 0.8
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
+                        fetchDuckDuckGoHTML(query: query, attempt: attempt + 1, completion: completion)
+                    }
+                    return
+                }
                 completion(.failure(SearchError.network(error.localizedDescription)))
                 return
             }
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard let data = data, let html = String(data: data, encoding: .utf8), (200..<300).contains(code) else {
+                if attempt < serpRetryLimit, code == 403 || code == 429 || code == 202 {
+                    let delay = Double(attempt) * 1.2
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
+                        fetchDuckDuckGoHTML(query: query, attempt: attempt + 1, completion: completion)
+                    }
+                    return
+                }
                 completion(.failure(SearchError.network("DuckDuckGo 请求失败 (\(code))")))
                 return
             }
-            completion(.success(parseDuckDuckGoHTML(html)))
+            let hits = parseDuckDuckGoHTML(html)
+            // Empty SERP is a real miss — do not retry and burn quota.
+            completion(.success(hits))
         }.resume()
     }
 
@@ -1160,10 +1433,10 @@ enum WebSearchService {
 
     private static func fetchBingHTML(query: String, completion: @escaping (Result<[Hit], Error>) -> Void) {
         guard let url = makeGETURL(
-            // `cn.bing.com` redirects to a request with `mkt=zh-CN`. Bing's
-            // CN-market SERP can incorrectly reduce Chinese multi-character
-            // topics (such as “二次元” / “亚文化”) to their first character.
-            // The global endpoint preserves the complete query.
+            // Traffic still lands on cn.bing.com from CN networks. Do NOT set
+            // ENSEARCH/BENVER cookies: they "internationalize" the index and
+            // scramble CJK queries into unrelated English/Tailscale/calculator
+            // spam. Prefer the default regional feed, then let DuckDuckGo lead.
             base: "https://www.bing.com/search",
             parameters: ["q": query, "format": "rss"]
         ) else {
@@ -1308,57 +1581,60 @@ enum WebSearchService {
         req.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
     }
 
+    private static func hitScore(_ hit: Hit, topic: String, targets: [SearchTarget]) -> Int {
+        let compactTopic = sanitizePlannerQuery(focusTopicPhrase(topic), topic: topic).lowercased()
+        let title = hit.title.lowercased()
+        let snippet = hit.snippet.lowercased()
+        let sourceText = title + " " + snippet
+        var value = 0
+        if !compactTopic.isEmpty {
+            if title.contains(compactTopic) { value += 6 }
+            if snippet.contains(compactTopic) { value += 3 }
+        }
+        if isTopicRelevantHit(hit, topic: topic) { value += 8 }
+        for target in targets {
+            if termMatches(sourceText, term: sanitizePlannerQuery(target.query, topic: topic)) { value += 6 }
+        }
+        if !hit.snippet.isEmpty { value += 1 }
+        if isTrustedSource(hit.url) { value += 10 }
+        if isEncyclopediaHost(hit.url) { value += 8 }
+        if let host = URL(string: hit.url)?.host?.lowercased() {
+            for target in targets {
+                guard let domain = target.domain else { continue }
+                if host == domain || host.hasSuffix("." + domain) {
+                    value += 12
+                }
+            }
+        }
+        let explanatoryMarkers = [
+            "定义", "起源", "发展", "历史", "研究", "论文", "报告",
+            "解释", "分析", "背景", "影响"
+        ]
+        if explanatoryMarkers.contains(where: { sourceText.contains($0) }) {
+            value += 4
+        }
+        if isJunkHit(hit) { value -= 50 }
+        if shouldBlockOfficialHit(hit, topic: topic) { value -= 100 }
+        if isWrongSenseHit(hit, topic: topic) { value -= 100 }
+        if isGenericNationHit(hit) && !isTopicRelevantHit(hit, topic: topic) { value -= 100 }
+        if isPlaybackPlatform(hit.url) { value -= 12 }
+        return value
+    }
+
+    private static func isTrustedSource(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
+        return trustedSourceHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
     private static func rankHits(
         _ hits: [Hit],
         topic: String,
         targets: [SearchTarget]
     ) -> [Hit] {
-        let compactTopic = sanitizePlannerQuery(focusTopicPhrase(topic), topic: topic).lowercased()
-
-        func score(_ hit: Hit) -> Int {
-            let title = hit.title.lowercased()
-            let snippet = hit.snippet.lowercased()
-            let sourceText = title + " " + snippet
-            var value = 0
-            if !compactTopic.isEmpty {
-                if title.contains(compactTopic) { value += 6 }
-                if snippet.contains(compactTopic) { value += 3 }
-            }
-            if relevantHits([hit], for: topic).count > 0 { value += 8 }
-            for target in targets {
-                if termMatches(sourceText, term: sanitizePlannerQuery(target.query, topic: topic)) { value += 6 }
-            }
-            if !hit.snippet.isEmpty { value += 1 }
-            if let host = URL(string: hit.url)?.host?.lowercased() {
-                if trustedSourceHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
-                    value += 10
-                }
-                for target in targets {
-                    guard let domain = target.domain else { continue }
-                    if host == domain || host.hasSuffix("." + domain) {
-                        value += 12
-                    }
-                }
-            }
-            let explanatoryMarkers = [
-                "定义", "起源", "发展", "历史", "研究", "论文", "报告",
-                "解释", "分析", "背景", "影响"
-            ]
-            if explanatoryMarkers.contains(where: { sourceText.contains($0) }) {
-                value += 4
-            }
-            if isJunkHit(hit) { value -= 50 }
-            if shouldBlockOfficialHit(hit, topic: topic) { value -= 100 }
-            if isWrongSenseHit(hit, topic: topic) { value -= 100 }
-            if isGenericNationHit(hit) && !isTopicRelevantHit(hit, topic: topic) { value -= 100 }
-            if isPlaybackPlatform(hit.url) { value -= 12 }
-            return value
-        }
-
-        return hits.enumerated()
+        hits.enumerated()
             .sorted { lhs, rhs in
-                let ls = score(lhs.element)
-                let rs = score(rhs.element)
+                let ls = hitScore(lhs.element, topic: topic, targets: targets)
+                let rs = hitScore(rhs.element, topic: topic, targets: targets)
                 if ls != rs { return ls > rs }
                 return lhs.offset < rhs.offset
             }
@@ -1384,29 +1660,38 @@ enum WebSearchService {
         targetQueries: [String]
     ) -> [Hit] {
         guard !rankedHits.isEmpty else { return [] }
+        let dummyTargets = targetQueries.map {
+            SearchTarget(name: "q", domain: nil, query: $0, reason: nil, directURL: nil)
+        }
+        // Drop weak / off-topic rows even if a fuzzy term overlap slipped through.
         let qualified = rankedHits.filter { hit in
             guard !isJunkHit(hit), !shouldBlockOfficialHit(hit, topic: topic),
-                  !isWrongSenseHit(hit, topic: topic) else { return false }
-            return isTopicRelevantHit(hit, topic: topic)
+                  !isWrongSenseHit(hit, topic: topic),
+                  isTopicRelevantHit(hit, topic: topic) else { return false }
+            let score = hitScore(hit, topic: topic, targets: dummyTargets)
+            if isEncyclopediaHost(hit.url) || isTrustedSource(hit.url) {
+                return score >= 6
+            }
+            return score >= minHitScoreToKeep
         }
         if qualified.count >= minQualifiedHits {
-            return qualified
+            return Array(qualified.prefix(6))
         }
         if !qualified.isEmpty {
             return padWithTopicRelevantHits(
                 qualified,
-                from: rankedHits,
+                from: rankedHits.filter { hitScore($0, topic: topic, targets: dummyTargets) >= minHitScoreToKeep },
                 topic: topic,
-                targetCount: minQualifiedHits
+                targetCount: min(minQualifiedHits, 3)
             )
         }
-        let relaxed = rankedHits.filter { hit in
-            guard !isJunkHit(hit), !shouldBlockOfficialHit(hit, topic: topic),
-                  !isWrongSenseHit(hit, topic: topic) else { return false }
-            return isTopicRelevantHit(hit, topic: topic)
-        }
-        if !relaxed.isEmpty {
-            return relaxed
+        // Last resort: a single strong encyclopedia/trusted row is enough to answer.
+        if let anchor = rankedHits.first(where: {
+            (isEncyclopediaHost($0.url) || isTrustedSource($0.url))
+                && isTopicRelevantHit($0, topic: topic)
+                && !isWrongSenseHit($0, topic: topic)
+        }) {
+            return [anchor]
         }
         return []
     }
@@ -1445,11 +1730,12 @@ enum WebSearchService {
 
         let requiredRun: Int
         if termCompact.count >= 6 {
-            requiredRun = 4
+            requiredRun = 5
         } else if termCompact.count >= 4 {
-            requiredRun = 3
+            requiredRun = 4
         } else {
-            requiredRun = 2
+            // 2-char fuzzy runs match too many unrelated CN titles.
+            return false
         }
         return longestCommonRun(termCompact, textCompact) >= requiredRun
     }
@@ -1474,7 +1760,27 @@ enum WebSearchService {
             return false
         }
         let blob = hit.title + " " + hit.snippet
-        return terms.contains { termMatches(blob, term: $0) }
+        if terms.contains(where: { termMatches(blob, term: $0) }) {
+            return true
+        }
+        // Encyclopedia titles often use Traditional Chinese or short lemmas
+        // (签证/簽證, 御宅族). Accept a shared character run against the topic.
+        if isEncyclopediaHost(hit.url) {
+            let topicCompact = searchableCharacters(in: focusTopicPhrase(topic))
+            let titleCompact = searchableCharacters(in: hit.title)
+            let need = topicCompact.count >= 4 ? 3 : 2
+            if topicCompact.count >= 2, longestCommonRun(topicCompact, titleCompact) >= need {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func isEncyclopediaHost(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return false }
+        return host.contains("wikipedia.org")
+            || host == "baike.baidu.com"
+            || host.hasSuffix(".baike.baidu.com")
     }
 
     private static func requiredMatchTerms(in text: String) -> [String] {
