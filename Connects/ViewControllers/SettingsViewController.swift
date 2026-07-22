@@ -175,7 +175,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         fontTip.text = "调整对话正文与思考区字号。侧栏可用聊天页左上角「关闭 / 侧栏」切换。"
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
-        contentStack.setCustomSpacing(12, after: fontTip)
+        contentStack.setCustomSpacing(22, after: fontTip)
 
         let turnContextRow = makeSwitchRow(
             label: turnContextBarLabel,

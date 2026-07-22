@@ -19,6 +19,12 @@ final class ChatRowHeightResolver {
     private var deferFrozenMapLiveUpdates = false
     /// Rows pinned at finger-down — ignore paint-driven grows while wiggling near bubble edge.
     private var gesturePinnedFrozenIDs = Set<String>()
+    /// History freeze with exact precomputed heights: the frozen map is IMMUTABLE for the
+    /// whole gesture. Every live grow/seed is rejected so no row at/above the viewport top
+    /// can change height mid-scroll — the single guarantee that kills displacement + edge hitch.
+    private var historyExactAuthorityMode = false
+
+    var isHistoryExactAuthority: Bool { historyExactAuthorityMode }
 
     func frozenRowHeight(for messageID: String) -> CGFloat? {
         scrollFrozenRowHeights?[messageID]
@@ -41,7 +47,9 @@ final class ChatRowHeightResolver {
     func beginScrollHeightFreeze(messages: [ChatMessage],
                                  layoutWidth: CGFloat,
                                  rows: [Int]? = nil,
-                                 deferLiveFrozenMapUpdates: Bool = false) {
+                                 deferLiveFrozenMapUpdates: Bool = false,
+                                 historyExactAuthority: Bool = false) {
+        historyExactAuthorityMode = historyExactAuthority
         guard !messages.isEmpty else {
             scrollFrozenRowHeights = [:]
             deferredFrozenRowGrows = deferLiveFrozenMapUpdates ? [:] : nil
@@ -84,6 +92,7 @@ final class ChatRowHeightResolver {
         scrollFrozenRowHeights = nil
         deferredFrozenRowGrows = nil
         deferFrozenMapLiveUpdates = false
+        historyExactAuthorityMode = false
         gesturePinnedFrozenIDs.removeAll()
     }
 
@@ -98,6 +107,19 @@ final class ChatRowHeightResolver {
 
     func isGesturePinnedFrozenMessage(_ messageID: String) -> Bool {
         gesturePinnedFrozenIDs.contains(messageID)
+    }
+
+    /// Raise live freeze height even while `deferFrozenMapLiveUpdates` (seed only — no deferred queue).
+    @discardableResult
+    func ensureMinimumFrozenRowHeightLive(messageID: String, columnHeight: CGFloat) -> Bool {
+        // History exact authority: frozen map is immutable — reject all live seeds.
+        guard !historyExactAuthorityMode else { return false }
+        guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
+        let required = columnHeight + Self.cellVerticalMargin
+        let current = scrollFrozenRowHeights?[messageID] ?? 0
+        guard required > current + 4 else { return false }
+        scrollFrozenRowHeights?[messageID] = required
+        return true
     }
 
     /// Drop queued grows — light settle keeps finger geometry; async formula sync catches up later.
@@ -155,6 +177,8 @@ final class ChatRowHeightResolver {
     /// Grow the frozen row map when painted content exceeds the snapshotted height.
     @discardableResult
     func growFrozenRowHeightIfNeeded(messageID: String, columnHeight: CGFloat) -> Bool {
+        // History exact authority: heights are precomputed exact — never grow mid-gesture.
+        guard !historyExactAuthorityMode else { return false }
         guard scrollFrozenRowHeights != nil, columnHeight > 40 else { return false }
         let required = columnHeight + Self.cellVerticalMargin
         let current = scrollFrozenRowHeights?[messageID] ?? 0
@@ -419,6 +443,18 @@ final class ChatRowHeightResolver {
                allowSyncLayout: false
            ), column > 40 {
             return column
+        }
+        // No committed height and no cached (formula-final) native layout yet — this row may be
+        // about to freeze. A char-count heuristic here can under-measure structurally dense plain
+        // text (tables, lists, code) and, once frozen (immutable), clip forever. A boundingRect
+        // pass is nearly as cheap and matches what `configurePlainFallback` actually paints, so
+        // use it as the floor whenever it is available.
+        if message.role == .assistant, !message.isStreaming,
+           let plain = AssistantMessageLayout.plainFallbackColumnContentHeight(
+               for: message,
+               layoutWidth: layoutWidth
+           ), plain > 40 {
+            return max(plain, Self.cheapColumnEstimate(for: message, layoutWidth: layoutWidth))
         }
         return max(Self.cheapColumnEstimate(for: message, layoutWidth: layoutWidth), 44)
     }

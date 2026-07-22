@@ -224,9 +224,10 @@ enum AssistantMessageLayout {
         return assistants.reversed()
     }
 
-    private static func formulasReady(in document: NativeMarkdownDocument,
-                                      style: NativeLayoutStyle) -> Bool {
-        var formulas = [(String, Bool)]()
+    /// Every formula reference in a parsed document, in document order (duplicates kept —
+    /// callers either dedupe or tolerate a cheap repeated cache-hit lookup).
+    private static func formulaReferences(in document: NativeMarkdownDocument) -> [(tex: String, display: Bool)] {
+        var formulas = [(tex: String, display: Bool)]()
         func scan(_ inlines: [NativeInline]) {
             for inline in inlines {
                 switch inline {
@@ -254,6 +255,12 @@ enum AssistantMessageLayout {
                 break
             }
         }
+        return formulas
+    }
+
+    private static func formulasReady(in document: NativeMarkdownDocument,
+                                      style: NativeLayoutStyle) -> Bool {
+        let formulas = formulaReferences(in: document)
         guard !formulas.isEmpty else { return true }
         return formulas.allSatisfy { tex, display in
             NativeFormulaRenderer.shared.hasMemoryArtifact(
@@ -268,6 +275,74 @@ enum AssistantMessageLayout {
                 display: display
             )
         }
+    }
+
+    /// Render every not-yet-cached formula in a document on the main thread (persists disk
+    /// metadata) so the layouter's `final` phase can cache a complete, exact layout.
+    /// `NativeFormulaRenderer.artifact` itself guards `Thread.isMainThread` for the actual
+    /// iosMath render; a memory/disk cache hit is cheap from any thread.
+    private static func renderMissingFormulas(in document: NativeMarkdownDocument,
+                                              style: NativeLayoutStyle) {
+        for (tex, display) in formulaReferences(in: document) {
+            _ = NativeFormulaRenderer.shared.artifact(
+                tex: tex,
+                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                color: style.colors.textPrimary,
+                display: display
+            )
+        }
+    }
+
+    /// Single source of "final height": render any missing formulas on the MAIN THREAD (required
+    /// by iosMath), force the layouter's `final` phase (now cacheable since every formula is
+    /// ready), and return the exact committed height. This is the only path that may commit a
+    /// row's history-scroll frozen height for a message containing math — a preview-based height
+    /// can under-measure and, once frozen+clipped, never recover (the truncation bug).
+    @discardableResult
+    static func renderFormulasAndExactHeight(for message: ChatMessage,
+                                             layoutWidth: CGFloat,
+                                             isLastRow: Bool,
+                                             pairedUser: ChatMessage? = nil) -> CGFloat? {
+        guard Thread.isMainThread else { return nil }
+        guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
+            return nil
+        }
+        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
+        let style = NativeLayoutStyle(
+            width: width,
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+        let document = NativeMarkdownParser.shared.parse(message.content)
+        if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
+            renderMissingFormulas(in: document, style: style)
+            _ = NativeMessageLayouter.shared.layout(document: document, style: style, renderMissingFormulas: true)
+        }
+        // Formulas are now rendered and the native layout is cached for this exact width, so this
+        // row is guaranteed to paint via `configureNative` — never the plain-text fallback. Use the
+        // native-only estimate rather than `exactColumnContentHeight`'s `max(native, plain)`:
+        // `plainFallbackColumnContentHeight` measures the *raw* markdown/LaTeX source as plain
+        // text, which commonly wraps to far more lines than the compact rendered formula. Taking
+        // that max here would over-reserve for a fallback paint that can't happen, and — because
+        // committed heights only ever grow, never shrink — that permanently leaves a visible gap
+        // above the action row.
+        if let native = estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: isLastRow,
+            allowSyncLayout: true,
+            pairedUser: pairedUser
+        ) {
+            return native
+        }
+        return exactColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: isLastRow,
+            allowSyncLayout: true,
+            pairedUser: pairedUser
+        )
     }
 
     /// `layoutWidth` from ChatVC is already bubble/content width (`currentRenderWidth`).
@@ -434,6 +509,39 @@ enum AssistantMessageLayout {
         guard total > 40 else { return nil }
         _ = isLastRow
         return total
+    }
+
+    /// Single exact height authority for an assistant row: the taller of the native
+    /// markdown layout and the plain-fallback text box. Reserving `max(...)` guarantees
+    /// both the native bitmap and the plain-text paint fit the same row height, so a
+    /// plain→native upgrade never reflows and never shifts `contentOffset`.
+    ///
+    /// Safe to call on `layoutPrewarmQueue` with `allowSyncLayout: true` (CoreText only,
+    /// no WebView, no UITableView cell). Returns nil when neither path can size the row.
+    static func exactColumnContentHeight(for message: ChatMessage,
+                                         layoutWidth: CGFloat,
+                                         isLastRow: Bool,
+                                         allowSyncLayout: Bool = true,
+                                         pairedUser: ChatMessage? = nil) -> CGFloat? {
+        guard message.role == .assistant, !message.isStreaming else { return nil }
+        let native = estimatedColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            isLastRow: isLastRow,
+            allowSyncLayout: allowSyncLayout,
+            pairedUser: pairedUser
+        )
+        let plain = plainFallbackColumnContentHeight(
+            for: message,
+            layoutWidth: layoutWidth,
+            pairedUser: pairedUser
+        )
+        switch (native, plain) {
+        case let (n?, p?): return max(n, p)
+        case let (n?, nil): return n
+        case let (nil, p?): return p
+        default: return nil
+        }
     }
 
     /// Height while an assistant row shows plain `assistantLabel` fallback (no native layout cache).

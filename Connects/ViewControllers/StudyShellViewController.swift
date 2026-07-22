@@ -56,6 +56,10 @@ final class StudyShellViewController: UIViewController {
     private var landscapeResizeActive = false
     private var didSeedPortraitMode = false
     private var isHandlingRotation = false
+#if DEBUG
+    /// Harness-only: simulate iPad portrait/landscape shell geometry without rotating the Mac window.
+    private var debugShellBoundsOverride: CGSize?
+#endif
 
     var onToggleSidebar: (() -> Void)?
 
@@ -113,7 +117,7 @@ final class StudyShellViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         if view.bounds.width > 1, view.bounds.height > 1 {
-            isPortraitMode = view.bounds.height > view.bounds.width
+            isPortraitMode = isPortraitShellBounds()
             didSeedPortraitMode = true
         }
         view.backgroundColor = DSTheme.c.background
@@ -273,6 +277,7 @@ final class StudyShellViewController: UIViewController {
             }
             self.pdfReaderVC.finishShellRotation(using: pdfSnapshot)
             self.syncStudyOverlayChrome()
+            self.settleChatAfterShellOrientationChange()
             self.postChatWidthNotification()
             self.bringChromeToFront()
         })
@@ -280,9 +285,9 @@ final class StudyShellViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard view.bounds.width > 1, view.bounds.height > 1 else { return }
+        guard shellBoundsSize().width > 1, shellBoundsSize().height > 1 else { return }
 
-        let portrait = view.bounds.height > view.bounds.width
+        let portrait = isPortraitShellBounds()
         if !didSeedPortraitMode {
             didSeedPortraitMode = true
             isPortraitMode = portrait
@@ -290,6 +295,11 @@ final class StudyShellViewController: UIViewController {
                 applyLayoutMode()
             }
         } else if portrait != isPortraitMode, !isHandlingRotation {
+#if DEBUG
+            if debugShellBoundsOverride != nil {
+                return
+            }
+#endif
             let pdfSnapshot = pdfReaderVC.captureReadingProgress()
             stashDepartingOverlayRatio()
             isPortraitMode = portrait
@@ -304,6 +314,7 @@ final class StudyShellViewController: UIViewController {
             }
             pdfReaderVC.finishShellRotation(using: pdfSnapshot)
             syncStudyOverlayChrome()
+            settleChatAfterShellOrientationChange()
             postChatWidthNotification()
         }
 
@@ -351,11 +362,11 @@ final class StudyShellViewController: UIViewController {
     private func captureDepartingOverlayRatio() -> CGFloat? {
         guard isReaderVisible, !isChatCollapsed, !chatHost.isHidden else { return nil }
         if isPortraitMode {
-            let total = max(view.bounds.height, 1)
+            let total = max(layoutBoundsSize().height, 1)
             guard portraitChatHeightConstraint.isActive, total > 1 else { return nil }
             return Self.clampOverlayRatio(portraitChatHeightConstraint.constant / total, portrait: true)
         }
-        let total = max(view.bounds.width, 1)
+        let total = max(layoutBoundsSize().width, 1)
         guard chatWidthConstraint.isActive, total > 1 else { return nil }
         return Self.clampOverlayRatio(chatWidthConstraint.constant / total, portrait: false)
     }
@@ -366,8 +377,23 @@ final class StudyShellViewController: UIViewController {
         return min(max(total * ratio, minChatWidth), total * maxOverlayRatio)
     }
 
+    private func shellBoundsSize() -> CGSize {
+#if DEBUG
+        if let override = debugShellBoundsOverride,
+           override.width > 1, override.height > 1 {
+            return override
+        }
+#endif
+        return view.bounds.size
+    }
+
+    private func isPortraitShellBounds(_ size: CGSize? = nil) -> Bool {
+        let bounds = size ?? shellBoundsSize()
+        return bounds.height > bounds.width
+    }
+
     private func layoutBoundsSize(for size: CGSize? = nil) -> CGSize {
-        let raw = size ?? view.bounds.size
+        let raw = size ?? shellBoundsSize()
         return CGSize(width: max(raw.width, 1), height: max(raw.height, 1))
     }
 
@@ -655,6 +681,16 @@ final class StudyShellViewController: UIViewController {
         }
     }
 
+    /// Orientation / simulated bounds change only — not on first chat→study entry.
+    private func settleChatAfterShellOrientationChange() {
+        guard isReaderVisible, !isChatCollapsed else { return }
+        guard let msgs = ConversationStore.shared.currentConversation?.messages, !msgs.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.isReaderVisible, !self.isChatCollapsed else { return }
+            self.chatVC.relayoutForStudyShellGeometryChange(messages: msgs)
+        }
+    }
+
     /// Status bar (landscape) and seam handle (portrait) are explicit spacers — nav bar stays at y=0.
     private func applyStudyPanelSpacers(expanded: Bool) {
         let statusBarInset: CGFloat
@@ -730,7 +766,7 @@ final class StudyShellViewController: UIViewController {
         portraitChatHeightConstraint.constant = 0
         attachChatHostToViewIfNeeded()
         chatWidthConstraint.isActive = true
-        let total = layoutWidth ?? max(view.bounds.width, 1)
+        let total = layoutWidth ?? max(layoutBoundsSize().width, 1)
         chatWidthConstraint.constant = overlayLength(for: total, portrait: false)
         NSLayoutConstraint.deactivate(chatLandscapeConstraints)
         chatLandscapeConstraints = [
@@ -751,7 +787,7 @@ final class StudyShellViewController: UIViewController {
         chatWidthConstraint.constant = 0
         attachChatHostToViewIfNeeded()
         portraitChatHeightConstraint.isActive = true
-        let total = layoutHeight ?? max(view.bounds.height, 1)
+        let total = layoutHeight ?? max(layoutBoundsSize().height, 1)
         portraitChatHeightConstraint.constant = overlayLength(for: total, portrait: true)
         NSLayoutConstraint.deactivate(chatPortraitConstraints)
         chatPortraitConstraints = [
@@ -810,7 +846,7 @@ final class StudyShellViewController: UIViewController {
 
     private func updateLandscapeOverlay(layoutWidth: CGFloat? = nil) {
         guard isReaderVisible, !isPortraitMode else { return }
-        let total = layoutWidth ?? max(view.bounds.width, 1)
+        let total = layoutWidth ?? max(layoutBoundsSize().width, 1)
 
         if isChatCollapsed {
             chatWidthConstraint.constant = 0
@@ -835,7 +871,7 @@ final class StudyShellViewController: UIViewController {
 
     private func updatePortraitOverlay(layoutHeight: CGFloat? = nil) {
         guard isReaderVisible, isPortraitMode else { return }
-        let total = layoutHeight ?? max(view.bounds.height, 1)
+        let total = layoutHeight ?? max(layoutBoundsSize().height, 1)
 
         if isChatCollapsed {
             portraitChatHeightConstraint.constant = 0
@@ -882,7 +918,7 @@ final class StudyShellViewController: UIViewController {
 
     @objc private func handleLandscapeResizePan(_ gesture: UIPanGestureRecognizer) {
         guard isReaderVisible, !isPortraitMode, !isChatCollapsed else { return }
-        let total = view.bounds.width
+        let total = layoutBoundsSize().width
         switch gesture.state {
         case .began:
             let point = gesture.location(in: chatHost)
@@ -912,10 +948,11 @@ final class StudyShellViewController: UIViewController {
 
     private func postChatWidthNotification() {
         let width: CGFloat
+        let shellWidth = layoutBoundsSize().width
         if !isReaderVisible {
-            width = view.bounds.width
+            width = shellWidth
         } else if isPortraitMode {
-            width = view.bounds.width
+            width = shellWidth
         } else if isChatCollapsed {
             width = 0
         } else {
@@ -958,6 +995,68 @@ final class StudyShellViewController: UIViewController {
         styleCollapseStrip()
         applyLayoutMode()
         postChatWidthNotification()
+    }
+
+    /// Simulate iPad shell bounds + orientation transition through the real StudyShell layout path.
+    func debugSimulateShellBounds(_ size: CGSize, completion: (() -> Void)? = nil) {
+        let normalized = layoutBoundsSize(for: size)
+        let willBePortrait = normalized.height > normalized.width
+        let orientationChanged = willBePortrait != isPortraitMode
+        let finish = {
+            self.view.layoutIfNeeded()
+            self.syncStudyOverlayChrome()
+            if orientationChanged {
+                self.settleChatAfterShellOrientationChange()
+            }
+            self.postChatWidthNotification()
+            completion?()
+        }
+
+        guard isReaderVisible else {
+            debugShellBoundsOverride = normalized
+            isPortraitMode = willBePortrait
+            finish()
+            return
+        }
+
+        if willBePortrait != isPortraitMode {
+            let pdfSnapshot = pdfReaderVC.captureReadingProgress()
+            stashDepartingOverlayRatio()
+            isHandlingRotation = true
+            pdfReaderVC.beginShellRotation(keeping: pdfSnapshot)
+            debugShellBoundsOverride = normalized
+            isPortraitMode = willBePortrait
+            applyLayoutMode(for: normalized)
+            UIView.performWithoutAnimation {
+                self.syncCollapseStripLayout()
+                self.updateChatPanelShadowPath()
+                self.view.layoutIfNeeded()
+                self.pdfReaderVC.updateDuringShellRotation()
+                self.bringChromeToFront()
+            }
+            isHandlingRotation = false
+            pdfReaderVC.finishShellRotation(using: pdfSnapshot)
+            finish()
+            return
+        }
+
+        debugShellBoundsOverride = normalized
+        isPortraitMode = willBePortrait
+        applyLayoutMode(for: normalized)
+        finish()
+    }
+
+    func debugClearShellBoundsOverride() {
+        debugShellBoundsOverride = nil
+    }
+
+    func debugChatPanelWidth() -> CGFloat {
+        guard isReaderVisible, !isChatCollapsed else { return 0 }
+        return chatHost.bounds.width
+    }
+
+    func debugIsPortraitShell() -> Bool {
+        isPortraitMode
     }
 #endif
 }

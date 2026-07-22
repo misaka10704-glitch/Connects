@@ -40,9 +40,14 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool
     /// Landscape study split: shift bubble right so action chrome clears the seam handle.
     func messageCellStudyContentLeadingGutter() -> CGFloat
+    /// While frozen (history-exact-authority), the immutable column height already committed
+    /// for this row's box. Native paint is only safe to bind when it fits inside this height;
+    /// nil means "not frozen" or "unknown" — caller should not gate on it.
+    func messageCellFrozenColumnHeight(_ cell: MessageCellType) -> CGFloat?
 }
 
 extension MessageCellDelegate {
+    func messageCellFrozenColumnHeight(_ cell: MessageCellType) -> CGFloat? { nil }
     func messageCellShouldFreezeHeight(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldDeferHeavyRender(_ cell: MessageCellType) -> Bool { false }
     func messageCellShouldTruncatePlainBody(_ cell: MessageCellType) -> Bool { false }

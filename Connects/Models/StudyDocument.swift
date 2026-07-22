@@ -50,6 +50,23 @@ struct StudyProgress: Codable, Equatable {
     }
 }
 
+struct PDFBookmark: Codable, Equatable, Identifiable {
+    let id: String
+    var title: String
+    var pageIndex: Int
+    var createdAt: Date
+
+    init(id: String = UUID().uuidString,
+         title: String,
+         pageIndex: Int,
+         createdAt: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.pageIndex = pageIndex
+        self.createdAt = createdAt
+    }
+}
+
 extension Notification.Name {
     static let studyDocumentsDidUpdate = Notification.Name("ConnectsStudyDocumentsDidUpdate")
 }

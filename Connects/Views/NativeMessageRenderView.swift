@@ -195,7 +195,7 @@ final class NativeMessageRenderView: UIView {
         UIGraphicsBeginImageContextWithOptions(size, false, scale)
         defer { UIGraphicsEndImageContext() }
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        draw(layout: layout, in: context, clipRect: CGRect(origin: .zero, size: size))
+        NativeMessageRenderView.drawCommands(layout.commands, in: context, clipRect: CGRect(origin: .zero, size: size))
         guard let cgImage = UIGraphicsGetImageFromCurrentImageContext()?.cgImage else { return }
         bitmapView.image = UIImage(cgImage: cgImage, scale: scale, orientation: .up)
         setNeedsLayout()
@@ -310,10 +310,12 @@ final class NativeMessageRenderView: UIView {
         layout?.size ?? .zero
     }
 
-    private func draw(layout: NativeMessageLayout, in context: CGContext, clipRect: CGRect) {
+    private static func drawCommands(_ commands: [NativeDrawCommand],
+                                     in context: CGContext,
+                                     clipRect: CGRect) {
         context.saveGState()
         context.clip(to: clipRect)
-        for command in layout.commands {
+        for command in commands {
             switch command {
             case .text(let fragment):
                 guard fragment.frame.intersects(clipRect) else { continue }

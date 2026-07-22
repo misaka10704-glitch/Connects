@@ -436,6 +436,7 @@ final class RootSplitViewController: UIViewController {
         })
         present(alert, animated: true)
     }
+
 }
 
 extension Notification.Name {

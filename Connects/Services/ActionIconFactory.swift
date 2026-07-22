@@ -18,6 +18,7 @@ enum ActionIconFactory {
         case folder
         case chevronLeft, chevronRight, chevronUp, chevronDown
         case book
+        case toc, bookmark
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
@@ -429,6 +430,35 @@ enum ActionIconFactory {
             page.addLine(to: CGPoint(x: cover.maxX - 3.5, y: cover.midY))
             page.lineWidth = 1.2
             page.stroke()
+
+        case .toc:
+            let lines: [CGFloat] = [0.30, 0.50, 0.70]
+            for yFrac in lines {
+                let y = r.minY + pointSize * yFrac
+                UIBezierPath(ovalIn: CGRect(x: r.minX + 3, y: y - 1.2, width: 2.4, height: 2.4)).fill()
+                let line = UIBezierPath()
+                line.move(to: CGPoint(x: r.minX + 7.5, y: y))
+                line.addLine(to: CGPoint(x: r.maxX - 3, y: y))
+                line.lineWidth = 1.45
+                line.stroke()
+            }
+
+        case .bookmark:
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: r.minX + 5.5, y: r.minY + 2.5))
+            path.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 2.5))
+            path.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.maxY - 2.5))
+            path.addLine(to: CGPoint(x: r.midX, y: r.maxY - 5.5))
+            path.addLine(to: CGPoint(x: r.minX + 5.5, y: r.maxY - 2.5))
+            path.close()
+            path.lineWidth = 1.55
+            path.stroke()
+            let notch = UIBezierPath()
+            notch.move(to: CGPoint(x: r.midX - 2.2, y: r.minY + 2.5))
+            notch.addLine(to: CGPoint(x: r.midX, y: r.minY + 6.5))
+            notch.addLine(to: CGPoint(x: r.midX + 2.2, y: r.minY + 2.5))
+            notch.lineWidth = 1.45
+            notch.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)
