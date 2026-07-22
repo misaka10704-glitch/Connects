@@ -5,12 +5,16 @@ enum StudyDocumentError: LocalizedError {
     case fileTooLarge
     case copyFailed
     case invalidPDF
+    case invalidMarkdown
+    case unsupportedType
 
     var errorDescription: String? {
         switch self {
-        case .fileTooLarge: return "PDF 超过 160MB，无法导入。"
-        case .copyFailed: return "无法复制 PDF 到应用目录。"
+        case .fileTooLarge: return "文件过大，无法导入。"
+        case .copyFailed: return "无法复制文件到应用目录。"
         case .invalidPDF: return "不是有效的 PDF 文件。"
+        case .invalidMarkdown: return "无法读取 Markdown 文件。"
+        case .unsupportedType: return "仅支持 PDF 或 Markdown（.md / .markdown）。"
         }
     }
 }
@@ -20,7 +24,9 @@ final class StudyDocumentStore {
 
     private(set) var documents: [StudyDocument] = []
     private let pdfCache = NSCache<NSString, PDFDocument>()
-    private let maxFileBytes: Int64 = 160 * 1024 * 1024
+    private let markdownCache = NSCache<NSString, NSString>()
+    private let maxPDFBytes: Int64 = 160 * 1024 * 1024
+    private let maxMarkdownBytes: Int64 = 8 * 1024 * 1024
     private let registryName = "registry.json"
 
     var studyRootURL: URL {
@@ -30,6 +36,7 @@ final class StudyDocumentStore {
 
     private init() {
         pdfCache.countLimit = 4
+        markdownCache.countLimit = 8
         loadRegistry()
     }
 
@@ -60,8 +67,35 @@ final class StudyDocumentStore {
         return doc
     }
 
+    func markdownText(for documentID: String) -> String? {
+        if let cached = markdownCache.object(forKey: documentID as NSString) {
+            return cached as String
+        }
+        guard let url = documentURL(forID: documentID),
+              let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else { return nil }
+        markdownCache.setObject(text as NSString, forKey: documentID as NSString)
+        return text
+    }
+
     func trimCaches() {
         pdfCache.removeAllObjects()
+        markdownCache.removeAllObjects()
+    }
+
+    /// Import PDF or Markdown based on file extension / UTI.
+    @discardableResult
+    func importDocument(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
+        let ext = sourceURL.pathExtension.lowercased()
+        switch ext {
+        case "pdf":
+            return try importPDF(from: sourceURL, title: title)
+        case "md", "markdown", "txt":
+            return try importMarkdown(from: sourceURL, title: title)
+        default:
+            throw StudyDocumentError.unsupportedType
+        }
     }
 
     @discardableResult
@@ -73,7 +107,7 @@ final class StudyDocumentStore {
 
         let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
         let size = attrs[.size] as? Int64 ?? 0
-        guard size <= maxFileBytes else { throw StudyDocumentError.fileTooLarge }
+        guard size <= maxPDFBytes else { throw StudyDocumentError.fileTooLarge }
 
         let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
         if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
@@ -105,7 +139,59 @@ final class StudyDocumentStore {
             localRelativePath: relative,
             contentFingerprint: fingerprint,
             fileSize: size,
-            lastOpenedAt: Date()
+            lastOpenedAt: Date(),
+            kind: .pdf
+        )
+        documents.insert(doc, at: 0)
+        saveRegistry()
+        notify()
+        return doc
+    }
+
+    @discardableResult
+    func importMarkdown(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        guard size <= maxMarkdownBytes else { throw StudyDocumentError.fileTooLarge }
+
+        let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
+        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+            touch(documentID: existing.id)
+            return existing
+        }
+
+        guard let data = try? Data(contentsOf: sourceURL),
+              String(data: data, encoding: .utf8) != nil
+                || String(data: data, encoding: .isoLatin1) != nil else {
+            throw StudyDocumentError.invalidMarkdown
+        }
+
+        let docID = UUID().uuidString
+        let relative = "\(docID)/original.md"
+        let folder = studyRootURL.appendingPathComponent(docID, isDirectory: true)
+        let dest = studyRootURL.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        try FileManager.default.copyItem(at: sourceURL, to: dest)
+
+        let displayTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? sourceURL.deletingPathExtension().lastPathComponent
+
+        let doc = StudyDocument(
+            id: docID,
+            title: String(displayTitle.prefix(120)),
+            localRelativePath: relative,
+            contentFingerprint: fingerprint,
+            fileSize: size,
+            lastOpenedAt: Date(),
+            kind: .markdown
         )
         documents.insert(doc, at: 0)
         saveRegistry()
@@ -125,9 +211,11 @@ final class StudyDocumentStore {
         guard let index = documents.firstIndex(where: { $0.id == documentID }) else { return }
         documents.remove(at: index)
         pdfCache.removeObject(forKey: documentID as NSString)
+        markdownCache.removeObject(forKey: documentID as NSString)
         let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
         try? FileManager.default.removeItem(at: folder)
         StudyProgressStore.shared.delete(documentID: documentID)
+        PDFBookmarkStore.shared.delete(documentID: documentID)
         ConversationStore.shared.detachStudyDocument(documentID: documentID)
         saveRegistry()
         notify()
@@ -135,6 +223,7 @@ final class StudyDocumentStore {
 
     func reloadAfterBackupImport() {
         pdfCache.removeAllObjects()
+        markdownCache.removeAllObjects()
         loadRegistry()
         notify()
     }
@@ -177,4 +266,42 @@ final class StudyDocumentStore {
     private func notify() {
         NotificationCenter.default.post(name: .studyDocumentsDidUpdate, object: nil)
     }
+
+#if DEBUG
+  private static let scrollStressPDFTitle = "ScrollStressHarness"
+
+    /// One-page PDF for shell-level study stress (landscape panel + rotation).
+    @discardableResult
+    func debugEnsureScrollStressDocument() throws -> StudyDocument {
+        if let existing = documents.first(where: { $0.title == Self.scrollStressPDFTitle }) {
+            touch(documentID: existing.id)
+            return existing
+        }
+        let docID = UUID().uuidString
+        let relative = "\(docID)/original.pdf"
+        let folder = studyRootURL.appendingPathComponent(docID, isDirectory: true)
+        let dest = studyRootURL.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let pdf = PDFDocument()
+        pdf.insert(PDFPage(), at: 0)
+        guard pdf.write(to: dest) else {
+            throw StudyDocumentError.invalidPDF
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: dest.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        let doc = StudyDocument(
+            id: docID,
+            title: Self.scrollStressPDFTitle,
+            localRelativePath: relative,
+            contentFingerprint: "scroll-stress-\(docID)",
+            fileSize: size,
+            lastOpenedAt: Date(),
+            kind: .pdf
+        )
+        documents.insert(doc, at: 0)
+        saveRegistry()
+        notify()
+        return doc
+    }
+#endif
 }

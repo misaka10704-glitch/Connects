@@ -20,6 +20,7 @@
 		A1000001000000000000000B /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000B /* SettingsViewController.swift */; };
 		A1000001000000000000000C /* SidebarViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000C /* SidebarViewController.swift */; };
 		A1000001000000000000000D /* InputBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000D /* InputBarView.swift */; };
+		T10000010000000000000001 /* ConnectsToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000001 /* ConnectsToast.swift */; };
 		A1000001000000000000000E /* AssistantMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000E /* AssistantMessageCell.swift */; };
 		E10000010000000000000004 /* AssistantMessageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000004 /* AssistantMessageLayout.swift */; };
 		E10000010000000000000001 /* MessageCellType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000001 /* MessageCellType.swift */; };
@@ -115,6 +116,10 @@
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
 		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
+		S10000010000000000000009 /* MarkdownReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000009 /* MarkdownReaderViewController.swift */; };
+		S1000001000000000000000A /* PDFContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000A /* PDFContentsViewController.swift */; };
+		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
+		S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000C /* MarkdownContentsViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -131,6 +136,7 @@
 		A2000001000000000000000B /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000C /* SidebarViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000D /* InputBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBarView.swift; sourceTree = "<group>"; };
+		T20000010000000000000001 /* ConnectsToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsToast.swift; sourceTree = "<group>"; };
 		A2000001000000000000000E /* AssistantMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageCell.swift; sourceTree = "<group>"; };
 		E20000010000000000000004 /* AssistantMessageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageLayout.swift; sourceTree = "<group>"; };
 		E20000010000000000000001 /* MessageCellType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageCellType.swift; sourceTree = "<group>"; };
@@ -229,6 +235,10 @@
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000009 /* MarkdownReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownReaderViewController.swift; sourceTree = "<group>"; };
+		S2000001000000000000000A /* PDFContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentsViewController.swift; sourceTree = "<group>"; };
+		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
+		S2000001000000000000000C /* MarkdownContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentsViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -365,6 +375,7 @@
 				S20000010000000000000003 /* StudyProgressStore.swift */,
 				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
+				S2000001000000000000000B /* PDFBookmarkStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -384,6 +395,9 @@
 				C2000001000000000000000F /* ProjectListViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
 				S20000010000000000000005 /* PDFReaderViewController.swift */,
+				S2000001000000000000000A /* PDFContentsViewController.swift */,
+				S20000010000000000000009 /* MarkdownReaderViewController.swift */,
+				S2000001000000000000000C /* MarkdownContentsViewController.swift */,
 				S20000010000000000000006 /* StudyShellViewController.swift */,
 				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
 			);
@@ -394,6 +408,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000001000000000000000D /* InputBarView.swift */,
+				T20000010000000000000001 /* ConnectsToast.swift */,
 				A2000001000000000000001F /* ContextUsageView.swift */,
 				F20000010000000000000004 /* ContextUsageRingView.swift */,
 				A20000010000000000000061 /* TurnContextBarView.swift */,
@@ -602,6 +617,7 @@
 				A1000001000000000000001D /* ContextBuilder.swift in Sources */,
 				A1000001000000000000001E /* ContextCompactor.swift in Sources */,
 				A1000001000000000000001F /* ContextUsageView.swift in Sources */,
+				T10000010000000000000001 /* ConnectsToast.swift in Sources */,
 				F10000010000000000000004 /* ContextUsageRingView.swift in Sources */,
 				F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */,
 				A10000010000000000000061 /* TurnContextBarView.swift in Sources */,
@@ -660,6 +676,10 @@
 				S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */,
 				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,
 				S10000010000000000000005 /* PDFReaderViewController.swift in Sources */,
+				S1000001000000000000000A /* PDFContentsViewController.swift in Sources */,
+				S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */,
+				S10000010000000000000009 /* MarkdownReaderViewController.swift in Sources */,
+				S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */,
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
 				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,

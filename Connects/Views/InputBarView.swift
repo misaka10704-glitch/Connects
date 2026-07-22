@@ -262,7 +262,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
         studyCaptureButton.imageView?.contentMode = .scaleAspectFit
         studyCaptureButton.accessibilityLabel = "同步阅读页"
-        studyCaptureButton.accessibilityHint = "开启后，发送消息时附带当前 PDF 页文字"
+        studyCaptureButton.accessibilityHint = "开启后，发送消息时附带当前阅读位置文字"
         studyCaptureButton.addTarget(self, action: #selector(studyCaptureTapped), for: .touchUpInside)
         studyCaptureButton.isHidden = true
         containerView.addSubview(studyCaptureButton)

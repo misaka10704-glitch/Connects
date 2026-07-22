@@ -442,6 +442,156 @@ enum MarkdownHTMLRenderer {
         )
     }
 
+    /// Scrollable study-reader shell (GFM + KaTeX). Same marked/katex assets as chat.
+    static func studyShellHTML(textColor: UIColor,
+                               backgroundColor: UIColor,
+                               secondaryColor: UIColor,
+                               fontSize: CGFloat = 17) -> String {
+        let fg = cssColor(textColor)
+        let bg = cssColor(backgroundColor)
+        let sec = cssColor(secondaryColor)
+        let border = cssColor(textColor.withAlphaComponent(0.16))
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=3, user-scalable=yes"/>
+        <link rel="stylesheet" href="katex/katex.min.css"/>
+        <style>
+          html, body { margin:0; padding:0; background:\(bg); color:\(fg);
+            font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+            font-size:\(String(format: "%.1f", fontSize))px; line-height:1.7;
+            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
+            height:100%; overflow:auto; -webkit-overflow-scrolling:touch; }
+          #c { padding:18px 22px 64px; max-width:52em; margin:0 auto; display:flow-root; }
+          #c h1,#c h2,#c h3,#c h4 { font-weight:600; line-height:1.3; margin:1em 0 0.4em; }
+          #c h1 { font-size:1.45em; } #c h2 { font-size:1.25em; }
+          #c h3 { font-size:1.1em; } #c h4 { font-size:1.02em; }
+          #c p { margin:0.55em 0; }
+          #c ul, #c ol { margin:0.45em 0; padding-left:1.4em; }
+          #c li { margin:0.22em 0; }
+          #c strong { font-weight:700; }
+          #c em { font-style:italic; }
+          #c a { color:#4da3ff; }
+          #c code { font-family:Menlo, Monaco, monospace; font-size:0.9em;
+            background:rgba(127,127,127,0.16); padding:0.12em 0.35em; border-radius:4px; }
+          #c pre { background:rgba(127,127,127,0.12); padding:12px 14px; border-radius:10px;
+            overflow-x:auto; margin:0.75em 0; -webkit-overflow-scrolling:touch; }
+          #c pre code { background:transparent; padding:0; }
+          #c blockquote { margin:0.65em 0; padding:0.1em 0 0.1em 0.9em;
+            border-left:3px solid \(border); color:\(sec); }
+          #c table { border-collapse:collapse; width:100%; margin:0.8em 0; font-size:0.95em;
+            display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+          #c th, #c td { border:1px solid \(border); padding:7px 10px; text-align:left; }
+          #c th { background:rgba(127,127,127,0.1); font-weight:600; }
+          #c hr { border:none; border-top:1px solid \(border); margin:1em 0; }
+          #c img { max-width:100%; height:auto; }
+          .katex-display { margin:0.75em 0; overflow-x:auto; overflow-y:hidden; }
+        </style>
+        <script src="markdown/marked.min.js"></script>
+        <script src="katex/katex.min.js"></script>
+        <script src="katex/auto-render.min.js"></script>
+        </head>
+        <body>
+        <div id="c"></div>
+        <script>
+          function __protectMath(src) {
+            var map = [];
+            var i = 0;
+            function stash(re) {
+              src = src.replace(re, function(m) {
+                var key = "@@MATH" + (i++) + "@@";
+                map.push([key, m]);
+                return key;
+              });
+            }
+            stash(/\\$\\$[\\s\\S]+?\\$\\$/g);
+            stash(/\\\\\\[[\\s\\S]+?\\\\\\]/g);
+            stash(/\\\\\\([\\s\\S]+?\\\\\\)/g);
+            stash(/\\$[^$\\n]+\\$/g);
+            stash(/\\\\begin\\{[a-zA-Z*]+\\}[\\s\\S]+?\\\\end\\{[a-zA-Z*]+\\}/g);
+            return { src: src, map: map };
+          }
+          function __restoreMath(html, map) {
+            for (var k = 0; k < map.length; k++) {
+              html = html.split(map[k][0]).join(map[k][1]);
+            }
+            return html;
+          }
+          window.__connectsRender = function(md) {
+            var el = document.getElementById("c");
+            if (!el) return;
+            try {
+              if (typeof marked !== "undefined") {
+                marked.setOptions({ gfm: true, breaks: true, headerIds: true, mangle: false });
+                var packed = __protectMath(md);
+                var html = marked.parse(packed.src);
+                html = __restoreMath(html, packed.map);
+                el.innerHTML = html;
+              } else {
+                el.textContent = md;
+              }
+              if (typeof renderMathInElement === "function") {
+                renderMathInElement(el, {
+                  delimiters: [
+                    {left: "$$", right: "$$", display: true},
+                    {left: "\\\\[", right: "\\\\]", display: true},
+                    {left: "\\\\(", right: "\\\\)", display: false},
+                    {left: "$", right: "$", display: false}
+                  ],
+                  ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+                  throwOnError: false
+                });
+              }
+            } catch (e) {
+              el.textContent = md;
+            }
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.studyReady) {
+              window.webkit.messageHandlers.studyReady.postMessage(1);
+            }
+          };
+          window.__connectsVisibleText = function(maxLen) {
+            maxLen = maxLen || 4000;
+            var el = document.getElementById("c");
+            if (!el) return "";
+            var text = (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim();
+            if (text.length <= maxLen) return text;
+            var y = window.scrollY || document.documentElement.scrollTop || 0;
+            var maxY = Math.max((document.documentElement.scrollHeight || 1) - (window.innerHeight || 1), 1);
+            var ratio = Math.min(Math.max(y / maxY, 0), 1);
+            var start = Math.max(0, Math.floor(text.length * ratio) - Math.floor(maxLen * 0.2));
+            return text.substring(start, start + maxLen);
+          };
+          window.__connectsHeadingOutline = function() {
+            var el = document.getElementById("c");
+            if (!el) return "[]";
+            var nodes = el.querySelectorAll("h1,h2,h3,h4");
+            var out = [];
+            for (var i = 0; i < nodes.length; i++) {
+              var n = nodes[i];
+              if (!n.id) n.id = "mdh-" + i;
+              out.push({
+                id: String(n.id),
+                title: String((n.textContent || "").replace(/\\s+/g, " ").trim()),
+                level: parseInt(String(n.tagName).substring(1), 10) || 1
+              });
+            }
+            return JSON.stringify(out);
+          };
+          window.__connectsScrollToHeading = function(id) {
+            var el = document.getElementById(id);
+            if (!el) return false;
+            el.scrollIntoView(true);
+            return true;
+          };
+          window.__connectsReady = true;
+        </script>
+        </body>
+        </html>
+        """
+    }
+
     static func jsonString(_ s: String) -> String {
         var out = "\""
         for ch in s.unicodeScalars {

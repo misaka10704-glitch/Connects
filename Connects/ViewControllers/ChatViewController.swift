@@ -24,7 +24,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let emptyTitleLabel = UILabel()
     private let emptySubtitleLabel = UILabel()
     private let emptyContainer = UIView()
-    private var emptyChips: UIStackView?
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
     private var studyChromeMode: StudyChromeMode = .none
@@ -405,6 +404,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // Root can calculate its initial split constraints before this child is
         // attached to a window. Defer table work until UIKit has real geometry.
         guard tableView.window != nil, isTableLayoutCommitted(),
+              tableView.bounds.width > 32, tableView.bounds.height > 32,
               let messages = renderedConversationMessages() else { return }
         let visible = tableView.indexPathsForVisibleRows ?? []
         viewportScrollAnchor = captureViewportScrollAnchor()
@@ -1148,11 +1148,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         readingHistory = false
         viewportPinnedByUser = false
         tableView.layoutIfNeeded()
-        let last = IndexPath(row: messages.count - 1, section: 0)
-        if last.row < tableView.numberOfRows(inSection: 0) {
-            tableView.scrollToRow(at: last, at: .bottom, animated: false)
-        }
-        tableView.layoutIfNeeded()
+        // Do not call `scrollToRow(at:at:.bottom)` here. On iOS 12 it can SIGSEGV when invoked
+        // synchronously after beginUpdates/endUpdates during study width / chrome changes
+        // (invalidateHeightsForWidthChange → reconcileBottomViewportIfNeeded). contentSize already
+        // reflects every row via heightForRowAt; snap + targetY below pin without that call.
         snapTableContentOffsetToBottom()
         let inset = tableView.adjustedContentInset
         let contentMaxY = max(
@@ -5014,30 +5013,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptySubtitleLabel.font = DSTheme.bodyFont(size: 14)
         emptyContainer.addSubview(emptySubtitleLabel)
 
-        let chips = UIStackView()
-        chips.axis = .vertical
-        chips.spacing = 10
-        chips.translatesAutoresizingMaskIntoConstraints = false
-        chips.tag = 8801
-        emptyContainer.addSubview(chips)
-        emptyChips = chips
-
-        let prompts = [
-            "解释一个概念，尽量通俗",
-            "帮我写一段清晰的代码",
-            "用表格对比几个方案"
-        ]
-        for p in prompts {
-            let b = UIButton(type: .system)
-            b.setTitle(p, for: .normal)
-            b.titleLabel?.font = DSTheme.bodyFont(size: 14)
-            b.contentEdgeInsets = UIEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
-            b.layer.cornerRadius = 18
-            b.layer.borderWidth = 0
-            b.addTarget(self, action: #selector(suggestionTapped(_:)), for: .touchUpInside)
-            chips.addArrangedSubview(b)
-        }
-
         // Center empty chrome in the band above the composer (moves with keyboard).
         NSLayoutConstraint.activate([
             emptyContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -5046,25 +5021,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyContainer.bottomAnchor.constraint(equalTo: inputBar.topAnchor),
 
             emptyTitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
-            emptyTitleLabel.centerYAnchor.constraint(equalTo: emptyContainer.centerYAnchor, constant: -36),
+            emptyTitleLabel.centerYAnchor.constraint(equalTo: emptyContainer.centerYAnchor, constant: -10),
             emptyTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 24),
             emptyTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -24),
 
             emptySubtitleLabel.topAnchor.constraint(equalTo: emptyTitleLabel.bottomAnchor, constant: 10),
-            emptySubtitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
-
-            chips.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 24),
-            chips.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
-            chips.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
-            chips.bottomAnchor.constraint(lessThanOrEqualTo: emptyContainer.bottomAnchor, constant: -12)
+            emptySubtitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor)
         ])
 
         view.bringSubviewToFront(inputBar)
-    }
-
-    @objc private func suggestionTapped(_ sender: UIButton) {
-        guard let title = sender.title(for: .normal) else { return }
-        sendMessage(title, imageBase64: nil)
     }
 
     private func updateEmptyState() {
@@ -5082,24 +5047,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             clearNavigationPrompt()
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
-            let hideChips = keyboardVisible
-            emptyChips?.isHidden = hideChips
-            if let chips = emptyChips, !hideChips {
-                for case let b as UIButton in chips.arrangedSubviews {
-                    b.setTitleColor(c.textPrimary, for: .normal)
-                    b.backgroundColor = c.surfaceHover
-                    b.layer.borderWidth = 0
-                }
-            }
         }
         layoutEmptyChromeForKeyboard()
     }
 
-    /// When keyboard is up, keep title/subtitle above the composer; hide suggestion chips to avoid clutter.
+    /// When keyboard is up, keep title above the composer; hide subtitle to avoid clutter.
     private func layoutEmptyChromeForKeyboard() {
         guard !emptyContainer.isHidden else { return }
-        let hideChips = keyboardVisible
-        emptyChips?.isHidden = hideChips
         emptySubtitleLabel.isHidden = keyboardVisible
         // Slightly higher title when keyboard consumes the lower half.
         // (centerY constant is fixed in constraints; hide chips is enough for Air 1 landscape.)
@@ -5283,7 +5237,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func copyEntireConversation() {
         guard let conv = ConversationStore.shared.currentConversation else { return }
         UIPasteboard.general.string = MarkdownExporter.renderPlain(conv)
-        showAlert(title: "已复制", message: "全部对话已复制到剪贴板。")
+        ConnectsToast.show("已复制全部对话", in: view)
     }
 
     /// Build API messages for a specific conversation — never the "currently visible" one by accident.
@@ -5373,11 +5327,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard conversationID == currentConversationID else { return }
         let message: String
         if studyContextProvider == nil {
-            message = "无法读取 PDF（学习模式未就绪）"
+            message = "无法读取文档（学习模式未就绪）"
         } else if ConversationStore.shared.conversation(id: conversationID)?.studyDocumentID == nil {
-            message = "当前对话未依附 PDF"
+            message = "当前对话未依附文档"
         } else {
-            message = "无法截取当前 PDF 页"
+            message = "无法截取当前阅读位置"
         }
         navigationItem.prompt = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -7254,12 +7208,7 @@ extension ChatViewController: MessageCellDelegate {
     func messageCellDidTapCopy(_ cell: MessageCellType, messageID: String) {
         guard let msg = ConversationStore.shared.currentConversation?.messages.first(where: { $0.id == messageID }) else { return }
         UIPasteboard.general.string = msg.copyableText
-        navigationItem.prompt = "已复制"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            if self?.navigationItem.prompt == "已复制" {
-                self?.navigationItem.prompt = nil
-            }
-        }
+        ConnectsToast.show("已复制", in: view)
     }
 
     func messageCellDidTapRetry(_ cell: MessageCellType, messageID: String) {
@@ -7401,13 +7350,7 @@ extension ChatViewController: InputBarViewDelegate {
     }
 }
 
-#if DEBUG
 extension ChatViewController {
-    struct DebugScrollAnchor {
-        let row: Int
-        let viewportY: CGFloat
-    }
-
     struct DebugQAEdgeState {
         let userRowsAtTopEdge: [Int]
         let userRowsAtBottomEdge: [Int]
@@ -7415,7 +7358,7 @@ extension ChatViewController {
         let uncommittedAssistantsNearEdge: Int
     }
 
-    /// User bubbles straddling the viewport band — QA switch stress signal.
+    /// User bubbles straddling the viewport band — used by scroll repair and stress harness.
     func debugVisibleQAEdgeState(edgeBand: CGFloat = 52) -> DebugQAEdgeState {
         guard let messages = ConversationStore.shared.currentConversation?.messages else {
             return DebugQAEdgeState(
@@ -7453,6 +7396,41 @@ extension ChatViewController {
             assistantRowsNearUserEdge: nearAssistants,
             uncommittedAssistantsNearEdge: uncommittedNearEdge
         )
+    }
+
+    /// Visible assistant rows whose action chrome extends past the allocated row frame.
+    func debugVisibleRowClipCount() -> Int {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return 0 }
+        var clipped = 0
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            guard let path = tableView.indexPath(for: cell),
+                  path.row < messages.count else { continue }
+            let msg = messages[path.row]
+            guard msg.role == .assistant, !msg.isStreaming else { continue }
+            let rowFrame = tableView.rectForRow(at: path)
+            if cell.hasVisibleActionButtons,
+               let actionTop = cell.debugActionRowViewportY(in: tableView) {
+                let actionBottom = actionTop + AssistantMessageLayout.actionRowHeight
+                let rowBottom = rowFrame.maxY - tableView.contentOffset.y
+                if actionBottom > rowBottom + 2 {
+                    clipped += 1
+                    continue
+                }
+            }
+            let contentH = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
+            if contentH > rowFrame.height + 6 {
+                clipped += 1
+            }
+        }
+        return clipped
+    }
+}
+
+#if DEBUG
+extension ChatViewController {
+    struct DebugScrollAnchor {
+        let row: Int
+        let viewportY: CGFloat
     }
 
     /// Small scroll-up delta that moves the next user bubble into the edge band (QA crossing).
@@ -7974,33 +7952,6 @@ extension ChatViewController {
         tableView.scrollToRow(at: path, at: .middle, animated: false)
         tableView.layoutIfNeeded()
         DispatchQueue.main.async(execute: completion)
-    }
-
-    /// Visible assistant rows whose action chrome extends past the allocated row frame.
-    func debugVisibleRowClipCount() -> Int {
-        guard let messages = ConversationStore.shared.currentConversation?.messages else { return 0 }
-        var clipped = 0
-        for case let cell as AssistantMessageCell in tableView.visibleCells {
-            guard let path = tableView.indexPath(for: cell),
-                  path.row < messages.count else { continue }
-            let msg = messages[path.row]
-            guard msg.role == .assistant, !msg.isStreaming else { continue }
-            let rowFrame = tableView.rectForRow(at: path)
-            if cell.hasVisibleActionButtons,
-               let actionTop = cell.debugActionRowViewportY(in: tableView) {
-                let actionBottom = actionTop + AssistantMessageLayout.actionRowHeight
-                let rowBottom = rowFrame.maxY - tableView.contentOffset.y
-                if actionBottom > rowBottom + 2 {
-                    clipped += 1
-                    continue
-                }
-            }
-            let contentH = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
-            if contentH > rowFrame.height + 6 {
-                clipped += 1
-            }
-        }
-        return clipped
     }
 
     struct DebugVisibleCrossQAState {

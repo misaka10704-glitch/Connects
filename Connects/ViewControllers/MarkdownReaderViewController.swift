@@ -1,0 +1,591 @@
+import UIKit
+import WebKit
+
+/// Study-mode Markdown reader — same shell role as `PDFReaderViewController`.
+final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UIScrollViewDelegate {
+    private let topBar = UIView()
+    private let sidebarButton = UIButton(type: .system)
+    private let contentsButton = UIButton(type: .system)
+    private let progressLabel = UILabel()
+    private let spinner = UIActivityIndicatorView(style: .gray)
+    private var webView: WKWebView!
+    private let contentsPanelHost = UIView()
+    private let contentsVC = MarkdownContentsViewController()
+    private var progressWorkItem: DispatchWorkItem?
+    private var currentDocumentID: String?
+    private var markdownSource: String = ""
+    private var loadGeneration: UInt = 0
+    private var sidebarButtonWidthConstraint: NSLayoutConstraint!
+    private var contentsPanelWidth: NSLayoutConstraint!
+    private var contentsPanelTrailing: NSLayoutConstraint!
+    private var isContentsPanelVisible = false
+    private let contentsPanelWidthConstant: CGFloat = 220
+    private var shellLoaded = false
+    private var pendingMarkdown: String?
+    private var pendingViewportProgress: StudyProgress?
+    private var isRestoringViewport = false
+    private var isShellRotating = false
+    private var shellRotationProgress: StudyProgress?
+    private var readerSurfaceActive = true
+    private var contentReady = false
+
+    var onPageChanged: (() -> Void)?
+    var onToggleSidebar: (() -> Void)?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = DSTheme.c.background
+
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(topBar)
+
+        sidebarButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebarButton.addTarget(self, action: #selector(sidebarTapped), for: .touchUpInside)
+        sidebarButton.accessibilityLabel = "打开侧栏"
+        topBar.addSubview(sidebarButton)
+        updateSidebarToggle(collapsed: true)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+
+        contentsButton.translatesAutoresizingMaskIntoConstraints = false
+        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
+        contentsButton.tintColor = DSTheme.c.textSecondary
+        contentsButton.accessibilityLabel = "目录"
+        contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
+        topBar.addSubview(contentsButton)
+
+        progressLabel.translatesAutoresizingMaskIntoConstraints = false
+        progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        progressLabel.textColor = DSTheme.c.textSecondary
+        progressLabel.textAlignment = .center
+        topBar.addSubview(progressLabel)
+
+        let config = WKWebViewConfiguration()
+        let controller = WKUserContentController()
+        controller.add(WeakScriptMessageHandler(delegate: self), name: "studyReady")
+        config.userContentController = controller
+        if #available(iOS 14.0, *) {
+            let prefs = WKWebpagePreferences()
+            prefs.allowsContentJavaScript = true
+            config.defaultWebpagePreferences = prefs
+        }
+
+        webView = WKWebView(frame: .zero, configuration: config)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.navigationDelegate = self
+        webView.scrollView.delegate = self
+        webView.scrollView.keyboardDismissMode = .onDrag
+        webView.backgroundColor = DSTheme.c.background
+        webView.isOpaque = false
+        if #available(iOS 11.0, *) {
+            webView.scrollView.contentInsetAdjustmentBehavior = .never
+        }
+        view.addSubview(webView)
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        view.addSubview(spinner)
+
+        NSLayoutConstraint.activate([
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: 40),
+
+            sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
+            sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            sidebarButtonWidthConstraint,
+            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+
+            progressLabel.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
+            progressLabel.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
+            progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+
+            contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
+            contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            contentsButton.widthAnchor.constraint(equalToConstant: 40),
+            contentsButton.heightAnchor.constraint(equalToConstant: 40),
+
+            webView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+
+        installContentsPanel()
+        syncContentsOverlayZOrder()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeChanged),
+            name: .themeDidChange,
+            object: nil
+        )
+        loadShellIfNeeded()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        flushProgressSave()
+    }
+
+    deinit {
+        if webView != nil {
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "studyReady")
+        }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func isLoaded(documentID: String) -> Bool {
+        currentDocumentID == documentID && contentReady && !markdownSource.isEmpty
+    }
+
+    func setReaderSurfaceActive(_ active: Bool) {
+        readerSurfaceActive = active
+        if !active {
+            pendingViewportProgress = nil
+        }
+    }
+
+    func updateSidebarToggle(collapsed: Bool) {
+        let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.tintColor = DSTheme.c.textSecondary
+        sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
+    }
+
+    func setSidebarButtonHidden(_ hidden: Bool) {
+        sidebarButton.isHidden = hidden
+        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    }
+
+    @objc private func sidebarTapped() {
+        onToggleSidebar?()
+    }
+
+    @objc private func contentsTapped() {
+        if isContentsPanelVisible {
+            setContentsPanelVisible(false, animated: true)
+        } else {
+            refreshContentsPanel()
+            setContentsPanelVisible(true, animated: true)
+        }
+    }
+
+    @objc private func themeChanged() {
+        view.backgroundColor = DSTheme.c.background
+        topBar.backgroundColor = DSTheme.c.background
+        webView.backgroundColor = DSTheme.c.background
+        progressLabel.textColor = DSTheme.c.textSecondary
+        sidebarButton.tintColor = DSTheme.c.textSecondary
+        contentsButton.tintColor = DSTheme.c.textSecondary
+        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        shellLoaded = false
+        contentReady = false
+        loadShellIfNeeded()
+        if !markdownSource.isEmpty {
+            pendingMarkdown = markdownSource
+            tryInjectPendingMarkdown()
+        }
+    }
+
+    private func installContentsPanel() {
+        contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
+        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
+        contentsPanelHost.layer.shadowOpacity = 0.12
+        contentsPanelHost.layer.shadowRadius = 8
+        contentsPanelHost.layer.shadowOffset = CGSize(width: -2, height: 0)
+        contentsPanelHost.layer.borderWidth = 1.0 / UIScreen.main.scale
+        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.isHidden = true
+        view.addSubview(contentsPanelHost)
+
+        addChild(contentsVC)
+        contentsVC.view.translatesAutoresizingMaskIntoConstraints = false
+        contentsPanelHost.addSubview(contentsVC.view)
+        contentsVC.didMove(toParent: self)
+
+        contentsVC.onSelectHeadingID = { [weak self] headingID in
+            self?.scrollToHeading(id: headingID)
+        }
+
+        contentsPanelWidth = contentsPanelHost.widthAnchor.constraint(equalToConstant: contentsPanelWidthConstant)
+        contentsPanelTrailing = contentsPanelHost.trailingAnchor.constraint(
+            equalTo: view.trailingAnchor,
+            constant: contentsPanelWidthConstant
+        )
+
+        NSLayoutConstraint.activate([
+            contentsPanelHost.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            contentsPanelHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentsPanelWidth,
+            contentsPanelTrailing,
+
+            contentsVC.view.topAnchor.constraint(equalTo: contentsPanelHost.topAnchor),
+            contentsVC.view.leadingAnchor.constraint(equalTo: contentsPanelHost.leadingAnchor),
+            contentsVC.view.trailingAnchor.constraint(equalTo: contentsPanelHost.trailingAnchor),
+            contentsVC.view.bottomAnchor.constraint(equalTo: contentsPanelHost.bottomAnchor)
+        ])
+    }
+
+    private func refreshContentsPanel() {
+        guard contentReady else {
+            contentsVC.setHeadings([])
+            return
+        }
+        webView.evaluateJavaScript("window.__connectsHeadingOutline && window.__connectsHeadingOutline();") { [weak self] result, _ in
+            guard let self = self else { return }
+            let headings = Self.parseHeadingOutline(result)
+            self.contentsVC.setHeadings(headings)
+        }
+    }
+
+    private func scrollToHeading(id: String) {
+        let escaped = id
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let js = "window.__connectsScrollToHeading && window.__connectsScrollToHeading('\(escaped)');"
+        webView.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self = self else { return }
+            self.setContentsPanelVisible(false, animated: true)
+            self.updateProgressLabel()
+            self.scheduleProgressSave()
+            self.onPageChanged?()
+        }
+    }
+
+    private static func parseHeadingOutline(_ result: Any?) -> [MarkdownContentsViewController.HeadingRow] {
+        guard let raw = result as? String,
+              let data = raw.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return arr.compactMap { item in
+            guard let id = item["id"] as? String,
+                  let title = item["title"] as? String,
+                  !title.isEmpty else { return nil }
+            let level = (item["level"] as? Int) ?? 1
+            return MarkdownContentsViewController.HeadingRow(id: id, title: title, level: level)
+        }
+    }
+
+    private func syncContentsOverlayZOrder() {
+        view.bringSubviewToFront(contentsPanelHost)
+        view.bringSubviewToFront(topBar)
+        view.bringSubviewToFront(spinner)
+    }
+
+    private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
+        isContentsPanelVisible = visible
+        if visible {
+            syncContentsOverlayZOrder()
+        }
+        contentsPanelHost.isHidden = false
+        contentsPanelTrailing.constant = visible ? 0 : contentsPanelWidthConstant
+        let updates = {
+            self.view.layoutIfNeeded()
+        }
+        if animated {
+            UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut], animations: updates) { _ in
+                self.contentsPanelHost.isHidden = !visible
+            }
+        } else {
+            updates()
+            contentsPanelHost.isHidden = !visible
+        }
+    }
+
+    func load(documentID: String, completion: ((Bool) -> Void)? = nil) {
+        if currentDocumentID != documentID {
+            markdownSource = ""
+            contentReady = false
+        }
+        currentDocumentID = documentID
+        loadGeneration &+= 1
+        let gen = loadGeneration
+        spinner.startAnimating()
+        progressLabel.text = "加载中…"
+        loadShellIfNeeded()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = StudyDocumentStore.shared.markdownText(for: documentID)
+            DispatchQueue.main.async {
+                guard let self = self, gen == self.loadGeneration, self.currentDocumentID == documentID else {
+                    completion?(false)
+                    return
+                }
+                self.spinner.stopAnimating()
+                guard let text = text else {
+                    self.progressLabel.text = "无法打开 Markdown"
+                    self.markdownSource = ""
+                    self.currentDocumentID = nil
+                    self.contentReady = false
+                    completion?(false)
+                    return
+                }
+                self.markdownSource = text
+                self.pendingMarkdown = text
+                self.tryInjectPendingMarkdown()
+                self.updateProgressLabel()
+                completion?(true)
+            }
+        }
+    }
+
+    func pauseReading() {
+        saveReadingProgressNow()
+    }
+
+    func resumeAfterConversationSwitch() {
+        guard contentReady else { return }
+        readerSurfaceActive = true
+        isRestoringViewport = true
+        view.layoutIfNeeded()
+        isRestoringViewport = false
+        updateProgressLabel()
+    }
+
+    func prepareForShellLayoutChange() {
+        guard !isShellRotating else { return }
+    }
+
+    func beginShellRotation(keeping progress: StudyProgress?) {
+        shellRotationProgress = progress
+        isShellRotating = true
+        isRestoringViewport = true
+    }
+
+    func updateDuringShellRotation() {
+        guard isShellRotating, contentReady else { return }
+        if let progress = shellRotationProgress {
+            applyScroll(from: progress)
+        }
+    }
+
+    func finishShellRotation(using progress: StudyProgress?) {
+        let snapshot = progress ?? shellRotationProgress
+        defer {
+            isShellRotating = false
+            isRestoringViewport = false
+            shellRotationProgress = nil
+        }
+        guard let snapshot = snapshot, contentReady else { return }
+        applyScroll(from: snapshot)
+        updateProgressLabel()
+    }
+
+    func realignVisibleViewport(using progress: StudyProgress?) {
+        guard contentReady else {
+            pendingViewportProgress = progress
+            return
+        }
+        guard readerSurfaceActive, webView.bounds.width > 64, webView.bounds.height > 64 else {
+            pendingViewportProgress = progress
+            return
+        }
+        beginViewportRestore(using: progress)
+    }
+
+    func restoreReadingProgress(_ progress: StudyProgress?) {
+        realignVisibleViewport(using: progress)
+    }
+
+    private func beginViewportRestore(using progress: StudyProgress?) {
+        isRestoringViewport = true
+        view.layoutIfNeeded()
+        applyScroll(from: progress)
+        updateProgressLabel()
+        isRestoringViewport = false
+    }
+
+    func captureReadingProgress() -> StudyProgress? {
+        guard currentDocumentID != nil, contentReady else { return nil }
+        let offset = webView.scrollView.contentOffset
+        return StudyProgress(
+            pageIndex: 0,
+            pageOffsetY: offset.y,
+            pageOffsetX: offset.x,
+            anchorX: nil,
+            anchorY: nil,
+            scaleFactor: nil,
+            updatedAt: Date()
+        )
+    }
+
+    func saveReadingProgressNow() {
+        progressWorkItem?.cancel()
+        flushProgressSave()
+    }
+
+    func clearDocument() {
+        loadGeneration &+= 1
+        saveReadingProgressNow()
+        currentDocumentID = nil
+        markdownSource = ""
+        contentReady = false
+        pendingMarkdown = nil
+        pendingViewportProgress = nil
+        progressLabel.text = nil
+        setContentsPanelVisible(false, animated: false)
+        contentsVC.setHeadings([])
+        guard isViewLoaded, webView != nil else { return }
+        webView.evaluateJavaScript("window.__connectsRender && window.__connectsRender('');", completionHandler: nil)
+    }
+
+    func currentPageText() -> String? {
+        guard contentReady, !markdownSource.isEmpty else { return nil }
+        // Prefer rendered visible text via JS when possible; fall back to raw window.
+        return estimatedVisibleRawMarkdown()
+    }
+
+    func currentPageLabel() -> String {
+        guard contentReady, currentDocumentID != nil else { return "无文档" }
+        let pct = Int((scrollFraction() * 100).rounded())
+        return "Markdown · \(pct)%"
+    }
+
+    func captureCurrentPageImageJPEG() -> String? {
+        guard contentReady, webView.bounds.width > 1, webView.bounds.height > 1 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = min(UIScreen.main.scale, 2)
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(bounds: webView.bounds, format: format)
+        let image = renderer.image { ctx in
+            DSTheme.c.background.setFill()
+            ctx.fill(webView.bounds)
+            webView.drawHierarchy(in: webView.bounds, afterScreenUpdates: true)
+        }
+        return ImageAttachmentHelper.prepareJPEGBase64(from: image)
+    }
+
+    // MARK: - WK / scroll
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        shellLoaded = true
+        tryInjectPendingMarkdown()
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "studyReady" else { return }
+        contentReady = true
+        spinner.stopAnimating()
+        let pending = pendingViewportProgress
+        pendingViewportProgress = nil
+        // Wait for layout/contentSize before restoring scroll offset.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.restoreWhenContentSized(pending)
+            self.updateProgressLabel()
+            self.onPageChanged?()
+        }
+    }
+
+    private func restoreWhenContentSized(_ progress: StudyProgress?, attempts: Int = 0) {
+        let height = webView.scrollView.contentSize.height
+        if height > 32 || attempts >= 24 {
+            beginViewportRestore(using: progress)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.restoreWhenContentSized(progress, attempts: attempts + 1)
+        }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !isRestoringViewport, !isShellRotating else { return }
+        updateProgressLabel()
+        scheduleProgressSave()
+        onPageChanged?()
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { scheduleProgressSave() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        scheduleProgressSave()
+    }
+
+    // MARK: - Private
+
+    private func loadShellIfNeeded() {
+        guard !shellLoaded else { return }
+        let html = MarkdownHTMLRenderer.studyShellHTML(
+            textColor: DSTheme.c.textPrimary,
+            backgroundColor: DSTheme.c.background,
+            secondaryColor: DSTheme.c.textSecondary,
+            fontSize: 17
+        )
+        webView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
+    }
+
+    private func tryInjectPendingMarkdown() {
+        guard shellLoaded, let md = pendingMarkdown else { return }
+        pendingMarkdown = nil
+        let js = MarkdownHTMLRenderer.renderJavaScript(content: md)
+        // study shell uses the same __connectsRender name
+        webView.evaluateJavaScript(js) { [weak self] _, error in
+            guard let self = self else { return }
+            if error != nil {
+                // Fallback: mark ready even if JS hiccups so capture can use raw text.
+                self.contentReady = true
+                self.updateProgressLabel()
+            }
+        }
+    }
+
+    private func applyScroll(from progress: StudyProgress?) {
+        guard let progress = progress else { return }
+        let y = progress.pageOffsetY ?? 0
+        let x = progress.pageOffsetX ?? 0
+        let maxY = max(webView.scrollView.contentSize.height - webView.scrollView.bounds.height, 0)
+        let maxX = max(webView.scrollView.contentSize.width - webView.scrollView.bounds.width, 0)
+        webView.scrollView.contentOffset = CGPoint(
+            x: min(max(x, 0), maxX),
+            y: min(max(y, 0), maxY)
+        )
+    }
+
+    private func scrollFraction() -> CGFloat {
+        let scroll = webView.scrollView
+        let maxY = max(scroll.contentSize.height - scroll.bounds.height, 1)
+        return min(max(scroll.contentOffset.y / maxY, 0), 1)
+    }
+
+    private func estimatedVisibleRawMarkdown() -> String {
+        let full = markdownSource
+        guard !full.isEmpty else { return "" }
+        let maxLen = 4000
+        if full.count <= maxLen { return full }
+        let ratio = Double(scrollFraction())
+        let start = max(0, Int(Double(full.count) * ratio) - maxLen / 5)
+        let end = min(full.count, start + maxLen)
+        let startIdx = full.index(full.startIndex, offsetBy: start)
+        let endIdx = full.index(full.startIndex, offsetBy: end)
+        return String(full[startIdx..<endIdx])
+    }
+
+    private func updateProgressLabel() {
+        progressLabel.text = currentPageLabel()
+    }
+
+    private func scheduleProgressSave() {
+        guard currentDocumentID != nil, contentReady else { return }
+        progressWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushProgressSave()
+        }
+        progressWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func flushProgressSave() {
+        guard let documentID = currentDocumentID,
+              let progress = captureReadingProgress() else { return }
+        StudyProgressStore.shared.update(documentID: documentID, progress: progress)
+    }
+}

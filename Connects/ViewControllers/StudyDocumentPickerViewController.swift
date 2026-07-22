@@ -7,8 +7,14 @@ protocol StudyDocumentPickerDelegate: AnyObject {
 final class StudyDocumentPickerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate {
     weak var delegate: StudyDocumentPickerDelegate?
 
+    private enum ImportKind {
+        case pdf
+        case markdown
+    }
+
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private var documents: [StudyDocument] = []
+    private var pendingImportKind: ImportKind = .pdf
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
         f.countStyle = .file
@@ -23,7 +29,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "选择 PDF"
+        title = "选择文档"
         view.backgroundColor = DSTheme.c.background
         navigationItem.leftBarButtonItem = ActionIconFactory.barItem(
             kind: .chevronLeft,
@@ -81,7 +87,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        documents.count + 1
+        documents.count + 2
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -94,15 +100,20 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         cell.detailTextLabel?.textColor = DSTheme.c.textSecondary
         cell.accessoryType = .none
         if indexPath.row == 0 {
-            cell.textLabel?.text = "从文件导入…"
+            cell.textLabel?.text = "从文件导入 PDF…"
             cell.detailTextLabel?.text = nil
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
+        } else if indexPath.row == 1 {
+            cell.textLabel?.text = "从文件导入 Markdown…"
+            cell.detailTextLabel?.text = ".md / .markdown"
+            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else {
-            let doc = documents[indexPath.row - 1]
+            let doc = documents[indexPath.row - 2]
             cell.textLabel?.text = doc.title
             let size = byteFormatter.string(fromByteCount: doc.fileSize)
             let opened = dateFormatter.string(from: doc.lastOpenedAt)
-            cell.detailTextLabel?.text = "\(size) · 最近打开 \(opened)"
+            let kindLabel = doc.kind == .markdown ? "Markdown" : "PDF"
+            cell.detailTextLabel?.text = "\(kindLabel) · \(size) · 最近打开 \(opened)"
             cell.imageView?.image = ActionIconFactory.image(.book, pointSize: 16)
         }
         return cell
@@ -111,10 +122,14 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if indexPath.row == 0 {
-            presentImportPicker()
+            presentImportPicker(kind: .pdf)
             return
         }
-        let doc = documents[indexPath.row - 1]
+        if indexPath.row == 1 {
+            presentImportPicker(kind: .markdown)
+            return
+        }
+        let doc = documents[indexPath.row - 2]
         delegate?.studyDocumentPicker(self, didSelect: doc.id)
     }
 
@@ -123,15 +138,15 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     }
 
     func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        indexPath.row > 0
+        indexPath.row > 1
     }
 
     func tableView(
         _ tableView: UITableView,
         editActionsForRowAt indexPath: IndexPath
     ) -> [UITableViewRowAction]? {
-        guard indexPath.row > 0 else { return nil }
-        let doc = documents[indexPath.row - 1]
+        guard indexPath.row > 1 else { return nil }
+        let doc = documents[indexPath.row - 2]
         let delete = UITableViewRowAction(style: .destructive, title: "删除") { [weak self] _, _ in
             self?.confirmDelete(document: doc)
         }
@@ -143,16 +158,16 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         commit editingStyle: UITableViewCell.EditingStyle,
         forRowAt indexPath: IndexPath
     ) {
-        guard editingStyle == .delete, indexPath.row > 0 else { return }
-        confirmDelete(document: documents[indexPath.row - 1])
+        guard editingStyle == .delete, indexPath.row > 1 else { return }
+        confirmDelete(document: documents[indexPath.row - 2])
     }
 
     func tableView(
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard indexPath.row > 0 else { return nil }
-        let doc = documents[indexPath.row - 1]
+        guard indexPath.row > 1 else { return nil }
+        let doc = documents[indexPath.row - 2]
         let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
             self?.confirmDelete(document: doc, completion: completion)
         }
@@ -164,8 +179,8 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let point = gesture.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: point), indexPath.row > 0 else { return }
-        let doc = documents[indexPath.row - 1]
+        guard let indexPath = tableView.indexPathForRow(at: point), indexPath.row > 1 else { return }
+        let doc = documents[indexPath.row - 2]
         tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
         ConnectsMenu.present(
             from: self,
@@ -196,13 +211,27 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         present(alert, animated: true)
     }
 
-    private func presentImportPicker() {
-        let picker = UIDocumentPickerViewController(documentTypes: ["com.adobe.pdf"], in: .import)
+    private func presentImportPicker(kind: ImportKind) {
+        pendingImportKind = kind
+        let types: [String]
+        switch kind {
+        case .pdf:
+            types = ["com.adobe.pdf"]
+        case .markdown:
+            types = [
+                "net.daringfireball.markdown",
+                "public.markdown",
+                "public.plain-text",
+                "public.text"
+            ]
+        }
+        let picker = UIDocumentPickerViewController(documentTypes: types, in: .import)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         if let pop = picker.popoverPresentationController {
+            let row = kind == .pdf ? 0 : 1
             pop.sourceView = tableView
-            pop.sourceRect = tableView.rectForRow(at: IndexPath(row: 0, section: 0))
+            pop.sourceRect = tableView.rectForRow(at: IndexPath(row: row, section: 0))
         }
         present(picker, animated: true)
     }
@@ -210,7 +239,17 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { return }
         do {
-            let doc = try StudyDocumentStore.shared.importPDF(from: url)
+            let doc: StudyDocument
+            switch pendingImportKind {
+            case .pdf:
+                doc = try StudyDocumentStore.shared.importPDF(from: url)
+            case .markdown:
+                let ext = url.pathExtension.lowercased()
+                if ext == "pdf" {
+                    throw StudyDocumentError.unsupportedType
+                }
+                doc = try StudyDocumentStore.shared.importMarkdown(from: url)
+            }
             delegate?.studyDocumentPicker(self, didSelect: doc.id)
         } catch {
             let alert = UIAlertController(title: "导入失败", message: error.localizedDescription, preferredStyle: .alert)

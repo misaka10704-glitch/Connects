@@ -1,13 +1,15 @@
 import UIKit
 
-/// Hosts chat + optional PDF reader for study sessions.
-/// Landscape: PDF full screen; AI chat overlays on the right.
-/// Portrait: PDF full screen; AI chat overlays on the bottom.
+/// Hosts chat + optional document reader (PDF / Markdown) for study sessions.
+/// Landscape: reader full screen; AI chat overlays on the right.
+/// Portrait: reader full screen; AI chat overlays on the bottom.
 final class StudyShellViewController: UIViewController {
     let chatNav: UINavigationController
     let chatVC: ChatViewController
 
     private let pdfReaderVC = PDFReaderViewController()
+    private let markdownReaderVC = MarkdownReaderViewController()
+    private var activeReaderKind: StudyDocumentKind = .pdf
     private let readerHost = UIView()
     private let chatHost = UIView()
     private let collapseStrip = UIButton(type: .system)
@@ -122,13 +124,17 @@ final class StudyShellViewController: UIViewController {
         collapseStrip.layer.zPosition = 100
         readerHost.clipsToBounds = false
         chatVC.studyContextProvider = self
-        pdfReaderVC.onToggleSidebar = { [weak self] in
+        let toggleSidebar: () -> Void = { [weak self] in
             self?.onToggleSidebar?()
         }
+        pdfReaderVC.onToggleSidebar = toggleSidebar
+        markdownReaderVC.onToggleSidebar = toggleSidebar
 
         addChild(pdfReaderVC)
+        addChild(markdownReaderVC)
         addChild(chatNav)
         pdfReaderVC.didMove(toParent: self)
+        markdownReaderVC.didMove(toParent: self)
         chatNav.didMove(toParent: self)
 
         [readerHost, collapseStrip].forEach {
@@ -136,6 +142,8 @@ final class StudyShellViewController: UIViewController {
             view.addSubview($0)
         }
         readerHost.addSubview(pdfReaderVC.view)
+        readerHost.addSubview(markdownReaderVC.view)
+        markdownReaderVC.view.isHidden = true
         landscapeStatusSpacer.translatesAutoresizingMaskIntoConstraints = false
         landscapeStatusSpacer.isUserInteractionEnabled = false
         landscapeStatusSpacer.backgroundColor = .clear
@@ -147,6 +155,7 @@ final class StudyShellViewController: UIViewController {
         chatHost.addSubview(chatNav.view)
         chatNav.view.translatesAutoresizingMaskIntoConstraints = false
         pdfReaderVC.view.translatesAutoresizingMaskIntoConstraints = false
+        markdownReaderVC.view.translatesAutoresizingMaskIntoConstraints = false
 
         landscapeStatusSpacerHeight = landscapeStatusSpacer.heightAnchor.constraint(equalToConstant: 0)
         portraitSeamSpacerHeight = portraitSeamSpacer.heightAnchor.constraint(equalToConstant: 0)
@@ -196,6 +205,11 @@ final class StudyShellViewController: UIViewController {
             pdfReaderVC.view.trailingAnchor.constraint(equalTo: readerHost.trailingAnchor),
             pdfReaderVC.view.topAnchor.constraint(equalTo: readerHost.topAnchor),
             pdfReaderVC.view.bottomAnchor.constraint(equalTo: readerHost.bottomAnchor),
+
+            markdownReaderVC.view.leadingAnchor.constraint(equalTo: readerHost.leadingAnchor),
+            markdownReaderVC.view.trailingAnchor.constraint(equalTo: readerHost.trailingAnchor),
+            markdownReaderVC.view.topAnchor.constraint(equalTo: readerHost.topAnchor),
+            markdownReaderVC.view.bottomAnchor.constraint(equalTo: readerHost.bottomAnchor),
 
             chatNav.view.trailingAnchor.constraint(equalTo: chatHost.trailingAnchor),
             chatNav.view.bottomAnchor.constraint(equalTo: chatHost.bottomAnchor)
@@ -249,10 +263,10 @@ final class StudyShellViewController: UIViewController {
         let willBePortrait = size.height > size.width
         guard willBePortrait != isPortraitMode else { return }
 
-        let pdfSnapshot = pdfReaderVC.captureReadingProgress()
+        let readerSnapshot = captureActiveReaderProgress()
         stashDepartingOverlayRatio()
         isHandlingRotation = true
-        pdfReaderVC.beginShellRotation(keeping: pdfSnapshot)
+        beginActiveReaderRotation(keeping: readerSnapshot)
 
         coordinator.animate(alongsideTransition: { _ in
             self.isPortraitMode = willBePortrait
@@ -261,7 +275,7 @@ final class StudyShellViewController: UIViewController {
                 self.syncCollapseStripLayout()
                 self.updateChatPanelShadowPath()
                 self.view.layoutIfNeeded()
-                self.pdfReaderVC.updateDuringShellRotation()
+                self.updateActiveReaderDuringRotation()
                 self.bringChromeToFront()
             }
         }, completion: { _ in
@@ -271,7 +285,7 @@ final class StudyShellViewController: UIViewController {
                 self.syncCollapseStripLayout()
                 self.updateChatPanelShadowPath()
             }
-            self.pdfReaderVC.finishShellRotation(using: pdfSnapshot)
+            self.finishActiveReaderRotation(using: readerSnapshot)
             self.syncStudyOverlayChrome()
             self.postChatWidthNotification()
             self.bringChromeToFront()
@@ -290,19 +304,19 @@ final class StudyShellViewController: UIViewController {
                 applyLayoutMode()
             }
         } else if portrait != isPortraitMode, !isHandlingRotation {
-            let pdfSnapshot = pdfReaderVC.captureReadingProgress()
+            let readerSnapshot = captureActiveReaderProgress()
             stashDepartingOverlayRatio()
             isPortraitMode = portrait
-            pdfReaderVC.beginShellRotation(keeping: pdfSnapshot)
+            beginActiveReaderRotation(keeping: readerSnapshot)
             applyLayoutMode()
             UIView.performWithoutAnimation {
                 self.syncCollapseStripLayout()
                 self.updateChatPanelShadowPath()
                 self.view.layoutIfNeeded()
-                self.pdfReaderVC.updateDuringShellRotation()
+                self.updateActiveReaderDuringRotation()
                 self.bringChromeToFront()
             }
-            pdfReaderVC.finishShellRotation(using: pdfSnapshot)
+            finishActiveReaderRotation(using: readerSnapshot)
             syncStudyOverlayChrome()
             postChatWidthNotification()
         }
@@ -331,9 +345,84 @@ final class StudyShellViewController: UIViewController {
             pdfReaderVC.setSidebarButtonHidden(true)
             pdfReaderVC.setReaderSurfaceActive(false)
             pdfReaderVC.prepareForShellLayoutChange()
+            markdownReaderVC.setSidebarButtonHidden(true)
+            markdownReaderVC.setReaderSurfaceActive(false)
+            markdownReaderVC.prepareForShellLayoutChange()
         } else {
             readerHost.isHidden = false
         }
+    }
+
+    private func captureActiveReaderProgress() -> StudyProgress? {
+        switch activeReaderKind {
+        case .pdf: return pdfReaderVC.captureReadingProgress()
+        case .markdown: return markdownReaderVC.captureReadingProgress()
+        }
+    }
+
+    private func beginActiveReaderRotation(keeping progress: StudyProgress?) {
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.beginShellRotation(keeping: progress)
+        case .markdown: markdownReaderVC.beginShellRotation(keeping: progress)
+        }
+    }
+
+    private func updateActiveReaderDuringRotation() {
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.updateDuringShellRotation()
+        case .markdown: markdownReaderVC.updateDuringShellRotation()
+        }
+    }
+
+    private func finishActiveReaderRotation(using progress: StudyProgress?) {
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.finishShellRotation(using: progress)
+        case .markdown: markdownReaderVC.finishShellRotation(using: progress)
+        }
+    }
+
+    private func showReader(kind: StudyDocumentKind) {
+        activeReaderKind = kind
+        pdfReaderVC.view.isHidden = kind != .pdf
+        markdownReaderVC.view.isHidden = kind != .markdown
+        switch kind {
+        case .pdf:
+            markdownReaderVC.setReaderSurfaceActive(false)
+            markdownReaderVC.setSidebarButtonHidden(true)
+        case .markdown:
+            pdfReaderVC.setReaderSurfaceActive(false)
+            pdfReaderVC.setSidebarButtonHidden(true)
+        }
+    }
+
+    private func isActiveReaderLoaded(documentID: String) -> Bool {
+        switch activeReaderKind {
+        case .pdf: return pdfReaderVC.isLoaded(documentID: documentID)
+        case .markdown: return markdownReaderVC.isLoaded(documentID: documentID)
+        }
+    }
+
+    private func loadActiveReader(documentID: String, completion: @escaping (Bool) -> Void) {
+        switch activeReaderKind {
+        case .pdf:
+            markdownReaderVC.clearDocument()
+            pdfReaderVC.load(documentID: documentID, completion: completion)
+        case .markdown:
+            pdfReaderVC.clearDocument()
+            markdownReaderVC.load(documentID: documentID, completion: completion)
+        }
+    }
+
+    private func saveActiveReaderProgress() {
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.saveReadingProgressNow()
+        case .markdown: markdownReaderVC.saveReadingProgressNow()
+        }
+    }
+
+    private func pauseActiveReader() {
+        pdfReaderVC.pauseReading()
+        markdownReaderVC.pauseReading()
     }
 
 
@@ -520,6 +609,7 @@ final class StudyShellViewController: UIViewController {
 
     func syncSidebarToggle(collapsed: Bool) {
         pdfReaderVC.updateSidebarToggle(collapsed: collapsed)
+        markdownReaderVC.updateSidebarToggle(collapsed: collapsed)
         if !isReaderVisible {
             chatVC.updateSidebarToggleTitle(collapsed: collapsed)
         }
@@ -536,7 +626,7 @@ final class StudyShellViewController: UIViewController {
         let wasInStudy = boundDocumentID != nil
 
         if boundDocumentID != nil {
-            pdfReaderVC.saveReadingProgressNow()
+            saveActiveReaderProgress()
         }
 
         boundDocumentID = docID
@@ -549,9 +639,11 @@ final class StudyShellViewController: UIViewController {
             if !wasInStudy || docChanged {
                 isChatCollapsed = true
             }
+            let kind = StudyDocumentStore.shared.document(id: docID)?.kind ?? .pdf
+            showReader(kind: kind)
         } else {
             isReaderVisible = false
-            pdfReaderVC.pauseReading()
+            pauseActiveReader()
             isChatCollapsed = false
         }
 
@@ -559,10 +651,10 @@ final class StudyShellViewController: UIViewController {
 
         if let docID = docID {
             let progress = StudyProgressStore.shared.progress(for: docID)
-            let needsLoad = !pdfReaderVC.isLoaded(documentID: docID)
+            let needsLoad = !isActiveReaderLoaded(documentID: docID)
             if needsLoad {
                 StudyDocumentStore.shared.touch(documentID: docID)
-                pdfReaderVC.load(documentID: docID) { [weak self] ok in
+                loadActiveReader(documentID: docID) { [weak self] ok in
                     guard let self = self, ok, self.loadGeneration == gen else { return }
                     self.commitReaderViewport(progress: progress, generation: gen)
                 }
@@ -576,25 +668,37 @@ final class StudyShellViewController: UIViewController {
 
     private func commitReaderViewport(progress: StudyProgress?, generation: UInt) {
         guard loadGeneration == generation, isReaderVisible, !readerHost.isHidden else { return }
-        pdfReaderVC.setReaderSurfaceActive(true)
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.setReaderSurfaceActive(true)
+        case .markdown: markdownReaderVC.setReaderSurfaceActive(true)
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.loadGeneration == generation,
                   self.isReaderVisible, !self.readerHost.isHidden else { return }
             self.view.layoutIfNeeded()
-            self.pdfReaderVC.realignVisibleViewport(using: progress)
+            switch self.activeReaderKind {
+            case .pdf: self.pdfReaderVC.realignVisibleViewport(using: progress)
+            case .markdown: self.markdownReaderVC.realignVisibleViewport(using: progress)
+            }
         }
     }
 
     private func resumeReaderAfterConversationSwitch(generation: UInt) {
         guard loadGeneration == generation, isReaderVisible, !readerHost.isHidden else { return }
-        pdfReaderVC.setReaderSurfaceActive(true)
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.setReaderSurfaceActive(true)
+        case .markdown: markdownReaderVC.setReaderSurfaceActive(true)
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.loadGeneration == generation,
                   self.isReaderVisible, !self.readerHost.isHidden else { return }
             self.view.layoutIfNeeded()
-            self.pdfReaderVC.resumeAfterConversationSwitch()
+            switch self.activeReaderKind {
+            case .pdf: self.pdfReaderVC.resumeAfterConversationSwitch()
+            case .markdown: self.markdownReaderVC.resumeAfterConversationSwitch()
+            }
         }
     }
 
@@ -606,7 +710,10 @@ final class StudyShellViewController: UIViewController {
         }
 
         setChatOnlyLayout(false)
-        pdfReaderVC.setSidebarButtonHidden(false)
+        switch activeReaderKind {
+        case .pdf: pdfReaderVC.setSidebarButtonHidden(false)
+        case .markdown: markdownReaderVC.setSidebarButtonHidden(false)
+        }
 
         let layoutSize = layoutBoundsSize(for: size)
         if isPortraitMode {
@@ -942,7 +1049,7 @@ final class StudyShellViewController: UIViewController {
             }
             bindCurrentConversation()
             if boundDocumentID == documentID,
-               pdfReaderVC.isLoaded(documentID: documentID),
+               isActiveReaderLoaded(documentID: documentID),
                captureCurrentStudyPage() != nil {
                 completion(true)
                 return
@@ -965,12 +1072,25 @@ final class StudyShellViewController: UIViewController {
 extension StudyShellViewController: StudyReadingContextProviding {
     func captureCurrentStudyPage() -> StudyPageCapture? {
         guard boundDocumentID != nil else { return nil }
-        let label = pdfReaderVC.currentPageLabel()
-        guard label != "无文档" else { return nil }
-        guard let imageJPEGBase64 = pdfReaderVC.captureCurrentPageImageJPEG() else { return nil }
+        let label: String
+        let text: String
+        let imageJPEGBase64: String?
+        switch activeReaderKind {
+        case .pdf:
+            label = pdfReaderVC.currentPageLabel()
+            guard label != "无文档" else { return nil }
+            imageJPEGBase64 = pdfReaderVC.captureCurrentPageImageJPEG()
+            text = pdfReaderVC.currentPageText() ?? ""
+        case .markdown:
+            label = markdownReaderVC.currentPageLabel()
+            guard label != "无文档" else { return nil }
+            imageJPEGBase64 = markdownReaderVC.captureCurrentPageImageJPEG()
+            text = markdownReaderVC.currentPageText() ?? ""
+        }
+        guard let imageJPEGBase64 = imageJPEGBase64 else { return nil }
         return StudyPageCapture(
             label: label,
-            text: pdfReaderVC.currentPageText() ?? "",
+            text: text,
             imageJPEGBase64: imageJPEGBase64
         )
     }
