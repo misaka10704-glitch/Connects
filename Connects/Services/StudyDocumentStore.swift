@@ -7,6 +7,7 @@ enum StudyDocumentError: LocalizedError {
     case invalidPDF
     case invalidMarkdown
     case unsupportedType
+    case markdownImportAsyncOnly
 
     var errorDescription: String? {
         switch self {
@@ -15,8 +16,16 @@ enum StudyDocumentError: LocalizedError {
         case .invalidPDF: return "不是有效的 PDF 文件。"
         case .invalidMarkdown: return "无法读取 Markdown 文件。"
         case .unsupportedType: return "仅支持 PDF 或 Markdown（.md / .markdown）。"
+        case .markdownImportAsyncOnly: return "Markdown 需异步转为 PDF 后导入。"
         }
     }
+}
+
+struct MarkdownPDFImportOutcome {
+    let document: StudyDocument
+    let missingImagePaths: [String]
+    /// True when an existing document was reused via fingerprint.
+    let reusedExisting: Bool
 }
 
 final class StudyDocumentStore {
@@ -26,7 +35,6 @@ final class StudyDocumentStore {
     private let pdfCache = NSCache<NSString, PDFDocument>()
     private let markdownCache = NSCache<NSString, NSString>()
     private let maxPDFBytes: Int64 = 160 * 1024 * 1024
-    private let maxMarkdownBytes: Int64 = 8 * 1024 * 1024
     private let registryName = "registry.json"
 
     var studyRootURL: URL {
@@ -57,6 +65,11 @@ final class StudyDocumentStore {
         return documentURL(for: doc)
     }
 
+    func documentFolderURL(forID id: String) -> URL? {
+        guard document(id: id) != nil else { return nil }
+        return studyRootURL.appendingPathComponent(id, isDirectory: true)
+    }
+
     func cachedPDFDocument(for documentID: String) -> PDFDocument? {
         if let cached = pdfCache.object(forKey: documentID as NSString) {
             return cached
@@ -84,7 +97,8 @@ final class StudyDocumentStore {
         markdownCache.removeAllObjects()
     }
 
-    /// Import PDF or Markdown based on file extension / UTI.
+    /// Import PDF based on file extension / UTI.
+    /// Markdown must use `importMarkdownAsPDF` (renders to a frozen PDF).
     @discardableResult
     func importDocument(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
         let ext = sourceURL.pathExtension.lowercased()
@@ -92,7 +106,7 @@ final class StudyDocumentStore {
         case "pdf":
             return try importPDF(from: sourceURL, title: title)
         case "md", "markdown", "txt":
-            return try importMarkdown(from: sourceURL, title: title)
+            throw StudyDocumentError.markdownImportAsyncOnly
         default:
             throw StudyDocumentError.unsupportedType
         }
@@ -148,28 +162,61 @@ final class StudyDocumentStore {
         return doc
     }
 
-    @discardableResult
-    func importMarkdown(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
-        let accessing = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing { sourceURL.stopAccessingSecurityScopedResource() }
+    /// Import Markdown (.md) plus optional user-picked shared images (matched by filename).
+    func importMarkdown(markdownURL: URL,
+                        accessRoot: URL,
+                        extraImageFiles: [URL] = [],
+                        title: String? = nil,
+                        completion: @escaping (Result<MarkdownPDFImportOutcome, Error>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Result<MarkdownStudyImportResult, Error>
+            do {
+                result = .success(try MarkdownStudyImporter.importSnapshot(
+                    markdownURL: markdownURL,
+                    accessRoot: accessRoot,
+                    extraImageFiles: extraImageFiles,
+                    title: title
+                ))
+            } catch {
+                result = .failure(error)
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let snap):
+                    do {
+                        let outcome = try self.registerMarkdownSnapshot(snap)
+                        completion(.success(outcome))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                }
+            }
         }
+    }
 
-        let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-        let size = attrs[.size] as? Int64 ?? 0
-        guard size <= maxMarkdownBytes else { throw StudyDocumentError.fileTooLarge }
+    /// Legacy single-file entry.
+    func importMarkdownAsPDF(from sourceURL: URL,
+                             title: String? = nil,
+                             completion: @escaping (Result<MarkdownPDFImportOutcome, Error>) -> Void) {
+        let root = sourceURL.deletingLastPathComponent()
+        importMarkdown(markdownURL: sourceURL, accessRoot: root, title: title, completion: completion)
+    }
 
-        let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
-        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+    private func registerMarkdownSnapshot(_ snap: MarkdownStudyImportResult) throws -> MarkdownPDFImportOutcome {
+        if let existing = documents.first(where: { $0.contentFingerprint == snap.fingerprint }) {
             touch(documentID: existing.id)
-            return existing
+            return MarkdownPDFImportOutcome(
+                document: existing,
+                missingImagePaths: snap.missingImagePaths,
+                reusedExisting: true
+            )
         }
 
-        guard let data = try? Data(contentsOf: sourceURL),
-              String(data: data, encoding: .utf8) != nil
-                || String(data: data, encoding: .isoLatin1) != nil else {
-            throw StudyDocumentError.invalidMarkdown
-        }
+        let mdData = Data(snap.markdown.utf8)
+        let mdSize = Int64(mdData.count)
+        guard mdSize <= 8 * 1024 * 1024 else { throw StudyDocumentError.fileTooLarge }
 
         let docID = UUID().uuidString
         let relative = "\(docID)/original.md"
@@ -179,24 +226,39 @@ final class StudyDocumentStore {
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
-        try FileManager.default.copyItem(at: sourceURL, to: dest)
 
-        let displayTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
-            ?? sourceURL.deletingPathExtension().lastPathComponent
+        do {
+            try mdData.write(to: dest, options: .atomic)
+            for asset in snap.assets {
+                let assetURL = folder.appendingPathComponent(asset.relativePath)
+                try FileManager.default.createDirectory(
+                    at: assetURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try asset.data.write(to: assetURL, options: .atomic)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw StudyDocumentError.copyFailed
+        }
 
         let doc = StudyDocument(
             id: docID,
-            title: String(displayTitle.prefix(120)),
+            title: snap.displayTitle,
             localRelativePath: relative,
-            contentFingerprint: fingerprint,
-            fileSize: size,
+            contentFingerprint: snap.fingerprint,
+            fileSize: mdSize,
             lastOpenedAt: Date(),
             kind: .markdown
         )
         documents.insert(doc, at: 0)
         saveRegistry()
         notify()
-        return doc
+        return MarkdownPDFImportOutcome(
+            document: doc,
+            missingImagePaths: snap.missingImagePaths,
+            reusedExisting: false
+        )
     }
 
     func touch(documentID: String) {

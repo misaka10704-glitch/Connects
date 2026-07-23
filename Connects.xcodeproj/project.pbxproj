@@ -121,6 +121,7 @@
 		S1000001000000000000000A /* PDFContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000A /* PDFContentsViewController.swift */; };
 		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
 		S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000C /* MarkdownContentsViewController.swift */; };
+		S1000001000000000000000D /* MarkdownStudyImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000D /* MarkdownStudyImporter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -241,6 +242,7 @@
 		S2000001000000000000000A /* PDFContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentsViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
 		S2000001000000000000000C /* MarkdownContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentsViewController.swift; sourceTree = "<group>"; };
+		S2000001000000000000000D /* MarkdownStudyImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStudyImporter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -375,6 +377,7 @@
 				F20000010000000000000002 /* SimpleZip.swift */,
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
+				S2000001000000000000000D /* MarkdownStudyImporter.swift */,
 				S20000010000000000000003 /* StudyProgressStore.swift */,
 				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
@@ -676,6 +679,7 @@
 				F10000010000000000000003 /* ConnectsBackupService.swift in Sources */,
 				S10000010000000000000001 /* StudyDocument.swift in Sources */,
 				S10000010000000000000002 /* StudyDocumentStore.swift in Sources */,
+				S1000001000000000000000D /* MarkdownStudyImporter.swift in Sources */,
 				S10000010000000000000003 /* StudyProgressStore.swift in Sources */,
 				S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */,
 				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,

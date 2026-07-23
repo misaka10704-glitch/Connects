@@ -62,6 +62,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let config = WKWebViewConfiguration()
         let controller = WKUserContentController()
         controller.add(WeakScriptMessageHandler(delegate: self), name: "studyReady")
+        controller.add(WeakScriptMessageHandler(delegate: self), name: "studyAsset")
         config.userContentController = controller
         if #available(iOS 14.0, *) {
             let prefs = WKWebpagePreferences()
@@ -134,6 +135,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     deinit {
         if webView != nil {
             webView.configuration.userContentController.removeScriptMessageHandler(forName: "studyReady")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "studyAsset")
         }
         NotificationCenter.default.removeObserver(self)
     }
@@ -464,12 +466,101 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     // MARK: - WK / scroll
 
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+        let href = url.absoluteString
+        // Any Study image target (connects.local / relative png / file URL ending in image).
+        if MarkdownStudyImporter.isStudyAssetHref(href)
+            || MarkdownStudyImporter.relativeLocalImagePath(from: href) != nil {
+            decisionHandler(.cancel)
+            let pass = MarkdownStudyImporter.relativeLocalImagePath(from: href) ?? href
+            presentStudyAsset(href: pass)
+            return
+        }
+        if navigationAction.navigationType == .linkActivated {
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "http" || scheme == "https" {
+                decisionHandler(.cancel)
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                return
+            }
+            // Non-image file / relative .md — ignore (do not silently swallow image taps).
+            if scheme == "file" || scheme.isEmpty || href.lowercased().hasSuffix(".md") {
+                decisionHandler(.cancel)
+                return
+            }
+        }
+        decisionHandler(.allow)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         shellLoaded = true
         tryInjectPendingMarkdown()
     }
 
+    private func presentStudyAsset(href: String) {
+        guard let docID = currentDocumentID,
+              let folder = StudyDocumentStore.shared.documentFolderURL(forID: docID) else {
+            let alert = UIAlertController(title: "无法打开图片", message: "当前没有打开的文档。", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+            present(alert, animated: true)
+            return
+        }
+
+        var candidates: [URL] = []
+        if let u = MarkdownStudyImporter.assetFileURL(documentFolder: folder, href: href) {
+            candidates.append(u)
+        }
+        if let rel = MarkdownStudyImporter.relativeLocalImagePath(from: href) {
+            candidates.append(folder.appendingPathComponent(rel))
+            // Also try basename-only under assets/
+            let base = (rel as NSString).lastPathComponent
+            if !base.isEmpty {
+                candidates.append(folder.appendingPathComponent("assets").appendingPathComponent(base))
+            }
+        }
+
+        var fileURL: URL?
+        var data: Data?
+        for url in candidates {
+            if let d = try? Data(contentsOf: url), !d.isEmpty, UIImage(data: d) != nil {
+                fileURL = url
+                data = d
+                break
+            }
+        }
+
+        guard let fileURL, let data, let image = UIImage(data: data) else {
+            let alert = UIAlertController(
+                title: "无法打开图片",
+                message: "资源不在文档目录中。\n\(href)\n\n请删除后重新导入 Markdown（需能读到旁路图片文件）。",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+            present(alert, animated: true)
+            return
+        }
+        let title = fileURL.deletingPathExtension().lastPathComponent
+        let vc = StudyAssetImageViewController(image: image, title: title)
+        present(vc, animated: true)
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "studyAsset" {
+            let href: String
+            if let s = message.body as? String {
+                href = s
+            } else {
+                href = "\(message.body)"
+            }
+            presentStudyAsset(href: href)
+            return
+        }
         guard message.name == "studyReady" else { return }
         contentReady = true
         spinner.stopAnimating()

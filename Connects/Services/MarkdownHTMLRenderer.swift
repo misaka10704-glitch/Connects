@@ -487,6 +487,15 @@ enum MarkdownHTMLRenderer {
           #c th { background:rgba(127,127,127,0.1); font-weight:600; }
           #c hr { border:none; border-top:1px solid \(border); margin:1em 0; }
           #c img { max-width:100%; height:auto; }
+          #c a[href^="https://connects.local/"],
+          #c a[href^="connects-asset:"],
+          #c a[href$=".png"], #c a[href$=".jpg"], #c a[href$=".jpeg"],
+          #c a[href$=".gif"], #c a[href$=".webp"], #c a[href$=".svg"] {
+            display:inline-block; margin:0.15em 0; padding:0.12em 0.55em;
+            border:1px solid \(border); border-radius:6px;
+            background:rgba(127,127,127,0.10); text-decoration:none;
+            font-size:0.92em; line-height:1.4;
+          }
           .katex-display { margin:0.75em 0; overflow-x:auto; overflow-y:hidden; }
         </style>
         <script src="markdown/marked.min.js"></script>
@@ -543,6 +552,47 @@ enum MarkdownHTMLRenderer {
                   ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
                   throwOnError: false
                 });
+              }
+              // Turn leftover <img> into 〔图〕 links (no inline images).
+              var imgs = el.querySelectorAll("img");
+              for (var ii = 0; ii < imgs.length; ii++) {
+                var img = imgs[ii];
+                var src = img.getAttribute("src") || "";
+                if (!src || src.indexOf("data:") === 0) continue;
+                var aImg = document.createElement("a");
+                aImg.setAttribute("href", src);
+                var label = (img.getAttribute("alt") || "").trim();
+                if (!label) {
+                  var parts = src.split("/");
+                  label = parts[parts.length - 1] || "图";
+                }
+                aImg.textContent = "〔图〕" + label;
+                if (img.parentNode) img.parentNode.replaceChild(aImg, img);
+              }
+              if (!el.__connectsAssetClickBound) {
+                el.__connectsAssetClickBound = true;
+                el.addEventListener("click", function(ev) {
+                  var node = ev.target;
+                  while (node && node !== el && (!node.tagName || node.tagName.toUpperCase() !== "A")) {
+                    node = node.parentNode;
+                  }
+                  if (!node || node === el) return;
+                  var href = node.getAttribute("href") || "";
+                  function isImageHref(h) {
+                    if (!h) return false;
+                    if (h.indexOf("https://connects.local/") === 0) return true;
+                    if (h.indexOf("http://connects.local/") === 0) return true;
+                    if (h.indexOf("connects-asset:") === 0) return true;
+                    if (/^https?:\\/\\//i.test(h) && h.indexOf("connects.local") < 0) return false;
+                    return /\\.(png|jpe?g|gif|webp|bmp|svg)(\\?.*)?$/i.test(h);
+                  }
+                  if (!isImageHref(href)) return;
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.studyAsset) {
+                    window.webkit.messageHandlers.studyAsset.postMessage(String(href));
+                  }
+                }, true);
               }
             } catch (e) {
               el.textContent = md;

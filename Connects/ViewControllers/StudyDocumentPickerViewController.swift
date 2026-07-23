@@ -10,11 +10,15 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     private enum ImportKind {
         case pdf
         case markdown
+        case markdownImages
     }
 
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private var documents: [StudyDocument] = []
     private var pendingImportKind: ImportKind = .pdf
+    private var isImportingMarkdown = false
+    private var pendingMarkdownURL: URL?
+    private var pendingAccessRoot: URL?
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
         f.countStyle = .file
@@ -105,7 +109,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else if indexPath.row == 1 {
             cell.textLabel?.text = "从文件导入 Markdown…"
-            cell.detailTextLabel?.text = ".md / .markdown"
+            cell.detailTextLabel?.text = "选 .md；有图再进 assets 全选（自动按引用甄别）"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else {
             let doc = documents[indexPath.row - 2]
@@ -214,9 +218,13 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     private func presentImportPicker(kind: ImportKind) {
         pendingImportKind = kind
         let types: [String]
+        let mode: UIDocumentPickerMode
+        let multi: Bool
         switch kind {
         case .pdf:
             types = ["com.adobe.pdf"]
+            mode = .import
+            multi = false
         case .markdown:
             types = [
                 "net.daringfireball.markdown",
@@ -224,10 +232,16 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
                 "public.plain-text",
                 "public.text"
             ]
+            mode = .open
+            multi = false
+        case .markdownImages:
+            types = ["public.image", "public.png", "public.jpeg", "com.compuserve.gif", "public.tiff"]
+            mode = .open
+            multi = true
         }
-        let picker = UIDocumentPickerViewController(documentTypes: types, in: .import)
+        let picker = UIDocumentPickerViewController(documentTypes: types, in: mode)
         picker.delegate = self
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = multi
         if let pop = picker.popoverPresentationController {
             let row = kind == .pdf ? 0 : 1
             pop.sourceView = tableView
@@ -237,24 +251,123 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
-        do {
-            let doc: StudyDocument
-            switch pendingImportKind {
-            case .pdf:
-                doc = try StudyDocumentStore.shared.importPDF(from: url)
-            case .markdown:
-                let ext = url.pathExtension.lowercased()
-                if ext == "pdf" {
-                    throw StudyDocumentError.unsupportedType
-                }
-                doc = try StudyDocumentStore.shared.importMarkdown(from: url)
+        guard !urls.isEmpty else { return }
+        switch pendingImportKind {
+        case .pdf:
+            guard let url = urls.first else { return }
+            do {
+                let doc = try StudyDocumentStore.shared.importPDF(from: url)
+                delegate?.studyDocumentPicker(self, didSelect: doc.id)
+            } catch {
+                presentImportError(error)
             }
-            delegate?.studyDocumentPicker(self, didSelect: doc.id)
-        } catch {
-            let alert = UIAlertController(title: "导入失败", message: error.localizedDescription, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .default))
-            present(alert, animated: true)
+        case .markdown:
+            guard let url = urls.first else { return }
+            handlePickedMarkdown(url)
+        case .markdownImages:
+            guard let md = pendingMarkdownURL, let root = pendingAccessRoot else { return }
+            beginMarkdownImport(markdownURL: md, accessRoot: root, extraImages: urls)
         }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if pendingImportKind == .markdownImages, let md = pendingMarkdownURL, let root = pendingAccessRoot {
+            // User skipped images — still import text-only.
+            beginMarkdownImport(markdownURL: md, accessRoot: root, extraImages: [])
+        }
+    }
+
+    private func handlePickedMarkdown(_ url: URL) {
+        pendingMarkdownURL = url
+        pendingAccessRoot = url.deletingLastPathComponent()
+
+        let needsImages = MarkdownStudyImporter.referencesLocalImages(in: url)
+        guard let root = pendingAccessRoot else { return }
+        if !needsImages {
+            beginMarkdownImport(markdownURL: url, accessRoot: root, extraImages: [])
+            return
+        }
+
+        let alert = UIAlertController(
+            title: "这篇引用了本地插图",
+            message: """
+            多个 md 共用 assets 时，第二步请进 assets 全选图片即可。
+            会按文件名自动甄别，只导入本文引用到的图，不会把整夹无关图都塞进来。
+
+            也可先只导入正文。
+            """,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "选择插图（可全选）", style: .default) { [weak self] _ in
+            self?.presentImportPicker(kind: .markdownImages)
+        })
+        alert.addAction(UIAlertAction(title: "仅导入正文", style: .cancel) { [weak self] _ in
+            guard let self, let md = self.pendingMarkdownURL, let root = self.pendingAccessRoot else { return }
+            self.beginMarkdownImport(markdownURL: md, accessRoot: root, extraImages: [])
+        })
+        present(alert, animated: true)
+    }
+
+    private func beginMarkdownImport(markdownURL: URL, accessRoot: URL, extraImages: [URL]) {
+        guard !isImportingMarkdown else { return }
+        isImportingMarkdown = true
+        setMarkdownImportBusy(true)
+        StudyDocumentStore.shared.importMarkdown(
+            markdownURL: markdownURL,
+            accessRoot: accessRoot,
+            extraImageFiles: extraImages
+        ) { [weak self] result in
+            guard let self else { return }
+            self.isImportingMarkdown = false
+            self.setMarkdownImportBusy(false)
+            self.pendingMarkdownURL = nil
+            self.pendingAccessRoot = nil
+            switch result {
+            case .failure(let error):
+                self.presentImportError(error)
+            case .success(let outcome):
+                let docID = outcome.document.id
+                let finish = { [weak self] in
+                    guard let self else { return }
+                    self.delegate?.studyDocumentPicker(self, didSelect: docID)
+                }
+                if outcome.missingImagePaths.isEmpty {
+                    finish()
+                } else {
+                    let sample = outcome.missingImagePaths.prefix(5).joined(separator: "\n")
+                    let more = outcome.missingImagePaths.count > 5 ? "\n…" : ""
+                    let alert = UIAlertController(
+                        title: "已导入（仍有图未匹配）",
+                        message: """
+                        未匹配 \(outcome.missingImagePaths.count) 张（按文件名对应）：
+                        \(sample)\(more)
+
+                        可删除后重导，并在第二步把 assets 里对应文件多选进来。
+                        """,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "好", style: .default) { _ in finish() })
+                    self.present(alert, animated: true)
+                }
+            }
+        }
+    }
+
+    private func setMarkdownImportBusy(_ busy: Bool) {
+        tableView.isUserInteractionEnabled = !busy
+        navigationItem.leftBarButtonItem?.isEnabled = !busy
+        if busy {
+            let indicator = UIActivityIndicatorView(style: .gray)
+            indicator.startAnimating()
+            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
+        } else {
+            navigationItem.rightBarButtonItem = nil
+        }
+    }
+
+    private func presentImportError(_ error: Error) {
+        let alert = UIAlertController(title: "导入失败", message: error.localizedDescription, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
     }
 }
