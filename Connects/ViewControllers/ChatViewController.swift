@@ -4242,15 +4242,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             showAlert(title: "无法重试", message: "原始图片已不存在，无法重新转写。")
             return
         }
+        // Study turns with reading context already carry durable page text —
+        // do not re-run OCR (it would leak source into「图片转写」).
+        if user.apiContextPrefix?.contains("[阅读上下文") == true {
+            showAlert(title: "无需转写", message: "该消息已附带阅读页文字，不必再做图片转写。")
+            return
+        }
         let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
-        let studyPagePDFText: String? = user.apiContextPrefix?.contains("[阅读上下文") == true ? "" : nil
         ImageTranscriptionCoordinator.shared.start(
             conversationID: conversation.id,
             userMessageID: user.id,
             assistantMessageID: assistantID,
             base64: base64,
             model: model,
-            studyPagePDFText: studyPagePDFText
+            studyPagePDFText: nil
         )
     }
 
@@ -4776,6 +4781,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             where message.role == .user
                 && message.hasImage
                 && (message.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            // Reading-context turns keep the screenshot for vision; text is already durable.
+            if message.apiContextPrefix?.contains("[阅读上下文") == true { continue }
             guard let base64 = message.imageJPEGBase64,
                   index + 1 < conversation.messages.count,
                   conversation.messages[index + 1].role == .assistant else { continue }
@@ -6046,7 +6053,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         )
         let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
         let hasImageAttachment = finalImage != nil && !(finalImage?.isEmpty ?? true)
-        let imageTranscriptionStatus = hasImageAttachment
+        // Rich study text already travels as apiContextPrefix — same as a normal
+        // text turn. Running OCR/vision would dump page source into「图片转写」.
+        let needsImageTranscription = hasImageAttachment
+            && (resolvedStudyCapture?.needsImageTranscription ?? true)
+        let imageTranscriptionStatus = needsImageTranscription
             ? (resolvedStudyCapture != nil
                 ? "正在提取页面文字（OCR），随后转写图片内容…"
                 : "正在将图片转写为文字，主回复不会等待此步骤。")
@@ -6059,7 +6070,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             searchProcessPhase: searchOn ? .planning : .idle,
             isStreaming: true,
             imageTranscriptionContent: imageTranscriptionStatus,
-            imageTranscriptionPhase: hasImageAttachment ? .transcribing : .idle
+            imageTranscriptionPhase: needsImageTranscription ? .transcribing : .idle
         )
         let convID = conv.id
         let model = conv.model
@@ -6147,7 +6158,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // has already captured the image (or will use its finished description);
         // this independent job prepares the compact durable context for later
         // turns and drives the small status label on the companion reply.
-        if let imageBase64 = finalImage, !imageBase64.isEmpty {
+        // Skip when Study already extracted rich page text — keep standalone-chat UX.
+        if needsImageTranscription, let imageBase64 = finalImage, !imageBase64.isEmpty {
             let captionModel = model.supportsVision ? model : AIModelOption.preferredVision
             ImageTranscriptionCoordinator.shared.start(
                 conversationID: convID,

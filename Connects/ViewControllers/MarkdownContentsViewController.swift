@@ -1,6 +1,6 @@
 import UIKit
 
-/// Outline panel for Study Markdown — headings only (no PDF-style page bookmarks).
+/// Outline panel for Study Markdown — compact title + indented headings.
 final class MarkdownContentsViewController: UIViewController {
     struct HeadingRow {
         let id: String
@@ -111,6 +111,7 @@ extension MarkdownContentsViewController: UITableViewDataSource, UITableViewDele
         cell.textLabel?.textColor = DSTheme.c.textPrimary
         cell.backgroundColor = DSTheme.c.background
         cell.selectionStyle = .default
+        cell.accessoryType = .none
         let indent = CGFloat(max(row.level - 1, 0)) * 10
         cell.separatorInset = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
         cell.layoutMargins = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)

@@ -127,13 +127,28 @@ final class ImageTranscriptionCoordinator {
             return
         }
 
+        let isStudyPage = studyPagePDFText != nil
+        // Rich study text already travels as apiContextPrefix — same as standalone
+        // text chat. Dumping it into「图片转写」was the Study OCR leak.
+        if let studyText = studyPagePDFText?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           studyText.count >= 80 {
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { conversation in
+                if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                    conversation.messages[i].imageTranscriptionPhase = .idle
+                    conversation.messages[i].imageTranscriptionContent = ""
+                }
+            }
+            postUpdate(conversationID)
+            return
+        }
+
         lock.lock()
         let generation = (generations[conversationID] ?? 0) &+ 1
         generations[conversationID] = generation
         active.insert(conversationID)
         lock.unlock()
 
-        let isStudyPage = studyPagePDFText != nil
         updateAssistant(
             conversationID: conversationID,
             messageID: assistantMessageID,

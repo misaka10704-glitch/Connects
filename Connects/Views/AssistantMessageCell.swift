@@ -23,6 +23,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private let assistantLabel = UILabel()
     private let nativeRenderView = NativeMessageRenderView()
     private let actionRow = UIView()
+    /// Single stack so version pager + copy/retry/fork never share leading constraints.
+    private let actionChromeStack = UIStackView()
     private let versionCluster = UIStackView()
     private let versionPrevButton = UIButton(type: .system)
     private let versionNextButton = UIButton(type: .system)
@@ -40,8 +42,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
     private var imageHeight: NSLayoutConstraint!
     private var actionHeight: NSLayoutConstraint!
-    private var copyLeadingToRow: NSLayoutConstraint!
-    private var copyLeadingToPager: NSLayoutConstraint!
     private var thinkingHeaderH: NSLayoutConstraint!
     private var thinkingBoxH: NSLayoutConstraint!
     private var thinkingBodyH: NSLayoutConstraint!
@@ -1967,8 +1967,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         versionNextButton.isEnabled = showPager && canNext
         versionPrevButton.alpha = versionPrevButton.isEnabled ? 1 : 0.35
         versionNextButton.alpha = versionNextButton.isEnabled ? 1 : 0.35
-        copyLeadingToRow.isActive = !showPager
-        copyLeadingToPager.isActive = showPager
     }
 
     private func setThinking(visible: Bool, expanded: Bool) {
@@ -2235,7 +2233,13 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         actionRow.isHidden = true
         contentView.addSubview(actionRow)
 
-        versionCluster.translatesAutoresizingMaskIntoConstraints = false
+        actionChromeStack.translatesAutoresizingMaskIntoConstraints = false
+        actionChromeStack.axis = .horizontal
+        actionChromeStack.spacing = 10
+        actionChromeStack.alignment = .center
+        actionChromeStack.distribution = .fill
+        actionRow.addSubview(actionChromeStack)
+
         versionCluster.axis = .horizontal
         versionCluster.spacing = 2
         versionCluster.alignment = .center
@@ -2248,7 +2252,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         for b in [versionPrevButton, versionNextButton, copyButton, retryButton, forkButton] {
             b.translatesAutoresizingMaskIntoConstraints = false
-            b.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 32).isActive = true
             b.heightAnchor.constraint(equalToConstant: 28).isActive = true
             b.setContentHuggingPriority(.required, for: .horizontal)
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -2256,28 +2260,20 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         versionCluster.addArrangedSubview(versionPrevButton)
         versionCluster.addArrangedSubview(versionLabel)
         versionCluster.addArrangedSubview(versionNextButton)
-        actionRow.addSubview(versionCluster)
-        for b in [copyButton, retryButton, forkButton] {
-            actionRow.addSubview(b)
-        }
+        actionChromeStack.addArrangedSubview(copyButton)
+        actionChromeStack.addArrangedSubview(retryButton)
+        actionChromeStack.addArrangedSubview(forkButton)
+        actionChromeStack.addArrangedSubview(versionCluster)
         copyButton.addTarget(self, action: #selector(copyTapped), for: .touchUpInside)
         retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
         forkButton.addTarget(self, action: #selector(forkTapped), for: .touchUpInside)
         versionPrevButton.addTarget(self, action: #selector(versionPrevTapped), for: .touchUpInside)
         versionNextButton.addTarget(self, action: #selector(versionNextTapped), for: .touchUpInside)
 
-        copyLeadingToRow = copyButton.leadingAnchor.constraint(equalTo: actionRow.leadingAnchor)
-        copyLeadingToPager = copyButton.leadingAnchor.constraint(equalTo: versionCluster.trailingAnchor, constant: 4)
-        copyLeadingToRow.isActive = true
         NSLayoutConstraint.activate([
-            versionCluster.leadingAnchor.constraint(equalTo: actionRow.leadingAnchor),
-            versionCluster.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
-            copyButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
-            retryButton.leadingAnchor.constraint(equalTo: copyButton.trailingAnchor, constant: 4),
-            retryButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
-            forkButton.leadingAnchor.constraint(equalTo: retryButton.trailingAnchor, constant: 4),
-            forkButton.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
-            forkButton.trailingAnchor.constraint(lessThanOrEqualTo: actionRow.trailingAnchor)
+            actionChromeStack.leadingAnchor.constraint(equalTo: actionRow.leadingAnchor),
+            actionChromeStack.centerYAnchor.constraint(equalTo: actionRow.centerYAnchor),
+            actionChromeStack.trailingAnchor.constraint(lessThanOrEqualTo: actionRow.trailingAnchor)
         ])
 
         // Fill available width up to max — avoids UILabel intrinsic-width collapse

@@ -7,6 +7,15 @@ struct StudyPageCapture {
 
     private static let shortTextThreshold = 80
 
+    /// Enough extractable text that OCR / vision transcription would only duplicate
+    /// reading context into the chat UI (same as a normal text turn + context).
+    var hasRichExtractableText: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).count >= Self.shortTextThreshold
+    }
+
+    /// Thin / empty page text still needs the standalone image-transcription path.
+    var needsImageTranscription: Bool { !hasRichExtractableText }
+
     func apiContextPrefix() -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {

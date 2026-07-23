@@ -13,9 +13,10 @@ final class PDFContentsViewController: UIViewController {
         let level: Int
     }
 
-    private let segmented = UISegmentedControl(items: ["目录", "书签"])
-    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let titleLabel = UILabel()
+    private let switchButton = UIButton(type: .system)
     private let addBookmarkButton = UIButton(type: .system)
+    private let tableView = UITableView(frame: .zero, style: .plain)
     private let emptyLabel = UILabel()
 
     private var activeTab: Tab = .outline
@@ -33,13 +34,21 @@ final class PDFContentsViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = DSTheme.c.background
 
-        segmented.selectedSegmentIndex = 0
-        segmented.addTarget(self, action: #selector(tabChanged), for: .valueChanged)
-        segmented.translatesAutoresizingMaskIntoConstraints = false
-        if #available(iOS 13.0, *) {
-            // Keep compact control height on newer SDKs.
-        }
-        view.addSubview(segmented)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = DSTheme.c.textPrimary
+        view.addSubview(titleLabel)
+
+        switchButton.translatesAutoresizingMaskIntoConstraints = false
+        switchButton.titleLabel?.font = UIFont.systemFont(ofSize: 13)
+        switchButton.addTarget(self, action: #selector(switchTabTapped), for: .touchUpInside)
+        view.addSubview(switchButton)
+
+        addBookmarkButton.translatesAutoresizingMaskIntoConstraints = false
+        addBookmarkButton.setTitle("添加", for: .normal)
+        addBookmarkButton.titleLabel?.font = UIFont.systemFont(ofSize: 13)
+        addBookmarkButton.addTarget(self, action: #selector(addBookmarkTapped), for: .touchUpInside)
+        view.addSubview(addBookmarkButton)
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
@@ -54,12 +63,6 @@ final class PDFContentsViewController: UIViewController {
         }
         view.addSubview(tableView)
 
-        addBookmarkButton.translatesAutoresizingMaskIntoConstraints = false
-        addBookmarkButton.setTitle("添加书签", for: .normal)
-        addBookmarkButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
-        addBookmarkButton.addTarget(self, action: #selector(addBookmarkTapped), for: .touchUpInside)
-        view.addSubview(addBookmarkButton)
-
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.font = UIFont.systemFont(ofSize: 13)
         emptyLabel.textColor = DSTheme.c.textSecondary
@@ -68,16 +71,18 @@ final class PDFContentsViewController: UIViewController {
         view.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            segmented.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            segmented.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
-            segmented.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
-            segmented.heightAnchor.constraint(equalToConstant: 28),
+            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
 
-            addBookmarkButton.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 4),
-            addBookmarkButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
-            addBookmarkButton.heightAnchor.constraint(equalToConstant: 28),
+            switchButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            switchButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
 
-            tableView.topAnchor.constraint(equalTo: addBookmarkButton.bottomAnchor, constant: 2),
+            addBookmarkButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            addBookmarkButton.trailingAnchor.constraint(equalTo: switchButton.leadingAnchor, constant: -12),
+
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBookmarkButton.leadingAnchor, constant: -8),
+
+            tableView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -88,7 +93,22 @@ final class PDFContentsViewController: UIViewController {
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -14)
         ])
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeChanged),
+            name: .themeDidChange,
+            object: nil
+        )
         reloadData()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func themeChanged() {
+        updateChrome()
+        tableView.reloadData()
     }
 
     func reloadData() {
@@ -106,27 +126,28 @@ final class PDFContentsViewController: UIViewController {
         let c = DSTheme.c
         view.backgroundColor = c.background
         tableView.backgroundColor = c.background
-        segmented.backgroundColor = c.inputBackground
-        if #available(iOS 13.0, *) {
-            segmented.selectedSegmentTintColor = c.background
-        }
-        segmented.setTitleTextAttributes([.foregroundColor: c.textPrimary, .font: UIFont.systemFont(ofSize: 12, weight: .medium)], for: .selected)
-        segmented.setTitleTextAttributes([.foregroundColor: c.textSecondary, .font: UIFont.systemFont(ofSize: 12)], for: .normal)
+        titleLabel.textColor = c.textPrimary
+        switchButton.tintColor = c.textSecondary
         addBookmarkButton.tintColor = c.accent
-        addBookmarkButton.isHidden = activeTab != .bookmarks
         emptyLabel.textColor = c.textSecondary
 
         switch activeTab {
         case .outline:
-            emptyLabel.text = outlineRows.isEmpty ? "此 PDF 没有目录" : nil
+            titleLabel.text = "目录"
+            switchButton.setTitle("书签", for: .normal)
+            addBookmarkButton.isHidden = true
+            emptyLabel.text = outlineRows.isEmpty ? "未找到标题" : nil
         case .bookmarks:
+            titleLabel.text = "书签"
+            switchButton.setTitle("目录", for: .normal)
+            addBookmarkButton.isHidden = false
             emptyLabel.text = bookmarkRows.isEmpty ? "暂无书签" : nil
         }
         emptyLabel.isHidden = emptyLabel.text == nil
     }
 
-    @objc private func tabChanged() {
-        activeTab = Tab(rawValue: segmented.selectedSegmentIndex) ?? .outline
+    @objc private func switchTabTapped() {
+        activeTab = (activeTab == .outline) ? .bookmarks : .outline
         updateChrome()
         tableView.reloadData()
     }
@@ -190,7 +211,6 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
         let c = DSTheme.c
         cell.backgroundColor = c.background
         cell.textLabel?.textColor = c.textPrimary
-        cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
         cell.detailTextLabel?.textColor = c.textSecondary
         cell.detailTextLabel?.font = UIFont.systemFont(ofSize: 11)
         cell.selectionStyle = .default
@@ -201,15 +221,27 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
             let row = outlineRows[indexPath.row]
             cell.textLabel?.text = row.title
             cell.textLabel?.numberOfLines = 2
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 13, weight: row.level <= 0 ? .semibold : .regular)
             cell.detailTextLabel?.text = nil
-            cell.indentationLevel = min(row.level, 6)
-            cell.indentationWidth = 10
+            cell.indentationLevel = 0
+            let indent = CGFloat(min(row.level, 6)) * 10
+            cell.separatorInset = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
+            cell.layoutMargins = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
+            if #available(iOS 11.0, *) {
+                cell.preservesSuperviewLayoutMargins = false
+            }
         case .bookmarks:
             let row = bookmarkRows[indexPath.row]
             cell.textLabel?.text = row.title
             cell.textLabel?.numberOfLines = 2
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
             cell.detailTextLabel?.text = "第 \(row.pageIndex + 1) 页"
             cell.indentationLevel = 0
+            cell.separatorInset = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
+            cell.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
+            if #available(iOS 11.0, *) {
+                cell.preservesSuperviewLayoutMargins = false
+            }
         }
         return cell
     }

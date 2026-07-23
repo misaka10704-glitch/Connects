@@ -1,0 +1,31 @@
+---
+description: Single Markdown render engine — Study must not diverge from chat
+alwaysApply: true
+---
+
+# Markdown 渲染引擎（唯一真源）
+
+## 目标
+
+Study 阅读与独立会谈的 **Markdown 语义 / 公式 / 样式行为必须同一套引擎**，避免「会谈改了、Study 忘了」或反过来。
+
+## 当前状态
+
+| 表面 | 实现 | 角色 |
+|------|------|------|
+| 聊天气泡（独立会谈 + Study 侧栏） | `NativeMarkdownParser` → `NativeMessageLayouter` → `NativeMessageRenderView` | **规范引擎（canonical）** |
+| Study 文档阅读（`.md`） | `MarkdownHTMLRenderer` + marked.js / KaTeX（WKWebView） | **过渡壳**，禁止再单独加语法能力 |
+| 共享预处理 | `MarkdownHTMLRenderer.normalizeForRender` | Native 解析入口已调用；改 normalize 即两边受益 |
+
+## 强制约定
+
+1. **新 Markdown / 公式 / 链接 / 表格行为**：只改 Native 管线（`NativeMarkdownParser` / `NativeMessageLayouter` / 相关 View）。不要只在 `studyShellHTML` / marked.js 里加一套。
+2. **Study 阅读器**：在迁到 Native 之前，只做导入、资源、滚动、目录、截屏等壳能力；不要扩展 Study 专用 Markdown 方言。
+3. **会谈侧栏与独立会谈**：同一 `ChatViewController` + Native 渲染；Study 不得再分叉另一套气泡渲染。
+4. **阅读页同步**：有足够可提取正文时走 `apiContextPrefix`（与纯文本会谈一致），**禁止**再把正文塞进「图片转写 / 页面 OCR」面板。
+5. **迁移方向**：Study `.md` 阅读最终应改为 Native 文档视图（或复用同一 Layouter）；`MarkdownHTMLRenderer.studyShellHTML` 视为待删除过渡代码。改渲染相关 bug 时优先推进统一，而不是加深 WKWebView 分叉。
+
+## 改之前自问
+
+- 这次改动是否只修了 Study WKWebView、没动 Native？→ 停下来，先改 Native，或明确只是壳/性能热修。
+- 是否在 Study 里新加了 marked 插件 / CSS 语义？→ 禁止，除非 Native 同步落地。

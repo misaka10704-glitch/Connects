@@ -2,7 +2,7 @@
 
 面向 **老旧 iPad**（尤其是 **iPad Air 1 / iOS 12**）的 AI 聊天客户端。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
 
-**当前版本：2.0.0**
+**当前版本：3.0.0**
 
 介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
 
@@ -20,6 +20,14 @@
 4. **会话可带走**：对话自动命名、可分叉、可导出完整 Markdown，方便备份与二次整理。
 
 这不是要替代官方网页版，而是给「旧硬件也想正经用模型」的人一个能装上、能用顺的本地壳。
+
+## 3.0 亮点
+
+- **Study Markdown 实用稳定版**：导入 `.md` 时可多选共享 `assets/` 按文件名匹配；图改为可点预览浮层，不再依赖整页 PDF 固化。
+- **目录样式统一**：MD / PDF 侧栏目录对齐 Markdown 简洁标题栏；PDF 书签用文字切换，去掉分段控件。
+- **阅读页同步不泄漏**：正文足够时只走 `apiContextPrefix`，不再把页面原文塞进「图片转写 / 页面 OCR」。
+- **操作条布局**：复制 / 重跑 / 分叉与版本分页收入同一 Stack，版本号放在三大按钮之后，避免重叠。
+- **渲染引擎约定**：聊天气泡以 Native Markdown 为规范引擎；Study WKWebView 仅作过渡壳（见 `.cursor/rules/markdown-render-engine.mdc`）。
 
 ## 2.0 亮点
 

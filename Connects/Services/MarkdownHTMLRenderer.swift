@@ -3,6 +3,12 @@ import UIKit
 
 /// Finished-message HTML: GFM markdown + KaTeX.
 /// Loads a persistent shell once; content is injected via JS (avoids re-parsing katex/marked every cell).
+///
+/// **Engine policy:** Chat bubbles use Native (`NativeMarkdownParser` /
+/// `NativeMessageLayouter`) as the canonical renderer. Study's `studyShellHTML`
+/// is a transitional WKWebView shell — do not add Study-only Markdown dialect
+/// here; see `.cursor/rules/markdown-render-engine.mdc`. Prefer migrating Study
+/// reading onto Native rather than deepening this fork.
 enum MarkdownHTMLRenderer {
     static var resourceBaseURL: URL? { Bundle.main.resourceURL }
 
