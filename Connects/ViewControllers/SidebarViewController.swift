@@ -33,7 +33,7 @@ private struct SidebarSection {
     let rows: [SidebarRow]
 }
 
-final class SidebarViewController: UIViewController, ThemeRefreshable, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate {
+final class SidebarViewController: UIViewController, ThemeRefreshable, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate, UIGestureRecognizerDelegate {
     weak var delegate: SidebarViewControllerDelegate?
 
     private let headerBar = UIView()
@@ -48,6 +48,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     private let settingsButton = UIButton(type: .system)
     private let topDivider = UIView()
     private let bottomDivider = UIView()
+    /// Own long-press — do not skip install when UITableView already has internal LPs (common on iPadOS 15).
+    private var rowLongPress: UILongPressGestureRecognizer?
 
     private var sections: [SidebarSection] = []
     private var filterText = ""
@@ -454,7 +456,10 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         tableView.showsVerticalScrollIndicator = false
         if #available(iOS 11.0, *) {
             tableView.contentInsetAdjustmentBehavior = .never
+            // Internal drag long-press competes with row menus on iPad.
+            tableView.dragInteractionEnabled = false
         }
+        installRowLongPressIfNeeded()
 
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.setTitle("  设置", for: .normal)
@@ -624,21 +629,75 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         }
     }
 
-    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool { false }
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        guard sections.indices.contains(indexPath.section),
+              sections[indexPath.section].rows.indices.contains(indexPath.row) else { return false }
+        if case .conversation = sections[indexPath.section].rows[indexPath.row] { return true }
+        return false
+    }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        if tableView.gestureRecognizers?.contains(where: { $0 is UILongPressGestureRecognizer }) != true {
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-            longPress.minimumPressDuration = 0.45
-            tableView.addGestureRecognizer(longPress)
+    func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard sections.indices.contains(indexPath.section),
+              sections[indexPath.section].rows.indices.contains(indexPath.row),
+              case .conversation(let conv) = sections[indexPath.section].rows[indexPath.row] else {
+            return nil
         }
+        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
+            self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
+            completion(true)
+        }
+        let archiveTitle = conv.isArchived ? "取消归档" : "归档"
+        let archive = UIContextualAction(style: .normal, title: archiveTitle) { [weak self] _, _, completion in
+            self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
+            completion(true)
+        }
+        archive.backgroundColor = UIColor(red: 90/255, green: 100/255, blue: 120/255, alpha: 1)
+        let config = UISwipeActionsConfiguration(actions: [delete, archive])
+        config.performsFirstActionWithFullSwipe = false
+        return config
+    }
+
+    private func installRowLongPressIfNeeded() {
+        guard rowLongPress == nil else { return }
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        // Must cancel the pending touch — otherwise finger-up becomes a row select and closes the drawer.
+        longPress.cancelsTouchesInView = true
+        longPress.delegate = self
+        tableView.addGestureRecognizer(longPress)
+        rowLongPress = longPress
+    }
+
+    /// Used by the root drawer pan so a long-press never counts as a close swipe.
+    var rowMenuLongPress: UILongPressGestureRecognizer? { rowLongPress }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        // Never share with the drawer pan; only tolerate other table-view long presses.
+        guard gestureRecognizer === rowLongPress else { return false }
+        return otherGestureRecognizer.view === tableView
+            && otherGestureRecognizer is UILongPressGestureRecognizer
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        // Prefer our row menu over table-internal long-press (drag / empty context menu).
+        gestureRecognizer === rowLongPress && otherGestureRecognizer is UILongPressGestureRecognizer
     }
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let point = gesture.location(in: tableView)
         guard let indexPath = tableView.indexPathForRow(at: point) else { return }
+        guard sections.indices.contains(indexPath.section),
+              sections[indexPath.section].rows.indices.contains(indexPath.row) else { return }
         let row = sections[indexPath.section].rows[indexPath.row]
         let cell = tableView.cellForRow(at: indexPath) ?? tableView
         let local = gesture.location(in: cell)
@@ -646,35 +705,39 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
         switch row {
         case .conversation(let conv):
-            tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
-            let archiveTitle = conv.isArchived ? "取消归档" : "归档"
-            ConnectsMenu.present(
-                from: self,
-                title: conv.title,
-                items: [
-                    ConnectsMenuItem(title: "重命名", icon: .rename) { [weak self] in
-                        self?.delegate?.sidebarDidRenameConversation(id: conv.id)
-                    },
-                    ConnectsMenuItem(title: "移动到项目…", icon: .folder) { [weak self] in
-                        guard let self = self else { return }
-                        self.presentMoveToProjectMenu(for: conv, sourceView: cell, sourceRect: hot)
-                    },
-                    ConnectsMenuItem(title: "分叉", icon: .fork) { [weak self] in
-                        self?.delegate?.sidebarDidForkConversation(id: conv.id)
-                    },
-                    ConnectsMenuItem(title: archiveTitle, icon: .archive) { [weak self] in
-                        self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
-                    },
-                    ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
-                        self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
-                    }
-                ],
-                sourceView: cell,
-                sourceRect: hot,
-                preferVertical: true
-            )
+            // Do not select the row — selection switches chat and must not dismiss the drawer.
+            presentConversationMenu(for: conv, sourceView: cell, sourceRect: hot)
         case .project(let project):
             presentProjectMenu(for: project, sourceView: cell, sourceRect: hot)
         }
+    }
+
+    private func presentConversationMenu(for conv: Conversation, sourceView: UIView, sourceRect: CGRect) {
+        let archiveTitle = conv.isArchived ? "取消归档" : "归档"
+        ConnectsMenu.present(
+            from: self,
+            title: conv.title,
+            items: [
+                ConnectsMenuItem(title: "重命名", icon: .rename) { [weak self] in
+                    self?.delegate?.sidebarDidRenameConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: "移动到项目…", icon: .folder) { [weak self] in
+                    guard let self = self else { return }
+                    self.presentMoveToProjectMenu(for: conv, sourceView: sourceView, sourceRect: sourceRect)
+                },
+                ConnectsMenuItem(title: "分叉", icon: .fork) { [weak self] in
+                    self?.delegate?.sidebarDidForkConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: archiveTitle, icon: .archive) { [weak self] in
+                    self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
+                },
+                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
+                }
+            ],
+            sourceView: sourceView,
+            sourceRect: sourceRect,
+            preferVertical: true
+        )
     }
 }

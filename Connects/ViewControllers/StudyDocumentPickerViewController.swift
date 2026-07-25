@@ -4,7 +4,7 @@ protocol StudyDocumentPickerDelegate: AnyObject {
     func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelect documentID: String)
 }
 
-final class StudyDocumentPickerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate {
+final class StudyDocumentPickerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate, UIGestureRecognizerDelegate {
     weak var delegate: StudyDocumentPickerDelegate?
 
     private enum ImportKind {
@@ -19,6 +19,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     private var isImportingMarkdown = false
     private var pendingMarkdownURL: URL?
     private var pendingAccessRoot: URL?
+    private var rowLongPress: UILongPressGestureRecognizer?
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
         f.countStyle = .file
@@ -47,6 +48,9 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         tableView.delegate = self
         tableView.backgroundColor = DSTheme.c.background
         tableView.separatorColor = DSTheme.c.border
+        if #available(iOS 11.0, *) {
+            tableView.dragInteractionEnabled = false
+        }
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -61,16 +65,32 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             name: .studyDocumentsDidUpdate,
             object: nil
         )
+        installRowLongPressIfNeeded()
         reload()
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        if tableView.gestureRecognizers?.contains(where: { $0 is UILongPressGestureRecognizer }) != true {
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-            longPress.minimumPressDuration = 0.45
-            tableView.addGestureRecognizer(longPress)
-        }
+    private func installRowLongPressIfNeeded() {
+        guard rowLongPress == nil else { return }
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = self
+        tableView.addGestureRecognizer(longPress)
+        rowLongPress = longPress
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === rowLongPress
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === rowLongPress && otherGestureRecognizer is UILongPressGestureRecognizer
     }
 
     deinit {

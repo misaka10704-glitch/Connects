@@ -114,7 +114,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         modelVisibility.applyTheme()
         agentsButton.setTitleColor(c.accent, for: .normal)
         exportBackupButton.setTitleColor(c.accent, for: .normal)
-        importBackupButton.setTitleColor(UIColor.systemRed, for: .normal)
+        if #available(iOS 13.0, *) {
+            importBackupButton.setTitleColor(.systemRed, for: .normal)
+        } else {
+            importBackupButton.setTitleColor(UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1), for: .normal)
+        }
 
         appearanceControl.tintColor = c.accent
         fontSizeControl.tintColor = c.accent
@@ -319,7 +323,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         importBackupButton.setTitle("从完整备份恢复", for: .normal)
         importBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         importBackupButton.contentHorizontalAlignment = .left
-        importBackupButton.setTitleColor(UIColor.systemRed, for: .normal)
+        if #available(iOS 13.0, *) {
+            importBackupButton.setTitleColor(.systemRed, for: .normal)
+        } else {
+            importBackupButton.setTitleColor(UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1), for: .normal)
+        }
         importBackupButton.addTarget(self, action: #selector(importBackupTapped), for: .touchUpInside)
         contentStack.addArrangedSubview(makeCard(embedding: importBackupButton, height: 42, inset: 0))
 

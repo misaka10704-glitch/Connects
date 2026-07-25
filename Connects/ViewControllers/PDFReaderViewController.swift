@@ -6,6 +6,8 @@ final class PDFReaderViewController: UIViewController {
     private let sidebarButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
     private let pdfView = PDFView()
+    /// White + difference blend → invert PDF page colors in dark mode.
+    private let invertOverlay = UIView()
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let pageLabel = UILabel()
     private let contentsPanelHost = UIView()
@@ -56,6 +58,12 @@ final class PDFReaderViewController: UIViewController {
         pdfView.backgroundColor = DSTheme.c.background
         view.addSubview(pdfView)
 
+        invertOverlay.translatesAutoresizingMaskIntoConstraints = false
+        invertOverlay.isUserInteractionEnabled = false
+        invertOverlay.isHidden = true
+        invertOverlay.backgroundColor = .white
+        pdfView.addSubview(invertOverlay)
+
         pageLabel.translatesAutoresizingMaskIntoConstraints = false
         pageLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
         pageLabel.textColor = DSTheme.c.textSecondary
@@ -91,12 +99,18 @@ final class PDFReaderViewController: UIViewController {
             pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            invertOverlay.topAnchor.constraint(equalTo: pdfView.topAnchor),
+            invertOverlay.leadingAnchor.constraint(equalTo: pdfView.leadingAnchor),
+            invertOverlay.trailingAnchor.constraint(equalTo: pdfView.trailingAnchor),
+            invertOverlay.bottomAnchor.constraint(equalTo: pdfView.bottomAnchor),
+
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
 
         installContentsPanel()
         syncContentsOverlayZOrder()
+        applyPDFColorInvert()
 
         NotificationCenter.default.addObserver(
             self,
@@ -139,6 +153,7 @@ final class PDFReaderViewController: UIViewController {
         if !isUserInteractingWithPDF {
             stabilizeViewportIfNeeded()
         }
+        ensureInvertOverlayOnTopIfNeeded()
     }
 
     private var isUserInteractingWithPDF: Bool {
@@ -195,12 +210,40 @@ final class PDFReaderViewController: UIViewController {
     @objc private func themeChanged() {
         view.backgroundColor = DSTheme.c.background
         topBar.backgroundColor = DSTheme.c.background
-        pdfView.backgroundColor = DSTheme.c.background
         pageLabel.textColor = DSTheme.c.textSecondary
         sidebarButton.tintColor = DSTheme.c.textSecondary
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        applyPDFColorInvert()
+    }
+
+    /// Dark theme: invert page colors (white paper → dark, black text → light).
+    private func applyPDFColorInvert() {
+        let dark = ThemeManager.shared.mode == .dark
+        if dark {
+            // Backdrop must be light so difference-blend yields a dark gutter.
+            pdfView.backgroundColor = .white
+            if #available(iOS 12.0, *) {
+                pdfView.pageShadowsEnabled = false
+            }
+            invertOverlay.isHidden = false
+            invertOverlay.backgroundColor = .white
+            invertOverlay.layer.compositingFilter = "differenceBlendMode"
+            pdfView.bringSubviewToFront(invertOverlay)
+        } else {
+            pdfView.backgroundColor = DSTheme.c.background
+            if #available(iOS 12.0, *) {
+                pdfView.pageShadowsEnabled = true
+            }
+            invertOverlay.isHidden = true
+            invertOverlay.layer.compositingFilter = nil
+        }
+    }
+
+    private func ensureInvertOverlayOnTopIfNeeded() {
+        guard ThemeManager.shared.mode == .dark, !invertOverlay.isHidden else { return }
+        pdfView.bringSubviewToFront(invertOverlay)
     }
 
     private func installContentsPanel() {
@@ -323,6 +366,7 @@ final class PDFReaderViewController: UIViewController {
                     return
                 }
                 self.pdfView.document = document
+                self.applyPDFColorInvert()
                 self.updatePageLabel()
                 completion?(true)
             }

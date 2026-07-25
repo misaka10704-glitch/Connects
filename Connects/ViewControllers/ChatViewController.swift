@@ -4860,6 +4860,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 },
                 ConnectsMenuItem(title: "重跑上一轮", icon: .retry) { [weak self] in
                     self?.retryLastTurn()
+                },
+                ConnectsMenuItem(title: "删除对话", icon: .trash, isDestructive: true) {
+                    ConversationStore.shared.deleteConversation(id: conv.id)
                 }
         ])
         ConnectsMenu.present(

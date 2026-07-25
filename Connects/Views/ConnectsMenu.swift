@@ -41,7 +41,24 @@ enum ConnectsMenu {
         menu.preferVertical = preferVertical
         menu.maxMenuHeight = maxHeight
         menu.preferredMenuWidth = menuWidth
-        host.present(menu, animated: false)
+        // Child VCs in the drawer / split shell need a presenter that can actually present.
+        topPresenter(from: host).present(menu, animated: false)
+    }
+
+    private static func topPresenter(from host: UIViewController) -> UIViewController {
+        var candidate = host
+        while let parent = candidate.parent {
+            candidate = parent
+        }
+        if let root = host.view.window?.rootViewController {
+            candidate = root
+        }
+        while let presented = candidate.presentedViewController {
+            // Don't stack under an already-visible ConnectsMenu.
+            if presented is ConnectsMenuController { break }
+            candidate = presented
+        }
+        return candidate
     }
 }
 

@@ -65,7 +65,9 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
             appearance.backgroundColor = c.background
             appearance.titleTextAttributes = [.foregroundColor: c.textPrimary]
             navigationController?.navigationBar.standardAppearance = appearance
-            navigationController?.navigationBar.scrollEdgeAppearance = appearance
+            if #available(iOS 15.0, *) {
+                navigationController?.navigationBar.scrollEdgeAppearance = appearance
+            }
         }
         reloadLegend()
     }

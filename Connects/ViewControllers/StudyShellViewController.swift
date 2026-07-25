@@ -1,5 +1,16 @@
 import UIKit
 
+/// Capsule control with an expanded hit target (Apple HIG ≥ 44pt).
+private final class StudyCollapseHandleButton: UIButton {
+    var minimumHitSize = CGSize(width: 44, height: 44)
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let dx = max(0, (minimumHitSize.width - bounds.width) / 2)
+        let dy = max(0, (minimumHitSize.height - bounds.height) / 2)
+        return bounds.insetBy(dx: -dx, dy: -dy).contains(point)
+    }
+}
+
 /// Hosts chat + optional document reader (PDF / Markdown) for study sessions.
 /// Landscape: reader full screen; AI chat overlays on the right.
 /// Portrait: reader full screen; AI chat overlays on the bottom.
@@ -12,7 +23,7 @@ final class StudyShellViewController: UIViewController {
     private var activeReaderKind: StudyDocumentKind = .pdf
     private let readerHost = UIView()
     private let chatHost = UIView()
-    private let collapseStrip = UIButton(type: .system)
+    private let collapseStrip = StudyCollapseHandleButton(type: .system)
 
     private var chatWidthConstraint: NSLayoutConstraint!
     private var portraitChatHeightConstraint: NSLayoutConstraint!
@@ -42,8 +53,9 @@ final class StudyShellViewController: UIViewController {
     private var isPortraitMode = false
     private var landscapeOverlayRatio: CGFloat
     private var portraitOverlayRatio: CGFloat
-    private let floatingHandleSize = CGSize(width: 52, height: 22)
+    private let floatingHandleSize = CGSize(width: 56, height: 28)
     private let collapsedHandleBottomInset: CGFloat = 10
+    private let collapseHandleMinHit = CGSize(width: 48, height: 48)
     private let compactChatBreakpoint: CGFloat = 520
     private let minChatWidth: CGFloat = 220
     private let defaultLandscapeOverlayRatio: CGFloat = 0.4
@@ -122,6 +134,7 @@ final class StudyShellViewController: UIViewController {
         chatHost.clipsToBounds = false
         chatHost.backgroundColor = DSTheme.c.background
         collapseStrip.layer.zPosition = 100
+        collapseStrip.minimumHitSize = collapseHandleMinHit
         readerHost.clipsToBounds = false
         chatVC.studyContextProvider = self
         let toggleSidebar: () -> Void = { [weak self] in
@@ -239,6 +252,8 @@ final class StudyShellViewController: UIViewController {
         collapseStripPortraitBottomY.isActive = false
 
         landscapeResizePan = UIPanGestureRecognizer(target: self, action: #selector(handleLandscapeResizePan(_:)))
+        landscapeResizePan.cancelsTouchesInView = false
+        landscapeResizePan.delegate = self
         chatHost.addGestureRecognizer(landscapeResizePan)
 
         NotificationCenter.default.addObserver(
@@ -521,9 +536,10 @@ final class StudyShellViewController: UIViewController {
 
     private func bringChromeToFront() {
         guard isReaderVisible else { return }
-        // Handle sits on the seam; chat panel stays above so it never covers action chrome.
-        view.bringSubviewToFront(collapseStrip)
+        // Chat panel above the reader; collapse handle must stay above both so it receives taps
+        // (UIKit hit-testing follows sibling order, not layer.zPosition).
         view.bringSubviewToFront(chatHost)
+        view.bringSubviewToFront(collapseStrip)
     }
 
     private func syncChatPanelChrome() {
@@ -592,7 +608,7 @@ final class StudyShellViewController: UIViewController {
         } else {
             kind = isChatCollapsed ? .chevronLeft : .chevronRight
         }
-        collapseStrip.setImage(ActionIconFactory.image(kind, pointSize: 11), for: .normal)
+        collapseStrip.setImage(ActionIconFactory.image(kind, pointSize: 13), for: .normal)
         styleFloatingHandle(collapseStrip)
         collapseStrip.accessibilityLabel = isChatCollapsed ? "展开 AI 对话" : "收起 AI 对话"
     }
@@ -880,8 +896,8 @@ final class StudyShellViewController: UIViewController {
             view.addSubview(chatHost)
             chatHost.translatesAutoresizingMaskIntoConstraints = false
         }
-        view.bringSubviewToFront(collapseStrip)
         view.bringSubviewToFront(chatHost)
+        view.bringSubviewToFront(collapseStrip)
     }
 
     private func ensureChatNavInHost() {
@@ -1093,5 +1109,28 @@ extension StudyShellViewController: StudyReadingContextProviding {
             text: text,
             imageJPEGBase64: imageJPEGBase64
         )
+    }
+}
+
+extension StudyShellViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        // Don't let the landscape resize pan steal taps on the collapse handle.
+        guard gestureRecognizer === landscapeResizePan else { return true }
+        if let view = touch.view, view === collapseStrip || view.isDescendant(of: collapseStrip) {
+            return false
+        }
+        let point = touch.location(in: collapseStrip)
+        return !collapseStrip.point(inside: point, with: nil)
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === landscapeResizePan,
+              let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let t = pan.translation(in: chatHost)
+        // Prefer horizontal resize; ignore near-stationary / vertical noise that blocks taps.
+        return abs(t.x) > abs(t.y) && abs(t.x) > 4
     }
 }

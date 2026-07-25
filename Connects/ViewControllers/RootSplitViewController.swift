@@ -13,7 +13,6 @@ final class RootSplitViewController: UIViewController {
     private let chatContainer = UIView()
     private let dimView = UIView()
     private let launchOverlay = UIView()
-    private let launchLogoView = UIImageView()
 
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarLeadingWide: NSLayoutConstraint!
@@ -141,7 +140,11 @@ final class RootSplitViewController: UIViewController {
         view.addGestureRecognizer(edge)
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleDrawerPan(_:)))
+        pan.delegate = self
         sidebarContainer.addGestureRecognizer(pan)
+        if let rowLongPress = sidebarVC.rowMenuLongPress {
+            pan.require(toFail: rowLongPress)
+        }
 
         applyLayoutMode(animated: false)
     }
@@ -239,11 +242,6 @@ final class RootSplitViewController: UIViewController {
         launchOverlay.translatesAutoresizingMaskIntoConstraints = false
         launchOverlay.backgroundColor = DSTheme.c.background
         launchOverlay.isUserInteractionEnabled = false
-
-        launchLogoView.translatesAutoresizingMaskIntoConstraints = false
-        launchLogoView.image = UIImage(named: "Logo-120")
-        launchLogoView.contentMode = .scaleAspectFit
-        launchOverlay.addSubview(launchLogoView)
         view.addSubview(launchOverlay)
         view.bringSubviewToFront(launchOverlay)
 
@@ -251,12 +249,7 @@ final class RootSplitViewController: UIViewController {
             launchOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             launchOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             launchOverlay.topAnchor.constraint(equalTo: view.topAnchor),
-            launchOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            launchLogoView.centerXAnchor.constraint(equalTo: launchOverlay.centerXAnchor),
-            launchLogoView.centerYAnchor.constraint(equalTo: launchOverlay.centerYAnchor),
-            launchLogoView.widthAnchor.constraint(equalToConstant: 120),
-            launchLogoView.heightAnchor.constraint(equalToConstant: 120)
+            launchOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
         // Safety net if chat bootstrap never reports ready.
@@ -438,6 +431,16 @@ final class RootSplitViewController: UIViewController {
     }
 }
 
+extension RootSplitViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              pan.view === sidebarContainer else { return true }
+        let t = pan.translation(in: sidebarContainer)
+        // Ignore mostly-vertical pans so table long-press / scroll still work on iPad.
+        return abs(t.x) > abs(t.y)
+    }
+}
+
 extension Notification.Name {
     static let connectsCompactLayoutDidChange = Notification.Name("ConnectsCompactLayoutDidChange")
     static let connectsChatWidthDidChange = Notification.Name("ConnectsChatWidthDidChange")
@@ -456,7 +459,7 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         if chatNav.topViewController !== chatVC {
             chatNav.popToRootViewController(animated: false)
         }
-        closeDrawer(animated: true)
+        // Keep drawer open — dismiss only via dim (blank) tap or explicit swipe-close.
         ConversationStore.shared.selectConversation(id: id)
         chatVC.applyConversationSwitchHint()
     }
@@ -492,7 +495,7 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
 
     func sidebarDidForkConversation(id: String) {
         _ = ConversationStore.shared.forkConversation(id: id)
-        closeDrawer()
+        // Stay open so the user can keep browsing; blank dim still closes.
     }
 
     func sidebarDidArchiveConversation(id: String, archive: Bool) {
