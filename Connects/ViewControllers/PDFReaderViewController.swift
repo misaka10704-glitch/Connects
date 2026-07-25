@@ -8,6 +8,8 @@ final class PDFReaderViewController: UIViewController {
     private let pdfView = PDFView()
     /// White + difference blend → invert PDF page colors in dark mode.
     private let invertOverlay = UIView()
+    /// After invert, lift pure black paper to app dark-gray (softer than #000).
+    private let paperLiftOverlay = UIView()
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let pageLabel = UILabel()
     private let contentsPanelHost = UIView()
@@ -64,6 +66,12 @@ final class PDFReaderViewController: UIViewController {
         invertOverlay.backgroundColor = .white
         pdfView.addSubview(invertOverlay)
 
+        paperLiftOverlay.translatesAutoresizingMaskIntoConstraints = false
+        paperLiftOverlay.isUserInteractionEnabled = false
+        paperLiftOverlay.isHidden = true
+        paperLiftOverlay.backgroundColor = DSTheme.dark.background
+        pdfView.addSubview(paperLiftOverlay)
+
         pageLabel.translatesAutoresizingMaskIntoConstraints = false
         pageLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
         pageLabel.textColor = DSTheme.c.textSecondary
@@ -103,6 +111,11 @@ final class PDFReaderViewController: UIViewController {
             invertOverlay.leadingAnchor.constraint(equalTo: pdfView.leadingAnchor),
             invertOverlay.trailingAnchor.constraint(equalTo: pdfView.trailingAnchor),
             invertOverlay.bottomAnchor.constraint(equalTo: pdfView.bottomAnchor),
+
+            paperLiftOverlay.topAnchor.constraint(equalTo: pdfView.topAnchor),
+            paperLiftOverlay.leadingAnchor.constraint(equalTo: pdfView.leadingAnchor),
+            paperLiftOverlay.trailingAnchor.constraint(equalTo: pdfView.trailingAnchor),
+            paperLiftOverlay.bottomAnchor.constraint(equalTo: pdfView.bottomAnchor),
 
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
@@ -218,11 +231,11 @@ final class PDFReaderViewController: UIViewController {
         applyPDFColorInvert()
     }
 
-    /// Dark theme: invert page colors (white paper → dark, black text → light).
+    /// Dark theme: invert pages, then lift pure black paper to app dark-gray background.
     private func applyPDFColorInvert() {
         let dark = ThemeManager.shared.mode == .dark
         if dark {
-            // Backdrop must be light so difference-blend yields a dark gutter.
+            // Difference needs a light backdrop; paperLift then raises #000 → DSTheme dark gray.
             pdfView.backgroundColor = .white
             if #available(iOS 12.0, *) {
                 pdfView.pageShadowsEnabled = false
@@ -230,7 +243,14 @@ final class PDFReaderViewController: UIViewController {
             invertOverlay.isHidden = false
             invertOverlay.backgroundColor = .white
             invertOverlay.layer.compositingFilter = "differenceBlendMode"
+
+            paperLiftOverlay.isHidden = false
+            paperLiftOverlay.backgroundColor = DSTheme.dark.background
+            // lighten(black, darkGray)=darkGray; lighten(white, darkGray)=white → soft paper, keep text.
+            paperLiftOverlay.layer.compositingFilter = "lightenBlendMode"
+
             pdfView.bringSubviewToFront(invertOverlay)
+            pdfView.bringSubviewToFront(paperLiftOverlay)
         } else {
             pdfView.backgroundColor = DSTheme.c.background
             if #available(iOS 12.0, *) {
@@ -238,12 +258,15 @@ final class PDFReaderViewController: UIViewController {
             }
             invertOverlay.isHidden = true
             invertOverlay.layer.compositingFilter = nil
+            paperLiftOverlay.isHidden = true
+            paperLiftOverlay.layer.compositingFilter = nil
         }
     }
 
     private func ensureInvertOverlayOnTopIfNeeded() {
         guard ThemeManager.shared.mode == .dark, !invertOverlay.isHidden else { return }
         pdfView.bringSubviewToFront(invertOverlay)
+        pdfView.bringSubviewToFront(paperLiftOverlay)
     }
 
     private func installContentsPanel() {
