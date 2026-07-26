@@ -23,7 +23,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let qwenCNSwitch = UISwitch()
     private let qwenCNLabel = UILabel()
     private let modelVisibility = ModelVisibilityView()
-    private let agentsButton = UIButton(type: .system)
     private let exportBackupButton = UIButton(type: .system)
     private let importBackupButton = UIButton(type: .system)
     private var backupBusy = false
@@ -112,7 +111,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         qwenCNLabel.textColor = c.textPrimary
         qwenCNSwitch.onTintColor = c.accent
         modelVisibility.applyTheme()
-        agentsButton.setTitleColor(c.accent, for: .normal)
         exportBackupButton.setTitleColor(c.accent, for: .normal)
         if #available(iOS 13.0, *) {
             importBackupButton.setTitleColor(.systemRed, for: .normal)
@@ -213,20 +211,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(debugTip)
         contentStack.addArrangedSubview(debugTip)
         contentStack.setCustomSpacing(22, after: debugTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("智能体"))
-        agentsButton.setTitle("管理智能体", for: .normal)
-        agentsButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        agentsButton.contentHorizontalAlignment = .left
-        agentsButton.addTarget(self, action: #selector(openAgents), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: agentsButton, height: 42, inset: 0))
-        let agentsTip = UILabel()
-        agentsTip.numberOfLines = 0
-        agentsTip.font = DSTheme.bodyFont(size: 13)
-        agentsTip.text = "创建或修改会话级智能体；查看、编辑和恢复 Memory 的记录、合并与注入 prompt。Memory 默认关闭，须在对话栏点「记」后才记录和使用。"
-        footerLabels.append(agentsTip)
-        contentStack.addArrangedSubview(agentsTip)
-        contentStack.setCustomSpacing(22, after: agentsTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
         contentStack.addArrangedSubview(modelVisibility)
@@ -334,7 +318,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let backupTip = UILabel()
         backupTip.numberOfLines = 0
         backupTip.font = DSTheme.bodyFont(size: 13)
-        backupTip.text = "完整备份包含对话、智能体、项目、设置、API Key 与 Memory 文档（不含可重建的渲染缓存）。恢复将覆盖本机现有数据。"
+        backupTip.text = "完整备份包含对话、项目、设置与 API Key（不含可重建的渲染缓存）。恢复将覆盖本机现有数据。"
         footerLabels.append(backupTip)
         contentStack.addArrangedSubview(backupTip)
         contentStack.setCustomSpacing(22, after: backupTip)
@@ -444,10 +428,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         SettingsManager.shared.qwenUseChinaEndpoint = qwenCNSwitch.isOn
     }
 
-    @objc private func openAgents() {
-        navigationController?.pushViewController(AgentListViewController(), animated: true)
-    }
-
     @objc private func exportBackupTapped() {
         guard !backupBusy else { return }
         setBackupBusy(true)
@@ -517,7 +497,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private func beginBackupRestore(from url: URL, stagingFolder: URL) {
         let alert = UIAlertController(
             title: "从完整备份恢复？",
-            message: "将覆盖对话、智能体、项目、设置、API Key 与 Memory 数据。此操作不可撤销。",
+            message: "将覆盖对话、项目、设置与 API Key 数据。此操作不可撤销。",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in

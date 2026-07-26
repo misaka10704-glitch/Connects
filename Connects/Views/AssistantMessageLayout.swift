@@ -10,8 +10,12 @@ enum AssistantMessageLayout {
     private static var expandedSearchIDs = Set<String>()
     /// `(messageID|width|utf8Count)` → measured thinking body height.
     private static var thinkingBodyHeightCache = [String: CGFloat]()
+    /// `(messageID|width|utf8Count)` → measured search / transcription body height.
+    private static var searchBodyHeightCache = [String: CGFloat]()
     private static let thinkingMeasureCapChars = 4_000
+    private static let searchMeasureCapChars = 4_000
     private static let thinkingHeightSoftCap: CGFloat = 2_400
+    private static let searchHeightSoftCap: CGFloat = 2_400
 
     static func isThinkingExpanded(messageID: String) -> Bool {
         expandedThinkingIDs.contains(messageID)
@@ -365,27 +369,151 @@ enum AssistantMessageLayout {
                                            layoutWidth: CGFloat,
                                            pairedUser: ChatMessage?) -> CGFloat {
         guard message.hasSearchProcess || message.hasImageTranscription else { return 0 }
-        let expanded = expandedSearchIDs.contains(message.id)
-        if !expanded { return 40 }
-        let text = resolvedSearchChromeText(for: message, pairedUser: pairedUser)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return 40 }
-        let thinkFont = SettingsManager.shared.chatThinkingFontSize
-        let font = UIFont.systemFont(ofSize: thinkFont)
-        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
-        let bodyH = ceil(
-            (text as NSString).boundingRect(
-                with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: font],
-                context: nil
-            ).height
-        )
-        return 32 + 4 + bodyH + 10
+        return 40
+    }
+
+    private static func chromeHeightCacheKey(messageID: String, width: CGFloat, utf8Count: Int) -> String {
+        "\(messageID)|\(Int(width))|\(utf8Count)"
     }
 
     private static func thinkingHeightCacheKey(messageID: String, width: CGFloat, utf8Count: Int) -> String {
-        "\(messageID)|\(Int(width))|\(utf8Count)"
+        chromeHeightCacheKey(messageID: messageID, width: width, utf8Count: utf8Count)
+    }
+
+    static func storeSearchBodyHeight(_ height: CGFloat,
+                                      messageID: String,
+                                      layoutWidth: CGFloat,
+                                      utf8Count: Int) {
+        guard !messageID.isEmpty, height > 0 else { return }
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        searchBodyHeightCache[chromeHeightCacheKey(
+            messageID: messageID,
+            width: width,
+            utf8Count: utf8Count
+        )] = height
+    }
+
+    static func lookupSearchBodyHeight(messageID: String,
+                                       layoutWidth: CGFloat,
+                                       utf8Count: Int) -> CGFloat? {
+        guard !messageID.isEmpty else { return nil }
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        return searchBodyHeightCache[chromeHeightCacheKey(
+            messageID: messageID,
+            width: width,
+            utf8Count: utf8Count
+        )]
+    }
+
+    static func resolvedSearchBodyHeight(text: String,
+                                         messageID: String,
+                                         layoutWidth: CGFloat) -> CGFloat {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 16 }
+        let utf8Count = trimmed.utf8.count
+        if let cached = lookupSearchBodyHeight(
+            messageID: messageID,
+            layoutWidth: layoutWidth,
+            utf8Count: utf8Count
+        ), cached > 0 {
+            return cached
+        }
+        return estimatedSearchBodyHeight(
+            text: trimmed,
+            layoutWidth: layoutWidth,
+            messageID: messageID
+        )
+    }
+
+    static func searchExpandHeightDelta(text: String,
+                                        messageID: String,
+                                        layoutWidth: CGFloat) -> CGFloat {
+        14 + resolvedSearchBodyHeight(
+            text: text,
+            messageID: messageID,
+            layoutWidth: layoutWidth
+        )
+    }
+
+    static func measureSearchBodyHeightOnBackground(text: String,
+                                                    fontSize: CGFloat,
+                                                    layoutWidth: CGFloat,
+                                                    messageID: String,
+                                                    completion: @escaping (CGFloat) -> Void) {
+        let trimmed = text
+        guard !trimmed.isEmpty else {
+            DispatchQueue.main.async { completion(16) }
+            return
+        }
+        layoutPrewarmQueue.async {
+            let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+            let font = UIFont.systemFont(ofSize: fontSize)
+            let bodyH = ceil(
+                (trimmed as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            storeSearchBodyHeight(
+                bodyH,
+                messageID: messageID,
+                layoutWidth: layoutWidth,
+                utf8Count: trimmed.utf8.count
+            )
+            DispatchQueue.main.async {
+                completion(max(bodyH, 16))
+            }
+        }
+    }
+
+    private static func estimatedSearchBodyHeight(text: String,
+                                                  layoutWidth: CGFloat,
+                                                  messageID: String) -> CGFloat {
+        let thinkFont = SettingsManager.shared.chatThinkingFontSize
+        let font = UIFont.systemFont(ofSize: thinkFont)
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        let utf8Count = text.utf8.count
+        if !messageID.isEmpty,
+           let cached = searchBodyHeightCache[chromeHeightCacheKey(
+               messageID: messageID,
+               width: width,
+               utf8Count: utf8Count
+           )] {
+            return max(cached, 16)
+        }
+        let bodyH: CGFloat
+        if utf8Count > searchMeasureCapChars {
+            let prefix = String(text.prefix(searchMeasureCapChars))
+            let prefixH = ceil(
+                (prefix as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            let scaled = prefixH * CGFloat(utf8Count) / CGFloat(searchMeasureCapChars)
+            bodyH = min(searchHeightSoftCap, ceil(scaled))
+        } else {
+            bodyH = ceil(
+                (text as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            if !messageID.isEmpty {
+                searchBodyHeightCache[chromeHeightCacheKey(
+                    messageID: messageID,
+                    width: width,
+                    utf8Count: utf8Count
+                )] = bodyH
+            }
+        }
+        return max(bodyH, 16)
     }
 
     static func storeThinkingBodyHeight(_ height: CGFloat,
@@ -399,6 +527,96 @@ enum AssistantMessageLayout {
             width: width,
             utf8Count: utf8Count
         )] = height
+    }
+
+    static func lookupThinkingBodyHeight(messageID: String,
+                                         layoutWidth: CGFloat,
+                                         utf8Count: Int) -> CGFloat? {
+        guard !messageID.isEmpty else { return nil }
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        return thinkingBodyHeightCache[thinkingHeightCacheKey(
+            messageID: messageID,
+            width: width,
+            utf8Count: utf8Count
+        )]
+    }
+
+    /// Body height only (excludes the 32pt tag header + chrome padding).
+    static func estimatedThinkingBodyHeight(reasoning: String,
+                                            layoutWidth: CGFloat,
+                                            messageID: String = "") -> CGFloat {
+        let chrome = estimatedThinkingChromeHeight(
+            reasoning: reasoning,
+            expanded: true,
+            messageID: messageID,
+            layoutWidth: layoutWidth
+        )
+        return max(chrome - 42, 16)
+    }
+
+    /// Body height for expand delta — cache first, cheap estimate fallback.
+    static func resolvedThinkingBodyHeight(reasoning: String,
+                                           messageID: String,
+                                           layoutWidth: CGFloat) -> CGFloat {
+        let trimmed = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 16 }
+        let utf8Count = trimmed.utf8.count
+        if let cached = lookupThinkingBodyHeight(
+            messageID: messageID,
+            layoutWidth: layoutWidth,
+            utf8Count: utf8Count
+        ), cached > 0 {
+            return cached
+        }
+        return estimatedThinkingBodyHeight(
+            reasoning: trimmed,
+            layoutWidth: layoutWidth,
+            messageID: messageID
+        )
+    }
+
+    /// Extra column height when expanding thinking (header-only → header + body).
+    static func thinkingExpandHeightDelta(reasoning: String,
+                                          messageID: String,
+                                          layoutWidth: CGFloat) -> CGFloat {
+        14 + resolvedThinkingBodyHeight(
+            reasoning: reasoning,
+            messageID: messageID,
+            layoutWidth: layoutWidth
+        )
+    }
+
+    static func measureThinkingBodyHeightOnBackground(text: String,
+                                                      fontSize: CGFloat,
+                                                      layoutWidth: CGFloat,
+                                                      messageID: String,
+                                                      completion: @escaping (CGFloat) -> Void) {
+        let trimmed = text
+        guard !trimmed.isEmpty else {
+            DispatchQueue.main.async { completion(16) }
+            return
+        }
+        layoutPrewarmQueue.async {
+            let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+            let font = UIFont.systemFont(ofSize: fontSize)
+            let bodyH = ceil(
+                (trimmed as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            storeThinkingBodyHeight(
+                bodyH,
+                messageID: messageID,
+                layoutWidth: layoutWidth,
+                utf8Count: trimmed.utf8.count
+            )
+            DispatchQueue.main.async {
+                completion(max(bodyH, 16))
+            }
+        }
     }
 
     /// Header + optional expanded body. Prefer real text measure — CJK `/48`
@@ -458,6 +676,27 @@ enum AssistantMessageLayout {
         return 28 + max(bodyH, 16) + 14
     }
 
+    /// Row-height delta when toggling thinking chrome — avoids cell layout on tap.
+    static func thinkingChromeHeightDelta(for message: ChatMessage,
+                                          layoutWidth: CGFloat,
+                                          expanded: Bool) -> CGFloat {
+        let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reasoning.isEmpty else { return 0 }
+        let expandedH = estimatedThinkingChromeHeight(
+            reasoning: reasoning,
+            expanded: true,
+            messageID: message.id,
+            layoutWidth: layoutWidth
+        )
+        let collapsedH = estimatedThinkingChromeHeight(
+            reasoning: reasoning,
+            expanded: false,
+            messageID: message.id,
+            layoutWidth: layoutWidth
+        )
+        return expanded ? (expandedH - collapsedH) : (collapsedH - expandedH)
+    }
+
     static func estimatedColumnContentHeight(for message: ChatMessage,
                                              layoutWidth: CGFloat,
                                              isLastRow: Bool,
@@ -476,10 +715,9 @@ enum AssistantMessageLayout {
 
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
-            let expanded = expandedThinkingIDs.contains(message.id)
             total += estimatedThinkingChromeHeight(
                 reasoning: reasoning,
-                expanded: expanded,
+                expanded: false,
                 messageID: message.id,
                 layoutWidth: layoutWidth
             )
@@ -536,10 +774,9 @@ enum AssistantMessageLayout {
 
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
-            let expanded = expandedThinkingIDs.contains(message.id)
             total += estimatedThinkingChromeHeight(
                 reasoning: reasoning,
-                expanded: expanded,
+                expanded: false,
                 messageID: message.id,
                 layoutWidth: layoutWidth
             )

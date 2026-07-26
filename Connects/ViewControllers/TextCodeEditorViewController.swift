@@ -342,6 +342,17 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         return text
     }
 
+    /// Text pinned by Ask (survives focus loss); used when the pending store key misses.
+    func pinnedAskText() -> String? {
+        guard let pinned = askPinnedRange else { return nil }
+        let plain = textView.text ?? ""
+        let clamped = NSIntersectionRange(pinned, NSRange(location: 0, length: (plain as NSString).length))
+        guard clamped.length > 0 else { return nil }
+        let text = (plain as NSString).substring(with: clamped)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     /// Persist a visible Ask highlight on the current selection without opening chat.
     func pinAskSelectionHighlight() {
         let range = textView.selectedRange

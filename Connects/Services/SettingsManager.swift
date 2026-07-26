@@ -94,10 +94,11 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
     }
 
-    /// Opt-in device-wide cross-session memory. Disabled means no read or write.
+    /// Opt-in device-wide cross-session memory — feature removed; kept for settings migration only.
+    @available(*, deprecated, message: "Memory feature removed")
     var memoryEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "connects_memory_enabled") }
-        set { UserDefaults.standard.set(newValue, forKey: "connects_memory_enabled") }
+        get { false }
+        set { UserDefaults.standard.set(false, forKey: "connects_memory_enabled") }
     }
 
     /// Experimental: prepend custom rules to outgoing user turns for the API only.

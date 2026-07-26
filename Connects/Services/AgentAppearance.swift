@@ -17,16 +17,6 @@ struct AgentAppearancePreset {
         all[max(0, min(all.count - 1, index))]
     }
 
-    static func avatar(for agent: CustomAgent?, size: CGFloat = 30) -> UIImage {
-        let preset = preset(agent?.iconPreset ?? 0)
-        let rect = CGRect(origin: .zero, size: CGSize(width: size, height: size))
-        UIGraphicsBeginImageContextWithOptions(rect.size, false, 0)
-        defer { UIGraphicsEndImageContext() }
-        preset.color.setFill()
-        UIBezierPath(ovalIn: rect).fill()
-        return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-    }
-
     static func colorBall(for project: Project, size: CGFloat = 12) -> UIImage {
         let preset = preset(project.colorPreset)
         let rect = CGRect(origin: .zero, size: CGSize(width: size, height: size))

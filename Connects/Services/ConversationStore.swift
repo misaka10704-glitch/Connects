@@ -299,7 +299,7 @@ final class ConversationStore {
         conversations[index].model = model
         conversations[index].updatedAt = Date()
         save()
-        notify()
+        notify(userInfo: ["source": "model"])
     }
 
     func setAgent(_ agentID: String?, for conversationID: String) {

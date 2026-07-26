@@ -76,15 +76,11 @@ enum ContextBuilder {
                                model: AIModelOption,
                                existingSummary: String? = nil,
                                existingThroughID: String? = nil,
-                               agentPrompt: String? = nil,
-                               memoryBackground: String? = nil,
                                keepRecentTurns: Int = ContextBuilder.keepRecentTurns) -> [ChatMessage] {
         build(from: messages,
               model: model,
               existingSummary: existingSummary,
               existingThroughID: existingThroughID,
-              agentPrompt: agentPrompt,
-              memoryBackground: memoryBackground,
               keepRecentTurns: keepRecentTurns).messages
     }
 
@@ -93,22 +89,13 @@ enum ContextBuilder {
         build(from: conversation.messages,
               model: conversation.model,
               existingSummary: conversation.contextSummary,
-              existingThroughID: conversation.contextSummaryThroughMessageID,
-              agentPrompt: AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt,
-              memoryBackground: MemoryStore.shared.injectedBackground()).usage
+              existingThroughID: conversation.contextSummaryThroughMessageID).usage
     }
 
     /// Fast estimate for immediate switch UI; `usage(for:)` refines asynchronously.
     static func quickUsageEstimate(for conversation: Conversation) -> Usage {
         let budget = charBudget(for: conversation.model)
         var chars = baseSystemPrompt.count + 400
-        let background = MemoryStore.shared.injectedBackground()
-        if !background.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            chars += min(background.count, 1_800)
-        }
-        if let agent = AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt {
-            chars += agent.count
-        }
         if let summary = conversation.contextSummary {
             chars += summary.count
         }
@@ -130,8 +117,6 @@ enum ContextBuilder {
                       model: AIModelOption,
                       existingSummary: String? = nil,
                       existingThroughID: String? = nil,
-                      agentPrompt: String? = nil,
-                      memoryBackground: String? = nil,
                       keepRecentTurns: Int = ContextBuilder.keepRecentTurns) -> BuildResult {
         let budget = charBudget(for: model)
         let thinkingOn = model.thinkingActive
@@ -151,17 +136,6 @@ enum ContextBuilder {
         // drifting into generic template answers (especially on sensitive history).
         let instructionPin = ChatMessage(role: .system, content: baseSystemPrompt)
         var systems = [instructionPin]
-        if let background = memoryBackground?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !background.isEmpty {
-            systems.append(ChatMessage(
-                role: .system,
-                content: "[Cross-session user memory]\n\(String(background.prefix(1_800)))"
-            ))
-        }
-        if let prompt = agentPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !prompt.isEmpty {
-            systems.append(ChatMessage(role: .system, content: "[Selected user agent]\n\(String(prompt.prefix(2_400)))"))
-        }
         systems += working.filter { $0.role == .system }
         let dialogue = working.filter { $0.role != .system }
 
@@ -325,6 +299,12 @@ enum ContextBuilder {
         case AIModelOption.kimi26.modelId:
             return 128_000
         case AIModelOption.kimiK27.modelId, AIModelOption.kimiK27Highspeed.modelId:
+            return 256_000
+        case AIModelOption.qwen37Flash.modelId:
+            return 192_000
+        case AIModelOption.glm47Flash.modelId:
+            return 128_000
+        case AIModelOption.doubaoSeed2Mini.modelId:
             return 256_000
         default:
             return 192_000
@@ -490,16 +470,12 @@ enum ContextBuilder {
             from: conversation.messages,
             model: conversation.model,
             existingSummary: conversation.contextSummary,
-            existingThroughID: conversation.contextSummaryThroughMessageID,
-            agentPrompt: AgentStore.shared.agent(id: conversation.agentID)?.trimmedPrompt,
-            memoryBackground: MemoryStore.shared.injectedBackground()
+            existingThroughID: conversation.contextSummaryThroughMessageID
         )
 
         var buckets: [String: Int] = [
             "system": 0,
             "rules": 0,
-            "memory": 0,
-            "agent": 0,
             "summary": 0,
             "conversation": 0,
             "images": 0,
@@ -537,8 +513,6 @@ enum ContextBuilder {
         let palette: [(String, String, UIColor)] = [
             ("system", "系统指令", UIColor(white: 0.62, alpha: 1)),
             ("rules", "用户规则", UIColor(red: 0.55, green: 0.82, blue: 0.55, alpha: 1)),
-            ("memory", "跨会话记忆", UIColor(red: 0.95, green: 0.55, blue: 0.72, alpha: 1)),
-            ("agent", "智能体设定", UIColor(red: 0.92, green: 0.78, blue: 0.42, alpha: 1)),
             ("summary", "对话摘要", UIColor(red: 0.92, green: 0.42, blue: 0.38, alpha: 1)),
             ("webSearch", "联网搜索", UIColor(red: 0.35, green: 0.78, blue: 0.92, alpha: 1)),
             ("study", "文档上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
@@ -563,8 +537,6 @@ enum ContextBuilder {
     }
 
     private static func classifySystemBucket(_ content: String) -> String {
-        if content.hasPrefix("[Cross-session user memory]") { return "memory" }
-        if content.hasPrefix("[Selected user agent]") { return "agent" }
         if content.hasPrefix("[Earlier conversation summary") { return "summary" }
         if content.hasPrefix("[Web search context]") { return "webSearch" }
         if content.contains("You are a precise, context-aware assistant") { return "system" }

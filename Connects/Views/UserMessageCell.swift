@@ -10,6 +10,7 @@ final class UserMessageCell: BaseMessageCell {
     private var userTopToRole: NSLayoutConstraint!
     private var userTopToImage: NSLayoutConstraint!
     private var userBubbleBottom: NSLayoutConstraint!
+    private var showsImageInBubble = false
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -32,6 +33,7 @@ final class UserMessageCell: BaseMessageCell {
         userLabel.text = nil
         userLabel.attributedText = nil
         userBubble.isHidden = true
+        showsImageInBubble = false
     }
 
     override func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat) {
@@ -53,6 +55,7 @@ final class UserMessageCell: BaseMessageCell {
         let c = DSTheme.c
         let font = SettingsManager.shared.chatBodyFontSize
 
+        showsImageInBubble = message.showsImageInChat
         applySharedImage(to: message)
 
         userBubble.isHidden = false
@@ -145,6 +148,7 @@ final class UserMessageCell: BaseMessageCell {
     }
 
     func applyCachedImageIfNeeded() {
+        guard showsImageInBubble else { return }
         guard let image = cachedImage else { return }
         guard imageViewMsg.image !== image || imageViewMsg.isHidden else { return }
         imageViewMsg.image = image

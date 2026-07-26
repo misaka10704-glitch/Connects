@@ -477,7 +477,12 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
         // Instant close so the dim overlay cannot eat the next sidebar-toggle tap.
         closeDrawer(animated: false)
-        _ = ConversationStore.shared.createConversation(model: model)
+        if chatNav.topViewController !== chatVC {
+            chatNav.popToRootViewController(animated: false)
+        }
+        let conv = ConversationStore.shared.createConversation(model: model)
+        // Notification may race render state — bind the new empty thread explicitly.
+        chatVC.switchToConversation(id: conv.id)
         chatVC.applyConversationSwitchHint()
     }
 
@@ -489,11 +494,6 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         nav.preferredContentSize = CGSize(width: 460, height: 620)
         nav.navigationBar.isTranslucent = false
         present(nav, animated: true)
-    }
-
-    func sidebarDidRequestMemory() {
-        closeDrawer()
-        chatNav.pushViewController(MemoryViewController(), animated: true)
     }
 
     func sidebarDidDeleteConversation(id: String) {

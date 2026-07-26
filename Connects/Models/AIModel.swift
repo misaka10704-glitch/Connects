@@ -105,13 +105,20 @@ struct AIModelOption: Equatable {
 
     /// Same weights as K2.7 Code, higher throughput serving tier.
     static let kimiK27Highspeed = AIModelOption(
-        provider: .kimi, modelId: "kimi-k2.7-code-highspeed", displayName: "Kimi K2.7 高速",
+        provider: .kimi, modelId: "kimi-k2.7-code-highspeed", displayName: "Kimi K2.7",
         baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
         supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
     )
 
     static let qwen37Plus = AIModelOption(
         provider: .qwen, modelId: "qwen3.7-plus", displayName: "Qwen 3.7 Plus",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .enableThinking
+    )
+
+    /// 百炼高速档 — 替代 qwen-turbo，低延迟日常对话。
+    static let qwen37Flash = AIModelOption(
+        provider: .qwen, modelId: "qwen3.7-flash", displayName: "Qwen 3.7 Flash",
         baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .enableThinking
     )
@@ -123,6 +130,13 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
 
+    /// 智谱高速档 — 低延迟、高吞吐，适合高频 QA。
+    static let glm47Flash = AIModelOption(
+        provider: .zhipu, modelId: "glm-4.7-flash", displayName: "GLM-4.7 Flash",
+        baseURL: "https://open.bigmodel.cn/api/paas/v4", supportsVision: false,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
+    )
+
     /// 豆包旗舰：中文对话强；若控制台用接入点，在设置填 `ep-…`。
     static let doubaoSeed16 = AIModelOption(
         provider: .doubao, modelId: "doubao-seed-1-6-251015", displayName: "Doubao Seed 1.6",
@@ -130,16 +144,27 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
 
+    /// 豆包 2.0 Mini — 速度与成本优先的高速档。
+    static let doubaoSeed2Mini = AIModelOption(
+        provider: .doubao, modelId: "doubao-seed-2.0-mini-260215", displayName: "Doubao 2.0 Mini",
+        baseURL: "https://ark.cn-beijing.volces.com/api/v3", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
+    )
+
     static let all: [AIModelOption] = [
         .deepseekV4Flash, .deepseekV4Pro,
-        .kimiK3, .kimi26, .kimiK27, .kimiK27Highspeed,
-        .qwen37Plus,
-        .glm52,
-        .doubaoSeed16
+        .kimiK27Highspeed, .kimiK3, .kimi26, .kimiK27,
+        .qwen37Flash, .qwen37Plus,
+        .glm47Flash, .glm52,
+        .doubaoSeed2Mini, .doubaoSeed16
     ]
 
     static let defaultEnabled: [AIModelOption] = [
-        .deepseekV4Flash, .deepseekV4Pro, .kimiK3, .kimiK27Highspeed, .qwen37Plus, .glm52, .doubaoSeed16
+        .deepseekV4Flash, .deepseekV4Pro,
+        .kimiK27Highspeed, .kimiK3,
+        .qwen37Flash, .qwen37Plus,
+        .glm47Flash, .glm52,
+        .doubaoSeed2Mini, .doubaoSeed16
     ]
 
     static var visible: [AIModelOption] {

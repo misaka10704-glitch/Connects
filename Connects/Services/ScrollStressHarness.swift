@@ -60,6 +60,12 @@ enum ScrollStressHarness {
     private static var diverseMode: Bool {
         ProcessInfo.processInfo.arguments.contains("-ScrollStressDiverse")
     }
+    private static var crossQAMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-CrossQAStress")
+    }
+    private static var crossQALiveMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("-CrossQAStressLive")
+    }
 
     private enum PacingProfile: String {
         case fast
@@ -68,7 +74,12 @@ enum ScrollStressHarness {
     }
 
     static func installFixtureIfRequested() {
+        if ProcessInfo.processInfo.arguments.contains("-ThinkingExpandFixture") {
+            installThinkingExpandFixture()
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("-ScrollStressStudyFixture")
+            || crossQAMode
             || (ProcessInfo.processInfo.arguments.contains("-ScrollStressFixture") && (studyMode || matrixMode || ultraSwitchMode || firstOpenMode || firstBubbleMode || bubbleWiggleMode || relaunchQAMode || diverseMode)) {
             installStudyFixture()
             return
@@ -102,6 +113,7 @@ enum ScrollStressHarness {
         guard ProcessInfo.processInfo.arguments.contains("-ScrollStressTest")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressRotate")
             || ProcessInfo.processInfo.arguments.contains("-ScrollStressStudy")
+            || crossQAMode
             || matrixMode
             || ultraSwitchMode
             || firstOpenMode
@@ -111,6 +123,13 @@ enum ScrollStressHarness {
             || diverseMode else { return }
         guard !didSchedule else { return }
         didSchedule = true
+        if crossQAMode {
+            log("scheduled cross-QA stress (matrix × study/pure + \(turnCount)-turn math +\(crossQALiveMode ? " live API" : ""))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                runCrossQA(on: chat)
+            }
+            return
+        }
         if diverseMode {
             log("scheduled diverse stress (fast+ultra mixed: chat → first-open → matrix)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -460,6 +479,39 @@ enum ScrollStressHarness {
         }
     }
 
+    private static func chromeShiftBaseline(from snap: ChatViewController.DebugActionChromeSnapshot) -> [Int: CGFloat] {
+        snap.buttonRowRelativeY
+    }
+
+    private static func chromeShiftY(for row: Int, in snap: ChatViewController.DebugActionChromeSnapshot) -> CGFloat? {
+        snap.buttonRowRelativeY[row]
+    }
+
+    private static func sampleChrome(step: Int,
+                                     label: String,
+                                     baseline: [Int: CGFloat]?,
+                                     pacing: ScrollPacing,
+                                     chat: ChatViewController,
+                                     chromeLateFailures: inout Int,
+                                     chromeShiftFailures: inout Int) {
+        let snap = chat.debugVisibleActionChromeSnapshot()
+        if label.hasPrefix("t+") && label != "t+settle" {
+            if snap.missingButtons > 0 {
+                chromeLateFailures += 1
+                log("chrome-late step=\(step) missing=\(snap.missingButtons) at \(label)")
+            }
+        }
+        if let baseline = baseline, !baseline.isEmpty {
+            for (row, y0) in baseline {
+                guard let y1 = chromeShiftY(for: row, in: snap) else { continue }
+                if abs(y1 - y0) > pacing.chromeShiftTolerance {
+                    chromeShiftFailures += 1
+                    log("chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt \(label)")
+                }
+            }
+        }
+    }
+
     private static func runScrollSteps(on chat: ChatViewController,
                                        exitOnFinish: Bool = true,
                                        completion: ((Bool) -> Void)? = nil) {
@@ -511,22 +563,15 @@ enum ScrollStressHarness {
         }
 
         func sampleChrome(step: Int, label: String, baseline: [Int: CGFloat]?, pacing: ScrollPacing) {
-            let snap = chat.debugVisibleActionChromeSnapshot()
-            if label.hasPrefix("t+") && label != "t+settle" {
-                if snap.missingButtons > 0 {
-                    chromeLateFailures += 1
-                    log("chrome-late step=\(step) missing=\(snap.missingButtons) at \(label)")
-                }
-            }
-            if let baseline = baseline, !snap.buttonViewportY.isEmpty {
-                for (row, y0) in baseline {
-                    guard let y1 = snap.buttonViewportY[row] else { continue }
-                    if abs(y1 - y0) > pacing.chromeShiftTolerance {
-                        chromeShiftFailures += 1
-                        log("chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt \(label)")
-                    }
-                }
-            }
+            ScrollStressHarness.sampleChrome(
+                step: step,
+                label: label,
+                baseline: baseline,
+                pacing: pacing,
+                chat: chat,
+                chromeLateFailures: &chromeLateFailures,
+                chromeShiftFailures: &chromeShiftFailures
+            )
         }
 
         func next() {
@@ -551,7 +596,7 @@ enum ScrollStressHarness {
             let simulate: (@escaping () -> Void) -> Void = { done in
                 chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration, completion: done)
             }
-            let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+            let baselineBefore = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
             scheduleMidScrollSamples(
                 chat: chat,
                 pacing: pacing,
@@ -566,7 +611,7 @@ enum ScrollStressHarness {
                 baseline: baselineBefore
             )
             simulate {
-                let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                let baseline = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
                 schedulePostScrollSamples(
                     chat: chat,
                     pacing: pacing,
@@ -666,7 +711,15 @@ enum ScrollStressHarness {
                 chat.debugPinToBottom {
                     chat.debugEnterStudyPanel(tableWidth: studyPanelTableWidth) {
                         chat.debugWaitForStudyRelayoutStable {
-                            runStudyBlankCheck(on: chat)
+                            let landscapeFailures = studyBlankCheckFailures(on: chat, label: "landscape")
+                            log("phase enter study portrait panel w=\(Int(portraitChatTableWidth))")
+                            chat.debugPinToBottom {
+                                chat.debugEnterStudyPortraitPanel(tableWidth: portraitChatTableWidth) {
+                                    chat.debugWaitForStudyRelayoutStable {
+                                        runStudyPortraitBlankCheck(on: chat, priorFailures: landscapeFailures)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -674,41 +727,51 @@ enum ScrollStressHarness {
         }
     }
 
-    private static func runStudyBlankCheck(on chat: ChatViewController) {
+    private static func studyBlankCheckFailures(on chat: ChatViewController, label: String) -> Int {
         let blank = chat.debugVisibleStudyBlankState()
         var blankFailures = 0
         if blank.unrenderedAssistants > 0 {
             blankFailures += 1
-            log("study-blank unrendered=\(blank.unrenderedAssistants)")
+            log("study-blank[\(label)] unrendered=\(blank.unrenderedAssistants)")
         }
         if blank.inflatedRows > 0 {
             blankFailures += 1
-            log("study-blank inflatedRows=\(blank.inflatedRows) maxSlack=\(Int(blank.maxRowSlackPt))pt")
+            log("study-blank[\(label)] inflatedRows=\(blank.inflatedRows) maxSlack=\(Int(blank.maxRowSlackPt))pt")
         }
         if blank.interRowGaps > 0 {
             blankFailures += 1
-            log("study-blank interRowGaps=\(blank.interRowGaps) maxGap=\(Int(blank.maxInterRowGapPt))pt")
+            log("study-blank[\(label)] interRowGaps=\(blank.interRowGaps) maxGap=\(Int(blank.maxInterRowGapPt))pt")
         }
         let qa = chat.debugVisibleCrossQAState()
         if qa.unrenderedAssistants > 0 {
             blankFailures += 1
-            log("study-blank native-missing=\(qa.unrenderedAssistants)")
+            log("study-blank[\(label)] native-missing=\(qa.unrenderedAssistants)")
         }
         let clipped = chat.debugVisibleRowClipCount()
         if clipped > 0 {
             blankFailures += 1
-            log("study-blank clip=\(clipped)")
+            log("study-blank[\(label)] clip=\(clipped)")
         }
         if qa.missingActionButtons > 0 {
             blankFailures += 1
-            log("study-blank missingActions=\(qa.missingActionButtons)")
+            log("study-blank[\(label)] missingActions=\(qa.missingActionButtons)")
         }
         if blankFailures > 0 {
-            log("FAIL study blank check (\(blankFailures) issues)")
+            log("FAIL study blank check [\(label)] (\(blankFailures) issues)")
         } else {
-            log("PASS study blank check (maxSlack=\(Int(blank.maxRowSlackPt))pt)")
+            log("PASS study blank check [\(label)] (maxSlack=\(Int(blank.maxRowSlackPt))pt)")
         }
+        return blankFailures
+    }
+
+    private static func runStudyBlankCheck(on chat: ChatViewController) {
+        let blankFailures = studyBlankCheckFailures(on: chat, label: "landscape")
         runStudyScrollSteps(on: chat, priorBlankFailures: blankFailures)
+    }
+
+    private static func runStudyPortraitBlankCheck(on chat: ChatViewController, priorFailures: Int) {
+        let portraitFailures = studyBlankCheckFailures(on: chat, label: "portrait")
+        runStudyScrollSteps(on: chat, priorBlankFailures: priorFailures + portraitFailures)
     }
 
     private static func runStudyScrollSteps(on chat: ChatViewController, priorBlankFailures: Int) {
@@ -762,7 +825,7 @@ enum ScrollStressHarness {
                 let anchor = chat.debugScrollAnchorSnapshot()
                 let distance: CGFloat = step.isMultiple(of: 3) ? 220 : (step.isMultiple(of: 2) ? 160 : 110)
                 let scrollDuration = pacing.scrollDuration
-                let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                let baselineBefore = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
                 scheduleMidScrollSamples(
                     chat: chat,
                     pacing: pacing,
@@ -1023,7 +1086,7 @@ enum ScrollStressHarness {
             let anchor = chat.debugScrollAnchorSnapshot()
             let distance = scrollDistance(step: step, profile: profile, style: .matrix)
             let scrollDuration = pacing.scrollDuration
-            let baselineBefore = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+            let baselineBefore = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
             scheduleMidScrollSamples(
                 chat: chat,
                 pacing: pacing,
@@ -1038,7 +1101,7 @@ enum ScrollStressHarness {
                 baseline: baselineBefore
             )
             chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
-                let baseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                let baseline = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
                 schedulePostScrollSamples(
                     chat: chat,
                     pacing: pacing,
@@ -1088,7 +1151,7 @@ enum ScrollStressHarness {
                         if !baseline.isEmpty {
                             let snap = chat.debugVisibleActionChromeSnapshot()
                             for (row, y0) in baseline {
-                                guard let y1 = snap.buttonViewportY[row] else { continue }
+                                guard let y1 = chromeShiftY(for: row, in: snap) else { continue }
                                 if abs(y1 - y0) > pacing.chromeShiftTolerance {
                                     metrics.chromeShiftFailures += 1
                                     log("\(phase) chrome-shift step=\(step) row=\(row) delta=\(Int(abs(y1 - y0)))pt")
@@ -1583,7 +1646,7 @@ enum ScrollStressHarness {
                 onBlank: { metrics.blankFailures += 1 },
                 onChromeLate: { metrics.chromeLateFailures += 1 },
                 onFlicker: { metrics.flickerFailures += 1 },
-                baseline: chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                baseline: chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
             )
                 chat.debugSimulateSlowScrollUp(distance: distance, duration: scrollDuration) {
                 auditEdge("t+0")
@@ -1919,12 +1982,12 @@ enum ScrollStressHarness {
                     chromeFailures += 1
                     log("rotation chrome step=\(step) width=\(Int(width)) missing=\(qa.missingActionButtons)")
                 }
-                let postRotateBaseline = chat.debugVisibleActionChromeSnapshot().buttonViewportY
+                let postRotateBaseline = chromeShiftBaseline(from: chat.debugVisibleActionChromeSnapshot())
                 chat.debugSimulateSlowScrollUp(distance: scrollDistance, duration: 0.45) {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
                         let postSnap = chat.debugVisibleActionChromeSnapshot()
-                        for (row, y0) in postRotateBaseline where postSnap.buttonViewportY[row] != nil {
-                            guard let y1 = postSnap.buttonViewportY[row] else { continue }
+                        for (row, y0) in postRotateBaseline where chromeShiftY(for: row, in: postSnap) != nil {
+                            guard let y1 = chromeShiftY(for: row, in: postSnap) else { continue }
                             // Scrolling up moves chrome down in viewport — only flag excess jitter.
                             let expectedY = y0 + scrollDistance
                             if abs(y1 - expectedY) > 14 {
@@ -2140,6 +2203,213 @@ enum ScrollStressHarness {
 
         > 滚动浏览时不应出现可见位移；公式块高度变化应被行高同步吸收。
         """
+    }
+
+    // MARK: - Cross-QA long context (pure + study portrait/landscape + optional live API)
+
+    private static func installMathHeavyFixture() {
+        let store = ConversationStore.shared
+        store.updateCurrentQuietly { conversation in
+            conversation.title = "CrossQA 公式压测 \(turnCount)轮"
+            conversation.messages.removeAll()
+            for turn in 1...turnCount {
+                conversation.messages.append(ChatMessage(
+                    role: .user,
+                    content: userQuestion(turn: turn)
+                ))
+                conversation.messages.append(ChatMessage(
+                    role: .assistant,
+                    content: mathHeavyAssistantBody(turn: turn),
+                    reasoningContent: turn.isMultiple(of: 2) ? "先展开期望，再用独立同分布假设，最后代入具体数字。" : "",
+                    isStreaming: false
+                ))
+            }
+        }
+        log("installed \(turnCount)-turn math-heavy fixture (cross-QA pure chat)")
+    }
+
+    private static func runCrossQA(on chat: ChatViewController) {
+        let metrics = MatrixMetrics()
+        chat.loadViewIfNeeded()
+        chat.reloadChat()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            log("cross-QA phase 1/3: orientation matrix")
+            runMatrix(on: chat, metrics: metrics, exitOnFinish: false) { matrixOK in
+                guard matrixOK else {
+                    finishCrossQA(metrics: metrics, matrixOK: false, pureOK: false, liveOK: false)
+                    return
+                }
+                log("cross-QA phase 2/3: \(turnCount)-turn math-heavy pure chat scroll")
+                installMathHeavyFixture()
+                chat.reloadChat()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    if let messages = ConversationStore.shared.currentConversation?.messages {
+                        let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming }
+                        AssistantMessageLayout.prewarmLayouts(
+                            for: assistants,
+                            targetWidth: chat.debugLayoutContentWidth(),
+                            layoutLimit: assistants.count
+                        )
+                        chat.debugSeedCommittedHeightsFromLayoutCache()
+                    }
+                    chat.setStudyChrome(.none)
+                    chat.debugSimulateLayoutWidthChange(tableWidth: fullChatTableWidth) {
+                        runScrollSteps(on: chat, exitOnFinish: false) { pureOK in
+                            guard pureOK else {
+                                finishCrossQA(metrics: metrics, matrixOK: true, pureOK: false, liveOK: false)
+                                return
+                            }
+                            if crossQALiveMode {
+                                log("cross-QA phase 3/3: live API rounds (pure / study-portrait / study-landscape)")
+                                runCrossQALive(on: chat, metrics: metrics) { liveOK in
+                                    finishCrossQA(metrics: metrics, matrixOK: true, pureOK: true, liveOK: liveOK)
+                                }
+                            } else {
+                                finishCrossQA(metrics: metrics, matrixOK: true, pureOK: true, liveOK: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func runCrossQALive(on chat: ChatViewController,
+                                       metrics: MatrixMetrics,
+                                       completion: @escaping (Bool) -> Void) {
+        DebugAPIBootstrap.loadKimiKeyIfNeeded(logTag: logTag)
+        guard SettingsManager.shared.hasAPIKey(for: .kimi) else {
+            log("SKIP live API (no Kimi key)")
+            completion(true)
+            return
+        }
+        let conv = ConversationStore.shared.createConversation(model: .kimi26)
+        chat.switchToConversation(id: conv.id, coldLaunch: true)
+        chat.reloadChat()
+
+        struct LiveMode {
+            let name: String
+            let width: CGFloat
+            let studyPortrait: Bool
+            let studyLandscape: Bool
+        }
+        let modes: [LiveMode] = [
+            LiveMode(name: "live-pure", width: portraitChatTableWidth, studyPortrait: false, studyLandscape: false),
+            LiveMode(name: "live-study-portrait", width: portraitChatTableWidth, studyPortrait: true, studyLandscape: false),
+            LiveMode(name: "live-study-landscape", width: studyPanelTableWidth, studyPortrait: false, studyLandscape: true)
+        ]
+
+        func runLiveMode(_ index: Int) {
+            guard index < modes.count else {
+                completion(true)
+                return
+            }
+            let mode = modes[index]
+            log("live \(index + 1)/\(modes.count): \(mode.name)")
+            let setup: (@escaping () -> Void) -> Void = { done in
+                chat.setStudyChrome(.none)
+                if mode.studyPortrait {
+                    chat.debugEnterStudyPortraitPanel(tableWidth: mode.width, completion: done)
+                } else if mode.studyLandscape {
+                    chat.debugEnterStudyPanel(tableWidth: mode.width, completion: done)
+                } else {
+                    chat.debugSimulateLayoutWidthChange(tableWidth: mode.width, completion: done)
+                }
+            }
+            setup {
+                chat.debugWaitForStudyRelayoutStable {
+                    let prompt = "用 Markdown+TeX 简述卷积的交换律，含一个块级公式。"
+                    chat.debugSendUserMessage(prompt, timeout: 240) { ok in
+                        if !ok {
+                            log("FAIL \(mode.name): stream timeout")
+                            metrics.renderFailures += 1
+                            runLiveMode(index + 1)
+                            return
+                        }
+                        chat.debugPinToBottom {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                runFirstQACrossJitter(
+                                    chat: chat,
+                                    phase: mode.name,
+                                    studyBlank: mode.studyPortrait || mode.studyLandscape,
+                                    metrics: metrics
+                                ) {
+                                    if mode.studyPortrait || mode.studyLandscape {
+                                        let blank = chat.debugVisibleStudyBlankState()
+                                        if blank.inflatedRows > 0, blank.maxRowSlackPt > 48 {
+                                            metrics.blankFailures += 1
+                                            log("FAIL \(mode.name) blank inflated=\(blank.inflatedRows)")
+                                        }
+                                    }
+                                    runLiveMode(index + 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        runLiveMode(0)
+    }
+
+    private static func finishCrossQA(metrics: MatrixMetrics,
+                                      matrixOK: Bool,
+                                      pureOK: Bool,
+                                      liveOK: Bool) {
+        let metricsFailed = metrics.jumpFailures + metrics.renderFailures + metrics.clipFailures
+            + metrics.blankFailures + metrics.chromeLateFailures + metrics.chromeShiftFailures
+            + metrics.flickerFailures > 0
+        let pass = matrixOK && pureOK && liveOK && !metricsFailed
+        if pass {
+            log("PASS cross-QA long-context stress (matrix + \(turnCount)-turn pure\(crossQALiveMode ? " + live API" : ""))")
+        } else {
+            if !matrixOK { log("FAIL cross-QA matrix phase") }
+            if !pureOK { log("FAIL cross-QA pure-chat scroll phase") }
+            if !liveOK { log("FAIL cross-QA live API phase") }
+            if metrics.jumpFailures > 0 { log("FAIL cross-QA jumps \(metrics.jumpFailures)") }
+            if metrics.renderFailures > 0 { log("FAIL cross-QA render \(metrics.renderFailures)") }
+            if metrics.clipFailures > 0 { log("FAIL cross-QA clip \(metrics.clipFailures)") }
+            if metrics.blankFailures > 0 { log("FAIL cross-QA blank \(metrics.blankFailures)") }
+            if metrics.chromeShiftFailures > 0 { log("FAIL cross-QA chrome-shift \(metrics.chromeShiftFailures)") }
+        }
+        fflush(stderr)
+        exit(pass ? 0 : 1)
+    }
+
+    // MARK: - Thinking expand bench (~1k char reasoning)
+
+    private static var thinkingExpandBenchScheduled = false
+
+    static func installThinkingExpandFixtureIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-ThinkingExpandFixture") else { return }
+        installThinkingExpandFixture()
+    }
+
+    private static func installThinkingExpandFixture() {
+        let line = "先展开期望，再用独立同分布假设写出方差，最后代入具体数字验算。"
+        let reasoning = String(repeating: line, count: 22)
+        ConversationStore.shared.updateCurrentQuietly { conversation in
+            conversation.title = "思考展开压测"
+            conversation.messages = [
+                ChatMessage(role: .user, content: "请推导方差公式并举例。"),
+                ChatMessage(
+                    role: .assistant,
+                    content: "方差定义为 \\(Var(X)=E[X^2]-E[X]^2\\)，独立时 \\(Var(aX+b)=a^2 Var(X)\\)。",
+                    reasoningContent: reasoning,
+                    isStreaming: false
+                )
+            ]
+        }
+        log("installed thinking-expand fixture (\(reasoning.count) char reasoning)")
+    }
+
+    static func scheduleThinkingExpandBenchIfRequested(on chat: ChatViewController) {
+        guard ProcessInfo.processInfo.arguments.contains("-ThinkingExpandTest") else { return }
+        guard !thinkingExpandBenchScheduled else { return }
+        thinkingExpandBenchScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            chat.debugBenchThinkingExpand(iterations: 2)
+        }
     }
 }
 #endif

@@ -153,12 +153,10 @@ enum ConnectsBackupService {
 enum ConnectsBackupRestoreCoordinator {
     static func applyAfterImport() {
         ConversationStore.shared.reloadAfterBackupImport()
-        AgentStore.shared.reloadAfterBackupImport()
         ProjectStore.shared.reloadAfterBackupImport()
         StudyDocumentStore.shared.reloadAfterBackupImport()
         RenderCacheStore.clearAll()
         PlainMarkdown.clearCache()
-        NotificationCenter.default.post(name: .memoryStoreDidUpdate, object: nil)
         NotificationCenter.default.post(name: .themeDidChange, object: nil)
     }
 }

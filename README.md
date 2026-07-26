@@ -64,8 +64,6 @@
 - 深度思考可开关；Kimi 可切国内 / 海外节点
 - 助手消息：复制、重跑、分叉、多版本切换；完整 Markdown 导出与分享
 - 主题：白天 / 黑夜；聊天字号：小 / 中 / 大
-- 智能体：设置中的独立智能体库创建与编辑，可选 20 种彩色衣服图标；每个对话在输入栏衣服图标选择一个智能体或关闭
-- 可选 Memory：输入栏最左侧的大脑图标开启后才读写；侧栏 Memory 页面渲染最近七日日志与整体背景，并可编辑背景 Markdown
 
 ## 设备与布局
 
@@ -111,13 +109,6 @@ open Connects.xcodeproj
 | Kimi | `kimi-k3`（旗舰）、`kimi-k2.6` 等 | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
 
 Key 只存本机 Keychain，不会打进仓库或上传。
-
-## 智能体与 Memory
-
-- **智能体**：设置 →「智能体」中创建和编辑。选择智能体只影响该会话发给模型的 system prompt，不会改写聊天气泡或历史消息。
-- **Memory**：默认关闭。对话输入栏的「记」按钮开启时，Connects 才会在本机 `Documents/ConnectsMemory/` 中写入当天的提问与有限上下文；关闭后不会读取或写入。
-- **保留规则**：最近 7 个自然日保留原始日志。更早日志会自动精炼进背景并保存 revision；用户手动修改背景时显示红绿 diff，点击 Keep 才会写入。
-- **管理**：侧栏搜索框下方的 Memory 入口显示统一 Markdown 文档和待确认数量。已确认数据保存在 `Documents/ConnectsMemory/logs/`、`background.md`、`revisions/` 与 `pending/`。
 
 ## 技术栈
 

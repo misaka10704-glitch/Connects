@@ -4,7 +4,6 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapSend(text: String, imageBase64: String?)
     func inputBarDidTapStop()
     func inputBarDidTapAttach()
-    func inputBarDidTapAgent()
     func inputBarDidToggleStudyCapture(_ enabled: Bool)
     func inputBarDidTapContextUsage()
     func inputBarDidRequestStudyContextScope(from sourceView: UIView)
@@ -26,8 +25,6 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let thinkingButton = UIButton(type: .system)
     private let studyCaptureButton = UIButton(type: .system)
     private let askSelectionButton = UIButton(type: .system)
-    private let memoryButton = UIButton(type: .system)
-    private let agentButton = UIButton(type: .system)
     private let contextUsageButton = UIButton(type: .system)
     private let contextRing = ContextUsageRingView()
     /// Long capsule left of the context ring — picks Kimi / Qwen / etc.
@@ -85,7 +82,6 @@ final class InputBarView: UIView, ThemeRefreshable {
     func attachAnchorRect() -> CGRect { attachButton.bounds }
 
     var hasAttachment: Bool { pendingImageBase64 != nil }
-    var agentAnchorView: UIView { agentButton }
     var contextUsageAnchorView: UIView { contextUsageButton }
 
     private var contextUsageVisible = false
@@ -102,31 +98,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         didSet { updateStudyCaptureAppearance() }
     }
 
-    func setAgent(_ agent: CustomAgent?) {
-        agentButton.setTitle(nil, for: .normal)
-        agentButton.clipsToBounds = true
-        agentButton.layer.cornerRadius = btnSize / 2
-        let c = DSTheme.c
-        if let agent = agent {
-            agentButton.setImage(
-                AgentAppearancePreset.avatar(for: agent, size: 20).withRenderingMode(.alwaysOriginal),
-                for: .normal
-            )
-            agentButton.tintColor = .clear
-            agentButton.backgroundColor = c.accent.withAlphaComponent(0.12)
-            agentButton.layer.borderWidth = 1.5 / UIScreen.main.scale
-            agentButton.layer.borderColor = c.accent.withAlphaComponent(0.32).cgColor
-            agentButton.accessibilityLabel = "当前智能体：\(agent.name)"
-        } else {
-            agentButton.setImage(ActionIconFactory.image(.tshirt, pointSize: 16), for: .normal)
-            agentButton.tintColor = c.textSecondary
-            agentButton.backgroundColor = .clear
-            agentButton.layer.borderWidth = 0
-            agentButton.layer.borderColor = nil
-            agentButton.accessibilityLabel = "选择智能体"
-        }
-    }
-
     var webSearchEnabled: Bool {
         get { SettingsManager.shared.webSearchEnabled }
         set {
@@ -140,14 +111,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         set {
             SettingsManager.shared.thinkingEnabled = newValue
             updateThinkingAppearance()
-        }
-    }
-
-    var memoryEnabled: Bool {
-        get { SettingsManager.shared.memoryEnabled }
-        set {
-            SettingsManager.shared.memoryEnabled = newValue
-            updateMemoryAppearance()
         }
     }
 
@@ -185,7 +148,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateWebSearchAppearance()
         updateThinkingAppearance()
         updateStudyCaptureAppearance()
-        updateMemoryAppearance()
         updateAIOptionsAppearance()
         contextRing.applyTheme()
     }
@@ -360,19 +322,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionButton.isHidden = true
         containerView.addSubview(askSelectionButton)
 
-        memoryButton.translatesAutoresizingMaskIntoConstraints = false
-        memoryButton.setImage(ActionIconFactory.image(.brain, pointSize: 16), for: .normal)
-        memoryButton.accessibilityLabel = "跨会话记忆"
-        memoryButton.addTarget(self, action: #selector(memoryTapped), for: .touchUpInside)
-        containerView.addSubview(memoryButton)
-
-        agentButton.translatesAutoresizingMaskIntoConstraints = false
-        agentButton.setImage(ActionIconFactory.image(.tshirt, pointSize: 16), for: .normal)
-        agentButton.accessibilityLabel = "选择智能体"
-        agentButton.addTarget(self, action: #selector(agentTapped), for: .touchUpInside)
-        containerView.addSubview(agentButton)
-
-        for tool in [agentButton, memoryButton, attachButton, studyCaptureButton, webSearchButton, thinkingButton, askSelectionButton] {
+        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, askSelectionButton] {
             styleIconToolButton(tool)
         }
 
@@ -481,52 +431,42 @@ final class InputBarView: UIView, ThemeRefreshable {
 
             // Composer tools live in a compact row above the editor, leaving the
             // input line its full width while keeping send in its usual place.
-            agentButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
-            agentButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4),
-            agentButton.widthAnchor.constraint(equalToConstant: btnSize),
-            agentButton.heightAnchor.constraint(equalToConstant: btnSize),
-
-            memoryButton.leadingAnchor.constraint(equalTo: agentButton.trailingAnchor, constant: 2),
-            memoryButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
-            memoryButton.widthAnchor.constraint(equalToConstant: btnSize),
-            memoryButton.heightAnchor.constraint(equalToConstant: btnSize),
-
-            attachButton.leadingAnchor.constraint(equalTo: memoryButton.trailingAnchor, constant: 2),
-            attachButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            attachButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
+            attachButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4),
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             studyCaptureButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 2),
-            studyCaptureButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            studyCaptureButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             studyCaptureWidthConstraint!,
             studyCaptureButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             webSearchButton.leadingAnchor.constraint(equalTo: studyCaptureButton.trailingAnchor, constant: 2),
-            webSearchButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            webSearchButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
             webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             thinkingButton.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 2),
-            thinkingButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            thinkingButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             // Ask sits at the end of the left tool cluster as a round slot.
             askSelectionButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
-            askSelectionButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            askSelectionButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             askSelectionWidthConstraint!,
             askSelectionButton.heightAnchor.constraint(equalToConstant: btnSize),
             askSelectionButton.trailingAnchor.constraint(lessThanOrEqualTo: aiOptionsButton.leadingAnchor, constant: -4),
 
             // Model picker (Kimi / Qwen …) immediately left of the context ring.
             aiOptionsButton.trailingAnchor.constraint(equalTo: contextUsageButton.leadingAnchor, constant: -4),
-            aiOptionsButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            aiOptionsButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             aiOptionsWidthConstraint!,
             aiOptionsMaxW,
             aiOptionsButton.heightAnchor.constraint(equalToConstant: btnSize),
 
             contextUsageButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
-            contextUsageButton.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
+            contextUsageButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             contextUsageWidthConstraint!,
             contextUsageButton.heightAnchor.constraint(equalToConstant: btnSize),
 
@@ -579,10 +519,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         if askSlotVisible {
             askSelectionButton.alpha = isStreaming ? 0.35 : (askHasSelection ? 1 : 0.42)
         }
-        memoryButton.isEnabled = !isStreaming
-        memoryButton.alpha = isStreaming ? 0.35 : 1
-        agentButton.isEnabled = !isStreaming
-        agentButton.alpha = isStreaming ? 0.35 : 1
         contextUsageButton.isEnabled = !isStreaming && contextUsageVisible
         if contextUsageVisible {
             contextUsageButton.alpha = isStreaming ? 0.35 : 1
@@ -683,10 +619,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionButton.accessibilityValue = on ? "已附带选区" : "未选择"
     }
 
-    private func updateMemoryAppearance() {
-        updateToggleAppearance(memoryButton, on: memoryEnabled)
-    }
-
     private func updateSendEnabled() {
         let hasText = !(textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let on = (hasText || pendingImageBase64 != nil) && !isStreaming
@@ -764,14 +696,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         guard askHasSelection else { return }
         setAskSelectionArmed(false)
         onClearAskSelection?()
-    }
-
-    @objc private func memoryTapped() {
-        memoryEnabled.toggle()
-    }
-
-    @objc private func agentTapped() {
-        delegate?.inputBarDidTapAgent()
     }
 
     @objc private func contextUsageTapped() {

@@ -41,6 +41,13 @@ final class StudyShellViewController: UIViewController {
     private var loadGeneration: UInt = 0
     private var boundDocumentID: String?
     private var boundConversationID: String?
+
+    /// Must match `handleAskSelection` — empty string breaks pending Ask lookup on send.
+    private func resolvedStudyConversationID() -> String {
+        boundConversationID
+            ?? ConversationStore.shared.currentConversation?.id
+            ?? ""
+    }
     private var isReaderVisible = false
     private var chatPanelStage: StudyChatPanelStage = .collapsed
     private var isPortraitMode = false
@@ -374,11 +381,24 @@ final class StudyShellViewController: UIViewController {
                     self.updateChatPanelShadowPath()
                 }
                 self.finishActiveReaderRotation(using: readerSnapshot)
-                self.syncStudyOverlayChrome()
-                self.postChatWidthNotification()
+                self.finishRotationChromeReconcile()
                 self.bringChromeToFront()
             }
         })
+    }
+
+    /// Defer chat table reconcile until after rotation geometry settles.
+    private func finishRotationChromeReconcile() {
+        let chaseBottom = chatVC.wantsBottomChaseForPanelResize
+        syncStudyOverlayChrome(reconcileContent: false)
+        postChatWidthNotification()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            guard let self = self else { return }
+            self.syncStudyOverlayChrome(reconcileContent: true)
+            if chaseBottom {
+                self.chatVC.rePinLatestTurnAfterStudyPanelResize(force: true)
+            }
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -407,8 +427,7 @@ final class StudyShellViewController: UIViewController {
                     self.bringChromeToFront()
                 }
                 finishActiveReaderRotation(using: readerSnapshot)
-                syncStudyOverlayChrome()
-                postChatWidthNotification()
+                finishRotationChromeReconcile()
             }
         }
 
@@ -887,6 +906,9 @@ final class StudyShellViewController: UIViewController {
         if enteringOrLeavingStudy || !didSeedPortraitMode {
             isPortraitMode = currentPortraitLayout()
             didSeedPortraitMode = true
+            applyLayoutMode()
+        } else if docID == nil, convChanged {
+            // 新对话 / chat-only switch: dismiss reader overlay and show full-screen chat.
             applyLayoutMode()
         }
 
@@ -1580,9 +1602,10 @@ extension StudyShellViewController: StudyReadingContextProviding {
             guard label != "无文档" else { return nil }
             let text = markdownReaderVC.currentPageText() ?? ""
             let full = markdownReaderVC.currentFullMarkdown()
-            let convID = boundConversationID ?? ""
+            let convID = resolvedStudyConversationID()
             let scope = StudyFileContextStore.shared.scope(for: convID)
             let pendingAsk = StudyAskSelectionStore.shared.pendingText(for: convID)
+                ?? markdownReaderVC.pinnedAskText()
             var prefixParts: [String] = ["[阅读上下文 · \(label)]"]
             if let pendingAsk = pendingAsk, !pendingAsk.isEmpty {
                 prefixParts.append("## SELECTION")
@@ -1611,8 +1634,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
             guard label != "无文档" else { return nil }
             guard let doc = StudyDocumentStore.shared.document(id: docID) else { return nil }
             let full = textEditorVC.currentPlainText()
-            let convID = boundConversationID ?? ""
+            let convID = resolvedStudyConversationID()
             let sel = StudyAskSelectionStore.shared.pendingText(for: convID)
+                ?? textEditorVC.pinnedAskText()
                 ?? textEditorVC.currentSelectionText()
             let scope = StudyFileContextStore.shared.scope(for: convID)
             let forceFull = scope == .fullFile || scope == .resync

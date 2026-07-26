@@ -77,6 +77,19 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         }
     }
 
+    /// Text pinned by Ask; fallback when `StudyAskSelectionStore` lookup misses on send.
+    func pinnedAskText() -> String? {
+        if isEditMode, let pinned = askPinnedEditorRange {
+            let plain = editorView.text ?? ""
+            let clamped = NSIntersectionRange(pinned, NSRange(location: 0, length: (plain as NSString).length))
+            guard clamped.length > 0 else { return nil }
+            let text = (plain as NSString).substring(with: clamped)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+        return nil
+    }
+
     private func paintAskEditorHighlight() {
         let plain = editorView.text ?? ""
         let attrs: [NSAttributedString.Key: Any] = [

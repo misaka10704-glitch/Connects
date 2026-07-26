@@ -577,11 +577,7 @@ final class ChatRowHeightResolver {
         if msg.role == .user {
             return estimatedUserColumnContentHeight(for: msg, layoutWidth: layoutWidth) ?? 64
         }
-        let reasoningExpanded = msg.hasReasoning
-            && AssistantMessageLayout.isThinkingExpanded(messageID: msg.id)
-        let reasoningChars = reasoningExpanded
-            ? msg.reasoningContent.count
-            : (msg.reasoningContent.isEmpty ? 0 : 40)
+        let reasoningChars = msg.reasoningContent.isEmpty ? 0 : 40
         let chars = max(msg.content.count, reasoningChars)
         let lines = max(1, chars / 48)
         var rough = CGFloat(36 + lines * 18)
@@ -591,8 +587,7 @@ final class ChatRowHeightResolver {
         }
         if msg.showsImageInChat { rough += 168 }
         if msg.hasReasoning {
-            rough += reasoningExpanded
-                ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 16) : 40
+            rough += 40
         }
         if msg.hasSearchProcess || msg.hasImageTranscription { rough += 40 }
         if msg.role == .assistant && !msg.isStreaming {

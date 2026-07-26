@@ -40,6 +40,15 @@ protocol MessageCellDelegate: AnyObject {
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool
     /// Landscape study split: shift bubble right so action chrome clears the seam handle.
     func messageCellStudyContentLeadingGutter() -> CGFloat
+    /// Thinking / search tag tapped — host presents a read-only viewer sheet.
+    func messageCellDidTapChromeViewer(_ cell: MessageCellType,
+                                       messageID: String,
+                                       kind: MessageExpandableChromeKind)
+}
+
+enum MessageExpandableChromeKind {
+    case thinking
+    case search
 }
 
 extension MessageCellDelegate {
@@ -53,6 +62,9 @@ extension MessageCellDelegate {
     func messageCellShouldPreserveOpenPaint(_ cell: MessageCellType) -> Bool { false }
     func messageCellStudyContentLeadingGutter() -> CGFloat { 0 }
     func messageCell(_ cell: MessageCellType, didFinishStableRender height: CGFloat, for messageID: String) {}
+    func messageCellDidTapChromeViewer(_ cell: MessageCellType,
+                                       messageID: String,
+                                       kind: MessageExpandableChromeKind) {}
 }
 
 enum MessageCellReuseID {
