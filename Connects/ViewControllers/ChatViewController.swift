@@ -6175,6 +6175,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let convID = conv.id
+        let oldRowCount = tableView.numberOfRows(inSection: 0)
 
         ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             let assistantIndex = userIndex + 1
@@ -6198,13 +6199,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
 
-        stickToBottom = true
-        readingHistory = false
-        viewportPinnedByUser = false
-        updateEmptyState()
-        tableView.reloadData()
-        scrollToBottom(animated: true, force: true)
-        syncStreamingChrome()
+        applyRetryThreadUI(oldRowCount: oldRowCount, userIndex: userIndex)
 
         let target = ConversationStore.shared.conversation(id: convID)
         let userText = target?.messages[userIndex].content ?? userMessage.content
@@ -6226,6 +6221,68 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 model: model,
                 needsAITitle: needsAITitle
             )
+        }
+    }
+
+    private func applyRetryThreadUI(oldRowCount: Int, userIndex: Int) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        let newCount = messages.count
+        let assistantIndex = userIndex + 1
+        let layoutWidth = currentRenderWidth()
+
+        stickToBottom = true
+        readingHistory = false
+        viewportPinnedByUser = false
+        updateEmptyState()
+
+        if rowHeights.isScrollHeightFrozen {
+            rowHeights.endScrollHeightFreeze()
+        }
+
+        if assistantIndex < messages.count {
+            let assistant = messages[assistantIndex]
+            rowHeights.invalidate(messageID: assistant.id)
+            pendingHeights.removeValue(forKey: assistant.id)
+            let streamingFloor = max(
+                ChatRowHeightResolver.cheapColumnEstimate(for: assistant, layoutWidth: layoutWidth),
+                96
+            )
+            rowHeights.commitMeasured(
+                columnHeight: streamingFloor,
+                messageID: assistant.id,
+                allowShrink: true
+            )
+        }
+
+        renderedMessageCount = newCount
+
+        UIView.performWithoutAnimation {
+            if newCount < oldRowCount {
+                let paths = (newCount..<oldRowCount).map { IndexPath(row: $0, section: 0) }
+                tableView.deleteRows(at: paths, with: .none)
+            } else if newCount > oldRowCount {
+                tableView.insertRows(at: [IndexPath(row: newCount - 1, section: 0)], with: .none)
+            }
+            if assistantIndex < tableView.numberOfRows(inSection: 0) {
+                tableView.reloadRows(at: [IndexPath(row: assistantIndex, section: 0)], with: .none)
+            }
+            tableView.layoutIfNeeded()
+        }
+
+        if let live = ConversationStore.shared.currentConversation?.messages, !live.isEmpty {
+            chaseLiveTailToBottom(messages: live, layoutWidth: layoutWidth)
+        } else {
+            scrollToBottom(animated: false, force: true)
+        }
+        syncStreamingChrome()
+        refreshStreamingRow(waitingGlyph: nil, relayout: true)
+        followStreamingViewportToBottom()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.followStreamingViewportToBottom()
+            if let live = ConversationStore.shared.currentConversation?.messages, !live.isEmpty {
+                self.chaseLiveTailToBottom(messages: live, layoutWidth: self.currentRenderWidth())
+            }
         }
     }
 
