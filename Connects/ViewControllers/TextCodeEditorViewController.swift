@@ -399,7 +399,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     @objc private func saveTapped() {
-        flushSaveIfNeeded(force: true)
+        flushSaveIfNeeded(force: true, showSuccessToast: true)
     }
 
     @objc private func themeChanged() {
@@ -494,7 +494,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
     }
 
+    private var isIMEComposing: Bool {
+        textView.markedTextRange != nil
+    }
+
     private func applyHighlightedText(_ text: String) {
+        guard !isIMEComposing else { return }
         let selected = textView.selectedRange
         let offset = textView.contentOffset
         isApplyingHighlight = true
@@ -528,6 +533,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         highlightWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
+            if self.isIMEComposing {
+                self.scheduleHighlight()
+                return
+            }
             self.applyHighlightedText(self.textView.text ?? "")
             self.updateLineNumbers(force: true)
         }
@@ -544,10 +553,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
     }
 
-    private func flushSaveIfNeeded(force: Bool = false) {
-        guard let docID = currentDocumentID, isDirty || force else { return }
+    private func flushSaveIfNeeded(force: Bool = false, showSuccessToast: Bool = false) {
+        guard currentDocumentID != nil, isDirty || force else { return }
         guard isDirty else { return }
         let text = textView.text ?? ""
+        guard let docID = currentDocumentID else { return }
         do {
             try StudyDocumentStore.shared.writeTextContent(text, for: docID)
             isDirty = false
@@ -556,6 +566,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                 StudyFileContextStore.shared.markDirty(conversationID: conv)
             }
             onContentEdited?()
+            if showSuccessToast {
+                ConnectsToast.show("已保存", in: view, duration: 1.0)
+            }
         } catch {
             ConnectsToast.show("保存失败：\(error.localizedDescription)", in: view, duration: 2.0)
         }
@@ -652,9 +665,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         isDirty = true
         updateProgressLabel()
         updateLineNumbers(force: true)
+        onPageChanged?()
+        // Replacing attributedText during IME composition commits raw pinyin letters.
+        guard !isIMEComposing else { return }
         scheduleHighlight()
         scheduleAutosave()
-        onPageChanged?()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
