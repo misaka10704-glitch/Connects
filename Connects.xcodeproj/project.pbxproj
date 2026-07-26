@@ -67,6 +67,9 @@
 		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
 		B10000010000000000000006 /* ScrollStressHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ScrollStressHarness.swift */; };
 		B10000010000000000000007 /* RenderAuditHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* RenderAuditHarness.swift */; };
+		S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000012 /* StudyFeatureQAHarness.swift */; };
+		S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000013 /* PDFCustomTextSelector.swift */; };
+		S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */; };
 		B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* DebugAPIBootstrap.swift */; };
 		B10000010000000000000009 /* RenderAuditChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000009 /* RenderAuditChecks.swift */; };
 		B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000A /* UsageSimulationHarness.swift */; };
@@ -122,6 +125,10 @@
 		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
 		S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000C /* MarkdownContentsViewController.swift */; };
 		S1000001000000000000000D /* MarkdownStudyImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000D /* MarkdownStudyImporter.swift */; };
+		S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000E /* CodeSyntaxHighlighter.swift */; };
+		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
+		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
+		S10000010000000000000011 /* StudyAskSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000011 /* StudyAskSupport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -187,6 +194,9 @@
 		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
 		B20000010000000000000006 /* ScrollStressHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollStressHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000007 /* RenderAuditHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditHarness.swift; sourceTree = "<group>"; };
+		S20000010000000000000012 /* StudyFeatureQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFeatureQAHarness.swift; sourceTree = "<group>"; };
+		S20000010000000000000013 /* PDFCustomTextSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFCustomTextSelector.swift; sourceTree = "<group>"; };
+		S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsKeyboardGeometry.swift; sourceTree = "<group>"; };
 		B20000010000000000000008 /* DebugAPIBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugAPIBootstrap.swift; sourceTree = "<group>"; };
 		B20000010000000000000009 /* RenderAuditChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditChecks.swift; sourceTree = "<group>"; };
 		B2000001000000000000000A /* UsageSimulationHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageSimulationHarness.swift; sourceTree = "<group>"; };
@@ -243,6 +253,10 @@
 		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
 		S2000001000000000000000C /* MarkdownContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentsViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000D /* MarkdownStudyImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStudyImporter.swift; sourceTree = "<group>"; };
+		S2000001000000000000000E /* CodeSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSyntaxHighlighter.swift; sourceTree = "<group>"; };
+		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
+		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000011 /* StudyAskSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAskSupport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -367,6 +381,9 @@
 				B20000010000000000000002 /* NativeMarkdownParser.swift */,
 				B20000010000000000000006 /* ScrollStressHarness.swift */,
 				B20000010000000000000007 /* RenderAuditHarness.swift */,
+				S20000010000000000000012 /* StudyFeatureQAHarness.swift */,
+				S20000010000000000000013 /* PDFCustomTextSelector.swift */,
+				S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */,
 				B20000010000000000000008 /* DebugAPIBootstrap.swift */,
 				B20000010000000000000009 /* RenderAuditChecks.swift */,
 				B2000001000000000000000A /* UsageSimulationHarness.swift */,
@@ -382,6 +399,9 @@
 				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
 				S2000001000000000000000B /* PDFBookmarkStore.swift */,
+				S2000001000000000000000E /* CodeSyntaxHighlighter.swift */,
+				S2000001000000000000000F /* StudyFileContextStore.swift */,
+				S20000010000000000000011 /* StudyAskSupport.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -404,6 +424,7 @@
 				S2000001000000000000000A /* PDFContentsViewController.swift */,
 				S20000010000000000000009 /* MarkdownReaderViewController.swift */,
 				S2000001000000000000000C /* MarkdownContentsViewController.swift */,
+				S20000010000000000000010 /* TextCodeEditorViewController.swift */,
 				S20000010000000000000006 /* StudyShellViewController.swift */,
 				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
 			);
@@ -641,6 +662,9 @@
 				B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */,
 				B10000010000000000000006 /* ScrollStressHarness.swift in Sources */,
 				B10000010000000000000007 /* RenderAuditHarness.swift in Sources */,
+				S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */,
+				S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */,
+				S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */,
 				B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */,
 				B10000010000000000000009 /* RenderAuditChecks.swift in Sources */,
 				B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */,
@@ -690,6 +714,10 @@
 				S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */,
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
 				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
+				S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */,
+				S1000001000000000000000F /* StudyFileContextStore.swift in Sources */,
+				S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */,
+				S10000010000000000000011 /* StudyAskSupport.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

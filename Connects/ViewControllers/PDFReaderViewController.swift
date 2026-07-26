@@ -3,18 +3,26 @@ import PDFKit
 
 final class PDFReaderViewController: UIViewController {
     private let topBar = UIView()
+    private let topBarSeparator = UIView()
     private let sidebarButton = UIButton(type: .system)
+    private let highlightPenButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
-    private let pdfView = PDFView()
+    private let pdfView = StudyPDFView()
+    private var isHighlightPenOn = false
     /// White + difference blend → invert PDF page colors in dark mode.
-    private let invertOverlay = UIView()
+    private let invertOverlay = PassthroughOverlayView()
     /// After invert, lift pure black paper to app dark-gray (softer than #000).
-    private let paperLiftOverlay = UIView()
+    private let paperLiftOverlay = PassthroughOverlayView()
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let pageLabel = UILabel()
     private let contentsPanelHost = UIView()
+    private let contentsDim = UIControl()
     private let contentsVC = PDFContentsViewController()
     private var progressWorkItem: DispatchWorkItem?
+    private var persistWorkItem: DispatchWorkItem?
+    private var isPersistingAnnotations = false
+    private var needsAnotherPersist = false
+    private var annotationsDirty = false
     private var currentDocumentID: String?
     private var loadGeneration: UInt = 0
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
@@ -37,7 +45,13 @@ final class PDFReaderViewController: UIViewController {
         view.backgroundColor = DSTheme.c.background
 
         topBar.translatesAutoresizingMaskIntoConstraints = false
+        topBar.backgroundColor = DSTheme.c.background
+        topBar.isOpaque = true
         view.addSubview(topBar)
+
+        topBarSeparator.translatesAutoresizingMaskIntoConstraints = false
+        topBarSeparator.backgroundColor = DSTheme.c.border.withAlphaComponent(0.55)
+        view.addSubview(topBarSeparator)
 
         sidebarButton.translatesAutoresizingMaskIntoConstraints = false
         sidebarButton.addTarget(self, action: #selector(sidebarTapped), for: .touchUpInside)
@@ -45,6 +59,17 @@ final class PDFReaderViewController: UIViewController {
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
         sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+
+        highlightPenButton.translatesAutoresizingMaskIntoConstraints = false
+        highlightPenButton.setImage(ActionIconFactory.image(.highlighter, pointSize: 17), for: .normal)
+        highlightPenButton.accessibilityLabel = "高亮笔"
+        highlightPenButton.accessibilityHint = "点按开/关；长按选线宽。划线时停住会自动拉直，按住可调角度"
+        highlightPenButton.addTarget(self, action: #selector(highlightPenTapped), for: .touchUpInside)
+        let penLongPress = UILongPressGestureRecognizer(target: self, action: #selector(highlightPenLongPressed(_:)))
+        penLongPress.minimumPressDuration = 0.35
+        penLongPress.cancelsTouchesInView = false
+        highlightPenButton.addGestureRecognizer(penLongPress)
+        topBar.addSubview(highlightPenButton)
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
@@ -58,24 +83,40 @@ final class PDFReaderViewController: UIViewController {
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
         pdfView.backgroundColor = DSTheme.c.background
+        pdfView.highlighter.strokeWidth = PDFHighlightStrokeStyle.Width.current
+        pdfView.highlighter.onStrokeFinished = { [weak self] annotation, page in
+            self?.markAnnotationsDirty(persistSoon: false)
+            self?.presentNoteEditor(for: annotation, on: page, afterStroke: true)
+        }
+        pdfView.highlighter.onOverlaysReordered = { [weak self] in
+            self?.liftReaderChromeAboveInk()
+        }
+        pdfView.noteTap.onTapHighlight = { [weak self] annotation, page in
+            self?.presentNoteEditor(for: annotation, on: page, afterStroke: false)
+        }
+        if #available(iOS 11.0, *) {
+            pdfView.usePageViewController(false)
+        }
+        // Keep PDFView free of covering subviews — overlays as children freeze hit-testing/scroll.
         view.addSubview(pdfView)
 
         invertOverlay.translatesAutoresizingMaskIntoConstraints = false
         invertOverlay.isUserInteractionEnabled = false
         invertOverlay.isHidden = true
         invertOverlay.backgroundColor = .white
-        pdfView.addSubview(invertOverlay)
+        view.addSubview(invertOverlay)
 
         paperLiftOverlay.translatesAutoresizingMaskIntoConstraints = false
         paperLiftOverlay.isUserInteractionEnabled = false
         paperLiftOverlay.isHidden = true
         paperLiftOverlay.backgroundColor = DSTheme.dark.background
-        pdfView.addSubview(paperLiftOverlay)
+        view.addSubview(paperLiftOverlay)
 
         pageLabel.translatesAutoresizingMaskIntoConstraints = false
         pageLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
         pageLabel.textColor = DSTheme.c.textSecondary
         pageLabel.textAlignment = .center
+        pageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         topBar.addSubview(pageLabel)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -93,16 +134,27 @@ final class PDFReaderViewController: UIViewController {
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
-            pageLabel.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
-            pageLabel.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
+            pageLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             pageLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            pageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
+            pageLabel.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             contentsButton.widthAnchor.constraint(equalToConstant: 40),
             contentsButton.heightAnchor.constraint(equalToConstant: 40),
 
-            pdfView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            highlightPenButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
+            highlightPenButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            highlightPenButton.widthAnchor.constraint(equalToConstant: 40),
+            highlightPenButton.heightAnchor.constraint(equalToConstant: 40),
+
+            topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBarSeparator.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            topBarSeparator.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+
+            pdfView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
             pdfView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pdfView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pdfView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -124,6 +176,10 @@ final class PDFReaderViewController: UIViewController {
         installContentsPanel()
         syncContentsOverlayZOrder()
         applyPDFColorInvert()
+        updateHighlightPenAppearance()
+        // Overlays must never sit above chrome / contents panel for hit testing.
+        view.insertSubview(invertOverlay, aboveSubview: pdfView)
+        view.insertSubview(paperLiftOverlay, aboveSubview: invertOverlay)
 
         NotificationCenter.default.addObserver(
             self,
@@ -131,6 +187,14 @@ final class PDFReaderViewController: UIViewController {
             name: Notification.Name.PDFViewPageChanged,
             object: pdfView
         )
+        if #available(iOS 11.0, *) {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(pageChanged),
+                name: .PDFViewVisiblePagesChanged,
+                object: pdfView
+            )
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(scaleChanged),
@@ -178,6 +242,15 @@ final class PDFReaderViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         flushProgressSave()
+        if isHighlightPenOn {
+            isHighlightPenOn = false
+            ConnectsNoteSheet.dismissIfNeeded()
+            pdfView.highlighter.setEnabled(false)
+            updateHighlightPenAppearance()
+        } else {
+            pdfView.highlighter.forceUnlockIfNeeded()
+            ConnectsNoteSheet.dismissIfNeeded()
+        }
     }
 
     deinit {
@@ -223,17 +296,297 @@ final class PDFReaderViewController: UIViewController {
     @objc private func themeChanged() {
         view.backgroundColor = DSTheme.c.background
         topBar.backgroundColor = DSTheme.c.background
+        topBar.isOpaque = true
+        topBarSeparator.backgroundColor = DSTheme.c.border.withAlphaComponent(0.55)
         pageLabel.textColor = DSTheme.c.textSecondary
         sidebarButton.tintColor = DSTheme.c.textSecondary
         contentsButton.tintColor = DSTheme.c.textSecondary
+        updateHighlightPenAppearance()
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
         applyPDFColorInvert()
+        bringHighlightChromeToFront()
+    }
+
+    @objc private func highlightPenTapped() {
+        // Instant chrome feedback first — never block on PDF serialize / hierarchy reshuffles.
+        ConnectsNoteSheet.dismissIfNeeded()
+        if isHighlightPenOn {
+            turnOffHighlightPen(persistIfDirty: true)
+        } else {
+            isHighlightPenOn = true
+            updateHighlightPenAppearance()
+            pdfView.highlighter.strokeWidth = PDFHighlightStrokeStyle.Width.current
+            pdfView.highlighter.setEnabled(true)
+            // Defer chrome lift — sync ensureOverlayZOrder on the tap frame felt laggy.
+            DispatchQueue.main.async { [weak self] in
+                self?.bringHighlightChromeToFront()
+            }
+        }
+    }
+
+    /// Leave freehand highlight mode (used after stroke+note, and when toggling the pen off).
+    private func turnOffHighlightPen(persistIfDirty: Bool) {
+        guard isHighlightPenOn else { return }
+        isHighlightPenOn = false
+        updateHighlightPenAppearance()
+        pdfView.highlighter.setEnabled(false)
+        if persistIfDirty, annotationsDirty {
+            schedulePersistPDFAnnotations(delay: 1.5)
+        }
+        // Same recovery as note dismiss — pen-off alone used to leave ▲▼ dead for a beat.
+        // Defer a beat so the tap frame stays light.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .connectsStudyStageChromeShouldReassert, object: nil)
+        }
+    }
+
+    /// Cheap chrome lift used by pen arming. Avoids ensureInvertOverlayOnTopIfNeeded reshuffles.
+    private func bringHighlightChromeToFront() {
+        // Only lift draw overlay z-order when armed — skip full invert reshuffle.
+        pdfView.highlighter.ensureOverlayZOrder()
+    }
+
+    /// Top bar / separator / drawer must sit above ink so strokes never paint through chrome.
+    private func liftReaderChromeAboveInk() {
+        if isContentsPanelVisible {
+            view.bringSubviewToFront(contentsDim)
+        }
+        view.bringSubviewToFront(contentsPanelHost)
+        view.bringSubviewToFront(topBar)
+        view.bringSubviewToFront(topBarSeparator)
+        view.bringSubviewToFront(spinner)
+    }
+
+    @objc private func highlightPenLongPressed(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        ConnectsNoteSheet.dismissIfNeeded()
+        let current = PDFHighlightStrokeStyle.Width.current
+        let items = PDFHighlightStrokeStyle.Width.allCases.map { width in
+            ConnectsMenuItem(
+                title: "线宽 · \(width.title)",
+                isSelected: width == current
+            ) { [weak self] in
+                PDFHighlightStrokeStyle.Width.current = width
+                self?.pdfView.highlighter.strokeWidth = width
+                if self?.isHighlightPenOn != true {
+                    self?.isHighlightPenOn = true
+                    self?.updateHighlightPenAppearance()
+                    self?.pdfView.highlighter.setEnabled(true)
+                    self?.bringHighlightChromeToFront()
+                }
+            }
+        }
+        ConnectsMenu.present(
+            from: self,
+            title: "高亮线宽",
+            items: items,
+            sourceView: highlightPenButton,
+            preferAbove: false,
+            menuWidth: 200
+        )
+    }
+
+    private func updateHighlightPenAppearance() {
+        let c = DSTheme.c
+        highlightPenButton.tintColor = isHighlightPenOn ? c.accent : c.textSecondary
+        highlightPenButton.backgroundColor = isHighlightPenOn ? c.accent.withAlphaComponent(0.16) : .clear
+        highlightPenButton.layer.cornerRadius = 20
+        highlightPenButton.clipsToBounds = true
+    }
+
+    private func presentNoteEditor(for annotation: PDFAnnotation, on page: PDFPage, afterStroke: Bool) {
+        if ConnectsNoteSheet.isVisible { return }
+        // Leave draw mode before the sheet — keeps ink overlay from fighting focus.
+        if afterStroke, isHighlightPenOn {
+            turnOffHighlightPen(persistIfDirty: false)
+        }
+        let existing = annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // After a new stroke, leave highlight mode once the note sheet closes
+        // (save / delete / cancel) so scrolling isn't stuck in pen mode.
+        let leaveHighlightAfterNote: () -> Void = { [weak self] in
+            guard afterStroke else { return }
+            // Pen already off when the sheet opened after a new stroke.
+            DispatchQueue.main.async {
+                self?.turnOffHighlightPen(persistIfDirty: true)
+            }
+        }
+        ConnectsNoteSheet.present(
+            from: self,
+            title: afterStroke ? "添加注释" : "编辑注释",
+            message: afterStroke ? "可为这条划线写一句说明，也可直接取消。" : "编辑说明，或删除这段划线。",
+            initialText: existing,
+            confirmTitle: "保存",
+            deleteTitle: "删除划线",
+            onSave: { [weak self] note in
+                annotation.contents = note
+                annotation.userName = StudyAskSelectionStore.noteAnnotationUserName
+                // Dirty only — serialize on leave / pen-off, never mid-scroll.
+                self?.markAnnotationsDirty(persistSoon: false)
+                leaveHighlightAfterNote()
+            },
+            onDelete: { [weak self] in
+                page.removeAnnotation(annotation)
+                self?.pdfView.highlighter.removeCommittedStroke(annotation)
+                self?.markAnnotationsDirty(persistSoon: false)
+                leaveHighlightAfterNote()
+            },
+            onCancel: { [weak self] in
+                if afterStroke {
+                    self?.markAnnotationsDirty(persistSoon: false)
+                }
+                leaveHighlightAfterNote()
+            }
+        )
+        // Do not lift PDF chrome here — that layout pass raced the note field's
+        // becomeFirstResponder and often swallowed the soft keyboard.
+    }
+
+    /// In-memory dirty flag. Optionally schedule a deferred write (never inline with button taps).
+    private func markAnnotationsDirty(persistSoon: Bool = false) {
+        annotationsDirty = true
+        persistWorkItem?.cancel()
+        persistWorkItem = nil
+        if persistSoon {
+            schedulePersistPDFAnnotations(delay: 1.5)
+        }
+    }
+
+    /// Debounced write — used as a safety net; leave/pause still flushes immediately.
+    private func schedulePersistPDFAnnotations(delay: TimeInterval = 6.0) {
+        persistWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.persistPDFAnnotationsNow()
+        }
+        persistWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func persistPDFAnnotationsNow() {
+        guard annotationsDirty else { return }
+        guard let docID = currentDocumentID, let doc = pdfView.document else { return }
+        if isPersistingAnnotations {
+            needsAnotherPersist = true
+            return
+        }
+        // Never serialize while drawing, editing a note, or actively scrolling.
+        let scrolling: Bool = {
+            guard let sv = pdfView.allEmbeddedScrollViews.first(where: {
+                $0.isDragging || $0.isDecelerating
+            }) else { return false }
+            return sv.isDragging || sv.isDecelerating
+        }()
+        if isHighlightPenOn
+            || pdfView.highlighter.isActivelyHighlighting
+            || ConnectsNoteSheet.isVisible
+            || scrolling {
+            schedulePersistPDFAnnotations(delay: 2.0)
+            return
+        }
+        isPersistingAnnotations = true
+        annotationsDirty = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.isHighlightPenOn
+                || self.pdfView.highlighter.isActivelyHighlighting
+                || ConnectsNoteSheet.isVisible {
+                self.isPersistingAnnotations = false
+                self.annotationsDirty = true
+                self.schedulePersistPDFAnnotations(delay: 2.0)
+                return
+            }
+            let data = doc.dataRepresentation()
+            DispatchQueue.global(qos: .utility).async {
+                var errorMessage: String?
+                if let data = data {
+                    do {
+                        try StudyDocumentStore.shared.writePDFData(data, for: docID, keepingCached: doc)
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                } else {
+                    errorMessage = StudyDocumentError.writeFailed.localizedDescription
+                    DispatchQueue.main.async { self.annotationsDirty = true }
+                }
+                DispatchQueue.main.async {
+                    self.isPersistingAnnotations = false
+                    if let errorMessage = errorMessage {
+                        ConnectsToast.show("保存失败：\(errorMessage)", in: self.view, duration: 2.0)
+                    }
+                    if self.needsAnotherPersist || self.annotationsDirty {
+                        self.needsAnotherPersist = false
+                        self.schedulePersistPDFAnnotations(delay: 2.0)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flush pending annotation writes. Default is deferred so conversation switches / panel
+    /// ops stay snappy — `dataRepresentation()` on a large PDF blocks the main thread hard.
+    func flushAnnotationPersistIfNeeded(synchronous: Bool = false) {
+        persistWorkItem?.cancel()
+        persistWorkItem = nil
+        guard annotationsDirty, let docID = currentDocumentID, let doc = pdfView.document else { return }
+        annotationsDirty = false
+
+        let writeBlock = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            // Serialize off the main thread — large PDFs block UI for hundreds of ms.
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self = self else { return }
+                guard let data = doc.dataRepresentation() else {
+                    DispatchQueue.main.async { self.annotationsDirty = true }
+                    return
+                }
+                do {
+                    try StudyDocumentStore.shared.writePDFData(data, for: docID, keepingCached: doc)
+                } catch {
+                    DispatchQueue.main.async {
+                        self.annotationsDirty = true
+                    }
+                }
+            }
+        }
+
+        if synchronous {
+            writeBlock.perform()
+        } else {
+            // Let layout / conversation switch / sidebar taps finish before serialize.
+            persistWorkItem = writeBlock
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: writeBlock)
+        }
+    }
+
+    /// Selection text + notes on the visible page (for AI context).
+    func selectedTextWithNotes() -> (text: String, notes: String)? {
+        var text = pdfView.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var noteLines: [String] = []
+        if let page = visibleContentPage() {
+            for ann in page.annotations {
+                let t = (ann.type ?? "").lowercased()
+                let isMarkup = t.contains("highlight") || t.contains("ink")
+                    || ann.userName == StudyAskSelectionStore.noteAnnotationUserName
+                guard isMarkup else { continue }
+                if let c = ann.contents?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty {
+                    noteLines.append("• \(c)")
+                }
+            }
+            if text.isEmpty {
+                // Prefer the first markup note as focus when no live selection.
+                text = page.annotations
+                    .compactMap { $0.contents?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first(where: { !$0.isEmpty }) ?? ""
+            }
+        }
+        if text.isEmpty && noteLines.isEmpty { return nil }
+        return (text, noteLines.joined(separator: "\n"))
     }
 
     /// Dark theme: invert pages, then lift pure black paper to app dark-gray background.
     private func applyPDFColorInvert() {
         let dark = ThemeManager.shared.mode == .dark
+        pdfView.highlighter.darkInvertActive = dark
         if dark {
             // Difference needs a light backdrop; paperLift then raises #000 → DSTheme dark gray.
             pdfView.backgroundColor = .white
@@ -248,9 +601,7 @@ final class PDFReaderViewController: UIViewController {
             paperLiftOverlay.backgroundColor = DSTheme.dark.background
             // lighten(black, darkGray)=darkGray; lighten(white, darkGray)=white → soft paper, keep text.
             paperLiftOverlay.layer.compositingFilter = "lightenBlendMode"
-
-            pdfView.bringSubviewToFront(invertOverlay)
-            pdfView.bringSubviewToFront(paperLiftOverlay)
+            ensureInvertOverlayOnTopIfNeeded()
         } else {
             pdfView.backgroundColor = DSTheme.c.background
             if #available(iOS 12.0, *) {
@@ -264,12 +615,30 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private func ensureInvertOverlayOnTopIfNeeded() {
-        guard ThemeManager.shared.mode == .dark, !invertOverlay.isHidden else { return }
-        pdfView.bringSubviewToFront(invertOverlay)
-        pdfView.bringSubviewToFront(paperLiftOverlay)
+        guard ThemeManager.shared.mode == .dark, !invertOverlay.isHidden else {
+            pdfView.highlighter.ensureOverlayZOrder()
+            return
+        }
+        // Keep overlays above the PDF surface but below chrome / contents drawer.
+        view.insertSubview(invertOverlay, aboveSubview: pdfView)
+        view.insertSubview(paperLiftOverlay, aboveSubview: invertOverlay)
+        pdfView.highlighter.ensureOverlayZOrder()
+        liftReaderChromeAboveInk()
+    }
+
+    private func syncContentsOverlayZOrder() {
+        ensureInvertOverlayOnTopIfNeeded()
+        liftReaderChromeAboveInk()
     }
 
     private func installContentsPanel() {
+        contentsDim.translatesAutoresizingMaskIntoConstraints = false
+        contentsDim.backgroundColor = UIColor.black.withAlphaComponent(0.08)
+        contentsDim.alpha = 0
+        contentsDim.isHidden = true
+        contentsDim.addTarget(self, action: #selector(contentsDimTapped), for: .touchUpInside)
+        view.addSubview(contentsDim)
+
         contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
@@ -319,6 +688,11 @@ final class PDFReaderViewController: UIViewController {
         )
 
         NSLayoutConstraint.activate([
+            contentsDim.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            contentsDim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentsDim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentsDim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
             contentsPanelHost.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             contentsPanelHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             contentsPanelWidth,
@@ -331,41 +705,57 @@ final class PDFReaderViewController: UIViewController {
         ])
     }
 
+    @objc private func contentsDimTapped() {
+        setContentsPanelVisible(false, animated: true)
+    }
+
     private func refreshContentsPanel() {
         contentsVC.document = pdfView.document
         contentsVC.documentID = currentDocumentID
         contentsVC.reloadData()
     }
 
-    private func syncContentsOverlayZOrder() {
-        view.bringSubviewToFront(contentsPanelHost)
-        view.bringSubviewToFront(topBar)
-        view.bringSubviewToFront(spinner)
-    }
-
     private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
         isContentsPanelVisible = visible
         if visible {
+            contentsDim.isHidden = false
             syncContentsOverlayZOrder()
         }
         contentsPanelHost.isHidden = false
         contentsPanelTrailing.constant = visible ? 0 : contentsPanelWidthConstant
         let updates = {
             self.view.layoutIfNeeded()
+            self.contentsDim.alpha = visible ? 1 : 0
         }
         if animated {
             UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut], animations: updates) { _ in
                 self.contentsPanelHost.isHidden = !visible
+                if !visible {
+                    self.contentsDim.isHidden = true
+                }
             }
         } else {
             updates()
             contentsPanelHost.isHidden = !visible
+            contentsDim.isHidden = !visible
         }
     }
 
     func load(documentID: String, completion: ((Bool) -> Void)? = nil) {
+        // Same doc already in memory: keep it. Do not rebuild ink or re-serialize inline —
+        // that made conversation switches feel stuck.
+        if currentDocumentID == documentID, pdfView.document != nil {
+            flushAnnotationPersistIfNeeded(synchronous: false)
+            pdfView.suppressNativeTextInteraction()
+            updatePageLabel()
+            completion?(true)
+            return
+        }
         if currentDocumentID != documentID {
+            pdfView.highlighter.cancelPendingInkWork()
+            flushAnnotationPersistIfNeeded(synchronous: false)
             pdfView.document = nil
+            annotationsDirty = false
         }
         currentDocumentID = documentID
         loadGeneration &+= 1
@@ -388,8 +778,13 @@ final class PDFReaderViewController: UIViewController {
                     completion?(false)
                     return
                 }
+                self.annotationsDirty = false
                 self.pdfView.document = document
+                // Document swap reinstalls PDFKit recognizers — kill selection again.
+                self.pdfView.suppressNativeTextInteraction()
                 self.applyPDFColorInvert()
+                self.pdfView.highlighter.ensureHostOverlaysInstalled()
+                self.pdfView.highlighter.reloadCommittedInk()
                 self.updatePageLabel()
                 completion?(true)
             }
@@ -397,7 +792,10 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func pauseReading() {
+        pdfView.highlighter.cancelPendingInkWork()
+        flushAnnotationPersistIfNeeded(synchronous: false)
         saveReadingProgressNow()
+        pdfView.highlighter.forceUnlockIfNeeded()
     }
 
     /// Same document still in memory after leaving study — do not reload progress or refit scale.
@@ -537,9 +935,12 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func clearDocument() {
+        pdfView.highlighter.cancelPendingInkWork()
+        flushAnnotationPersistIfNeeded(synchronous: false)
         loadGeneration &+= 1
         saveReadingProgressNow()
         currentDocumentID = nil
+        annotationsDirty = false
         pdfView.document = nil
         pageLabel.text = nil
         pendingViewportProgress = nil
@@ -551,9 +952,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func currentPageText() -> String? {
-        guard let doc = pdfView.document,
-              let index = resolvedPageIndex(),
-              let page = doc.page(at: index) else { return nil }
+        guard let page = visibleContentPage() else { return nil }
         return page.string?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -566,36 +965,61 @@ final class PDFReaderViewController: UIViewController {
     }
 
     func captureCurrentPageImageJPEG() -> String? {
-        guard let doc = pdfView.document,
-              let index = resolvedPageIndex(),
-              let page = doc.page(at: index) else { return nil }
-        let bounds = page.bounds(for: .mediaBox)
-        guard bounds.width > 1, bounds.height > 1 else { return nil }
-
-        let maxSide: CGFloat = 1400
-        let scale = min(maxSide / max(bounds.width, bounds.height), 2.0)
-        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-
-        UIGraphicsBeginImageContextWithOptions(size, true, 1)
-        guard let ctx = UIGraphicsGetCurrentContext() else {
-            UIGraphicsEndImageContext()
+        // Match Markdown: snapshot the live viewport (zoom + scroll), not a guessed
+        // full-page mediaBox — continuous `currentPage` was sending the wrong sheet.
+        guard pdfView.document != nil, pdfView.bounds.width > 1, pdfView.bounds.height > 1 else {
             return nil
         }
-        UIColor.white.setFill()
-        ctx.fill(CGRect(origin: .zero, size: size))
-        ctx.saveGState()
-        ctx.translateBy(x: 0, y: size.height)
-        ctx.scaleBy(x: scale, y: -scale)
-        page.draw(with: .mediaBox, to: ctx)
-        ctx.restoreGState()
-        let image = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        return image.flatMap { ImageAttachmentHelper.prepareJPEGBase64(from: $0) }
+        let raw = pdfView.bounds
+        let maxSide: CGFloat = 1400
+        let down = min(1, maxSide / max(raw.width, raw.height))
+        let size = CGSize(width: floor(raw.width * down), height: floor(raw.height * down))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            ctx.cgContext.scaleBy(x: down, y: down)
+            // false = no layout hitch mid-send; still paints the current scroll position.
+            pdfView.drawHierarchy(in: raw, afterScreenUpdates: false)
+        }
+        return ImageAttachmentHelper.prepareJPEGBase64(from: image)
+    }
+
+    /// Continuous-mode `currentPage` often lags the viewport — pick the page covering most of the view.
+    private func visibleContentPage() -> PDFPage? {
+        guard pdfView.document != nil, pdfView.bounds.width > 1, pdfView.bounds.height > 1 else {
+            return pdfView.currentPage
+        }
+        if #available(iOS 11.0, *), !pdfView.visiblePages.isEmpty {
+            var best: PDFPage?
+            var bestArea: CGFloat = 0
+            for page in pdfView.visiblePages {
+                let pageRect = pdfView.convert(page.bounds(for: .cropBox), from: page)
+                let inter = pageRect.intersection(pdfView.bounds)
+                guard !inter.isNull, !inter.isEmpty else { continue }
+                let area = inter.width * inter.height
+                if area > bestArea {
+                    bestArea = area
+                    best = page
+                }
+            }
+            if let best = best { return best }
+        }
+        // Prefer the page under the upper-middle of the reader (typical reading focus).
+        let focus = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.height * 0.28)
+        if let page = pdfView.page(for: focus, nearest: true) {
+            return page
+        }
+        let center = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY)
+        return pdfView.page(for: center, nearest: true) ?? pdfView.currentPage
     }
 
     private func resolvedPageIndex() -> Int? {
         guard let doc = pdfView.document else { return nil }
-        if let page = pdfView.currentPage {
+        if let page = visibleContentPage() {
             return doc.index(for: page)
         }
         if let docID = currentDocumentID,

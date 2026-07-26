@@ -525,10 +525,10 @@ final class ChatRowHeightResolver {
         let labelWidth = max(columnWidth - 124, 80)
         let font = UIFont.systemFont(ofSize: SettingsManager.shared.chatBodyFontSize)
         var total: CGFloat = 0
-        if message.hasImage {
+        if message.showsImageInChat {
             total += 8 + 160 + 10
         }
-        let text = message.content.isEmpty && message.hasImage ? "" : message.content
+        let text = message.content.isEmpty && message.showsImageInChat ? "" : message.content
         if !text.isEmpty {
             let textHeight = ceil(
                 (text as NSString).boundingRect(
@@ -539,7 +539,7 @@ final class ChatRowHeightResolver {
                 ).height
             )
             total += 8 + 10 + textHeight + 10
-        } else if message.hasImage {
+        } else if message.showsImageInChat {
             total += 8
         } else {
             total += 8 + 10 + font.lineHeight + 10
@@ -555,17 +555,17 @@ final class ChatRowHeightResolver {
         let font = UIFont.systemFont(ofSize: SettingsManager.shared.chatBodyFontSize)
         let averageGlyphWidth = max(font.pointSize * 0.56, 6)
         let charactersPerLine = max(Int(labelWidth / averageGlyphWidth), 1)
-        let text = message.content.isEmpty && message.hasImage ? "" : message.content
+        let text = message.content.isEmpty && message.showsImageInChat ? "" : message.content
         var total: CGFloat = 0
 
-        if message.hasImage {
+        if message.showsImageInChat {
             total += 8 + 160 + 10
         }
         if !text.isEmpty {
             let explicitLines = text.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
             let wrappedLines = max(1, Int(ceil(CGFloat(text.count) / CGFloat(charactersPerLine))))
             total += 8 + 10 + CGFloat(max(explicitLines, wrappedLines)) * font.lineHeight + 10
-        } else if message.hasImage {
+        } else if message.showsImageInChat {
             total += 8
         } else {
             total += 8 + 10 + font.lineHeight + 10
@@ -589,7 +589,7 @@ final class ChatRowHeightResolver {
         if displayMathBlocks > 0 {
             rough += CGFloat(displayMathBlocks) * 52
         }
-        if msg.hasImage { rough += 168 }
+        if msg.showsImageInChat { rough += 168 }
         if msg.hasReasoning {
             rough += reasoningExpanded
                 ? CGFloat(28 + max(1, msg.reasoningContent.count / 48) * 16) : 40

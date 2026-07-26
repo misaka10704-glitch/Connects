@@ -17,6 +17,7 @@ final class ConversationStore {
     private let legacyKey = "connects_conversations"
     private let selectedProjectKey = "connects_selected_project_id"
     private var saveWorkItem: DispatchWorkItem?
+    private var saveGeneration: UInt = 0
 
     var currentConversation: Conversation? {
         guard let id = currentConversationID else { return nil }
@@ -135,8 +136,10 @@ final class ConversationStore {
         conversations.insert(conversation, at: 0)
         currentConversationID = conversation.id
         showArchived = false
-        save()
-        notify()
+        // Never encode the full store on the tap path — UserDefaults JSON can freeze the UI.
+        persistCurrentConversationID()
+        scheduleSave()
+        notify(userInfo: ["source": "select"])
         return conversation
     }
 
@@ -197,6 +200,7 @@ final class ConversationStore {
                     searchProcessPhase: $0.searchProcessPhase == .idle ? .idle : .done,
                     createdAt: $0.createdAt,
                     imageJPEGBase64: $0.imageJPEGBase64,
+                    hidesAttachedImageInChat: $0.hidesAttachedImageInChat,
                     imageDescription: $0.imageDescription,
                     imageTranscriptionContent: $0.imageTranscriptionContent,
                     imageTranscriptionPhase: $0.imageTranscriptionPhase == .transcribing ? .failed : $0.imageTranscriptionPhase
@@ -221,8 +225,8 @@ final class ConversationStore {
         conversations.insert(copy, at: 0)
         currentConversationID = copy.id
         showArchived = false
-        save()
-        notify()
+        scheduleSave()
+        notify(userInfo: ["source": "select"])
         return copy
     }
 
@@ -238,7 +242,7 @@ final class ConversationStore {
         guard !cleaned.isEmpty, cleaned != "[图片]" else { return }
         conversations[index].title = String(cleaned.prefix(20))
         conversations[index].updatedAt = Date()
-        save()
+        scheduleSave()
         notify(userInfo: ["source": "title"])
     }
 
@@ -477,11 +481,21 @@ final class ConversationStore {
     }
 
     private func save() {
-        // Encode off hot path would be better; keep main for iOS-12 simplicity but avoid during 30Hz UI.
-        if let data = try? JSONEncoder().encode(conversations) {
-            UserDefaults.standard.set(data, forKey: storageKey)
-        }
+        // Snapshot then encode off the main thread — large histories (esp. with images)
+        // used to freeze "新对话" / conversation switches on encode.
+        saveGeneration &+= 1
+        let generation = saveGeneration
+        let snapshot = conversations
+        let key = storageKey
         persistCurrentConversationID()
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            DispatchQueue.main.async {
+                // Drop stale encodes so an older background save cannot clobber a newer one.
+                guard generation == self.saveGeneration else { return }
+                UserDefaults.standard.set(data, forKey: key)
+            }
+        }
     }
 
     func reloadAfterBackupImport() {

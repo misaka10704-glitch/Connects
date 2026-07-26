@@ -96,6 +96,20 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
 
+    /// Kimi K2.7 Code — forces thinking (API rejects disabled).
+    static let kimiK27 = AIModelOption(
+        provider: .kimi, modelId: "kimi-k2.7-code", displayName: "Kimi K2.7",
+        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
+        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
+    )
+
+    /// Same weights as K2.7 Code, higher throughput serving tier.
+    static let kimiK27Highspeed = AIModelOption(
+        provider: .kimi, modelId: "kimi-k2.7-code-highspeed", displayName: "Kimi K2.7 高速",
+        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
+        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
+    )
+
     static let qwen37Plus = AIModelOption(
         provider: .qwen, modelId: "qwen3.7-plus", displayName: "Qwen 3.7 Plus",
         baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
@@ -118,14 +132,14 @@ struct AIModelOption: Equatable {
 
     static let all: [AIModelOption] = [
         .deepseekV4Flash, .deepseekV4Pro,
-        .kimiK3, .kimi26,
+        .kimiK3, .kimi26, .kimiK27, .kimiK27Highspeed,
         .qwen37Plus,
         .glm52,
         .doubaoSeed16
     ]
 
     static let defaultEnabled: [AIModelOption] = [
-        .deepseekV4Flash, .deepseekV4Pro, .kimiK3, .qwen37Plus, .glm52, .doubaoSeed16
+        .deepseekV4Flash, .deepseekV4Pro, .kimiK3, .kimiK27Highspeed, .qwen37Plus, .glm52, .doubaoSeed16
     ]
 
     static var visible: [AIModelOption] {

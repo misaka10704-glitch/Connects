@@ -18,6 +18,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window.makeKeyAndVisible()
         self.window = window
         NativeRendererSelfTest.run()
+        #if DEBUG
+        StudyFeatureQAHarness.runIfRequested()
+        #endif
         // iOS does not guarantee background execution; catch up retention when
         // the user next opens the app — defer off the first frame.
         DispatchQueue.main.async {

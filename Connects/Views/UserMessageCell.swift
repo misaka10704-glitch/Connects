@@ -61,7 +61,7 @@ final class UserMessageCell: BaseMessageCell {
         userLabel.attributedText = nil
         userLabel.textColor = c.textPrimary
         userLabel.font = UIFont.systemFont(ofSize: font)
-        userLabel.text = message.content.isEmpty && message.hasImage ? nil : message.content
+        userLabel.text = message.content.isEmpty && message.showsImageInChat ? nil : message.content
 
         userTopToRole.isActive = imageViewMsg.isHidden
         userTopToImage.isActive = !imageViewMsg.isHidden
@@ -83,7 +83,7 @@ final class UserMessageCell: BaseMessageCell {
         userLabel.attributedText = nil
         userLabel.textColor = c.textPrimary
         userLabel.font = UIFont.systemFont(ofSize: font)
-        let text = message.content.isEmpty && message.hasImage ? nil : message.content
+        let text = message.content.isEmpty && message.showsImageInChat ? nil : message.content
         if userLabel.text != text {
             userLabel.text = text
         }

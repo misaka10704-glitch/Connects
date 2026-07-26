@@ -8,6 +8,10 @@ enum AssistantMessageLayout {
 
     private static var expandedThinkingIDs = Set<String>()
     private static var expandedSearchIDs = Set<String>()
+    /// `(messageID|width|utf8Count)` → measured thinking body height.
+    private static var thinkingBodyHeightCache = [String: CGFloat]()
+    private static let thinkingMeasureCapChars = 4_000
+    private static let thinkingHeightSoftCap: CGFloat = 2_400
 
     static func isThinkingExpanded(messageID: String) -> Bool {
         expandedThinkingIDs.contains(messageID)
@@ -380,22 +384,77 @@ enum AssistantMessageLayout {
         return 32 + 4 + bodyH + 10
     }
 
+    private static func thinkingHeightCacheKey(messageID: String, width: CGFloat, utf8Count: Int) -> String {
+        "\(messageID)|\(Int(width))|\(utf8Count)"
+    }
+
+    static func storeThinkingBodyHeight(_ height: CGFloat,
+                                        messageID: String,
+                                        layoutWidth: CGFloat,
+                                        utf8Count: Int) {
+        guard !messageID.isEmpty, height > 0 else { return }
+        let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        thinkingBodyHeightCache[thinkingHeightCacheKey(
+            messageID: messageID,
+            width: width,
+            utf8Count: utf8Count
+        )] = height
+    }
+
     /// Header + optional expanded body. Prefer real text measure — CJK `/48`
     /// estimates under-count lines and clip「已深度思考」with trailing "…".
-    private static func estimatedThinkingChromeHeight(reasoning: String, expanded: Bool) -> CGFloat {
+    /// Long reasoning: capped estimate first (cache / soft-cap); precise measure stored later.
+    private static func estimatedThinkingChromeHeight(reasoning: String,
+                                                      expanded: Bool,
+                                                      messageID: String = "",
+                                                      layoutWidth: CGFloat? = nil) -> CGFloat {
         if !expanded { return 40 }
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
         let font = UIFont.systemFont(ofSize: thinkFont)
-        // Match thinkingBody preferredMaxLayoutWidth ≈ bubble − padding.
-        let width = max(DSTheme.bubbleMaxWidth - 24, 80)
-        let bodyH = ceil(
-            (reasoning as NSString).boundingRect(
-                with: CGSize(width: width, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: font],
-                context: nil
-            ).height
+        let width = max(
+            (layoutWidth.map { nativeLayoutWidth(for: max($0, 120)) } ?? DSTheme.bubbleMaxWidth) - 24,
+            80
         )
+        let utf8Count = reasoning.utf8.count
+        if !messageID.isEmpty,
+           let cached = thinkingBodyHeightCache[thinkingHeightCacheKey(
+               messageID: messageID,
+               width: width,
+               utf8Count: utf8Count
+           )] {
+            return 28 + max(cached, 16) + 14
+        }
+
+        let bodyH: CGFloat
+        if utf8Count > thinkingMeasureCapChars {
+            let prefix = String(reasoning.prefix(thinkingMeasureCapChars))
+            let prefixH = ceil(
+                (prefix as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            let scaled = prefixH * CGFloat(utf8Count) / CGFloat(thinkingMeasureCapChars)
+            bodyH = min(thinkingHeightSoftCap, ceil(scaled))
+        } else {
+            bodyH = ceil(
+                (reasoning as NSString).boundingRect(
+                    with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: [.font: font],
+                    context: nil
+                ).height
+            )
+            if !messageID.isEmpty {
+                thinkingBodyHeightCache[thinkingHeightCacheKey(
+                    messageID: messageID,
+                    width: width,
+                    utf8Count: utf8Count
+                )] = bodyH
+            }
+        }
         return 28 + max(bodyH, 16) + 14
     }
 
@@ -418,10 +477,15 @@ enum AssistantMessageLayout {
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
             let expanded = expandedThinkingIDs.contains(message.id)
-            total += estimatedThinkingChromeHeight(reasoning: reasoning, expanded: expanded)
+            total += estimatedThinkingChromeHeight(
+                reasoning: reasoning,
+                expanded: expanded,
+                messageID: message.id,
+                layoutWidth: layoutWidth
+            )
         }
 
-        if message.hasImage {
+        if message.showsImageInChat {
             total += 168
         }
 
@@ -473,10 +537,15 @@ enum AssistantMessageLayout {
         let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !reasoning.isEmpty {
             let expanded = expandedThinkingIDs.contains(message.id)
-            total += estimatedThinkingChromeHeight(reasoning: reasoning, expanded: expanded)
+            total += estimatedThinkingChromeHeight(
+                reasoning: reasoning,
+                expanded: expanded,
+                messageID: message.id,
+                layoutWidth: layoutWidth
+            )
         }
 
-        if message.hasImage {
+        if message.showsImageInChat {
             total += 168
         }
 
@@ -492,7 +561,7 @@ enum AssistantMessageLayout {
                     context: nil
                 ).height
             )
-            let bodyTop: CGFloat = (total > 0 || message.hasImage) ? 10 : 8
+            let bodyTop: CGFloat = (total > 0 || message.showsImageInChat) ? 10 : 8
             total += bodyTop + textHeight
         }
 

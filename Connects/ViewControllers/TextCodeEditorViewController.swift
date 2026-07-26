@@ -1,0 +1,673 @@
+import UIKit
+
+/// Study-mode code / plain-text editor with syntax highlighting.
+final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    private let topBar = UIView()
+    private let topBarSeparator = UIView()
+    private let sidebarButton = UIButton(type: .system)
+    private let modeButton = UIButton(type: .system)
+    private let saveButton = UIButton(type: .system)
+    private let progressLabel = UILabel()
+    private let gutterView = UIView()
+    private let gutterSeparator = UIView()
+    /// Non-interactive twin of the editor; contentOffset stays locked to `textView`.
+    private let lineNumberView = UITextView()
+    private let textView = StudyAskTextView()
+    private let spinner = UIActivityIndicatorView(style: .gray)
+
+    private var currentDocumentID: String?
+    private var language: StudyTextLanguage = .plain
+    private var loadGeneration: UInt = 0
+    private var sidebarButtonWidthConstraint: NSLayoutConstraint!
+    private var gutterWidthConstraint: NSLayoutConstraint!
+    private var isEditMode = false
+    private var isDirty = false
+    private var highlightWorkItem: DispatchWorkItem?
+    /// Ask 选区：语法高亮之上的持久背景，不依赖系统选区（用户可先读后开 AI）。
+    private var askPinnedRange: NSRange?
+    private var saveWorkItem: DispatchWorkItem?
+    private var isApplyingHighlight = false
+    private var isSyncingLineNumbers = false
+    private var readerSurfaceActive = true
+    private var pendingViewportProgress: StudyProgress?
+    private var conversationIDForDirty: String?
+
+    private static let fontSizeDefaultsKey = "connects.codeEditor.fontSize"
+    private static let minFontPointSize: CGFloat = 9
+    private static let maxFontPointSize: CGFloat = 28
+    private var fontPointSize: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: TextCodeEditorViewController.fontSizeDefaultsKey)
+        if stored >= 9, stored <= 28 { return CGFloat(stored) }
+        return CodeSyntaxHighlighter.defaultPointSize
+    }()
+    private var pinchBaseFontSize: CGFloat = CodeSyntaxHighlighter.defaultPointSize
+
+    var onPageChanged: (() -> Void)?
+    var onToggleSidebar: (() -> Void)?
+    var onContentEdited: (() -> Void)?
+    var onAskSelection: ((String) -> Void)?
+
+    private var lastWrapLayoutWidth: CGFloat = 0
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = DSTheme.c.background
+        StudyAskMenu.installIfNeeded()
+
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(topBar)
+
+        topBarSeparator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(topBarSeparator)
+
+        sidebarButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebarButton.addTarget(self, action: #selector(sidebarTapped), for: .touchUpInside)
+        sidebarButton.accessibilityLabel = "打开侧栏"
+        topBar.addSubview(sidebarButton)
+        updateSidebarToggle(collapsed: true)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+
+        modeButton.translatesAutoresizingMaskIntoConstraints = false
+        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: 18), for: .normal)
+        modeButton.imageView?.contentMode = .scaleAspectFit
+        modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
+        modeButton.accessibilityLabel = "切换到编辑模式"
+        topBar.addSubview(modeButton)
+
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.imageView?.contentMode = .scaleAspectFit
+        saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+        saveButton.accessibilityLabel = "保存"
+        topBar.addSubview(saveButton)
+
+        progressLabel.translatesAutoresizingMaskIntoConstraints = false
+        progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        progressLabel.textColor = DSTheme.c.textSecondary
+        progressLabel.textAlignment = .center
+        progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        topBar.addSubview(progressLabel)
+
+        gutterView.translatesAutoresizingMaskIntoConstraints = false
+        gutterView.clipsToBounds = true
+        view.addSubview(gutterView)
+
+        lineNumberView.translatesAutoresizingMaskIntoConstraints = false
+        lineNumberView.isEditable = false
+        lineNumberView.isSelectable = false
+        lineNumberView.isScrollEnabled = true
+        lineNumberView.isUserInteractionEnabled = false
+        lineNumberView.backgroundColor = .clear
+        lineNumberView.textAlignment = .right
+        lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        lineNumberView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 8)
+        lineNumberView.textContainer.lineFragmentPadding = 0
+        lineNumberView.textContainer.widthTracksTextView = true
+        lineNumberView.textContainer.lineBreakMode = .byClipping
+        lineNumberView.showsVerticalScrollIndicator = false
+        lineNumberView.showsHorizontalScrollIndicator = false
+        if #available(iOS 11.0, *) {
+            lineNumberView.contentInsetAdjustmentBehavior = .never
+        }
+        gutterView.addSubview(lineNumberView)
+
+        gutterSeparator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(gutterSeparator)
+
+        gutterWidthConstraint = gutterView.widthAnchor.constraint(equalToConstant: 44)
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.delegate = self
+        textView.backgroundColor = DSTheme.c.background
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 10)
+        textView.textContainer.lineFragmentPadding = 0
+        // Soft-wrap to the editor width so long lines are not clipped on the right.
+        textView.textContainer.widthTracksTextView = true
+        textView.textContainer.lineBreakMode = .byCharWrapping
+        textView.autocorrectionType = .no
+        textView.autocapitalizationType = .none
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.keyboardDismissMode = .interactive
+        textView.alwaysBounceVertical = true
+        textView.alwaysBounceHorizontal = false
+        textView.showsHorizontalScrollIndicator = false
+        textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        textView.onAskSelection = { [weak self] text in
+            self?.onAskSelection?(text)
+        }
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleFontPinch(_:)))
+        pinch.delegate = self
+        textView.addGestureRecognizer(pinch)
+        if #available(iOS 11.0, *) {
+            textView.contentInsetAdjustmentBehavior = .never
+        }
+        view.addSubview(textView)
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        view.addSubview(spinner)
+
+        NSLayoutConstraint.activate([
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: 40),
+
+            sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
+            sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            sidebarButtonWidthConstraint,
+            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+
+            progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+            progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
+            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
+
+            // Far-right chrome: [mode][save], fixed 40pt slots (never collapse).
+            saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
+            saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            saveButton.widthAnchor.constraint(equalToConstant: 40),
+            saveButton.heightAnchor.constraint(equalToConstant: 40),
+
+            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            modeButton.widthAnchor.constraint(equalToConstant: 40),
+            modeButton.heightAnchor.constraint(equalToConstant: 40),
+
+            topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBarSeparator.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            topBarSeparator.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+
+            gutterView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            gutterView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            gutterView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gutterWidthConstraint,
+
+            lineNumberView.leadingAnchor.constraint(equalTo: gutterView.leadingAnchor),
+            lineNumberView.trailingAnchor.constraint(equalTo: gutterView.trailingAnchor),
+            lineNumberView.topAnchor.constraint(equalTo: gutterView.topAnchor),
+            lineNumberView.bottomAnchor.constraint(equalTo: gutterView.bottomAnchor),
+
+            gutterSeparator.leadingAnchor.constraint(equalTo: gutterView.trailingAnchor, constant: 6),
+            gutterSeparator.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            gutterSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gutterSeparator.widthAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+
+            textView.leadingAnchor.constraint(equalTo: gutterSeparator.trailingAnchor, constant: 10),
+            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+
+        NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        applyChromeColors()
+        // Defaults already match read mode; avoid applyEditMode during load (view has no window yet).
+        isEditMode = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        refreshModeChrome()
+        updateProgressLabel()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let w = textView.bounds.width
+        if abs(w - lastWrapLayoutWidth) > 0.5 {
+            lastWrapLayoutWidth = w
+            updateLineNumbers(force: true)
+        }
+        syncLineNumberOffset()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func bindConversationID(_ id: String?) {
+        conversationIDForDirty = id
+    }
+
+    func isLoaded(documentID: String) -> Bool {
+        currentDocumentID == documentID
+    }
+
+    func setReaderSurfaceActive(_ active: Bool) {
+        readerSurfaceActive = active
+    }
+
+    func updateSidebarToggle(collapsed: Bool) {
+        let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.tintColor = DSTheme.c.textSecondary
+        sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
+    }
+
+    func setSidebarButtonHidden(_ hidden: Bool) {
+        sidebarButton.isHidden = hidden
+        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    }
+
+    func load(documentID: String, completion: @escaping (Bool) -> Void) {
+        loadGeneration &+= 1
+        let gen = loadGeneration
+        currentDocumentID = documentID
+        spinner.startAnimating()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let text = StudyDocumentStore.shared.textContent(for: documentID) ?? ""
+            let lang = StudyDocumentStore.shared.document(id: documentID)?.textLanguage ?? .plain
+            DispatchQueue.main.async {
+                guard self.loadGeneration == gen else { return }
+                self.language = lang
+                self.isDirty = false
+                self.applyHighlightedText(text)
+                self.updateLineNumbers(force: true)
+                self.syncLineNumberOffset()
+                self.updateProgressLabel()
+                self.spinner.stopAnimating()
+                completion(true)
+            }
+        }
+    }
+
+    func clearDocument() {
+        loadGeneration &+= 1
+        flushSaveIfNeeded()
+        askPinnedRange = nil
+        currentDocumentID = nil
+        textView.text = ""
+        lineNumberView.text = ""
+        progressLabel.text = nil
+        isDirty = false
+    }
+
+    func pauseReading() {
+        flushSaveIfNeeded()
+        textView.resignFirstResponder()
+    }
+
+    func prepareForShellLayoutChange() {}
+    func beginShellRotation(keeping progress: StudyProgress?) {
+        pendingViewportProgress = progress ?? captureReadingProgress()
+    }
+    func updateDuringShellRotation() {}
+    func finishShellRotation(using progress: StudyProgress?) {
+        realignVisibleViewport(using: progress ?? pendingViewportProgress)
+        pendingViewportProgress = nil
+    }
+    func resumeAfterConversationSwitch() {
+        syncLineNumberOffset()
+    }
+
+    func captureReadingProgress() -> StudyProgress? {
+        guard currentDocumentID != nil else { return nil }
+        return StudyProgress(
+            pageIndex: 0,
+            pageOffsetY: textView.contentOffset.y,
+            pageOffsetX: textView.contentOffset.x,
+            scaleFactor: nil,
+            updatedAt: Date()
+        )
+    }
+
+    func saveReadingProgressNow() {
+        flushProgressSave()
+        flushSaveIfNeeded()
+    }
+
+    func realignVisibleViewport(using progress: StudyProgress?) {
+        guard let y = progress?.pageOffsetY else { return }
+        textView.setContentOffset(CGPoint(x: 0, y: max(0, y)), animated: false)
+        syncLineNumberOffset()
+    }
+
+    func setReaderSurfaceActiveForCapture(_ active: Bool) {
+        readerSurfaceActive = active
+    }
+
+    func currentPlainText() -> String {
+        textView.text ?? ""
+    }
+
+    func currentSelectionText() -> String? {
+        guard let range = textView.selectedTextRange,
+              !range.isEmpty,
+              let text = textView.text(in: range)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// Persist a visible Ask highlight on the current selection without opening chat.
+    func pinAskSelectionHighlight() {
+        let range = textView.selectedRange
+        let length = (textView.text as NSString?)?.length ?? 0
+        let clamped = NSIntersectionRange(range, NSRange(location: 0, length: length))
+        guard clamped.length > 0 else { return }
+        askPinnedRange = clamped
+        applyHighlightedText(textView.text ?? "")
+        textView.selectedRange = clamped
+        dismissAskMenuKeepingSelection()
+    }
+
+    func clearAskSelectionHighlight() {
+        guard askPinnedRange != nil else { return }
+        askPinnedRange = nil
+        applyHighlightedText(textView.text ?? "")
+    }
+
+    private func dismissAskMenuKeepingSelection() {
+        if #available(iOS 13.0, *) {
+            UIMenuController.shared.hideMenu(from: textView)
+        } else {
+            UIMenuController.shared.setMenuVisible(false, animated: true)
+        }
+    }
+
+    func currentPageLabel() -> String {
+        guard currentDocumentID != nil else { return "无文档" }
+        let lines = max((textView.text as NSString?)?.length ?? 0 > 0
+            ? (textView.text as NSString).components(separatedBy: "\n").count : 0, 1)
+        let mode = isEditMode ? "编辑" : "阅读"
+        let dirty = (isEditMode && isDirty) ? " · 未保存" : ""
+        return "\(language.displayName) · \(mode) · \(lines) 行\(dirty)"
+    }
+
+    func currentPageText() -> String? {
+        currentPlainText()
+    }
+
+    // MARK: - Private
+
+    @objc private func sidebarTapped() {
+        onToggleSidebar?()
+    }
+
+    @objc private func saveTapped() {
+        flushSaveIfNeeded(force: true)
+    }
+
+    @objc private func themeChanged() {
+        applyChromeColors()
+        applyHighlightedText(textView.text ?? "")
+        updateLineNumbers(force: true)
+        syncLineNumberOffset()
+    }
+
+    private func applyChromeColors() {
+        let c = DSTheme.c
+        view.backgroundColor = c.background
+        topBar.backgroundColor = c.background
+        textView.backgroundColor = c.background
+        gutterView.backgroundColor = c.sidebarBackground
+        gutterSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
+        topBarSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
+        lineNumberView.textColor = c.textTertiary
+        lineNumberView.backgroundColor = .clear
+        progressLabel.textColor = c.textSecondary
+        modeButton.tintColor = c.textSecondary
+        saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+        textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        refreshModeChrome()
+    }
+
+    @objc private func handleFontPinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchBaseFontSize = fontPointSize
+        case .changed:
+            let next = min(
+                Self.maxFontPointSize,
+                max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
+            )
+            guard abs(next - fontPointSize) >= 0.4 else { return }
+            applyFontSize(next, persist: false)
+        case .ended, .cancelled:
+            applyFontSize(fontPointSize, persist: true)
+        default:
+            break
+        }
+    }
+
+    private func applyFontSize(_ size: CGFloat, persist: Bool) {
+        fontPointSize = size
+        lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        applyHighlightedText(textView.text ?? "")
+        updateLineNumbers(force: true)
+        syncLineNumberOffset()
+        if persist {
+            UserDefaults.standard.set(Double(fontPointSize), forKey: Self.fontSizeDefaultsKey)
+        }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer is UIPinchGestureRecognizer
+    }
+
+    @objc private func modeTapped() {
+        applyEditMode(!isEditMode)
+    }
+
+    private func applyEditMode(_ editing: Bool) {
+        if !editing {
+            // Avoid flush/resign during viewDidLoad (view not in a window yet).
+            if isViewLoaded, view.window != nil {
+                flushSaveIfNeeded(force: true)
+                textView.resignFirstResponder()
+            }
+        }
+        isEditMode = editing
+        textView.isEditable = editing
+        textView.isSelectable = true
+        refreshModeChrome()
+        updateProgressLabel()
+    }
+
+    private func refreshModeChrome() {
+        let c = DSTheme.c
+        // Read → pencil (enter edit). Edit → eye (enter read). Same pointSize as save.
+        let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
+        modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+        modeButton.tintColor = c.textSecondary
+        modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.isHidden = false
+        saveButton.isEnabled = isEditMode
+        saveButton.alpha = isEditMode ? 1 : 0.35
+        saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+    }
+
+    private func applyHighlightedText(_ text: String) {
+        let selected = textView.selectedRange
+        let offset = textView.contentOffset
+        isApplyingHighlight = true
+        let attributed = CodeSyntaxHighlighter.highlight(
+            text,
+            language: language,
+            fontSize: fontPointSize
+        )
+        if let pinned = askPinnedRange {
+            let length = (text as NSString).length
+            let clamped = NSIntersectionRange(pinned, NSRange(location: 0, length: length))
+            if clamped.length > 0, let mutable = attributed.mutableCopy() as? NSMutableAttributedString {
+                let tint = DSTheme.c.accent.withAlphaComponent(0.28)
+                mutable.addAttribute(.backgroundColor, value: tint, range: clamped)
+                textView.attributedText = mutable
+            } else {
+                askPinnedRange = nil
+                textView.attributedText = attributed
+            }
+        } else {
+            textView.attributedText = attributed
+        }
+        textView.selectedRange = selected
+        textView.setContentOffset(offset, animated: false)
+        isApplyingHighlight = false
+        textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        syncLineNumberOffset()
+    }
+
+    private func scheduleHighlight() {
+        highlightWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.applyHighlightedText(self.textView.text ?? "")
+            self.updateLineNumbers(force: true)
+        }
+        highlightWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    private func scheduleAutosave() {
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushSaveIfNeeded(force: true)
+        }
+        saveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
+    private func flushSaveIfNeeded(force: Bool = false) {
+        guard let docID = currentDocumentID, isDirty || force else { return }
+        guard isDirty else { return }
+        let text = textView.text ?? ""
+        do {
+            try StudyDocumentStore.shared.writeTextContent(text, for: docID)
+            isDirty = false
+            updateProgressLabel()
+            if let conv = conversationIDForDirty {
+                StudyFileContextStore.shared.markDirty(conversationID: conv)
+            }
+            onContentEdited?()
+        } catch {
+            ConnectsToast.show("保存失败：\(error.localizedDescription)", in: view, duration: 2.0)
+        }
+    }
+
+    private func flushProgressSave() {
+        guard let docID = currentDocumentID,
+              let progress = captureReadingProgress() else { return }
+        StudyProgressStore.shared.update(documentID: docID, progress: progress)
+    }
+
+    private func updateLineNumbers(force: Bool = false) {
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+
+        let layout = textView.layoutManager
+        let ns = (textView.text ?? "") as NSString
+        var rows: [String] = []
+        var logicalLine = 1
+        let glyphCount = layout.numberOfGlyphs
+
+        if glyphCount == 0 {
+            rows = ["1"]
+        } else {
+            var glyphIndex = 0
+            while glyphIndex < glyphCount {
+                var fragmentRange = NSRange()
+                _ = layout.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &fragmentRange)
+                let charRange = layout.characterRange(forGlyphRange: fragmentRange, actualGlyphRange: nil)
+                let isFirstFragment: Bool
+                if charRange.location == 0 {
+                    isFirstFragment = true
+                } else if charRange.location < ns.length {
+                    isFirstFragment = ns.character(at: charRange.location - 1) == 10 // \n
+                } else {
+                    isFirstFragment = false
+                }
+                rows.append(isFirstFragment ? "\(logicalLine)" : "")
+                if isFirstFragment { logicalLine += 1 }
+                glyphIndex = NSMaxRange(fragmentRange)
+            }
+            if ns.length > 0, ns.character(at: ns.length - 1) == 10 {
+                rows.append("\(logicalLine)")
+            }
+        }
+
+        let numbers = rows.joined(separator: "\n")
+        let digits = "\(max(logicalLine - 1, 1))".count
+        let targetGutter = CodeSyntaxHighlighter.lineNumberGutterWidth(
+            digits: digits,
+            fontSize: fontPointSize
+        )
+        let gutterChanged = abs(gutterWidthConstraint.constant - targetGutter) > 0.5
+        if gutterChanged {
+            gutterWidthConstraint.constant = targetGutter
+            view.layoutIfNeeded()
+        }
+        if force || gutterChanged || lineNumberView.text != numbers {
+            let attrs = CodeSyntaxHighlighter.lineNumberAttributes(fontSize: fontPointSize)
+            lineNumberView.attributedText = NSAttributedString(string: numbers, attributes: attrs)
+            lineNumberView.textAlignment = .right
+        }
+    }
+
+    private func syncLineNumberOffset() {
+        guard !isSyncingLineNumbers else { return }
+        isSyncingLineNumbers = true
+        let y = textView.contentOffset.y
+        let target = CGPoint(x: 0, y: y)
+        if abs(lineNumberView.contentOffset.y - y) > 0.5 {
+            lineNumberView.setContentOffset(target, animated: false)
+        }
+        // Keep contentSize tall enough so twin scroll does not clamp early.
+        if lineNumberView.contentSize.height + 1 < textView.contentSize.height {
+            lineNumberView.contentSize = CGSize(
+                width: max(lineNumberView.bounds.width, 1),
+                height: textView.contentSize.height
+            )
+            lineNumberView.setContentOffset(target, animated: false)
+        }
+        isSyncingLineNumbers = false
+    }
+
+    private func updateProgressLabel() {
+        progressLabel.text = currentPageLabel()
+    }
+
+    // MARK: - UITextViewDelegate
+
+    func textViewDidChange(_ textView: UITextView) {
+        guard !isApplyingHighlight else { return }
+        if askPinnedRange != nil {
+            askPinnedRange = nil
+        }
+        isDirty = true
+        updateProgressLabel()
+        updateLineNumbers(force: true)
+        scheduleHighlight()
+        scheduleAutosave()
+        onPageChanged?()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === textView else { return }
+        syncLineNumberOffset()
+        onPageChanged?()
+    }
+
+#if DEBUG
+    func debugEditorContentOffsetY() -> CGFloat { textView.contentOffset.y }
+    func debugLineNumberContentOffsetY() -> CGFloat { lineNumberView.contentOffset.y }
+    func debugScrollEditor(by dy: CGFloat) {
+        let y = min(max(0, textView.contentOffset.y + dy),
+                    max(0, textView.contentSize.height - textView.bounds.height))
+        textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
+        syncLineNumberOffset()
+    }
+    func debugSetEditMode(_ editing: Bool) {
+        applyEditMode(editing)
+        view.layoutIfNeeded()
+    }
+    func debugTopChromeFrames() -> (mode: CGRect, save: CGRect) {
+        (modeButton.convert(modeButton.bounds, to: view),
+         saveButton.convert(saveButton.bounds, to: view))
+    }
+#endif
+}

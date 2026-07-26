@@ -95,6 +95,10 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var nativeMessageForRemeasure: ChatMessage?
     private var lastActionRowSignature = ""
     private var lastChromeActionKey = ""
+    /// Avoid re-assigning the same thinking body on expand / reconfigure.
+    private var lastThinkingPopulateKey = ""
+    private var thinkingBodyShowsFull = false
+    private static let thinkingBodyInitialCap = 4_000
 
     private struct DeferredNativeBind {
         let message: ChatMessage
@@ -176,7 +180,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard message.role == .assistant, !message.isStreaming else { return }
         roleLabel.isHidden = true
         roleLabel.text = nil
-        if message.hasImage {
+        if message.showsImageInChat {
             imageViewMsg.image = cachedImage
             imageViewMsg.isHidden = cachedImage == nil
             imageHeight.constant = cachedImage != nil ? 160 : 0
@@ -231,7 +235,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
         roleLabel.isHidden = true
         roleLabel.text = nil
-        if message.hasImage {
+        if message.showsImageInChat {
             imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
             imageViewMsg.isHidden = imageViewMsg.image == nil
             imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
@@ -517,6 +521,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedImageActivity = false
         cachedThemeColors = nil
         preferredLayoutWidth = 0
+        lastThinkingPopulateKey = ""
+        thinkingBodyShowsFull = false
     }
 
     private var cachedImage: UIImage?
@@ -581,6 +587,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     func finishChromeToggleLayout() {
         contentView.setNeedsLayout()
+        // Long reasoning: skip sync layoutIfNeeded — table beginUpdates + UILabel
+        // measure on the same turn is the hitch. Next runloop paints the height.
+        if cachedReasoningText.count > Self.thinkingBodyInitialCap, thinkingExpanded {
+            return
+        }
         contentView.layoutIfNeeded()
     }
 
@@ -644,7 +655,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         roleLabel.isHidden = true
         roleLabel.text = nil
 
-        if message.hasImage {
+        if message.showsImageInChat {
             if deferHeavyRender {
                 imageViewMsg.image = cachedImage
                 imageViewMsg.isHidden = cachedImage == nil
@@ -742,7 +753,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         roleLabel.isHidden = true
         roleLabel.text = nil
 
-        if message.hasImage {
+        if message.showsImageInChat {
             imageViewMsg.image = cachedImage
             imageViewMsg.isHidden = cachedImage == nil
             imageHeight.constant = cachedImage != nil ? 160 : 0
@@ -884,16 +895,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                     thinkFont: thinkFont
                 )
             } else if lightweightBodies {
-                applyThinkingLayoutWidth()
-                if thinkingExpanded {
-                    thinkingBody.attributedText = nil
-                    thinkingBody.textColor = colors.textSecondary
-                    thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
-                    thinkingBody.text = cachedReasoningText
-                } else {
-                    thinkingBody.attributedText = nil
-                    thinkingBody.text = nil
-                }
+                populateThinkingBody(
+                    expanded: thinkingExpanded,
+                    streaming: false,
+                    colors: colors,
+                    thinkFont: thinkFont
+                )
                 setThinking(visible: true, expanded: thinkingExpanded)
             } else {
                 populateThinkingBody(
@@ -1242,26 +1249,79 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard expanded else {
             thinkingBody.attributedText = nil
             thinkingBody.text = nil
+            lastThinkingPopulateKey = ""
+            thinkingBodyShowsFull = false
             return
         }
-        // Always paint the full cached reasoning. Never keep a live "…" window
-        // after the user expands a finished (or finishing) turn.
+        let full = cachedReasoningText
+        let wantsFull = thinkingBodyShowsFull || full.count <= Self.thinkingBodyInitialCap
+        let display: String
+        if wantsFull {
+            display = full
+        } else {
+            display = String(full.prefix(Self.thinkingBodyInitialCap)) + "\n\n… 展开全部"
+        }
+        let key = "\(messageID)|\(full.utf8.count)|\(wantsFull ? "full" : "cap")"
+        if lastThinkingPopulateKey == key, thinkingBody.text == display {
+            _ = streaming
+            return
+        }
+        lastThinkingPopulateKey = key
         thinkingBody.attributedText = nil
         thinkingBody.textColor = colors.textSecondary
         thinkingBody.font = UIFont.systemFont(ofSize: thinkFont)
-        if streaming || cachedReasoningText.count > 4_000 {
-            // Plain UILabel — PlainMarkdown on 10k+ chars hitchs iPad Air 1.
-            thinkingBody.text = cachedReasoningText
-        } else if cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
-            thinkingBody.text = cachedReasoningText
-        } else {
-            thinkingBody.attributedText = PlainMarkdown.attributed(
-                cachedReasoningText,
-                bodyFont: UIFont.systemFont(ofSize: thinkFont),
-                textColor: colors.textSecondary,
-                secondaryColor: colors.textTertiary
+        thinkingBody.text = display
+        _ = streaming
+
+        if wantsFull {
+            let width = thinkingBody.preferredMaxLayoutWidth
+            let bodyH = thinkingBody.sizeThatFits(
+                CGSize(width: max(width, 80), height: .greatestFiniteMagnitude)
+            ).height
+            AssistantMessageLayout.storeThinkingBodyHeight(
+                ceil(bodyH),
+                messageID: messageID,
+                layoutWidth: preferredLayoutWidth > 0 ? preferredLayoutWidth : nativeLayoutWidth(),
+                utf8Count: full.utf8.count
             )
+        } else {
+            // Progressive fill on next turn so expand stays responsive.
+            let captureID = messageID
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self,
+                      self.messageID == captureID,
+                      self.thinkingExpanded else { return }
+                self.thinkingBodyShowsFull = true
+                let c = self.cachedThemeColors ?? DSTheme.c
+                let font = self.cachedThinkingFontSize > 0
+                    ? self.cachedThinkingFontSize
+                    : SettingsManager.shared.chatThinkingFontSize
+                self.populateThinkingBody(
+                    expanded: true,
+                    streaming: false,
+                    colors: c,
+                    thinkFont: font
+                )
+                self.contentView.setNeedsLayout()
+                self.scheduleMeasuredHeightNotify(for: captureID)
+                NotificationCenter.default.post(
+                    name: Notification.Name("ConnectsThinkingToggle"),
+                    object: nil,
+                    userInfo: ["messageID": captureID]
+                )
+            }
         }
+    }
+
+    /// Host recovery check — true when cell chrome disagrees with the expand store.
+    func thinkingExpandedMismatch(wantExpanded: Bool) -> Bool {
+        guard hasThinking else { return false }
+        return thinkingExpanded != wantExpanded || (wantExpanded && thinkingBody.isHidden)
+    }
+
+    func searchExpandedMismatch(wantExpanded: Bool) -> Bool {
+        guard hasSearch else { return false }
+        return searchExpanded != wantExpanded || (wantExpanded && searchBody.isHidden)
     }
 
     private func applyThinkingLayoutWidth() {
@@ -1711,13 +1771,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if let pairedUser = pairedUser {
             pairedUserMessage = pairedUser
         }
-        if message.hasImageTranscription {
-            let display = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !display.isEmpty, !ImageDurableText.isStatusOnly(display) {
-                AssistantMessageLayout.setSearchExpanded(true, messageID: message.id)
-            }
-        }
+        // Keep image transcription collapsed by default (same as thinking).
         let cover = contentView.snapshotView(afterScreenUpdates: false)
         if let cover = cover {
             cover.frame = contentView.bounds
@@ -2062,10 +2116,23 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     @objc private func toggleThink() {
-        guard hasThinking, !streamingPresentation else { return }
+        guard hasThinking else { return }
+        // Stream-finish can leave streamingPresentation stuck while the header
+        // already shows「已深度思考」— treat store.isStreaming as the truth.
+        if streamingPresentation {
+            let stillStreaming = ConversationStore.shared.currentConversation?.messages
+                .first(where: { $0.id == messageID })?.isStreaming == true
+            guard !stillStreaming else { return }
+            streamingPresentation = false
+            thinkingHeader.isEnabled = true
+        }
         thinkingExpanded.toggle()
         if thinkingExpanded { AssistantMessageLayout.setThinkingExpanded(true, messageID: messageID) }
-        else { AssistantMessageLayout.setThinkingExpanded(false, messageID: messageID) }
+        else {
+            AssistantMessageLayout.setThinkingExpanded(false, messageID: messageID)
+            thinkingBodyShowsFull = false
+            lastThinkingPopulateKey = ""
+        }
         // Pull the latest store text — streaming updates kept the cache in sync
         // while the tag stayed collapsed.
         if let msg = ConversationStore.shared.currentConversation?.messages
@@ -2097,7 +2164,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     @objc private func toggleSearch() {
-        guard hasSearch, !streamingPresentation else { return }
+        guard hasSearch else { return }
+        if streamingPresentation {
+            let stillStreaming = ConversationStore.shared.currentConversation?.messages
+                .first(where: { $0.id == messageID })?.isStreaming == true
+            guard !stillStreaming else { return }
+            streamingPresentation = false
+            searchHeader.isEnabled = true
+        }
         if imageTranscriptionFailed {
             NotificationCenter.default.post(
                 name: Notification.Name("ConnectsImageTranscriptionRetry"),
@@ -2119,9 +2193,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let chevron = searchExpanded ? "▾" : "▸"
         searchHeader.setTitle("\(chevron)  \(cachedSearchTitleCore)", for: .normal)
         finishChromeToggleLayout()
-        if searchExpanded {
-            scheduleMeasuredHeightNotify(for: messageID)
-        }
         NotificationCenter.default.post(
             name: Notification.Name("ConnectsSearchToggle"),
             object: nil,

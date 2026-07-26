@@ -225,7 +225,14 @@ final class APIClient: NSObject {
                 payload["reasoning_effort"] = "max"
             }
         case .thinkingType:
-            if model.supportsThinkingToggle {
+            // K2.7 Code rejects disabled thinking; always send enabled when forced.
+            if model.forcesThinking {
+                if preserveThinking, model.provider == .kimi {
+                    payload["thinking"] = ["type": "enabled", "keep": "all"]
+                } else {
+                    payload["thinking"] = ["type": "enabled"]
+                }
+            } else if model.supportsThinkingToggle {
                 if preserveThinking, model.provider == .kimi, thinkingOn {
                     payload["thinking"] = ["type": "enabled", "keep": "all"]
                 } else {

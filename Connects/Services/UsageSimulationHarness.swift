@@ -340,6 +340,17 @@ enum UsageSimulationHarness {
     }
 
     private static func verifyStudyUserMessage(_ user: ChatMessage, assistant: ChatMessage? = nil) -> String? {
+        if user.hidesAttachedImageInChat {
+            guard user.hasImage else { return "PDF study capture missing JPEG for 图片转写" }
+            guard !user.showsImageInChat else { return "PDF screenshot should stay out of chat bubble" }
+            if let assistant = assistant {
+                if assistant.hasImageTranscription { return nil }
+                if assistant.imageTranscriptionPhase == .transcribing { return nil }
+                return "PDF study capture missing 图片转写 tag"
+            }
+            if user.apiContextPrefix?.contains("[阅读上下文") == true { return nil }
+            return "PDF study capture missing assistant transcription"
+        }
         if user.hasImage { return nil }
         if let description = user.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
             return nil

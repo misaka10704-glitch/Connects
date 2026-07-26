@@ -324,6 +324,8 @@ enum ContextBuilder {
             return 256_000
         case AIModelOption.kimi26.modelId:
             return 128_000
+        case AIModelOption.kimiK27.modelId, AIModelOption.kimiK27Highspeed.modelId:
+            return 256_000
         default:
             return 192_000
         }
@@ -539,7 +541,7 @@ enum ContextBuilder {
             ("agent", "智能体设定", UIColor(red: 0.92, green: 0.78, blue: 0.42, alpha: 1)),
             ("summary", "对话摘要", UIColor(red: 0.92, green: 0.42, blue: 0.38, alpha: 1)),
             ("webSearch", "联网搜索", UIColor(red: 0.35, green: 0.78, blue: 0.92, alpha: 1)),
-            ("study", "阅读页上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
+            ("study", "文档上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
             ("images", "图片", UIColor(red: 0.45, green: 0.72, blue: 0.95, alpha: 1)),
             ("conversation", "近期对话", UIColor(red: 0.95, green: 0.58, blue: 0.35, alpha: 1)),
             ("otherSystem", "其他系统消息", UIColor(white: 0.48, alpha: 1))

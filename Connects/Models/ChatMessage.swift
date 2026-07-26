@@ -89,6 +89,8 @@ struct ChatMessage: Codable, Equatable {
     var isStreaming: Bool
     /// JPEG base64 for Kimi multimodal & local display
     var imageJPEGBase64: String?
+    /// When true, keep `imageJPEGBase64` for API /「图片转写」but hide the chat thumbnail.
+    var hidesAttachedImageInChat: Bool
     /// Prepended to this user turn when serializing for the API. Not shown in chat bubbles.
     var apiContextPrefix: String?
     /// Durable semantic replacement used after the original image leaves API context.
@@ -110,6 +112,7 @@ struct ChatMessage: Codable, Equatable {
          createdAt: Date = Date(),
          isStreaming: Bool = false,
          imageJPEGBase64: String? = nil,
+         hidesAttachedImageInChat: Bool = false,
          apiContextPrefix: String? = nil,
          imageDescription: String? = nil,
          imageTranscriptionContent: String = "",
@@ -125,6 +128,7 @@ struct ChatMessage: Codable, Equatable {
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.imageJPEGBase64 = imageJPEGBase64
+        self.hidesAttachedImageInChat = hidesAttachedImageInChat
         self.apiContextPrefix = apiContextPrefix
         self.imageDescription = imageDescription
         self.imageTranscriptionContent = imageTranscriptionContent
@@ -136,6 +140,9 @@ struct ChatMessage: Codable, Equatable {
     var apiRole: String { role.rawValue }
 
     var hasImage: Bool { imageJPEGBase64 != nil && !(imageJPEGBase64?.isEmpty ?? true) }
+
+    /// Whether the chat bubble should render the attached JPEG thumbnail.
+    var showsImageInChat: Bool { hasImage && !hidesAttachedImageInChat }
 
     var hasReasoning: Bool {
         !reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -270,7 +277,8 @@ struct ChatMessage: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, reasoningContent, searchProcessContent, searchProcessPhase
-        case createdAt, isStreaming, imageJPEGBase64, apiContextPrefix, imageDescription
+        case createdAt, isStreaming, imageJPEGBase64, hidesAttachedImageInChat
+        case apiContextPrefix, imageDescription
         case imageTranscriptionContent, imageTranscriptionPhase
         case versions, versionIndex
     }
@@ -286,6 +294,7 @@ struct ChatMessage: Codable, Equatable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
         imageJPEGBase64 = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64)
+        hidesAttachedImageInChat = try c.decodeIfPresent(Bool.self, forKey: .hidesAttachedImageInChat) ?? false
         apiContextPrefix = try c.decodeIfPresent(String.self, forKey: .apiContextPrefix)
         imageDescription = try c.decodeIfPresent(String.self, forKey: .imageDescription)
         imageTranscriptionContent = try c.decodeIfPresent(String.self, forKey: .imageTranscriptionContent) ?? ""
@@ -329,6 +338,9 @@ struct ChatMessage: Codable, Equatable {
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encodeIfPresent(imageJPEGBase64, forKey: .imageJPEGBase64)
+        if hidesAttachedImageInChat {
+            try c.encode(true, forKey: .hidesAttachedImageInChat)
+        }
         try c.encodeIfPresent(apiContextPrefix, forKey: .apiContextPrefix)
         try c.encodeIfPresent(imageDescription, forKey: .imageDescription)
         if !imageTranscriptionContent.isEmpty || imageTranscriptionPhase != .idle {

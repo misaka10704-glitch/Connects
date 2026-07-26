@@ -21,12 +21,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let turnContextBar = TurnContextBarView()
     private let inputBar = InputBarView()
     private let modelButton = UIButton(type: .custom)
+    /// Study nav title: ▲/▼ panel control. Model / AI 选项 only live in the input bar.
+    private let studyPanelNavCapsule = StudyPanelStageCapsule()
+    private lazy var studyPanelNavHost = StudyPanelNavTitleHost(capsule: studyPanelNavCapsule)
     private let emptyTitleLabel = UILabel()
     private let emptySubtitleLabel = UILabel()
     private let emptyContainer = UIView()
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
     private var studyChromeMode: StudyChromeMode = .none
+    /// When study AI is fully expanded it covers the reader sidebar — show the toggle here.
+    private var studyShowsSidebarToggle = false
     private var bottomConstraint: NSLayoutConstraint?
     private var composerBottomUsesViewBottom = false
     private var inputSideInsetConstraint: NSLayoutConstraint?
@@ -257,6 +262,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
     private var nativeHydrationScrollWork: DispatchWorkItem?
     private static let switchLayoutProbeTailRows = 4
+    /// Tail band seeded on open/switch — avoids O(n) walks on long threads.
+    private static let openBottomSeedTailRows = 24
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -277,10 +284,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         ensureBottomPinnedIfNeeded()
         if stickToBottom,
+           !needsPendingScrollPrep,
            let messages = ConversationStore.shared.currentConversation?.messages,
            !messages.isEmpty {
             // Opening can begin while this controller is still outside the
             // window hierarchy. Pin only after it has real bounds.
+            // Skip when eager open prep is queued — it pins on the next frame.
             pinOpenViewportToBottom(messages)
         }
         guard !didPerformColdOpenRescue else { return }
@@ -332,6 +341,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if navigationItem.titleView === studyPanelNavHost {
+            studyPanelNavHost.setNeedsLayout()
+        }
+        // Keep composer controls above the table after scroll-driven relayout.
+        if inputBar.superview === view {
+            view.bringSubviewToFront(inputBar)
+        }
         let bucket = widthBucket(for: tableView.bounds.width)
         guard bucket > 0 else { return }
         if layoutWidthBucket == 0 {
@@ -354,7 +370,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func chatWidthDidChange(_ note: Notification) {
-        // Slide Over / split from root — table width may lag one layout pass.
+        // Study panel height flips used to post this every time and rebuild all row heights.
+        let reported = note.userInfo?["width"] as? CGFloat
+        let candidate = tableView.bounds.width > 32 ? tableView.bounds.width : (reported ?? 0)
+        let bucket = widthBucket(for: candidate)
+        guard bucket > 0 else { return }
+        if layoutWidthBucket == 0 {
+            layoutWidthBucket = bucket
+            return
+        }
+        guard bucket != layoutWidthBucket else { return }
+        layoutWidthBucket = bucket
         scheduleInvalidateHeightsForWidthChange()
     }
 
@@ -505,11 +531,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         _ = immediate
     }
 
-    /// Full-width / portrait: rebind every row from layout cache so off-screen rows do not leave a tall gap.
+    /// Full-width / portrait: rebind visible + tail from layout cache — not every off-screen row.
     private func rebindRowHeightsAfterWidthChange(messages: [ChatMessage], layoutWidth: CGFloat) {
-        let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming }
-        guard !assistants.isEmpty, assistants.count <= 48 else { return }
-        let prewarmLimit = isStudySessionActive() ? assistants.count : min(assistants.count, 20)
+        let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
+        let lookahead = scrollLookaheadRowsPrioritized(in: messages)
+        var commitRows = Set(visible + lookahead)
+        commitRows.formUnion(tailBandRows(in: messages, count: max(Self.switchLayoutProbeTailRows * 3, 12)))
+        let sortedCommit = commitRows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+        let assistants = sortedCommit.compactMap { row -> ChatMessage? in
+            guard row < messages.count else { return nil }
+            let msg = messages[row]
+            return msg.role == .assistant && !msg.isStreaming ? msg : nil
+        }
+        guard !assistants.isEmpty else { return }
+        let prewarmLimit = min(assistants.count, isStudySessionActive() ? 16 : 12)
         AssistantMessageLayout.prewarmLayouts(
             for: assistants,
             targetWidth: layoutWidth,
@@ -518,15 +553,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         _ = commitCachedLayoutHeights(
             messages: messages,
             layoutWidth: layoutWidth,
-            rows: Array(0..<messages.count),
-            syncLayoutBudget: min(12, messages.count),
+            rows: sortedCommit,
+            syncLayoutBudget: min(12, sortedCommit.count),
             allowGrowCommitted: true,
             allowShrinkCommitted: true
         )
         rowHeights.rebuildDisplayHeights(
             messages: messages,
             layoutWidth: layoutWidth,
-            layoutProbeTailRows: messages.count
+            layoutProbeTailRows: max(Self.switchLayoutProbeTailRows, min(16, sortedCommit.count))
         )
     }
 
@@ -1096,7 +1131,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Seed row-height map so the first reload can scroll to the true bottom (not mid-thread).
     private func seedOpenBottomViewportHeights(messages: [ChatMessage], layoutWidth: CGFloat) {
         guard !messages.isEmpty else { return }
-        for (_, msg) in messages.enumerated() where !msg.isStreaming {
+        let tailStart = max(0, messages.count - Self.openBottomSeedTailRows)
+        for row in tailStart..<messages.count {
+            let msg = messages[row]
+            guard !msg.isStreaming else { continue }
             if rowHeights.isCommitted(msg.id) { continue }
             let known = rowHeights.bestKnownColumnHeight(for: msg.id)
             if known > 40 { continue }
@@ -1112,10 +1150,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let floor = max(cheap, msg.role == .assistant ? 80 : 52)
             rowHeights.updateDisplayEstimate(columnHeight: floor, messageID: msg.id)
         }
-        let totalH = rowHeights.totalRowHeight(for: messages, layoutWidth: layoutWidth)
-        let minPlausible = max(tableView.bounds.height * 0.9, CGFloat(messages.count) * 60)
-        guard totalH < minPlausible else { return }
-        for msg in messages where !msg.isStreaming {
+        let tailSlice = Array(messages[tailStart...])
+        let tailH = tailSlice.enumerated().reduce(into: CGFloat(0)) { sum, item in
+            let row = tailStart + item.offset
+            sum += rowHeights.rowHeight(
+                for: item.element,
+                row: row,
+                messageCount: messages.count,
+                layoutWidth: layoutWidth
+            )
+        }
+        let minTailPlausible = max(tableView.bounds.height * 0.55, CGFloat(tailSlice.count) * 60)
+        guard tailH < minTailPlausible else {
+            if let tailID = tailAssistantMessageID(in: messages),
+               let tail = messages.first(where: { $0.id == tailID }) {
+                let slack = AssistantMessageLayout.actionRowReservedHeight + 8
+                let prior = rowHeights.bestKnownColumnHeight(for: tailID)
+                rowHeights.updateDisplayEstimate(columnHeight: prior + slack, messageID: tail.id)
+            }
+            return
+        }
+        for row in tailStart..<messages.count {
+            let msg = messages[row]
+            guard !msg.isStreaming else { continue }
             let cheap = ChatRowHeightResolver.cheapColumnEstimate(for: msg, layoutWidth: layoutWidth)
             let inflated = max(
                 cheap * 1.18,
@@ -1185,7 +1242,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Grow tail row + pin until action chrome clears the input bar — runs while alpha is still 0.
     private func finalizeOpenBottomViewport(messages: [ChatMessage], layoutWidth: CGFloat) {
         guard tableMatchesMessages(messages) else { return }
-        for _ in 0..<2 {
+        let passes = openTailLayoutIsWarm(for: renderedConversationID) ? 1 : 2
+        for _ in 0..<passes {
             guard tableMatchesMessages(messages) else { return }
             showOpenTailActionChromeIfAligned(messages: messages, layoutWidth: layoutWidth)
             if let tailID = tailAssistantMessageID(in: messages),
@@ -1826,6 +1884,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         DispatchQueue.main.async(execute: work)
     }
 
+    /// Row indices in the tail band used for open / switch height seeding.
+    private func tailBandRows(in messages: [ChatMessage], count: Int = 24) -> [Int] {
+        let n = messages.count
+        guard n > 0 else { return [] }
+        let start = max(0, n - count)
+        return Array(start..<n)
+    }
+
     /// Visible + first QA turns above bottom — avoids `0..<minVisible` on cold open.
     private func lightOpenBottomPrepRows(in messages: [ChatMessage]) -> [Int] {
         let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
@@ -1846,6 +1912,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                                                    layoutWidth: CGFloat,
                                                    atBottom: Bool = false,
                                                    preserveViewport: Bool = false) {
+        let openGen = openGeneration
         let visibleMin = tableView.indexPathsForVisibleRows?.map(\.row).min()
             ?? max(0, messages.count - 1)
         let edgeRows = firstQAEdgeWarmRows(in: messages, aboveVisibleMin: visibleMin)
@@ -1853,6 +1920,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ? lightOpenBottomPrepRows(in: messages)
             : firstHistoryScrollPrepRows(in: messages)
         guard !prepRows.isEmpty || atBottom else { return }
+        guard openGen == openGeneration else { return }
         let anchorPath = viewportScrollAnchorPath()
         let anchorY = anchorPath.map { path in
             tableView.rectForRow(at: path).minY - tableView.contentOffset.y
@@ -1860,48 +1928,65 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let path = anchorPath, let y = anchorY {
             pendingScrollSettleAnchor = (path, y)
         }
-        // Full-list display estimates keep contentSize sane.
-        rowHeights.rebuildDisplayHeights(
-            messages: messages,
-            layoutWidth: layoutWidth,
-            throughRow: messages.count - 1,
-            layoutProbeTailRows: messages.count
-        )
+        // Full-list display estimates keep contentSize sane — but never force
+        // full-history native probe on the open frame (see atBottom branch).
+        if !atBottom {
+            rowHeights.rebuildDisplayHeights(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                throughRow: messages.count - 1,
+                layoutProbeTailRows: messages.count
+            )
+        }
         if atBottom {
-            // Commit every row from cache/estimate (no sync) so contentSize baseline exists.
+            // Visible + first QA edge + small tail only. `throughRow: count-1` used to
+            // force full-history native resolve on every cold open / conversation switch.
+            let minPrep = prepRows.min() ?? max(0, messages.count - 8)
+            let probeTail = min(
+                messages.count,
+                max(Self.switchLayoutProbeTailRows, messages.count - minPrep)
+            )
+            rowHeights.rebuildDisplayHeights(
+                messages: messages,
+                layoutWidth: layoutWidth,
+                throughRow: nil,
+                layoutProbeTailRows: probeTail
+            )
+            // Commit tail + prep band from cache only — display map already has cheap head estimates.
+            var baselineRows = Set(prepRows)
+            baselineRows.formUnion(tailBandRows(in: messages))
             _ = commitCachedLayoutHeights(
                 messages: messages,
                 layoutWidth: layoutWidth,
-                rows: Array(0..<messages.count),
+                rows: baselineRows.sorted(),
                 syncLayoutBudget: 0,
                 allowGrowCommitted: true,
                 allowShrinkCommitted: true
             )
-            // Sync-layout bottom-up: first budget hits QA turns the finger will cross first.
-            let bottomUp = Array((0..<messages.count).reversed())
+            // Sync-layout only the QA edge the finger will hit first — rest warms async.
+            let syncEdge = edgeRows.isEmpty ? prepRows : edgeRows
             let syncBudget = min(
-                isStudyNarrowPanelActive() ? 14 : 12,
+                isStudyNarrowPanelActive() ? 6 : 4,
                 messages.filter { $0.role == .assistant && !$0.isStreaming }.count
             )
-            let syncEdge = edgeRows.isEmpty ? prepRows : edgeRows
             prewarmScrollLookahead(
                 messages: messages,
                 layoutWidth: layoutWidth,
                 rows: syncEdge,
                 aggressive: false,
-                syncLimit: min(12, max(syncEdge.count, 1))
+                syncLimit: min(syncBudget, max(syncEdge.count, 1))
             )
             _ = commitCachedLayoutHeights(
                 messages: messages,
                 layoutWidth: layoutWidth,
-                rows: bottomUp,
+                rows: syncEdge.reversed(),
                 syncLayoutBudget: syncBudget,
                 allowGrowCommitted: true,
                 allowShrinkCommitted: true
             )
             _ = shrinkInflatedCommittedRows(
                 messages: messages,
-                rows: Array(0..<messages.count),
+                rows: syncEdge,
                 layoutWidth: layoutWidth,
                 slackThreshold: isStudyNarrowPanelActive() ? 10 : 20
             )
@@ -1958,9 +2043,39 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
         viewportScrollAnchor = atBottom ? nil : captureViewportScrollAnchor()
+        guard openGen == openGeneration else { return }
         if atBottom {
             scheduleFirstQAEdgeWarmAfterOpen(messages: messages, layoutWidth: layoutWidth)
         }
+    }
+
+    /// Narrow study panel: warm visible + lookahead without repeating full open prep.
+    private func prepareStudyNarrowTailFromOpen(messages: [ChatMessage], layoutWidth: CGFloat) {
+        let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
+        let lookahead = scrollLookaheadRowsPrioritized(in: messages)
+        let prepRows = Array(Set(visible + lookahead + tailBandRows(in: messages, count: 12))).sorted()
+        guard !prepRows.isEmpty else { return }
+        let assistants = prepRows.compactMap { row -> ChatMessage? in
+            guard row < messages.count else { return nil }
+            let msg = messages[row]
+            return msg.role == .assistant && !msg.isStreaming ? msg : nil
+        }
+        if !assistants.isEmpty {
+            AssistantMessageLayout.prewarmLayouts(
+                for: assistants,
+                targetWidth: layoutWidth,
+                layoutLimit: min(assistants.count, 10)
+            )
+        }
+        _ = commitCachedLayoutHeights(
+            messages: messages,
+            layoutWidth: layoutWidth,
+            rows: prepRows,
+            syncLayoutBudget: min(10, prepRows.count),
+            allowGrowCommitted: true,
+            allowShrinkCommitted: true
+        )
+        paintVisibleBlankAssistantsIfNeeded(messages: messages, layoutWidth: layoutWidth)
     }
 
     /// Assistants just above the open viewport — first QA crosses the user will hit.
@@ -2024,9 +2139,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Study panel first scroll: rebind narrow-width heights for visible + lookahead only.
     private func prepareStudyFirstScrollFromOpen(messages: [ChatMessage], layoutWidth: CGFloat) {
+        prepareStudyNarrowTailFromOpen(messages: messages, layoutWidth: layoutWidth)
         let visible = tableView.indexPathsForVisibleRows?.map(\.row) ?? []
-        let lookahead = scrollLookaheadRowsPrioritized(in: messages)
-        let prepRows = Array(Set(visible + lookahead)).sorted()
+        let prepRows = Array(Set(visible + scrollLookaheadRowsPrioritized(in: messages))).sorted()
         guard !prepRows.isEmpty else { return }
         let anchorPath = viewportScrollAnchorPath()
         let anchorY = anchorPath.map { path in
@@ -2035,41 +2150,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let path = anchorPath, let y = anchorY {
             pendingScrollSettleAnchor = (path, y)
         }
-        let assistants = prepRows.compactMap { row -> ChatMessage? in
-            guard row < messages.count else { return nil }
-            let msg = messages[row]
-            return msg.role == .assistant && !msg.isStreaming ? msg : nil
-        }
-        if !assistants.isEmpty {
-            AssistantMessageLayout.prewarmLayouts(
-                for: assistants,
-                targetWidth: layoutWidth,
-                layoutLimit: min(assistants.count, 10)
-            )
-        }
-        _ = commitCachedLayoutHeights(
-            messages: messages,
-            layoutWidth: layoutWidth,
-            rows: Array(0..<messages.count),
-            syncLayoutBudget: 0,
-            allowGrowCommitted: true,
-            allowShrinkCommitted: true
-        )
-        _ = commitCachedLayoutHeights(
-            messages: messages,
-            layoutWidth: layoutWidth,
-            rows: prepRows,
-            syncLayoutBudget: min(12, prepRows.count),
-            allowGrowCommitted: true,
-            allowShrinkCommitted: true
-        )
         _ = shrinkInflatedCommittedRows(
             messages: messages,
-            rows: Array(0..<messages.count),
+            rows: prepRows,
             layoutWidth: layoutWidth,
             slackThreshold: 8
         )
-        paintVisibleBlankAssistantsIfNeeded(messages: messages, layoutWidth: layoutWidth)
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             if cell.hasPendingDeferredNativeRender {
                 cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
@@ -2159,17 +2245,23 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               !messages.isEmpty else { return }
         let layoutWidth = currentRenderWidth()
+        let openGen = openGeneration
         // At bottom: light height prep + async first-QA warm (full sync layout waits for first drag if needed).
         if pendingStudyFirstScrollPrep {
-            prepareFirstHistoryScrollFromOpen(messages: messages, layoutWidth: layoutWidth, atBottom: true)
-            prepareStudyFirstScrollFromOpen(messages: messages, layoutWidth: layoutWidth)
-            needsFirstHistoryScrollPrep = false
+            if needsFirstHistoryScrollPrep {
+                prepareFirstHistoryScrollFromOpen(messages: messages, layoutWidth: layoutWidth, atBottom: true)
+                needsFirstHistoryScrollPrep = false
+            }
+            guard openGen == openGeneration else { return }
+            prepareStudyNarrowTailFromOpen(messages: messages, layoutWidth: layoutWidth)
             pendingStudyFirstScrollPrep = false
         } else if needsFirstHistoryScrollPrep {
             prepareFirstHistoryScrollFromOpen(messages: messages, layoutWidth: layoutWidth, atBottom: true)
+            guard openGen == openGeneration else { return }
             syncPrewarmFirstQAEdgeAtBottom(messages: messages, layoutWidth: layoutWidth)
             needsFirstHistoryScrollPrep = false
         }
+        guard openGen == openGeneration else { return }
         isPerformingColdLaunchOpen = false
         UIView.performWithoutAnimation {
             tableView.beginUpdates()
@@ -3057,8 +3149,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         needsFirstHistoryScrollPrep = true
         hasCompletedFirstHistoryScrollGesture = false
         scheduleCoalescedOpenUpgrade()
-        // Prep QA-edge heights before the first upward fling — async loses to a fast finger-down.
-        eagerPreparePendingHistoryHeightsAtBottom()
+        // Heavy first-scroll height prep must not run on the same turn as reload+pin —
+        // that is the cold-open / conversation-switch hitch.
+        let openGen = openGeneration
+        let openID = renderedConversationID
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  openGen == self.openGeneration,
+                  openID == self.renderedConversationID else { return }
+            self.eagerPreparePendingHistoryHeightsAtBottom()
+        }
     }
 
     /// Re-pin after study chrome / width / deferred layout when we should open at the latest turn.
@@ -3066,9 +3166,35 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard stickToBottom, !isViewportPinned(), isTableLayoutCommitted() else { return }
         let msgs = messages ?? renderedConversationMessages()
         guard let msgs = msgs, !msgs.isEmpty, tableView.window != nil else { return }
-        let layoutWidth = currentRenderWidth()
-        guard pendingOpenAtBottom || suppressHeightRemeasure || openBottomStickActive else { return }
-        reconcileBottomViewportIfNeeded(messages: msgs, layoutWidth: layoutWidth)
+        // Study panel resize also needs this path — do not require openBottomStickActive.
+        reconcileBottomViewportIfNeeded(messages: msgs, layoutWidth: currentRenderWidth())
+    }
+
+    /// Whether the chat was following the live/latest turn (capture before panel animation).
+    var wantsBottomChaseForPanelResize: Bool {
+        stickToBottom || finishViewportLocked || isCurrentStreaming
+    }
+
+    /// After half↔full length change: force chase bottom if we were sticking / streaming.
+    /// Panel animation can briefly desync contentOffset vs bounds and mark readingHistory.
+    func rePinLatestTurnAfterStudyPanelResize(force: Bool = false) {
+        guard isViewLoaded, tableView.window != nil else { return }
+        guard force || stickToBottom || finishViewportLocked || isCurrentStreaming else { return }
+        stickToBottom = true
+        readingHistory = false
+        viewportPinnedByUser = false
+        viewportScrollAnchor = nil
+        // snapTableContentOffsetToBottom already layouts the table once.
+        if finishViewportLocked || isCurrentStreaming {
+            followStreamingViewportToBottom()
+        } else {
+            snapTableContentOffsetToBottom()
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard self.stickToBottom || self.finishViewportLocked || self.isCurrentStreaming else { return }
+            self.snapTableContentOffsetToBottom()
+        }
     }
 
     private func scrollToLastRowReliable(_ messages: [ChatMessage]) {
@@ -4020,13 +4146,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             updateAgentButton()
             updateEmptyState()
             syncStreamingChrome()
-            DispatchQueue.main.async { [weak self] in
+            // Empty "新对话" can bind immediately — deferring a runloop felt like a stuck window.
+            let messagesEmpty = ConversationStore.shared.currentConversation?.messages.isEmpty == true
+            let bind = { [weak self] in
                 guard let self = self, targetID == self.currentConversationID else { return }
                 if let id = targetID, id != self.renderedConversationID {
                     self.switchToConversation(id: id)
                 }
                 self.updateStudyInputBar()
                 self.finishConversationSwitchChrome(layoutWidth: layoutWidth)
+            }
+            if messagesEmpty {
+                bind()
+            } else {
+                DispatchQueue.main.async(execute: bind)
             }
             return
         }
@@ -4067,60 +4200,69 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func thinkingToggled(_ note: Notification) {
-        if let mid = note.userInfo?["messageID"] as? String,
-           let messages = ConversationStore.shared.currentConversation?.messages,
-           let row = messages.firstIndex(where: { $0.id == mid }) {
-            // A cached row height cannot be shared by expanded and collapsed
-            // reasoning states. Reusing the expanded height after collapse left
-            // several screens of empty space on iOS 12.
-            rowHeights.invalidate(messageID: mid)
-            pendingHeights.removeValue(forKey: mid)
-            if let cid = renderedConversationID {
-                storePersistedHeights(rowHeights.exportPersistable(), for: cid)
-            }
-            let path = IndexPath(row: row, section: 0)
-            let message = messages[row]
-            let pairedUser = pairedUserMessage(forAssistantAt: row, in: messages)
-            let layoutWidth = currentRenderWidth()
-            let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
-            UIView.performWithoutAnimation {
-                if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
-                    if isSearch {
-                        cell.syncSearchPresentation(with: message, layoutWidth: layoutWidth, pairedUser: pairedUser)
-                    } else {
-                        cell.syncThinkingPresentation(with: message, layoutWidth: layoutWidth)
-                    }
-                    cell.finishChromeToggleLayout()
-                    // Measure the real stack after expand — projected/CJK estimate
-                    // under-counts Chinese reasoning and clips the body with "…".
-                    var fitted = cell.fittedColumnContentHeight()
-                    if fitted > 40 {
-                        rowHeights.commitMeasured(columnHeight: fitted, messageID: mid, allowShrink: true)
-                    }
-                    tableView.beginUpdates()
-                    tableView.endUpdates()
-                    tableView.layoutIfNeeded()
-                    fitted = cell.fittedColumnContentHeight()
-                    if fitted > 40 {
-                        rowHeights.commitMeasured(columnHeight: fitted, messageID: mid, allowShrink: true)
-                        tableView.beginUpdates()
-                        tableView.endUpdates()
-                        tableView.layoutIfNeeded()
-                    }
-                } else {
-                    tableView.reloadRows(at: [path], with: .none)
-                }
-                tableView.layoutIfNeeded()
-                let anchorY = tableView.rectForRow(at: path).minY - tableView.contentOffset.y
-                remeasureRowsPreservingViewport(
-                    anchorPath: path,
-                    preferSavedViewportAnchor: false,
-                    fixedViewportY: anchorY
-                )
-            }
+        guard let mid = note.userInfo?["messageID"] as? String,
+              let messages = ConversationStore.shared.currentConversation?.messages,
+              let row = messages.firstIndex(where: { $0.id == mid }) else {
+            reloadTablePreservingViewport()
             return
         }
-        reloadTablePreservingViewport()
+        // Expanded/collapsed chrome already painted by the cell. Only refresh row
+        // geometry — re-sync + multi beginUpdates used to hitch / flash the row.
+        rowHeights.invalidate(messageID: mid)
+        pendingHeights.removeValue(forKey: mid)
+        let path = IndexPath(row: row, section: 0)
+        let isSearch = note.name == Notification.Name("ConnectsSearchToggle")
+
+        UIView.performWithoutAnimation {
+            if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
+                // Off-path recovery only (reuse / missed paint). Avoid PlainMarkdown twice.
+                if isSearch {
+                    let want = AssistantMessageLayout.isSearchExpanded(messageID: mid)
+                    if cell.searchExpandedMismatch(wantExpanded: want) {
+                        let pairedUser = pairedUserMessage(forAssistantAt: row, in: messages)
+                        cell.syncSearchPresentation(
+                            with: messages[row],
+                            layoutWidth: currentRenderWidth(),
+                            pairedUser: pairedUser
+                        )
+                    }
+                } else if cell.thinkingExpandedMismatch(
+                    wantExpanded: AssistantMessageLayout.isThinkingExpanded(messageID: mid)
+                ) {
+                    cell.syncThinkingPresentation(
+                        with: messages[row],
+                        layoutWidth: currentRenderWidth()
+                    )
+                }
+                cell.finishChromeToggleLayout()
+                let fitted = cell.fittedColumnContentHeight()
+                if fitted > 40 {
+                    rowHeights.commitMeasured(columnHeight: fitted, messageID: mid, allowShrink: true)
+                    if rowHeights.isScrollHeightFrozen {
+                        // Frozen map otherwise ignores commitMeasured — expand looked dead.
+                        rowHeights.pinFrozenRowHeight(messageID: mid, columnHeight: fitted)
+                    }
+                }
+                let anchorY = tableView.rectForRow(at: path).minY - tableView.contentOffset.y
+                tableView.beginUpdates()
+                tableView.endUpdates()
+                tableView.layoutIfNeeded()
+                let target = tableView.rectForRow(at: path).minY - anchorY
+                let minOffset = -tableView.adjustedContentInset.top
+                let maxOffset = max(
+                    minOffset,
+                    tableView.contentSize.height
+                        - tableView.bounds.height
+                        + tableView.adjustedContentInset.bottom
+                )
+                tableView.contentOffset.y = min(max(target, minOffset), maxOffset)
+            } else {
+                tableView.reloadRows(at: [path], with: .none)
+            }
+        }
+        if let cid = renderedConversationID {
+            storePersistedHeights(rowHeights.exportPersistable(), for: cid)
+        }
     }
 
     @objc private func fontSizeChanged() {
@@ -4267,7 +4409,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         stopStreamUITimer()
         // Streaming stays lightweight; completion performs one deterministic
         // native parse/layout and swaps under the cell snapshot cover.
-        ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
+        let repairID = id
+        DispatchQueue.main.async {
+            ConversationStore.shared.repairImageTranscriptionDisplays(for: repairID)
+        }
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last else { return }
         syncStreamingChrome()
@@ -4405,7 +4550,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let now = Date()
             // Geometry must keep up even while the user reads history; only
             // auto-scrolling is suppressed in that mode.
-            let shouldRelayout = now.timeIntervalSince(lastStreamLayoutAt) >= 0.14
+            let shouldRelayout = now.timeIntervalSince(lastStreamLayoutAt) >= 0.18
             if shouldRelayout {
                 lastStreamLayoutAt = now
             }
@@ -4522,11 +4667,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     func setStudyChrome(_ mode: StudyChromeMode) {
-        guard studyChromeMode != mode else {
-            refreshStudyComposerLayout()
-            return
-        }
+        guard studyChromeMode != mode else { return }
         studyChromeMode = mode
+        if mode == .none {
+            studyShowsSidebarToggle = false
+        }
         applyStudyChrome()
         updateStudyInputBar()
         if mode == .documentReader || mode == .portraitPanel {
@@ -4547,7 +4692,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    func refreshStudyComposerLayout() {
+    /// Full-AI study panel covers the document sidebar control; re-host it on chat nav.
+    func setStudyShowsSidebarToggle(_ visible: Bool) {
+        guard studyShowsSidebarToggle != visible else { return }
+        studyShowsSidebarToggle = visible
+        applyStudyChrome()
+    }
+
+    func refreshStudyComposerLayout(reconcileViewport: Bool = true) {
         guard isViewLoaded else { return }
         let preserveKeyboardLift = keyboardVisible
         refreshComposerBottomAnchorIfNeeded()
@@ -4555,15 +4707,59 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             bottomConstraint?.constant = restingComposerBottomConstant()
         }
         view.layoutIfNeeded()
-        guard let messages = renderedConversationMessages(), !messages.isEmpty else { return }
+        guard reconcileViewport,
+              let messages = renderedConversationMessages(), !messages.isEmpty else { return }
         reconcileBottomViewportIfNeeded(messages: messages, layoutWidth: currentRenderWidth())
     }
 
     func dismissComposerKeyboard() {
         guard isViewLoaded else { return }
+        guard !ConnectsNoteSheet.isVisible else { return }
         view.endEditing(true)
         keyboardVisible = false
         bottomConstraint?.constant = restingComposerBottomConstant()
+    }
+
+    /// Cancel scroll-settle / deceleration work so stage & input controls respond immediately.
+    func prepareForStudyPanelControlTap() {
+        guard isViewLoaded else { return }
+        scrollSettleWork?.cancel()
+        scrollSettleWork = nil
+        scrollFreezeGeometryWork?.cancel()
+        scrollFreezeGeometryWork = nil
+        nativeHydrationScrollWork?.cancel()
+        nativeHydrationScrollWork = nil
+        deferredRenderWork?.cancel()
+        deferredRenderWork = nil
+        if tableView.isDragging || tableView.isDecelerating {
+            tableView.setContentOffset(tableView.contentOffset, animated: false)
+        }
+        view.bringSubviewToFront(inputBar)
+    }
+
+    /// Study Ask: stash selection as hidden API context. Does not open the panel or focus the composer —
+    /// the reader keeps the highlight until the user opens AI themselves.
+    func prepareAskAboutSelection(_ text: String) {
+        loadViewIfNeeded()
+        _ = text
+        inputBar.studyCaptureVisible = true
+        inputBar.studyPageCaptureEnabled = true
+        if let id = currentConversationID {
+            ConversationStore.shared.updateConversationQuietly(id: id) { draftConv in
+                draftConv.studyPageCaptureEnabled = true
+            }
+        }
+        inputBar.onClearAskSelection = { [weak self] in
+            guard let id = self?.currentConversationID else { return }
+            StudyAskSelectionStore.shared.clear(conversationID: id)
+            self?.studyContextProvider?.clearAskSelectionHighlightInReader()
+        }
+        inputBar.setAskSelectionArmed(true)
+        refreshComposerBottomAnchorIfNeeded()
+    }
+
+    func clearAskSelectionChip() {
+        inputBar.setAskSelectionArmed(false)
     }
 
     /// Shell-owned spacers handle top clearance; reset any prior compensation.
@@ -4580,7 +4776,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func applyStudyChrome() {
-        navigationItem.leftBarButtonItem = isStudySessionActive() ? nil : sidebarToggleItem
+        // Sidebar button visibility must follow the *conversation*, not stale study chrome.
+        // After「新对话」the document is already nil while studyChromeMode can lag one frame —
+        // that previously hid the toggle until the next chrome sync.
+        let hasStudyDoc = ConversationStore.shared.currentConversation?.studyDocumentID != nil
+        if !hasStudyDoc, studyChromeMode != .none {
+            studyChromeMode = .none
+            studyShowsSidebarToggle = false
+        }
+        let hideSidebar = hasStudyDoc && !studyShowsSidebarToggle
+        navigationItem.leftBarButtonItem = hideSidebar ? nil : sidebarToggleItem
         if isViewLoaded, turnContextBarTopToSafe != nil, turnContextBarTopToView != nil {
             let portraitPanel = studyChromeMode == .portraitPanel
             turnContextBarTopToSafe.isActive = !portraitPanel
@@ -4590,14 +4795,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             refreshComposerBottomAnchorIfNeeded()
             normalizePortraitPanelSafeArea()
         }
+        updateModelButton()
         updateEmptyState()
+    }
+
+    func syncStudyPanelStageControl() {
+        // Model / AI 选项 live only in the input bar. Stage ▲▼ is the floating
+        // shell chip (nav titleView was not hittable right after half-open).
+        if navigationItem.titleView === studyPanelNavHost || navigationItem.titleView === modelButton {
+            navigationItem.titleView = nil
+        }
     }
 
     /// Slide Over / narrow width: tighter chrome for 网课侧拉.
     func setCompactChrome(_ on: Bool) {
-        isCompactChrome = on
         let inset = on ? 12.0 : DSTheme.contentHorizontalPadding
-        inputSideInsetConstraint?.constant = -(inset * 2)
+        let side = -(inset * 2)
+        if isCompactChrome == on, inputSideInsetConstraint?.constant == side {
+            return
+        }
+        isCompactChrome = on
+        inputSideInsetConstraint?.constant = side
         emptyTitleLabel.font = UIFont.systemFont(ofSize: on ? 22 : 28, weight: .semibold)
         emptySubtitleLabel.font = DSTheme.bodyFont(size: on ? 13 : 14)
         if let collapsed = pendingSidebarCollapsed {
@@ -4675,10 +4893,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let conv = ConversationStore.shared.currentConversation else {
             inputBar.studyCaptureVisible = false
             inputBar.studyPageCaptureEnabled = false
+            inputBar.setAskSelectionSlotVisible(false)
             return
         }
-        inputBar.studyCaptureVisible = conv.studyDocumentID != nil
+        let hasDoc = conv.studyDocumentID != nil
+        inputBar.studyCaptureVisible = hasDoc
         inputBar.studyPageCaptureEnabled = conv.studyPageCaptureEnabled
+        // Ask is for markdown / code (text); PDF is highlighter-only.
+        let askSupported: Bool = {
+            guard let docID = conv.studyDocumentID,
+                  let kind = StudyDocumentStore.shared.document(id: docID)?.kind else { return false }
+            return kind == .markdown || kind == .text
+        }()
+        inputBar.setAskSelectionSlotVisible(askSupported)
+        let armed = askSupported
+            && StudyAskSelectionStore.shared.pendingText(for: conv.id) != nil
+        inputBar.setAskSelectionArmed(armed)
+        inputBar.onClearAskSelection = { [weak self] in
+            guard let id = self?.currentConversationID else { return }
+            StudyAskSelectionStore.shared.clear(conversationID: id)
+            self?.studyContextProvider?.clearAskSelectionHighlightInReader()
+        }
         applyStudyChrome()
     }
 
@@ -4706,7 +4941,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         if conversationChanged {
             if let id = newID {
-                ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
+                // Repair off the open frame — string sync + rare save must not stall switch.
+                DispatchQueue.main.async {
+                    ConversationStore.shared.repairImageTranscriptionDisplays(for: id)
+                }
                 switchToConversation(id: id, coldLaunch: coldLaunch)
             }
             guard newID == ConversationStore.shared.currentConversationID else {
@@ -4907,8 +5145,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func setupNavBar() {
-        // Centered model chip as titleView itself (must report size — a plain wrap
-        // collapses to ~0 and draws outside its hit box, so taps never land).
+        // Kept for legacy picker anchors; model / AI 选项 UI is input-bar only.
         modelButton.translatesAutoresizingMaskIntoConstraints = true
         modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         modelButton.titleLabel?.lineBreakMode = .byTruncatingTail
@@ -4919,7 +5156,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         modelButton.isUserInteractionEnabled = true
         modelButton.addTarget(self, action: #selector(modelTapped), for: .touchUpInside)
         modelButton.accessibilityLabel = "选择模型"
-        navigationItem.titleView = modelButton
+        modelButton.isHidden = true
+
+        studyPanelNavCapsule.setAxis(.horizontal)
+        studyPanelNavCapsule.onStepTowardAI = { [weak self] in
+            self?.stepStudyPanel(towardAI: true)
+        }
+        studyPanelNavCapsule.onStepTowardReading = { [weak self] in
+            self?.stepStudyPanel(towardAI: false)
+        }
+        // Default: no nav model chip. Portrait study half/full installs ▲▼ via sync.
+        navigationItem.titleView = nil
 
         sidebarToggleItem = ActionIconFactory.barItem(
             kind: .sidebarOpen,
@@ -5026,7 +5273,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         let convID = conv.id
-        let visible = ContextBuilder.shouldShowUsage(for: conv)
+        // Always reserve the ring placeholder so the tool row layout stays stable.
+        let visible = true
         let compacting = ContextCompactor.isCompacting(convID)
         let immediate = contextUsageCache[convID] ?? ContextBuilder.quickUsageEstimate(for: conv)
         inputBar.setContextUsageCompacting(compacting)
@@ -5057,7 +5305,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let usage = ContextBuilder.usage(for: conv)
         inputBar.updateContextUsage(
             usage,
-            visible: ContextBuilder.shouldShowUsage(for: conv),
+            visible: true,
             animated: false
         )
         guard usage.shouldAutoCompact else { return }
@@ -5159,15 +5407,56 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func updateModelButton() {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+        // Single source of truth: input-bar AI 选项. Do not also mount a nav model chip.
+        inputBar.setModelChip(title: model.displayName)
         modelButton.setTitle("\(model.displayName)  ▾", for: .normal)
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        modelButton.sizeToFit()
-        var size = modelButton.bounds.size
-        size.width = min(max(size.width, 132), 240)
-        size.height = 32
-        modelButton.bounds = CGRect(origin: .zero, size: size)
-        // Re-assign so UINavigationBar remeasures the titleView hit box.
-        navigationItem.titleView = modelButton
+        syncStudyPanelStageControl()
+    }
+
+    private func stepStudyPanel(towardAI: Bool) {
+        guard let provider = studyContextProvider else { return }
+        // Stage chips only change layout — never focus the composer.
+        prepareForStudyPanelControlTap()
+        dismissComposerKeyboard()
+        let current = provider.studyChatPanelStage
+        let next: StudyChatPanelStage?
+        if towardAI {
+            switch current {
+            case .collapsed: next = .half
+            case .half: next = .full
+            case .full: next = nil
+            }
+        } else {
+            switch current {
+            case .full: next = .half
+            case .half: next = .collapsed
+            case .collapsed: next = nil
+            }
+        }
+        guard let next = next else { return }
+        provider.applyStudyChatPanelStage(next, animated: true)
+    }
+
+    private func presentModelPicker(anchor: UIView) {
+        let current = ConversationStore.shared.currentConversation?.model
+        let pool = AIModelOption.visible
+        ModelCapsuleDropdown.present(
+            from: self,
+            anchor: anchor,
+            models: pool,
+            selected: current,
+            onPick: { [weak self] option in
+                guard let self = self else { return }
+                guard let id = ConversationStore.shared.currentConversationID else { return }
+                ConversationStore.shared.setModel(option, for: id)
+                self.inputBar.clearAttachment()
+                self.updateAttachAvailability()
+                self.updateModelButton()
+            },
+            onDismiss: { [weak self] in
+                self?.updateModelButton()
+            }
+        )
     }
 
     private func updateAgentButton() {
@@ -5195,6 +5484,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func keyboardWillChange(_ note: Notification) {
+        // Note sheet owns the soft keyboard — don't lift the chat composer under it.
+        if ConnectsNoteSheet.isVisible { return }
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
               let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double else { return }
 
@@ -5205,15 +5496,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        // Convert keyboard to this VC's view (correct for split detail pane on iPad).
-        let converted = view.convert(frame, from: nil)
-        let intersection = view.bounds.intersection(converted)
-        let overlap = intersection.isNull ? 0 : intersection.height
-        // bottomConstraint is vs safeArea.bottom — subtract safe-area inset already baked into that anchor.
-        let safePad = view.safeAreaInsets.bottom
-        let lift = max(0, overlap - safePad)
-        keyboardVisible = lift > 20
-        bottomConstraint?.constant = keyboardVisible ? -(lift + 6) : restingComposerBottomConstant()
+        // Classify docked vs floating/mini so landscape undocked keyboards don't yank the composer.
+        let snap = ConnectsKeyboardGeometry.resolve(screenFrame: frame, in: view)
+        let safeAreaInAnchor = !composerBottomUsesViewBottom
+        let lift = ConnectsKeyboardGeometry.composerLift(
+            snapshot: snap,
+            in: view,
+            safeAreaAlreadyInAnchor: safeAreaInAnchor
+        )
+        switch snap.kind {
+        case .hidden:
+            bottomConstraint?.constant = restingComposerBottomConstant()
+            keyboardVisible = false
+        case .docked:
+            keyboardVisible = lift > 20
+            bottomConstraint?.constant = keyboardVisible ? -(lift + 6) : restingComposerBottomConstant()
+        case .floatingMini:
+            // Only lift when the mini keyboard covers the composer band; otherwise stay put.
+            keyboardVisible = lift > 12
+            bottomConstraint?.constant = keyboardVisible
+                ? -(lift + DSTheme.inputBarBottomPadding)
+                : restingComposerBottomConstant()
+        }
         layoutEmptyChromeForKeyboard()
         animateKeyboard(duration: duration, note: note)
     }
@@ -5245,13 +5549,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func applyPortraitStudyComposerBottom(keyboardFrame: CGRect) {
         refreshComposerBottomAnchorIfNeeded()
-        let converted = view.convert(keyboardFrame, from: nil)
-        let overlap = max(0, view.bounds.maxY - converted.minY)
-        keyboardVisible = overlap > 20
-        if keyboardVisible {
-            bottomConstraint?.constant = -(overlap + DSTheme.inputBarBottomPadding)
-        } else {
+        let snap = ConnectsKeyboardGeometry.resolve(screenFrame: keyboardFrame, in: view)
+        // Portrait panel anchors to view.bottom — do not subtract safeArea again.
+        let lift = ConnectsKeyboardGeometry.composerLift(
+            snapshot: snap,
+            in: view,
+            safeAreaAlreadyInAnchor: false
+        )
+        switch snap.kind {
+        case .hidden:
+            keyboardVisible = false
             bottomConstraint?.constant = restingComposerBottomConstant()
+        case .docked:
+            keyboardVisible = lift > 20
+            bottomConstraint?.constant = keyboardVisible
+                ? -(lift + DSTheme.inputBarBottomPadding)
+                : restingComposerBottomConstant()
+        case .floatingMini:
+            keyboardVisible = lift > 12
+            bottomConstraint?.constant = keyboardVisible
+                ? -(lift + DSTheme.inputBarBottomPadding)
+                : restingComposerBottomConstant()
         }
     }
 
@@ -5348,7 +5666,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     /// Build API messages for a specific conversation — never the "currently visible" one by accident.
-    private func apiContext(for model: AIModelOption, conversationID: String) -> [ChatMessage] {
+    /// Pass `studyCapture` from `performSend` to avoid a second PDF screenshot on the hot path.
+    private func apiContext(
+        for model: AIModelOption,
+        conversationID: String,
+        studyCapture: StudyPageCapture? = nil
+    ) -> [ChatMessage] {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
         let raw = conv.messages
         let agentPrompt = AgentStore.shared.agent(id: conv.agentID)?.trimmedPrompt
@@ -5391,7 +5714,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
         var messages = built.messages
-        applyStudyCaptureToLastUserMessage(in: &messages, conversationID: conversationID, persist: true)
+        applyStudyCaptureToLastUserMessage(
+            in: &messages,
+            conversationID: conversationID,
+            persist: true,
+            capture: studyCapture
+        )
         return messages
     }
 
@@ -5409,17 +5737,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func applyStudyCaptureToLastUserMessage(
         in messages: inout [ChatMessage],
         conversationID: String,
-        persist: Bool
+        persist: Bool,
+        capture: StudyPageCapture? = nil
     ) {
-        guard isStudyPageCaptureEnabled(for: conversationID),
-              let capture = studyPageCapturePayload(),
+        let resolvedCapture: StudyPageCapture?
+        if let capture = capture {
+            resolvedCapture = capture
+        } else if isStudyPageCaptureEnabled(for: conversationID) {
+            resolvedCapture = studyPageCapturePayload()
+        } else {
+            resolvedCapture = nil
+        }
+        guard let capture = resolvedCapture,
               let idx = messages.lastIndex(where: { $0.role == .user }) else { return }
         var msg = messages[idx]
         let prefix = capture.apiContextPrefix()
-        let changed = msg.apiContextPrefix != prefix || msg.imageJPEGBase64 != capture.imageJPEGBase64
+        let changed = msg.apiContextPrefix != prefix
+            || msg.imageJPEGBase64 != capture.imageJPEGBase64
+            || msg.hidesAttachedImageInChat != capture.hidesImageInChatBubble
         guard changed else { return }
         msg.apiContextPrefix = prefix
         msg.imageJPEGBase64 = capture.imageJPEGBase64
+        msg.hidesAttachedImageInChat = capture.hidesImageInChatBubble
         messages[idx] = msg
         guard persist else { return }
         let messageID = msg.id
@@ -5427,6 +5766,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             guard let i = draft.messages.firstIndex(where: { $0.id == messageID }) else { return }
             draft.messages[i].apiContextPrefix = prefix
             draft.messages[i].imageJPEGBase64 = capture.imageJPEGBase64
+            draft.messages[i].hidesAttachedImageInChat = capture.hidesImageInChatBubble
         }
     }
 
@@ -5545,7 +5885,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         convID: String,
         model: AIModelOption,
         needsAITitle: Bool,
-        query: String
+        query: String,
+        studyCapture: StudyPageCapture? = nil
     ) {
         let generation = WebSearchCoordinator.shared.begin(convID)
         syncStreamingChrome()
@@ -5555,7 +5896,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             body: "正在结合对话上下文推荐查证来源…\n（会消解「那这个呢」「为什么」等指代，并选择百科、知乎、媒体等站点定向检索。）"
         )
 
-        let contextMsgs = apiContext(for: model, conversationID: convID)
+        let contextMsgs = apiContext(for: model, conversationID: convID, studyCapture: studyCapture)
         WebSearchService.planSearch(
             contextMessages: contextMsgs,
             model: model,
@@ -5605,7 +5946,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     c.messages[c.messages.count - 1] = last
                 }
                 // Always rebuild from THIS conversation — never the currently visible chat.
-                var msgs = self.apiContext(for: model, conversationID: convID)
+                var msgs = self.apiContext(for: model, conversationID: convID, studyCapture: studyCapture)
                 switch result {
                 case .success(let bundle):
                     self.updateSearchProcess(
@@ -5694,28 +6035,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func modelTapped() {
-        let current = ConversationStore.shared.currentConversation?.model
-        let pool = AIModelOption.visible
-        // Flip chevron while open for capsule-dropdown feel.
         if let title = modelButton.title(for: .normal)?.replacingOccurrences(of: "▾", with: "▴") {
             modelButton.setTitle(title, for: .normal)
         }
-        ModelCapsuleDropdown.present(
-            from: self,
-            anchor: modelButton,
-            models: pool,
-            selected: current,
-            onPick: { [weak self] option in
-                guard let self = self else { return }
-                guard let id = ConversationStore.shared.currentConversationID else { return }
-                ConversationStore.shared.setModel(option, for: id)
-                self.inputBar.clearAttachment()
-                self.updateAttachAvailability()
-            },
-            onDismiss: { [weak self] in
-                self?.updateModelButton()
-            }
-        )
+        presentModelPicker(anchor: modelButton)
     }
 
     private func agentTapped() {
@@ -5993,7 +6316,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        let usage = ContextBuilder.usage(for: conv)
+        let usage = ContextBuilder.quickUsageEstimate(for: conv)
         let intendedConversationID = conv.id
         if usage.shouldAutoCompact {
             inputBar.setContextUsageCompacting(true)
@@ -6027,12 +6350,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if isStudyPageCaptureEnabled(for: conversationID) {
             if let capture = studyPageCapturePayload() {
                 resolvedStudyCapture = capture
+                _ = StudyAskSelectionStore.shared.consume(for: conversationID)
             } else {
                 notifyStudyCaptureFailure(for: conversationID)
                 return
             }
         } else {
             resolvedStudyCapture = nil
+            StudyAskSelectionStore.shared.clear(conversationID: conversationID)
+        }
+        if currentConversationID == conversationID {
+            clearAskSelectionChip()
+            studyContextProvider?.clearAskSelectionHighlightInReader()
         }
 
         let finalImage = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64
@@ -6052,6 +6381,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             role: .user,
             content: displayText,
             imageJPEGBase64: finalImage,
+            hidesAttachedImageInChat: resolvedStudyCapture?.hidesImageInChatBubble ?? false,
             apiContextPrefix: studyPrefix
         )
         let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
@@ -6095,12 +6425,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             // First turn in a brand-new chat: ensure the table is actually visible
             // (empty open left alpha=0; only isHidden was cleared above).
             tableView.alpha = 1
+            tableView.isHidden = false
             UIView.performWithoutAnimation {
                 if firstNewRow == 0 {
-                    // First turn in an empty chat: reload instead of insertRows.
-                    // The empty-open path hid the table at alpha 0; insert into that
-                    // state is unreliable on iOS 12 and can leave zero visible cells.
-                    tableView.reloadData()
+                    // Prefer insertRows once the empty table is visible; reload only if
+                    // the table already has a stale snapshot (iOS 12 edge cases).
+                    if tableView.numberOfRows(inSection: 0) == 0 {
+                        tableView.insertRows(
+                            at: [
+                                IndexPath(row: 0, section: 0),
+                                IndexPath(row: 1, section: 0)
+                            ],
+                            with: .none
+                        )
+                    } else {
+                        tableView.reloadData()
+                    }
                 } else {
                     tableView.insertRows(
                         at: [
@@ -6118,17 +6458,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             updateTurnContextBar(preferBottom: true)
             // Paint the streaming shell immediately — don't wait for the first
             // stream tick (thinking/search tags should show on send).
-            if currentConversationID == convID {
-                syncStreamingChrome()
-                refreshStreamingRow(waitingGlyph: nil, relayout: true)
-                followStreamingViewportToBottom()
-                // Keyboard / contentSize often settle on the next turns.
-                DispatchQueue.main.async { [weak self] in
-                    self?.followStreamingViewportToBottom()
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                    self?.followStreamingViewportToBottom()
-                }
+            syncStreamingChrome()
+            refreshStreamingRow(waitingGlyph: nil, relayout: false)
+            followStreamingViewportToBottom()
+            DispatchQueue.main.async { [weak self] in
+                self?.followStreamingViewportToBottom()
             }
         }
         // This posts a title notification. Do it only after UITableView has
@@ -6138,23 +6472,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConversationStore.shared.applyProvisionalTitle(id: convID, fromUserText: displayText)
         }
 
-        if searchOn {
-            beginWebSearchThenStream(
-                convID: convID,
-                model: model,
-                needsAITitle: needsAITitle,
-                query: displayText
-            )
-        } else {
-            if currentConversationID == convID {
-                syncStreamingChrome()
+        // Phase B: build API context + start stream on the next turn so send
+        // paint is not blocked by Memory/ContextBuilder / duplicate PDF capture.
+        let captureForAPI = resolvedStudyCapture
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if searchOn {
+                self.beginWebSearchThenStream(
+                    convID: convID,
+                    model: model,
+                    needsAITitle: needsAITitle,
+                    query: displayText,
+                    studyCapture: captureForAPI
+                )
+            } else {
+                let messages = self.apiContext(
+                    for: model,
+                    conversationID: convID,
+                    studyCapture: captureForAPI
+                )
+                StreamManager.shared.start(
+                    conversationID: convID,
+                    messages: messages,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
             }
-            StreamManager.shared.start(
-                conversationID: convID,
-                messages: apiContext(for: model, conversationID: convID),
-                model: model,
-                needsAITitle: needsAITitle
-            )
         }
 
         // Do not make a reply wait for OCR/vision extraction. The first request
@@ -7444,8 +7787,64 @@ extension ChatViewController: InputBarViewDelegate {
         }
         inputBar.studyPageCaptureEnabled = enabled
         if enabled {
-            ConnectsToast.show("发送时将附带当前阅读页截图", in: view, duration: 1.6)
+            let kind = ConversationStore.shared.conversation(id: id).flatMap { conv in
+                conv.studyDocumentID.flatMap { StudyDocumentStore.shared.document(id: $0)?.kind }
+            }
+            let tip: String
+            switch kind {
+            case .text?: tip = "发送时将附带代码全文上下文（无截图）"
+            case .markdown?: tip = "发送时将附带当前 Markdown 上下文"
+            case .pdf?: tip = "发送时将附带当前页截图（不抽取 PDF 文本）"
+            default: tip = "发送时将附带当前阅读上下文"
+            }
+            ConnectsToast.show(tip, in: view, duration: 1.6)
         }
+    }
+
+    func inputBarDidTapAIOptions() {
+        prepareForStudyPanelControlTap()
+        presentModelPicker(anchor: inputBar.aiOptionsAnchorView)
+    }
+
+    func inputBarDidRequestStudyContextScope(from sourceView: UIView) {
+        guard let id = currentConversationID else { return }
+        let current = StudyFileContextStore.shared.scope(for: id)
+        func mark(_ scope: StudyContextScope, title: String) -> String {
+            current == scope ? "✓ \(title)" : title
+        }
+        ConnectsMenu.present(
+            from: self,
+            title: "文档上下文范围",
+            items: [
+                ConnectsMenuItem(title: mark(.auto, title: "智能（默认）"), icon: .book) { [weak self] in
+                    guard let self = self else { return }
+                    StudyFileContextStore.shared.setScope(.auto, for: id)
+                    ConnectsToast.show("上下文：智能", in: self.view, duration: 1.2)
+                },
+                ConnectsMenuItem(title: mark(.fullFile, title: "全文 / 文件"), icon: .book) { [weak self] in
+                    guard let self = self else { return }
+                    StudyFileContextStore.shared.setScope(.fullFile, for: id)
+                    ConnectsToast.show("上下文：全文", in: self.view, duration: 1.2)
+                },
+                ConnectsMenuItem(title: mark(.selection, title: "选区"), icon: .edit) { [weak self] in
+                    guard let self = self else { return }
+                    StudyFileContextStore.shared.setScope(.selection, for: id)
+                    ConnectsToast.show("上下文：选区", in: self.view, duration: 1.2)
+                },
+                ConnectsMenuItem(title: mark(.sectionOrPage, title: "节 / 页"), icon: .toc) { [weak self] in
+                    guard let self = self else { return }
+                    StudyFileContextStore.shared.setScope(.sectionOrPage, for: id)
+                    ConnectsToast.show("上下文：节/页", in: self.view, duration: 1.2)
+                },
+                ConnectsMenuItem(title: "重新同步全文", icon: .retry) { [weak self] in
+                    guard let self = self else { return }
+                    StudyFileContextStore.shared.setScope(.resync, for: id)
+                    ConnectsToast.show("下一条将重新钉住全文", in: self.view, duration: 1.4)
+                }
+            ],
+            sourceView: sourceView,
+            sourceRect: sourceView.bounds
+        )
     }
 
     func inputBarDidTapSend(text: String, imageBase64: String?) {

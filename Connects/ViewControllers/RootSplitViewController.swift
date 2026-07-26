@@ -66,6 +66,7 @@ final class RootSplitViewController: UIViewController {
         dimView.backgroundColor = UIColor.black.withAlphaComponent(0.35)
         dimView.alpha = 0
         dimView.isHidden = true
+        dimView.isUserInteractionEnabled = false
         let tapDim = UITapGestureRecognizer(target: self, action: #selector(dimViewTapped))
         dimView.addGestureRecognizer(tapDim)
 
@@ -294,6 +295,7 @@ final class RootSplitViewController: UIViewController {
 
         if isCompactLayout {
             isDrawerOpen = false
+            dimView.isUserInteractionEnabled = false
             dimView.isHidden = true
             dimView.alpha = 0
             sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
@@ -307,6 +309,7 @@ final class RootSplitViewController: UIViewController {
             syncSidebarToggleUI(collapsed: isSidebarCollapsed)
             dimView.isHidden = !isDrawerOpen
             dimView.alpha = isDrawerOpen ? 1 : 0
+            dimView.isUserInteractionEnabled = isDrawerOpen
         }
         applyThemeColors()
         let updates = { self.view.layoutIfNeeded() }
@@ -328,6 +331,7 @@ final class RootSplitViewController: UIViewController {
         isDrawerOpen = true
         isSidebarCollapsed = false
         dimView.isHidden = false
+        dimView.isUserInteractionEnabled = true
         sidebarLeadingCompact.constant = 0
         view.bringSubviewToFront(dimView)
         view.bringSubviewToFront(sidebarContainer)
@@ -348,6 +352,9 @@ final class RootSplitViewController: UIViewController {
 
         isDrawerOpen = false
         isSidebarCollapsed = true
+        // Drop hit-testing immediately — alpha animation used to swallow nav taps
+        // for ~0.22s after「新对话」closed the drawer.
+        dimView.isUserInteractionEnabled = false
         syncSidebarToggleUI(collapsed: true)
 
         if animated {
@@ -444,6 +451,8 @@ extension RootSplitViewController: UIGestureRecognizerDelegate {
 extension Notification.Name {
     static let connectsCompactLayoutDidChange = Notification.Name("ConnectsCompactLayoutDidChange")
     static let connectsChatWidthDidChange = Notification.Name("ConnectsChatWidthDidChange")
+    /// Study shell: re-arm floating ▲▼ after highlight-off / keyboard teardown.
+    static let connectsStudyStageChromeShouldReassert = Notification.Name("ConnectsStudyStageChromeShouldReassert")
 }
 
 extension RootSplitViewController: SidebarViewControllerDelegate {
@@ -466,8 +475,10 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
 
     func sidebarDidRequestNewChat() {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+        // Instant close so the dim overlay cannot eat the next sidebar-toggle tap.
+        closeDrawer(animated: false)
         _ = ConversationStore.shared.createConversation(model: model)
-        closeDrawer()
+        chatVC.applyConversationSwitchHint()
     }
 
     func sidebarDidRequestSettings() {

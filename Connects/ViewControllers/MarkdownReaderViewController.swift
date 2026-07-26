@@ -2,14 +2,21 @@ import UIKit
 import WebKit
 
 /// Study-mode Markdown reader — same shell role as `PDFReaderViewController`.
-final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UIScrollViewDelegate {
+final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UIScrollViewDelegate, UITextViewDelegate {
     private let topBar = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
+    private let modeButton = UIButton(type: .system)
+    private let saveButton = UIButton(type: .system)
     private let progressLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .gray)
-    private var webView: WKWebView!
+    private var webView: StudyAskWebView!
+    private let editorView = StudyAskTextView()
+    private var isEditMode = false
+    private var isDirty = false
+    private var saveWorkItem: DispatchWorkItem?
     private let contentsPanelHost = UIView()
+    private let contentsDim = UIControl()
     private let contentsVC = MarkdownContentsViewController()
     private var progressWorkItem: DispatchWorkItem?
     private var currentDocumentID: String?
@@ -28,9 +35,110 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private var shellRotationProgress: StudyProgress?
     private var readerSurfaceActive = true
     private var contentReady = false
+    private var askPinnedEditorRange: NSRange?
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
+    var onAskSelection: ((String) -> Void)?
+
+    /// Persist Ask highlight on the current selection; does not open AI.
+    func pinAskSelectionHighlight() {
+        if isEditMode {
+            let range = editorView.selectedRange
+            let length = (editorView.text as NSString?)?.length ?? 0
+            let clamped = NSIntersectionRange(range, NSRange(location: 0, length: length))
+            guard clamped.length > 0 else { return }
+            askPinnedEditorRange = clamped
+            paintAskEditorHighlight()
+            editorView.selectedRange = clamped
+            if #available(iOS 13.0, *) {
+                UIMenuController.shared.hideMenu(from: editorView)
+            } else {
+                UIMenuController.shared.setMenuVisible(false, animated: true)
+            }
+            return
+        }
+        pinAskWebHighlight()
+    }
+
+    func clearAskSelectionHighlight() {
+        askPinnedEditorRange = nil
+        if isEditMode {
+            let plain = editorView.text ?? ""
+            editorView.attributedText = NSAttributedString(
+                string: plain,
+                attributes: [
+                    .font: editorView.font ?? UIFont.systemFont(ofSize: 16),
+                    .foregroundColor: DSTheme.c.textPrimary
+                ]
+            )
+        } else {
+            webView.evaluateJavaScript(Self.clearAskWebHighlightJS, completionHandler: nil)
+        }
+    }
+
+    private func paintAskEditorHighlight() {
+        let plain = editorView.text ?? ""
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: editorView.font ?? UIFont.systemFont(ofSize: 16),
+            .foregroundColor: DSTheme.c.textPrimary
+        ]
+        let mutable = NSMutableAttributedString(string: plain, attributes: attrs)
+        if let pinned = askPinnedEditorRange {
+            let clamped = NSIntersectionRange(pinned, NSRange(location: 0, length: (plain as NSString).length))
+            if clamped.length > 0 {
+                mutable.addAttribute(
+                    .backgroundColor,
+                    value: DSTheme.c.accent.withAlphaComponent(0.28),
+                    range: clamped
+                )
+            }
+        }
+        let selected = editorView.selectedRange
+        editorView.attributedText = mutable
+        editorView.selectedRange = selected
+    }
+
+    private func pinAskWebHighlight() {
+        webView.evaluateJavaScript(Self.pinAskWebHighlightJS, completionHandler: nil)
+    }
+
+    private static let pinAskWebHighlightJS = """
+    (function(){
+      document.querySelectorAll('mark.connects-ask').forEach(function(m){
+        var p = m.parentNode; if (!p) return;
+        while (m.firstChild) p.insertBefore(m.firstChild, m);
+        p.removeChild(m); p.normalize();
+      });
+      var sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+      var range = sel.getRangeAt(0);
+      var mark = document.createElement('mark');
+      mark.className = 'connects-ask';
+      mark.style.background = 'rgba(64,140,255,0.35)';
+      mark.style.color = 'inherit';
+      try {
+        mark.appendChild(range.extractContents());
+        range.insertNode(mark);
+      } catch (e) { return false; }
+      sel.removeAllRanges();
+      var keep = document.createRange();
+      keep.selectNodeContents(mark);
+      sel.addRange(keep);
+      return true;
+    })();
+    """
+
+    private static let clearAskWebHighlightJS = """
+    (function(){
+      document.querySelectorAll('mark.connects-ask').forEach(function(m){
+        var p = m.parentNode; if (!p) return;
+        while (m.firstChild) p.insertBefore(m.firstChild, m);
+        p.removeChild(m); p.normalize();
+      });
+      return true;
+    })();
+    """
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -53,10 +161,24 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
         topBar.addSubview(contentsButton)
 
+        modeButton.translatesAutoresizingMaskIntoConstraints = false
+        modeButton.setTitle("编辑", for: .normal)
+        modeButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
+        topBar.addSubview(modeButton)
+
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.setTitle("保存", for: .normal)
+        saveButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+        saveButton.isHidden = true
+        topBar.addSubview(saveButton)
+
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
         progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
         progressLabel.textColor = DSTheme.c.textSecondary
         progressLabel.textAlignment = .center
+        progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         topBar.addSubview(progressLabel)
 
         let config = WKWebViewConfiguration()
@@ -70,17 +192,40 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             config.defaultWebpagePreferences = prefs
         }
 
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = StudyAskWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
         webView.scrollView.delegate = self
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.backgroundColor = DSTheme.c.background
         webView.isOpaque = false
+        webView.onAskSelection = { [weak self] text in
+            self?.onAskSelection?(text)
+        }
         if #available(iOS 11.0, *) {
             webView.scrollView.contentInsetAdjustmentBehavior = .never
         }
         view.addSubview(webView)
+
+        editorView.translatesAutoresizingMaskIntoConstraints = false
+        editorView.font = UIFont(name: "Menlo-Regular", size: 14) ?? UIFont.systemFont(ofSize: 14)
+        editorView.backgroundColor = DSTheme.c.background
+        editorView.textColor = DSTheme.c.textPrimary
+        editorView.autocorrectionType = .no
+        editorView.autocapitalizationType = .none
+        editorView.smartDashesType = .no
+        editorView.smartQuotesType = .no
+        editorView.keyboardDismissMode = .interactive
+        editorView.isHidden = true
+        editorView.delegate = self
+        editorView.onAskSelection = { [weak self] text in
+            self?.onAskSelection?(text)
+        }
+        if #available(iOS 11.0, *) {
+            editorView.contentInsetAdjustmentBehavior = .never
+        }
+        view.addSubview(editorView)
+        StudyAskMenu.installIfNeeded()
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
@@ -97,9 +242,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
-            progressLabel.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
-            progressLabel.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
+            progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
+            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
+
+            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -4),
+            modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+
+            saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
+            saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -110,6 +262,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            editorView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            editorView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            editorView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            editorView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
@@ -180,9 +337,13 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         view.backgroundColor = DSTheme.c.background
         topBar.backgroundColor = DSTheme.c.background
         webView.backgroundColor = DSTheme.c.background
+        editorView.backgroundColor = DSTheme.c.background
+        editorView.textColor = DSTheme.c.textPrimary
         progressLabel.textColor = DSTheme.c.textSecondary
         sidebarButton.tintColor = DSTheme.c.textSecondary
         contentsButton.tintColor = DSTheme.c.textSecondary
+        modeButton.tintColor = DSTheme.c.accent
+        saveButton.tintColor = DSTheme.c.accent
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
         shellLoaded = false
@@ -194,7 +355,83 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         }
     }
 
+    @objc private func modeTapped() {
+        if isEditMode {
+            flushMarkdownSaveIfNeeded()
+            setEditMode(false)
+        } else {
+            setEditMode(true)
+        }
+    }
+
+    @objc private func saveTapped() {
+        flushMarkdownSaveIfNeeded(force: true)
+    }
+
+    private func setEditMode(_ editing: Bool) {
+        isEditMode = editing
+        modeButton.setTitle(editing ? "阅读" : "编辑", for: .normal)
+        saveButton.isHidden = !editing
+        contentsButton.isHidden = editing
+        webView.isHidden = editing
+        editorView.isHidden = !editing
+        if editing {
+            editorView.text = markdownSource
+            editorView.becomeFirstResponder()
+        } else {
+            editorView.resignFirstResponder()
+            pendingMarkdown = markdownSource
+            tryInjectPendingMarkdown()
+            refreshContentsPanel()
+        }
+        updateProgressLabel()
+    }
+
+    private func flushMarkdownSaveIfNeeded(force: Bool = false) {
+        guard let docID = currentDocumentID else { return }
+        if isEditMode {
+            markdownSource = editorView.text ?? markdownSource
+        }
+        guard isDirty || force else { return }
+        guard isDirty else { return }
+        do {
+            try StudyDocumentStore.shared.writeTextContent(markdownSource, for: docID)
+            isDirty = false
+            updateProgressLabel()
+            ConnectsToast.show("已保存", in: view, duration: 1.0)
+        } catch {
+            ConnectsToast.show("保存失败：\(error.localizedDescription)", in: view, duration: 2.0)
+        }
+    }
+
+    private func scheduleMarkdownAutosave() {
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushMarkdownSaveIfNeeded(force: true)
+        }
+        saveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        guard textView === editorView else { return }
+        if askPinnedEditorRange != nil {
+            askPinnedEditorRange = nil
+        }
+        isDirty = true
+        markdownSource = textView.text ?? ""
+        updateProgressLabel()
+        scheduleMarkdownAutosave()
+    }
+
     private func installContentsPanel() {
+        contentsDim.translatesAutoresizingMaskIntoConstraints = false
+        contentsDim.backgroundColor = UIColor.black.withAlphaComponent(0.08)
+        contentsDim.alpha = 0
+        contentsDim.isHidden = true
+        contentsDim.addTarget(self, action: #selector(contentsDimTapped), for: .touchUpInside)
+        view.addSubview(contentsDim)
+
         contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
@@ -222,6 +459,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         )
 
         NSLayoutConstraint.activate([
+            contentsDim.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            contentsDim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentsDim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentsDim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
             contentsPanelHost.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             contentsPanelHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             contentsPanelWidth,
@@ -232,6 +474,10 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             contentsVC.view.trailingAnchor.constraint(equalTo: contentsPanelHost.trailingAnchor),
             contentsVC.view.bottomAnchor.constraint(equalTo: contentsPanelHost.bottomAnchor)
         ])
+    }
+
+    @objc private func contentsDimTapped() {
+        setContentsPanelVisible(false, animated: true)
     }
 
     private func refreshContentsPanel() {
@@ -276,6 +522,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     private func syncContentsOverlayZOrder() {
+        if isContentsPanelVisible {
+            view.bringSubviewToFront(contentsDim)
+        }
         view.bringSubviewToFront(contentsPanelHost)
         view.bringSubviewToFront(topBar)
         view.bringSubviewToFront(spinner)
@@ -284,20 +533,26 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
         isContentsPanelVisible = visible
         if visible {
+            contentsDim.isHidden = false
             syncContentsOverlayZOrder()
         }
         contentsPanelHost.isHidden = false
         contentsPanelTrailing.constant = visible ? 0 : contentsPanelWidthConstant
         let updates = {
             self.view.layoutIfNeeded()
+            self.contentsDim.alpha = visible ? 1 : 0
         }
         if animated {
             UIView.animate(withDuration: 0.24, delay: 0, options: [.curveEaseOut], animations: updates) { _ in
                 self.contentsPanelHost.isHidden = !visible
+                if !visible {
+                    self.contentsDim.isHidden = true
+                }
             }
         } else {
             updates()
             contentsPanelHost.isHidden = !visible
+            contentsDim.isHidden = !visible
         }
     }
 
@@ -330,8 +585,14 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
                     return
                 }
                 self.markdownSource = text
+                self.editorView.text = text
+                self.isDirty = false
                 self.pendingMarkdown = text
-                self.tryInjectPendingMarkdown()
+                if self.isEditMode {
+                    self.setEditMode(true)
+                } else {
+                    self.tryInjectPendingMarkdown()
+                }
                 self.updateProgressLabel()
                 completion?(true)
             }
@@ -339,7 +600,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     func pauseReading() {
+        flushMarkdownSaveIfNeeded(force: true)
         saveReadingProgressNow()
+        editorView.resignFirstResponder()
     }
 
     func resumeAfterConversationSwitch() {
@@ -425,9 +688,13 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     func clearDocument() {
         loadGeneration &+= 1
+        flushMarkdownSaveIfNeeded(force: true)
         saveReadingProgressNow()
+        askPinnedEditorRange = nil
         currentDocumentID = nil
         markdownSource = ""
+        editorView.text = ""
+        isDirty = false
         contentReady = false
         pendingMarkdown = nil
         pendingViewportProgress = nil
@@ -438,19 +705,33 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         webView.evaluateJavaScript("window.__connectsRender && window.__connectsRender('');", completionHandler: nil)
     }
 
+    func currentFullMarkdown() -> String? {
+        if isEditMode { return editorView.text }
+        return markdownSource.isEmpty ? nil : markdownSource
+    }
+
     func currentPageText() -> String? {
-        guard contentReady, !markdownSource.isEmpty else { return nil }
-        // Prefer rendered visible text via JS when possible; fall back to raw window.
+        if isEditMode {
+            let full = editorView.text ?? ""
+            return full.isEmpty ? nil : String(full.prefix(4_000))
+        }
+        guard contentReady || !markdownSource.isEmpty else { return nil }
         return estimatedVisibleRawMarkdown()
     }
 
     func currentPageLabel() -> String {
-        guard contentReady, currentDocumentID != nil else { return "无文档" }
+        guard currentDocumentID != nil else { return "无文档" }
+        if isEditMode {
+            let dirty = isDirty ? " · 未保存" : ""
+            return "Markdown 编辑\(dirty)"
+        }
+        guard contentReady else { return "无文档" }
         let pct = Int((scrollFraction() * 100).rounded())
         return "Markdown · \(pct)%"
     }
 
     func captureCurrentPageImageJPEG() -> String? {
+        if isEditMode { return nil }
         guard contentReady, webView.bounds.width > 1, webView.bounds.height > 1 else { return nil }
         let format = UIGraphicsImageRendererFormat()
         format.scale = min(UIScreen.main.scale, 2)

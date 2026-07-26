@@ -6,17 +6,23 @@ enum StudyDocumentError: LocalizedError {
     case copyFailed
     case invalidPDF
     case invalidMarkdown
+    case invalidText
     case unsupportedType
     case markdownImportAsyncOnly
+    case bookmarkUnavailable
+    case writeFailed
 
     var errorDescription: String? {
         switch self {
-        case .fileTooLarge: return "文件过大，无法导入。"
+        case .fileTooLarge: return "文件过大，无法打开。"
         case .copyFailed: return "无法复制文件到应用目录。"
         case .invalidPDF: return "不是有效的 PDF 文件。"
         case .invalidMarkdown: return "无法读取 Markdown 文件。"
-        case .unsupportedType: return "仅支持 PDF 或 Markdown（.md / .markdown）。"
-        case .markdownImportAsyncOnly: return "Markdown 需异步转为 PDF 后导入。"
+        case .invalidText: return "无法读取文本文件。"
+        case .unsupportedType: return "支持 PDF、Markdown、Verilog（.v）及常见代码文本。"
+        case .markdownImportAsyncOnly: return "请使用「打开 Markdown」选择文件。"
+        case .bookmarkUnavailable: return "无法访问原文件，请重新打开该文档。"
+        case .writeFailed: return "无法写入文件。"
         }
     }
 }
@@ -34,8 +40,12 @@ final class StudyDocumentStore {
     private(set) var documents: [StudyDocument] = []
     private let pdfCache = NSCache<NSString, PDFDocument>()
     private let markdownCache = NSCache<NSString, NSString>()
+    private let textCache = NSCache<NSString, NSString>()
     private let maxPDFBytes: Int64 = 160 * 1024 * 1024
+    private let maxTextBytes: Int64 = 8 * 1024 * 1024
     private let registryName = "registry.json"
+    private var activeAccess: [String: (url: URL, accessing: Bool)] = [:]
+    private let accessLock = NSLock()
 
     var studyRootURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -45,6 +55,7 @@ final class StudyDocumentStore {
     private init() {
         pdfCache.countLimit = 4
         markdownCache.countLimit = 8
+        textCache.countLimit = 8
         loadRegistry()
     }
 
@@ -56,57 +67,317 @@ final class StudyDocumentStore {
         Array(documents.sorted { $0.lastOpenedAt > $1.lastOpenedAt }.prefix(limit))
     }
 
+    /// Sandbox URL for imported copies. Prefer `resolvedURL(forID:)` for reading/writing.
     func documentURL(for document: StudyDocument) -> URL {
         studyRootURL.appendingPathComponent(document.localRelativePath)
     }
 
     func documentURL(forID id: String) -> URL? {
         guard let doc = document(id: id) else { return nil }
+        if doc.accessMode == .originalBookmark {
+            return try? resolvedURL(forID: id)
+        }
+        guard !doc.localRelativePath.isEmpty else { return nil }
         return documentURL(for: doc)
     }
 
     func documentFolderURL(forID id: String) -> URL? {
-        guard document(id: id) != nil else { return nil }
+        guard let doc = document(id: id) else { return nil }
+        if doc.accessMode == .originalBookmark,
+           let url = try? resolvedURL(forID: id) {
+            return url.deletingLastPathComponent()
+        }
         return studyRootURL.appendingPathComponent(id, isDirectory: true)
+    }
+
+    /// Resolve security-scoped bookmark (or sandbox copy) and keep access while document is open.
+    @discardableResult
+    func resolvedURL(forID id: String) throws -> URL {
+        guard let doc = document(id: id) else { throw StudyDocumentError.bookmarkUnavailable }
+        accessLock.lock()
+        if let existing = activeAccess[id] {
+            accessLock.unlock()
+            return existing.url
+        }
+        accessLock.unlock()
+
+        if doc.accessMode == .originalBookmark, let data = doc.bookmarkData {
+            var isStale = false
+            // iOS: security-scoped bookmarks from the document picker use empty creation/resolve options
+            // (`.withSecurityScope` is macOS-only).
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            let accessing = url.startAccessingSecurityScopedResource()
+            accessLock.lock()
+            activeAccess[id] = (url, accessing)
+            accessLock.unlock()
+            if isStale {
+                if let refreshed = try? url.bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                ), let idx = documents.firstIndex(where: { $0.id == id }) {
+                    documents[idx].bookmarkData = refreshed
+                    documents[idx].displayPath = url.path
+                    saveRegistry()
+                }
+            }
+            return url
+        }
+
+        guard !doc.localRelativePath.isEmpty else { throw StudyDocumentError.bookmarkUnavailable }
+        let url = documentURL(for: doc)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw StudyDocumentError.bookmarkUnavailable
+        }
+        accessLock.lock()
+        activeAccess[id] = (url, false)
+        accessLock.unlock()
+        return url
+    }
+
+    func releaseAccess(forID id: String) {
+        accessLock.lock()
+        let entry = activeAccess.removeValue(forKey: id)
+        accessLock.unlock()
+        if let entry = entry, entry.accessing {
+            entry.url.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    func releaseAllAccess() {
+        accessLock.lock()
+        let entries = activeAccess
+        activeAccess.removeAll()
+        accessLock.unlock()
+        for (_, entry) in entries where entry.accessing {
+            entry.url.stopAccessingSecurityScopedResource()
+        }
     }
 
     func cachedPDFDocument(for documentID: String) -> PDFDocument? {
         if let cached = pdfCache.object(forKey: documentID as NSString) {
             return cached
         }
-        guard let url = documentURL(forID: documentID),
+        guard let url = try? resolvedURL(forID: documentID),
               let doc = PDFDocument(url: url) else { return nil }
         pdfCache.setObject(doc, forKey: documentID as NSString)
         return doc
     }
 
+    func invalidatePDFCache(for documentID: String) {
+        pdfCache.removeObject(forKey: documentID as NSString)
+    }
+
     func markdownText(for documentID: String) -> String? {
-        if let cached = markdownCache.object(forKey: documentID as NSString) {
+        textContent(for: documentID)
+    }
+
+    func textContent(for documentID: String) -> String? {
+        if let cached = textCache.object(forKey: documentID as NSString)
+            ?? markdownCache.object(forKey: documentID as NSString) {
             return cached as String
         }
-        guard let url = documentURL(forID: documentID),
-              let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else { return nil }
-        markdownCache.setObject(text as NSString, forKey: documentID as NSString)
+        guard let url = try? resolvedURL(forID: documentID) else { return nil }
+        var result: String?
+        let coordinator = NSFileCoordinator()
+        var coError: NSError?
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coError) { readURL in
+            guard let data = try? Data(contentsOf: readURL),
+                  let text = String(data: data, encoding: .utf8)
+                    ?? String(data: data, encoding: .isoLatin1) else { return }
+            result = text
+        }
+        guard let text = result else { return nil }
+        textCache.setObject(text as NSString, forKey: documentID as NSString)
+        if document(id: documentID)?.kind == .markdown {
+            markdownCache.setObject(text as NSString, forKey: documentID as NSString)
+        }
         return text
+    }
+
+    func writeTextContent(_ text: String, for documentID: String) throws {
+        let url = try resolvedURL(forID: documentID)
+        let data = Data(text.utf8)
+        guard Int64(data.count) <= maxTextBytes else { throw StudyDocumentError.fileTooLarge }
+        var writeError: Error?
+        let coordinator = NSFileCoordinator()
+        var coError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coError) { writeURL in
+            do {
+                try data.write(to: writeURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coError = coError { throw coError }
+        if let writeError = writeError { throw writeError }
+        textCache.setObject(text as NSString, forKey: documentID as NSString)
+        if document(id: documentID)?.kind == .markdown {
+            markdownCache.setObject(text as NSString, forKey: documentID as NSString)
+        }
+        if let idx = documents.firstIndex(where: { $0.id == documentID }) {
+            documents[idx].fileSize = Int64(data.count)
+            documents[idx].contentFingerprint = Self.fingerprint(data: data, fileSize: Int64(data.count))
+            saveRegistry()
+        }
+    }
+
+    func writePDFDocument(_ pdf: PDFDocument, for documentID: String) throws {
+        guard let data = pdf.dataRepresentation() else { throw StudyDocumentError.writeFailed }
+        try writePDFData(data, for: documentID, keepingCached: pdf)
+    }
+
+    /// Disk write only — safe off the main thread. Call after `dataRepresentation()` on main.
+    func writePDFData(_ data: Data, for documentID: String, keepingCached pdf: PDFDocument? = nil) throws {
+        let url = try resolvedURL(forID: documentID)
+        var writeError: Error?
+        let coordinator = NSFileCoordinator()
+        var coError: NSError?
+        coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coError) { writeURL in
+            do {
+                try data.write(to: writeURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coError = coError { throw coError }
+        if let writeError = writeError { throw writeError }
+        if let pdf = pdf {
+            pdfCache.setObject(pdf, forKey: documentID as NSString)
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? Int64,
+           let idx = documents.firstIndex(where: { $0.id == documentID }) {
+            documents[idx].fileSize = size
+            saveRegistry()
+        }
+    }
+
+    func contentSHA8(for documentID: String) -> String {
+        guard let text = textContent(for: documentID) else { return "????????" }
+        var hash: UInt64 = 5381
+        for byte in text.utf8.prefix(256 * 1024) {
+            hash = ((hash << 5) &+ hash) &+ UInt64(byte)
+        }
+        return String(format: "%08llx", hash & 0xffff_ffff)
     }
 
     func trimCaches() {
         pdfCache.removeAllObjects()
         markdownCache.removeAllObjects()
+        textCache.removeAllObjects()
     }
 
-    /// Import PDF based on file extension / UTI.
-    /// Markdown must use `importMarkdownAsPDF` (renders to a frozen PDF).
+    /// Open original file in place (security-scoped bookmark). Prefer over import copy.
+    @discardableResult
+    func openDocument(from sourceURL: URL, title: String? = nil, forceText: Bool = false) throws -> StudyDocument {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        let ext = sourceURL.pathExtension.lowercased()
+        let kind: StudyDocumentKind
+        if let inferred = StudyDocument.kind(forExtension: ext) {
+            kind = inferred
+        } else if forceText {
+            kind = .text
+        } else {
+            throw StudyDocumentError.unsupportedType
+        }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
+        guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
+
+        if kind == .pdf, PDFDocument(url: sourceURL) == nil {
+            throw StudyDocumentError.invalidPDF
+        }
+        if kind != .pdf {
+            guard (try? Data(contentsOf: sourceURL)) != nil else {
+                throw kind == .markdown ? StudyDocumentError.invalidMarkdown : StudyDocumentError.invalidText
+            }
+        }
+
+        let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
+        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+            touch(documentID: existing.id)
+            return existing
+        }
+
+        let bookmark = try sourceURL.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let displayTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+            ?? sourceURL.deletingPathExtension().lastPathComponent
+        let lang: StudyTextLanguage? = kind == .text ? StudyTextLanguage.infer(fromExtension: ext) : nil
+
+        let doc = StudyDocument(
+            id: UUID().uuidString,
+            title: String(displayTitle.prefix(120)),
+            localRelativePath: "",
+            contentFingerprint: fingerprint,
+            fileSize: size,
+            lastOpenedAt: Date(),
+            kind: kind,
+            accessMode: .originalBookmark,
+            bookmarkData: bookmark,
+            displayPath: sourceURL.path,
+            textLanguage: lang
+        )
+        documents.insert(doc, at: 0)
+        saveRegistry()
+        notify()
+        return doc
+    }
+
+    /// Re-bind a document after bookmark failure by picking the same file again.
+    @discardableResult
+    func rebindBookmark(documentID: String, from sourceURL: URL) throws -> StudyDocument {
+        guard let idx = documents.firstIndex(where: { $0.id == documentID }) else {
+            return try openDocument(from: sourceURL)
+        }
+        releaseAccess(forID: documentID)
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+        let bookmark = try sourceURL.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        documents[idx].bookmarkData = bookmark
+        documents[idx].displayPath = sourceURL.path
+        documents[idx].accessMode = .originalBookmark
+        documents[idx].fileSize = size
+        documents[idx].contentFingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
+        documents[idx].lastOpenedAt = Date()
+        pdfCache.removeObject(forKey: documentID as NSString)
+        markdownCache.removeObject(forKey: documentID as NSString)
+        textCache.removeObject(forKey: documentID as NSString)
+        saveRegistry()
+        notify()
+        return documents[idx]
+    }
+
+    /// Import PDF based on file extension / UTI (legacy sandbox copy).
     @discardableResult
     func importDocument(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
         let ext = sourceURL.pathExtension.lowercased()
         switch ext {
         case "pdf":
             return try importPDF(from: sourceURL, title: title)
-        case "md", "markdown", "txt":
-            throw StudyDocumentError.markdownImportAsyncOnly
+        case "md", "markdown", "txt", "v", "vh", "sv", "c", "h", "py":
+            return try openDocument(from: sourceURL, title: title)
         default:
             throw StudyDocumentError.unsupportedType
         }
@@ -114,6 +385,11 @@ final class StudyDocumentStore {
 
     @discardableResult
     func importPDF(from sourceURL: URL, title: String? = nil) throws -> StudyDocument {
+        // Prefer open-in-place; fall back to copy if bookmark fails.
+        if let opened = try? openDocument(from: sourceURL, title: title), opened.kind == .pdf {
+            return opened
+        }
+
         let accessing = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if accessing { sourceURL.stopAccessingSecurityScopedResource() }
@@ -154,7 +430,9 @@ final class StudyDocumentStore {
             contentFingerprint: fingerprint,
             fileSize: size,
             lastOpenedAt: Date(),
-            kind: .pdf
+            kind: .pdf,
+            accessMode: .importedCopy,
+            displayPath: sourceURL.path
         )
         documents.insert(doc, at: 0)
         saveRegistry()
@@ -163,11 +441,23 @@ final class StudyDocumentStore {
     }
 
     /// Import Markdown (.md) plus optional user-picked shared images (matched by filename).
+    /// Prefer open-in-place when no extra images are needed.
     func importMarkdown(markdownURL: URL,
                         accessRoot: URL,
                         extraImageFiles: [URL] = [],
                         title: String? = nil,
                         completion: @escaping (Result<MarkdownPDFImportOutcome, Error>) -> Void) {
+        if extraImageFiles.isEmpty,
+           !MarkdownStudyImporter.referencesLocalImages(in: markdownURL),
+           let opened = try? openDocument(from: markdownURL, title: title) {
+            completion(.success(MarkdownPDFImportOutcome(
+                document: opened,
+                missingImagePaths: [],
+                reusedExisting: false
+            )))
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async {
             let result: Result<MarkdownStudyImportResult, Error>
             do {
@@ -216,7 +506,7 @@ final class StudyDocumentStore {
 
         let mdData = Data(snap.markdown.utf8)
         let mdSize = Int64(mdData.count)
-        guard mdSize <= 8 * 1024 * 1024 else { throw StudyDocumentError.fileTooLarge }
+        guard mdSize <= maxTextBytes else { throw StudyDocumentError.fileTooLarge }
 
         let docID = UUID().uuidString
         let relative = "\(docID)/original.md"
@@ -249,7 +539,8 @@ final class StudyDocumentStore {
             contentFingerprint: snap.fingerprint,
             fileSize: mdSize,
             lastOpenedAt: Date(),
-            kind: .markdown
+            kind: .markdown,
+            accessMode: .importedCopy
         )
         documents.insert(doc, at: 0)
         saveRegistry()
@@ -271,11 +562,16 @@ final class StudyDocumentStore {
 
     func delete(documentID: String) {
         guard let index = documents.firstIndex(where: { $0.id == documentID }) else { return }
+        let doc = documents[index]
         documents.remove(at: index)
+        releaseAccess(forID: documentID)
         pdfCache.removeObject(forKey: documentID as NSString)
         markdownCache.removeObject(forKey: documentID as NSString)
-        let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
-        try? FileManager.default.removeItem(at: folder)
+        textCache.removeObject(forKey: documentID as NSString)
+        if doc.accessMode == .importedCopy, !doc.localRelativePath.isEmpty {
+            let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
+            try? FileManager.default.removeItem(at: folder)
+        }
         StudyProgressStore.shared.delete(documentID: documentID)
         PDFBookmarkStore.shared.delete(documentID: documentID)
         ConversationStore.shared.detachStudyDocument(documentID: documentID)
@@ -284,8 +580,10 @@ final class StudyDocumentStore {
     }
 
     func reloadAfterBackupImport() {
+        releaseAllAccess()
         pdfCache.removeAllObjects()
         markdownCache.removeAllObjects()
+        textCache.removeAllObjects()
         loadRegistry()
         notify()
     }
@@ -296,11 +594,15 @@ final class StudyDocumentStore {
         }
         defer { handle.closeFile() }
         let sample = handle.readData(ofLength: 512 * 1024)
+        return fingerprint(data: sample, fileSize: fileSize, name: url.lastPathComponent)
+    }
+
+    private static func fingerprint(data: Data, fileSize: Int64, name: String = "") -> String {
         var hash: UInt64 = 5381
-        for byte in sample {
+        for byte in data.prefix(512 * 1024) {
             hash = ((hash << 5) &+ hash) &+ UInt64(byte)
         }
-        return "\(fileSize)-\(hash)"
+        return "\(fileSize)-\(hash)\(name.isEmpty ? "" : "-\(name)")"
     }
 
     private var registryURL: URL {
@@ -314,8 +616,12 @@ final class StudyDocumentStore {
             documents = []
             return
         }
-        documents = decoded.filter {
-            FileManager.default.fileExists(atPath: documentURL(for: $0).path)
+        documents = decoded.filter { doc in
+            if doc.accessMode == .originalBookmark, doc.bookmarkData != nil {
+                return true
+            }
+            guard !doc.localRelativePath.isEmpty else { return false }
+            return FileManager.default.fileExists(atPath: documentURL(for: doc).path)
         }
     }
 
@@ -358,7 +664,8 @@ final class StudyDocumentStore {
             contentFingerprint: "scroll-stress-\(docID)",
             fileSize: size,
             lastOpenedAt: Date(),
-            kind: .pdf
+            kind: .pdf,
+            accessMode: .importedCopy
         )
         documents.insert(doc, at: 0)
         saveRegistry()

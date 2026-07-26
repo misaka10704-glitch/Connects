@@ -52,7 +52,7 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
     }
 
     func applySharedImage(to message: ChatMessage) {
-        if message.hasImage {
+        if message.showsImageInChat {
             if cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
                 imageViewMsg.image = cachedImage
                 imageViewMsg.isHidden = cachedImage == nil
