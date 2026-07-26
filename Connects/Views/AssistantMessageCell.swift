@@ -935,16 +935,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                     ? message.searchProcessPhase.headerTitle
                     : SearchProcessPhase.done.headerTitle
             }
-            if streaming, !search.isEmpty {
-                applySearchLivePreview(
-                    text: search,
-                    colors: colors,
-                    thinkFont: thinkFont
-                )
-            } else {
-                populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
-                setSearch(visible: true, expanded: false)
-            }
+            populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
+            setSearch(visible: true, expanded: false)
             applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: colors.textSecondary)
             updateSearchHeaderInteraction(messageIsStreaming: streaming)
             searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
@@ -1768,21 +1760,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             cachedSearchText = search
             searchExpanded = false
-            let colors = cachedThemeColors ?? DSTheme.c
-            let thinkFont = cachedThinkingFontSize > 0
-                ? cachedThinkingFontSize
-                : SettingsManager.shared.chatThinkingFontSize
-            if search.isEmpty {
-                searchBody.attributedText = nil
-                searchBody.text = nil
-                setSearch(visible: true, expanded: false)
-            } else {
-                applySearchLivePreview(
-                    text: search,
-                    colors: colors,
-                    thinkFont: thinkFont
-                )
-            }
+            searchBody.attributedText = nil
+            searchBody.text = nil
+            setSearch(visible: true, expanded: false)
             let titleCore = imageActivity
                 ? message.imageTranscriptionPhase.headerTitle
                 : (message.searchProcessPhase != .done
@@ -1826,15 +1806,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             } else if !thinkingBox.isHidden, content.isEmpty {
                 applyThinkingLivePreview(
                     reasoning: message.reasoningContent,
-                    colors: cachedThemeColors ?? DSTheme.c,
-                    thinkFont: cachedThinkingFontSize > 0
-                        ? cachedThinkingFontSize
-                        : SettingsManager.shared.chatThinkingFontSize,
-                    waitingGlyph: glyph
-                )
-            } else if !searchBox.isHidden, !cachedSearchText.isEmpty {
-                applySearchLivePreview(
-                    text: cachedSearchText,
                     colors: cachedThemeColors ?? DSTheme.c,
                     thinkFont: cachedThinkingFontSize > 0
                         ? cachedThinkingFontSize
