@@ -203,6 +203,15 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateFocusBorder()
     }
 
+    var isComposerFirstResponder: Bool {
+        textView.isFirstResponder
+    }
+
+    /// Trigger the same path as tapping Send (for ⌘↩).
+    func sendFromKeyboardShortcut() {
+        sendTapped()
+    }
+
     /// Show Ask in the tool row for supported docs (gray until a selection is armed).
     func setAskSelectionSlotVisible(_ visible: Bool) {
         askSlotVisible = visible

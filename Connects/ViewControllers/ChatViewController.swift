@@ -5080,6 +5080,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         bottomConstraint?.constant = restingComposerBottomConstant()
     }
 
+    var isComposerFirstResponder: Bool {
+        isViewLoaded && inputBar.isComposerFirstResponder
+    }
+
+    func focusComposerFromShortcut() {
+        guard isViewLoaded else { return }
+        inputBar.focusComposer()
+        view.bringSubviewToFront(inputBar)
+    }
+
+    func sendFromKeyboardShortcut() {
+        guard isViewLoaded, !isCurrentStreaming else { return }
+        inputBar.sendFromKeyboardShortcut()
+    }
+
     /// Cancel scroll-settle / deceleration work so stage & input controls respond immediately.
     func prepareForStudyPanelControlTap() {
         guard isViewLoaded else { return }

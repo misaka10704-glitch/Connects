@@ -86,6 +86,8 @@ final class StudyShellViewController: UIViewController {
     private var didSeedPortraitMode = false
     private var isHandlingRotation = false
     private var isAnimatingPanelStage = false
+    /// After panel open animation, put keyboard into the AI composer (⌘L / ⌘J).
+    private var pendingFocusComposerAfterPanel = false
 
     private var isChatCollapsed: Bool { chatPanelStage == .collapsed }
 
@@ -894,6 +896,8 @@ final class StudyShellViewController: UIViewController {
             }
             let kind = StudyDocumentStore.shared.document(id: docID)?.kind ?? .pdf
             showReader(kind: kind)
+            // Keep shell in the responder chain so ⌘ shortcuts work before any text field is focused.
+            _ = becomeFirstResponder()
         } else {
             // Always leave study chrome when there is no document — including cold launch /
             // 新对话. Skipping remount here left an empty PDF shell ("无文档") on screen.
@@ -1273,14 +1277,21 @@ final class StudyShellViewController: UIViewController {
         }
     }
 
-    private func applyChatPanelStage(_ stage: StudyChatPanelStage, animated: Bool) {
-        // Never auto-pop the composer keyboard when expanding / collapsing the AI panel.
-        // Unhiding chatHost can otherwise restore a previous first-responder and raise the keyboard.
-        chatVC.dismissComposerKeyboard()
-        view.endEditing(true)
+    private func applyChatPanelStage(_ stage: StudyChatPanelStage, animated: Bool, focusComposerAfter: Bool = false) {
+        pendingFocusComposerAfterPanel = focusComposerAfter && stage != .collapsed
+        // Never auto-pop the composer keyboard when expanding / collapsing the AI panel —
+        // unless a shortcut asked to focus the composer after opening.
+        if !pendingFocusComposerAfterPanel {
+            chatVC.dismissComposerKeyboard()
+            view.endEditing(true)
+        } else {
+            // Leave the reader; composer focus is restored in `finish`.
+            view.endEditing(true)
+        }
 
         if stage == .collapsed {
             chatVC.dismissComposerKeyboard()
+            pendingFocusComposerAfterPanel = false
         } else if chatPanelStage == .half {
             stashDepartingOverlayRatio()
         }
@@ -1340,9 +1351,17 @@ final class StudyShellViewController: UIViewController {
                 self.chatHost.isHidden = true
                 self.chatNav.view.isHidden = true
             }
-            // UIKit may restore composer first-responder when the host finishes unhiding.
-            self.chatVC.dismissComposerKeyboard()
-            self.view.endEditing(true)
+            if self.pendingFocusComposerAfterPanel {
+                self.pendingFocusComposerAfterPanel = false
+                // UIKit may also try to restore a previous first responder; win the race next tick.
+                DispatchQueue.main.async {
+                    self.chatVC.focusComposerFromShortcut()
+                }
+            } else {
+                // UIKit may restore composer first-responder when the host finishes unhiding.
+                self.chatVC.dismissComposerKeyboard()
+                self.view.endEditing(true)
+            }
             self.syncPanelStageCapsuleLayout(layoutNow: false)
             self.bringChromeToFront()
             self.isAnimatingPanelStage = false
@@ -1698,6 +1717,116 @@ extension StudyShellViewController: UIGestureRecognizerDelegate {
             return abs(t.y) > abs(t.x) && abs(t.y) > 12
         }
         return true
+    }
+}
+
+// MARK: - Hardware keyboard shortcuts (iPad ⌘ long-press HUD)
+
+extension StudyShellViewController {
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var keyCommands: [UIKeyCommand]? {
+        var cmds: [UIKeyCommand] = [
+            makeKeyCommand(input: "\r", modifiers: .command, action: #selector(shortcutSend), title: "发送消息")
+        ]
+        guard isReaderVisible else { return cmds }
+
+        cmds += [
+            makeKeyCommand(input: "]", modifiers: .command, action: #selector(shortcutExpandAI), title: "扩大 AI 面板"),
+            makeKeyCommand(input: "[", modifiers: .command, action: #selector(shortcutShrinkAI), title: "缩小 AI 面板"),
+            makeKeyCommand(input: "j", modifiers: .command, action: #selector(shortcutToggleFocus), title: "切换代码 / AI 输入"),
+            makeKeyCommand(input: "e", modifiers: .command, action: #selector(shortcutFocusCode), title: "编辑代码"),
+            makeKeyCommand(input: "l", modifiers: .command, action: #selector(shortcutFocusAI), title: "聚焦 AI 输入"),
+            makeKeyCommand(input: "s", modifiers: .command, action: #selector(shortcutSave), title: "保存文档")
+        ]
+        return cmds
+    }
+
+    private func makeKeyCommand(input: String,
+                                modifiers: UIKeyModifierFlags,
+                                action: Selector,
+                                title: String) -> UIKeyCommand {
+        if #available(iOS 13.0, *) {
+            let cmd = UIKeyCommand(title: title, action: action, input: input, modifierFlags: modifiers)
+            if #available(iOS 15.0, *) {
+                cmd.wantsPriorityOverSystemBehavior = true
+            }
+            return cmd
+        }
+        let cmd = UIKeyCommand(input: input, modifierFlags: modifiers, action: action)
+        cmd.discoverabilityTitle = title
+        return cmd
+    }
+
+    @objc private func shortcutExpandAI() {
+        guard isReaderVisible else { return }
+        stepPanelTowardAI()
+    }
+
+    @objc private func shortcutShrinkAI() {
+        guard isReaderVisible else { return }
+        stepPanelTowardReading()
+    }
+
+    @objc private func shortcutToggleFocus() {
+        guard isReaderVisible else {
+            chatVC.focusComposerFromShortcut()
+            return
+        }
+        if chatVC.isComposerFirstResponder {
+            focusActiveReaderForEditing()
+        } else {
+            shortcutFocusAI()
+        }
+    }
+
+    @objc private func shortcutFocusCode() {
+        guard isReaderVisible else { return }
+        focusActiveReaderForEditing()
+    }
+
+    @objc private func shortcutFocusAI() {
+        guard isReaderVisible else {
+            chatVC.focusComposerFromShortcut()
+            return
+        }
+        chatVC.prepareForStudyPanelControlTap()
+        if chatPanelStage == .collapsed {
+            applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
+        } else {
+            chatVC.focusComposerFromShortcut()
+        }
+    }
+
+    @objc private func shortcutSave() {
+        guard isReaderVisible else { return }
+        switch activeReaderKind {
+        case .text:
+            textEditorVC.saveFromKeyboardShortcut()
+        case .markdown:
+            markdownReaderVC.saveFromKeyboardShortcut()
+        case .pdf:
+            ConnectsToast.show("PDF 无需文本保存", in: view, duration: 1.0)
+        }
+    }
+
+    @objc private func shortcutSend() {
+        if isReaderVisible, chatPanelStage == .collapsed {
+            applyChatPanelStage(.half, animated: true, focusComposerAfter: false)
+        }
+        chatVC.sendFromKeyboardShortcut()
+    }
+
+    private func focusActiveReaderForEditing() {
+        view.endEditing(true)
+        switch activeReaderKind {
+        case .text:
+            textEditorVC.focusForKeyboardEditing()
+        case .markdown:
+            markdownReaderVC.focusForKeyboardEditing()
+        case .pdf:
+            ConnectsToast.show("PDF 阅读页不支持键盘编辑", in: view, duration: 1.2)
+        }
     }
 }
 

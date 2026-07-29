@@ -126,6 +126,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         textView.textContainer.lineBreakMode = .byCharWrapping
         textView.autocorrectionType = .no
         textView.autocapitalizationType = .none
+        textView.spellCheckingType = .no
         textView.smartDashesType = .no
         textView.smartQuotesType = .no
         textView.smartInsertDeleteType = .no
@@ -465,6 +466,23 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         applyEditMode(!isEditMode)
     }
 
+    /// Keyboard shortcut: enter edit mode and focus the code text view.
+    func focusForKeyboardEditing() {
+        applyEditMode(true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.isEditMode else { return }
+            _ = self.textView.becomeFirstResponder()
+        }
+    }
+
+    var isCodeEditorFirstResponder: Bool {
+        textView.isFirstResponder
+    }
+
+    func saveFromKeyboardShortcut() {
+        flushSaveIfNeeded(force: true, showSuccessToast: true)
+    }
+
     private func applyEditMode(_ editing: Bool) {
         if !editing {
             // Avoid flush/resign during viewDidLoad (view not in a window yet).
@@ -498,12 +516,47 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         textView.markedTextRange != nil
     }
 
+    /// UTF-16 caret/selection snapshot that survives attributed-string swaps.
+    private func captureCaretSnapshot() -> (location: Int, length: Int, contentOffset: CGPoint) {
+        let offset = textView.contentOffset
+        if let selected = textView.selectedTextRange {
+            let loc = textView.offset(from: textView.beginningOfDocument, to: selected.start)
+            let len = textView.offset(from: selected.start, to: selected.end)
+            return (max(0, loc), max(0, len), offset)
+        }
+        let range = textView.selectedRange
+        return (range.location, range.length, offset)
+    }
+
+    private func restoreCaret(location: Int, length: Int, contentOffset: CGPoint?) {
+        let maxLen = textView.textStorage.length
+        let loc = max(0, min(location, maxLen))
+        let len = max(0, min(length, maxLen - loc))
+        if let start = textView.position(from: textView.beginningOfDocument, offset: loc),
+           let end = textView.position(from: start, offset: len),
+           let range = textView.textRange(from: start, to: end) {
+            textView.selectedTextRange = range
+        } else {
+            textView.selectedRange = NSRange(location: loc, length: len)
+        }
+        // Only pin scroll when not editing. While first-responder, UITextView
+        // scrolls to keep the caret visible — forcing an old offset fights that
+        // and makes the page jump up/down after each highlight pass.
+        guard let contentOffset = contentOffset else { return }
+        if abs(textView.contentOffset.y - contentOffset.y) > 0.5
+            || abs(textView.contentOffset.x - contentOffset.x) > 0.5 {
+            textView.setContentOffset(contentOffset, animated: false)
+        }
+    }
+
     private func applyHighlightedText(_ text: String) {
         guard !isIMEComposing else { return }
-        let selected = textView.selectedRange
-        let offset = textView.contentOffset
+        let caret = captureCaretSnapshot()
+        let editing = textView.isFirstResponder
         isApplyingHighlight = true
-        let attributed = CodeSyntaxHighlighter.highlight(
+        defer { isApplyingHighlight = false }
+
+        var attributed: NSAttributedString = CodeSyntaxHighlighter.highlight(
             text,
             language: language,
             fontSize: fontPointSize
@@ -514,17 +567,46 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             if clamped.length > 0, let mutable = attributed.mutableCopy() as? NSMutableAttributedString {
                 let tint = DSTheme.c.accent.withAlphaComponent(0.28)
                 mutable.addAttribute(.backgroundColor, value: tint, range: clamped)
-                textView.attributedText = mutable
+                attributed = mutable
             } else {
                 askPinnedRange = nil
-                textView.attributedText = attributed
             }
-        } else {
-            textView.attributedText = attributed
         }
-        textView.selectedRange = selected
-        textView.setContentOffset(offset, animated: false)
-        isApplyingHighlight = false
+
+        let storage = textView.textStorage
+        // After keystrokes the plain string is already in textStorage. Replacing the
+        // whole attributed string reflows layout and resets scroll — paint colors only.
+        let samePlainText = storage.string == attributed.string
+        UIView.performWithoutAnimation {
+            storage.beginEditing()
+            if samePlainText, storage.length == attributed.length {
+                let full = NSRange(location: 0, length: attributed.length)
+                attributed.enumerateAttributes(in: full, options: []) { attrs, range, _ in
+                    storage.setAttributes(attrs, range: range)
+                }
+            } else {
+                storage.setAttributedString(attributed)
+            }
+            storage.endEditing()
+
+            let now = textView.selectedRange
+            let caretMoved = now.location != caret.location || now.length != caret.length
+            if caretMoved || !samePlainText {
+                // Never force contentOffset while typing — that causes the visible jump.
+                restoreCaret(
+                    location: caret.location,
+                    length: caret.length,
+                    contentOffset: editing ? nil : caret.contentOffset
+                )
+            } else if !editing {
+                restoreCaret(
+                    location: caret.location,
+                    length: caret.length,
+                    contentOffset: caret.contentOffset
+                )
+            }
+        }
+
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
         syncLineNumberOffset()
     }
@@ -534,14 +616,18 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             if self.isIMEComposing {
+                // Keep waiting until composition ends — do not paint over marked text.
                 self.scheduleHighlight()
                 return
             }
             self.applyHighlightedText(self.textView.text ?? "")
-            self.updateLineNumbers(force: true)
+            // Refresh gutter after highlight; avoid layoutIfNeeded while typing.
+            self.updateLineNumbers(force: true, allowImmediateLayout: !self.textView.isFirstResponder)
         }
         highlightWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        // Slightly longer debounce so mid-token Latin typing is less likely to
+        // fight the keyboard; still snappy after a short pause / word boundary.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
     }
 
     private func scheduleAutosave() {
@@ -580,7 +666,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         StudyProgressStore.shared.update(documentID: docID, progress: progress)
     }
 
-    private func updateLineNumbers(force: Bool = false) {
+    private func updateLineNumbers(force: Bool = false, allowImmediateLayout: Bool = true) {
         textView.layoutManager.ensureLayout(for: textView.textContainer)
 
         let layout = textView.layoutManager
@@ -623,13 +709,18 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let gutterChanged = abs(gutterWidthConstraint.constant - targetGutter) > 0.5
         if gutterChanged {
             gutterWidthConstraint.constant = targetGutter
-            view.layoutIfNeeded()
+            // Synchronous layout while typing changes editor width → soft-wrap
+            // reflow → visible vertical jump. Defer until the next layout pass.
+            if allowImmediateLayout, !textView.isFirstResponder {
+                view.layoutIfNeeded()
+            }
         }
         if force || gutterChanged || lineNumberView.text != numbers {
             let attrs = CodeSyntaxHighlighter.lineNumberAttributes(fontSize: fontPointSize)
             lineNumberView.attributedText = NSAttributedString(string: numbers, attributes: attrs)
             lineNumberView.textAlignment = .right
         }
+        syncLineNumberOffset()
     }
 
     private func syncLineNumberOffset() {
@@ -664,12 +755,18 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
         isDirty = true
         updateProgressLabel()
-        updateLineNumbers(force: true)
+        // Line numbers refresh after debounced highlight. Doing ensureLayout +
+        // gutter work on every keystroke fights soft-wrap and scrolls the page.
         onPageChanged?()
-        // Replacing attributedText during IME composition commits raw pinyin letters.
+        // Replacing attributes during IME composition commits raw pinyin letters.
         guard !isIMEComposing else { return }
         scheduleHighlight()
         scheduleAutosave()
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        // Apply any deferred gutter width change now that reflow won't yank the caret.
+        updateLineNumbers(force: true, allowImmediateLayout: true)
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {

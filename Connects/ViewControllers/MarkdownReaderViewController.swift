@@ -400,6 +400,23 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         updateProgressLabel()
     }
 
+    /// Keyboard shortcut: enter Markdown edit mode and focus the editor.
+    func focusForKeyboardEditing() {
+        if !isEditMode {
+            setEditMode(true)
+        } else {
+            _ = editorView.becomeFirstResponder()
+        }
+    }
+
+    var isMarkdownEditorFirstResponder: Bool {
+        isEditMode && editorView.isFirstResponder
+    }
+
+    func saveFromKeyboardShortcut() {
+        flushMarkdownSaveIfNeeded(force: true)
+    }
+
     private func flushMarkdownSaveIfNeeded(force: Bool = false) {
         guard let docID = currentDocumentID else { return }
         if isEditMode {
