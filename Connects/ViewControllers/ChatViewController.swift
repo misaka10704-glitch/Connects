@@ -4960,18 +4960,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func syncStreamingChrome() {
         let running = isCurrentStreaming
+        let tokenStreaming: Bool = {
+            guard let id = currentConversationID else { return false }
+            return StreamManager.shared.isRunning(id)
+        }()
         inputBar.isStreaming = running
-        if running {
+        if tokenStreaming {
             if rowHeights.isScrollHeightFrozen {
                 rowHeights.endScrollHeightFreeze()
             }
-            // Lock through the whole generate → render → pin sequence.
+            // Lock only while tokens are arriving — not during web-search planning.
             finishViewportLocked = true
             tableView.isScrollEnabled = false
             stickToBottom = true
             readingHistory = false
             viewportPinnedByUser = false
             followStreamingViewportToBottom()
+            ensureStreamUITimer()
+        } else if running {
+            // Search / transcription chrome: keep Stop enabled, but allow scroll.
+            stopStreamUITimer()
+            finishViewportLocked = false
+            tableView.isScrollEnabled = true
             ensureStreamUITimer()
         } else {
             stopStreamUITimer()
@@ -6026,25 +6036,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         studyCapture: StudyPageCapture? = nil
     ) -> [ChatMessage] {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
-        let raw = conv.messages
-        var keep = ContextBuilder.keepRecentTurns
-        var built = ContextBuilder.build(
-            from: raw,
-            model: model,
-            existingSummary: conv.contextSummary,
-            existingThroughID: conv.contextSummaryThroughMessageID,
-            keepRecentTurns: keep
-        )
-        if built.usage.shouldAutoCompact {
-            keep = ContextBuilder.compactKeepRecentTurns
-            built = ContextBuilder.build(
-                from: raw,
-                model: model,
-                existingSummary: conv.contextSummary,
-                existingThroughID: conv.contextSummaryThroughMessageID,
-                keepRecentTurns: keep
-            )
-        }
+        let built = Self.buildContextResult(from: conv, model: model)
         // Keep the extractive rolling summary so the next request never has to
         // rebuild (and accidentally truncate) its older context from scratch.
         // The dedicated compactor can still replace this with a richer LLM
@@ -6068,6 +6060,67 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             capture: studyCapture
         )
         return messages
+    }
+
+    /// Pick keep-recent window once via a cheap estimate, then build a single context.
+    private static func buildContextResult(
+        from conv: Conversation,
+        model: AIModelOption
+    ) -> ContextBuilder.BuildResult {
+        let quick = ContextBuilder.quickUsageEstimate(for: conv)
+        let keep = quick.shouldAutoCompact
+            ? ContextBuilder.compactKeepRecentTurns
+            : ContextBuilder.keepRecentTurns
+        return ContextBuilder.build(
+            from: conv.messages,
+            model: model,
+            existingSummary: conv.contextSummary,
+            existingThroughID: conv.contextSummaryThroughMessageID,
+            keepRecentTurns: keep
+        )
+    }
+
+    /// Snapshot on main, assemble on a background queue, then apply study capture on main.
+    private func buildAPIContextAsync(
+        for model: AIModelOption,
+        conversationID: String,
+        studyCapture: StudyPageCapture? = nil,
+        completion: @escaping ([ChatMessage]) -> Void
+    ) {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID) else {
+            completion([])
+            return
+        }
+        // Value-type copy so background work does not touch the store.
+        let snapshot = conv
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Self.buildContextResult(from: snapshot, model: model)
+            DispatchQueue.main.async {
+                guard let self = self else {
+                    completion(result.messages)
+                    return
+                }
+                if let live = ConversationStore.shared.conversation(id: conversationID),
+                   result.summary != live.contextSummary
+                    || result.summaryThroughMessageID != live.contextSummaryThroughMessageID {
+                    ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+                        draft.contextSummary = result.summary
+                        draft.contextSummaryThroughMessageID = result.summaryThroughMessageID
+                    }
+                }
+                if conversationID == self.currentConversationID {
+                    self.refreshContextUsage()
+                }
+                var messages = result.messages
+                self.applyStudyCaptureToLastUserMessage(
+                    in: &messages,
+                    conversationID: conversationID,
+                    persist: true,
+                    capture: studyCapture
+                )
+                completion(messages)
+            }
+        }
     }
 
     private func isStudyPageCaptureEnabled(for conversationID: String) -> Bool {
@@ -6099,21 +6152,33 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               let idx = messages.lastIndex(where: { $0.role == .user }) else { return }
         var msg = messages[idx]
         let prefix = capture.apiContextPrefix()
+        let hasDescription = !(msg.imageDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        // Only keep JPEG when this turn still needs vision and no durable text exists.
+        // Rich text pages and already-transcribed turns must not re-inject screenshots.
+        let attachJPEG = capture.needsImageTranscription && !hasDescription
+        let jpeg = attachJPEG ? capture.imageJPEGBase64 : nil
+        let hideBubble = attachJPEG ? capture.hidesImageInChatBubble : msg.hidesAttachedImageInChat
         let changed = msg.apiContextPrefix != prefix
-            || msg.imageJPEGBase64 != capture.imageJPEGBase64
-            || msg.hidesAttachedImageInChat != capture.hidesImageInChatBubble
+            || msg.imageJPEGBase64 != jpeg
+            || (attachJPEG && msg.hidesAttachedImageInChat != hideBubble)
+            || (!attachJPEG && msg.imageJPEGBase64 != nil && (hasDescription || capture.hasRichExtractableText))
         guard changed else { return }
         msg.apiContextPrefix = prefix
-        msg.imageJPEGBase64 = capture.imageJPEGBase64
-        msg.hidesAttachedImageInChat = capture.hidesImageInChatBubble
+        msg.imageJPEGBase64 = jpeg
+        if attachJPEG {
+            msg.hidesAttachedImageInChat = hideBubble
+        }
         messages[idx] = msg
         guard persist else { return }
         let messageID = msg.id
         ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
             guard let i = draft.messages.firstIndex(where: { $0.id == messageID }) else { return }
             draft.messages[i].apiContextPrefix = prefix
-            draft.messages[i].imageJPEGBase64 = capture.imageJPEGBase64
-            draft.messages[i].hidesAttachedImageInChat = capture.hidesImageInChatBubble
+            draft.messages[i].imageJPEGBase64 = jpeg
+            if attachJPEG {
+                draft.messages[i].hidesAttachedImageInChat = hideBubble
+            }
         }
     }
 
@@ -6215,12 +6280,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 query: userText
             )
         } else {
-            StreamManager.shared.start(
-                conversationID: convID,
-                messages: apiContext(for: model, conversationID: convID),
-                model: model,
-                needsAITitle: needsAITitle
-            )
+            buildAPIContextAsync(for: model, conversationID: convID) { [weak self] messages in
+                StreamManager.shared.start(
+                    conversationID: convID,
+                    messages: messages,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
+                self?.syncStreamingChrome()
+            }
         }
     }
 
@@ -6303,9 +6371,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             body: "正在结合对话上下文推荐查证来源…\n（会消解「那这个呢」「为什么」等指代，并选择百科、知乎、媒体等站点定向检索。）"
         )
 
-        let contextMsgs = apiContext(for: model, conversationID: convID, studyCapture: studyCapture)
+        // Lightweight transcript only — planSearch truncates to ~3.5k chars.
+        // Avoid a full ContextBuilder pass before search (was blocking TTFT).
+        let planningMsgs = Self.planningMessages(for: convID)
         WebSearchService.planSearch(
-            contextMessages: contextMsgs,
+            contextMessages: planningMsgs,
             model: model,
             fallbackQuery: query
         ) { [weak self] plan in
@@ -6337,11 +6407,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 onStatus: { [weak self] status in
                     guard let self = self else { return }
                     guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
-                    if status.contains("阅读") {
-                        self.updateSearchProcess(convID: convID, phase: .reading)
-                    } else {
-                        self.updateSearchProcess(convID: convID, phase: .searching)
-                    }
+                    let phase: SearchProcessPhase =
+                        (status.contains("阅读") || status.contains("已读")) ? .reading : .searching
+                    self.updateSearchProcess(
+                        convID: convID,
+                        phase: phase,
+                        append: "\n" + status
+                    )
                 }
             ) { [weak self] result in
                 guard let self = self else { return }
@@ -6352,35 +6424,55 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     last.content = ""
                     c.messages[c.messages.count - 1] = last
                 }
-                // Always rebuild from THIS conversation — never the currently visible chat.
-                var msgs = self.apiContext(for: model, conversationID: convID, studyCapture: studyCapture)
-                switch result {
-                case .success(let bundle):
-                    self.updateSearchProcess(
-                        convID: convID,
-                        phase: .done,
-                        body: bundle.processLog
-                    )
-                    msgs = WebSearchService.inject(into: msgs, bundle: bundle)
-                    msgs = WebSearchService.fitInjectedContext(msgs, model: model)
-                case .failure(let err):
-                    #if DEBUG
-                    print("[Connects] web search failed [\(convID.prefix(6))]: \(err.localizedDescription)")
-                    #endif
-                    self.updateSearchProcess(
-                        convID: convID,
-                        phase: .done,
-                        append: "\n\n检索未成功：\(err.localizedDescription)\n将改为不依赖网页证据直接作答。"
-                    )
-                }
-                StreamManager.shared.start(
+                // Single ContextBuilder pass after search, off the main-thread hot path.
+                self.buildAPIContextAsync(
+                    for: model,
                     conversationID: convID,
-                    messages: msgs,
-                    model: model,
-                    needsAITitle: needsAITitle
-                )
-                self.syncStreamingChrome()
+                    studyCapture: studyCapture
+                ) { msgs in
+                    guard WebSearchCoordinator.shared.matchesGeneration(convID, generation: generation) else { return }
+                    var apiMsgs = msgs
+                    switch result {
+                    case .success(let bundle):
+                        self.updateSearchProcess(
+                            convID: convID,
+                            phase: .done,
+                            body: bundle.processLog
+                        )
+                        apiMsgs = WebSearchService.inject(into: apiMsgs, bundle: bundle)
+                        apiMsgs = WebSearchService.fitInjectedContext(apiMsgs, model: model)
+                    case .failure(let err):
+                        #if DEBUG
+                        print("[Connects] web search failed [\(convID.prefix(6))]: \(err.localizedDescription)")
+                        #endif
+                        self.updateSearchProcess(
+                            convID: convID,
+                            phase: .done,
+                            append: "\n\n检索未成功：\(err.localizedDescription)\n将改为不依赖网页证据直接作答。"
+                        )
+                    }
+                    StreamManager.shared.start(
+                        conversationID: convID,
+                        messages: apiMsgs,
+                        model: model,
+                        needsAITitle: needsAITitle
+                    )
+                    self.syncStreamingChrome()
+                }
             }
+        }
+    }
+
+    /// Recent finished turns for web-search planning (no ContextBuilder / no images).
+    private static func planningMessages(for conversationID: String) -> [ChatMessage] {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
+        let finished = conv.messages.filter {
+            !$0.isStreaming && ($0.role == .user || $0.role == .assistant)
+        }
+        return Array(finished.suffix(12)).map { msg in
+            var copy = msg
+            copy.imageJPEGBase64 = nil
+            return copy
         }
     }
 
@@ -6900,8 +6992,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConversationStore.shared.applyProvisionalTitle(id: convID, fromUserText: displayText)
         }
 
-        // Phase B: build API context + start stream on the next turn so send
-        // paint is not blocked by Memory/ContextBuilder / duplicate PDF capture.
+        // Phase B: build API context + start stream off the main-thread hot path
+        // so send paint is not blocked by ContextBuilder / duplicate PDF capture.
         let captureForAPI = resolvedStudyCapture
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -6914,17 +7006,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     studyCapture: captureForAPI
                 )
             } else {
-                let messages = self.apiContext(
+                self.buildAPIContextAsync(
                     for: model,
                     conversationID: convID,
                     studyCapture: captureForAPI
-                )
-                StreamManager.shared.start(
-                    conversationID: convID,
-                    messages: messages,
-                    model: model,
-                    needsAITitle: needsAITitle
-                )
+                ) { messages in
+                    StreamManager.shared.start(
+                        conversationID: convID,
+                        messages: messages,
+                        model: model,
+                        needsAITitle: needsAITitle
+                    )
+                    self.syncStreamingChrome()
+                }
             }
         }
 
@@ -8334,6 +8428,27 @@ extension ChatViewController: InputBarViewDelegate {
             ],
             sourceView: sourceView,
             sourceRect: sourceView.bounds
+        )
+    }
+
+    func inputBarDidRequestReasoningEffort(from sourceView: UIView) {
+        let current = SettingsManager.shared.reasoningEffort
+        func mark(_ level: ReasoningEffortLevel) -> String {
+            current == level ? "✓ \(level.displayName)" : level.displayName
+        }
+        ConnectsMenu.present(
+            from: self,
+            title: "Kimi K3 思考程度",
+            items: ReasoningEffortLevel.allCases.map { level in
+                ConnectsMenuItem(title: mark(level), isSelected: current == level) { [weak self] in
+                    guard let self = self else { return }
+                    SettingsManager.shared.reasoningEffort = level
+                    ConnectsToast.show("思考程度：\(level.displayName)", in: self.view, duration: 1.2)
+                }
+            },
+            sourceView: sourceView,
+            sourceRect: sourceView.bounds,
+            preferAbove: true
         )
     }
 

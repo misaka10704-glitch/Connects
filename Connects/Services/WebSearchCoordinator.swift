@@ -44,6 +44,12 @@ final class WebSearchCoordinator {
         return active.contains(conversationID) && generations[conversationID] == generation
     }
 
+    /// True when this generation was not cancelled/replaced (search may already have finished).
+    func matchesGeneration(_ conversationID: String, generation: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return generations[conversationID] == generation
+    }
+
     func finish(_ conversationID: String, generation: UInt64) {
         lock.lock()
         guard generations[conversationID] == generation else {

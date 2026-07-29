@@ -22,7 +22,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         #if DEBUG
         StudyFeatureQAHarness.runIfRequested()
         #endif
+        SettingsManager.applyIdleTimerSetting()
         return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        SettingsManager.applyIdleTimerSetting()
+    }
+
+    func applicationWillResignActive(_ application: UIApplication) {
+        // Avoid keeping the screen awake while backgrounded / locked.
+        application.isIdleTimerDisabled = false
     }
 
     func application(_ application: UIApplication,

@@ -8,6 +8,9 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private let appearanceControl = UISegmentedControl(items: AppearanceMode.allCases.map { $0.displayName })
     private let fontSizeControl = UISegmentedControl(items: ["小", "中", "大"])
+    private let keepScreenOnSwitch = UISwitch()
+    private let keepScreenOnLabel = UILabel()
+    private let reasoningEffortControl = UISegmentedControl(items: ReasoningEffortLevel.allCases.map { $0.displayName })
     private let renderDebugSwitch = UISwitch()
     private let renderDebugLabel = UILabel()
     private let turnContextBarSwitch = UISwitch()
@@ -124,6 +127,9 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         renderDebugSwitch.onTintColor = c.accent
         turnContextBarLabel.textColor = c.textPrimary
         turnContextBarSwitch.onTintColor = c.accent
+        keepScreenOnLabel.textColor = c.textPrimary
+        keepScreenOnSwitch.onTintColor = c.accent
+        reasoningEffortControl.tintColor = c.accent
         if #available(iOS 13.0, *) {
             appearanceControl.selectedSegmentTintColor = c.accent
             appearanceControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
@@ -165,7 +171,23 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
         appearanceControl.addTarget(self, action: #selector(appearanceChanged), for: .valueChanged)
         contentStack.addArrangedSubview(makeCard(embedding: appearanceControl, height: 36, inset: 12))
-        contentStack.setCustomSpacing(16, after: contentStack.arrangedSubviews.last!)
+        contentStack.setCustomSpacing(12, after: contentStack.arrangedSubviews.last!)
+
+        let keepScreenRow = makeSwitchRow(
+            label: keepScreenOnLabel,
+            text: "保持屏幕常亮",
+            sw: keepScreenOnSwitch,
+            isOn: SettingsManager.shared.keepScreenOn,
+            action: #selector(keepScreenOnChanged)
+        )
+        contentStack.addArrangedSubview(makeCard(embedding: keepScreenRow, height: 44, inset: 12))
+        let keepScreenTip = UILabel()
+        keepScreenTip.numberOfLines = 0
+        keepScreenTip.font = DSTheme.bodyFont(size: 13)
+        keepScreenTip.text = "前台使用时防止自动锁屏，方便长时间阅读与对话。切到后台后会恢复系统熄屏。"
+        footerLabels.append(keepScreenTip)
+        contentStack.addArrangedSubview(keepScreenTip)
+        contentStack.setCustomSpacing(16, after: keepScreenTip)
 
         contentStack.addArrangedSubview(makeSectionTitle("聊天字号"))
         fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
@@ -178,6 +200,22 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(fontTip)
         contentStack.addArrangedSubview(fontTip)
         contentStack.setCustomSpacing(12, after: fontTip)
+
+        contentStack.addArrangedSubview(makeSectionTitle("Kimi K3 思考程度"))
+        if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
+            reasoningEffortControl.selectedSegmentIndex = idx
+        } else {
+            reasoningEffortControl.selectedSegmentIndex = 0
+        }
+        reasoningEffortControl.addTarget(self, action: #selector(reasoningEffortChanged), for: .valueChanged)
+        contentStack.addArrangedSubview(makeCard(embedding: reasoningEffortControl, height: 36, inset: 12))
+        let effortTip = UILabel()
+        effortTip.numberOfLines = 0
+        effortTip.font = DSTheme.bodyFont(size: 13)
+        effortTip.text = "仅影响 Kimi K3。默认「低」以减少等待；难题可改为「高」或「最大」。也可在输入栏长按灯泡切换。"
+        footerLabels.append(effortTip)
+        contentStack.addArrangedSubview(effortTip)
+        contentStack.setCustomSpacing(12, after: effortTip)
 
         let turnContextRow = makeSwitchRow(
             label: turnContextBarLabel,
@@ -420,6 +458,17 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         SettingsManager.shared.turnContextBarEnabled = turnContextBarSwitch.isOn
     }
 
+    @objc private func keepScreenOnChanged() {
+        SettingsManager.shared.keepScreenOn = keepScreenOnSwitch.isOn
+    }
+
+    @objc private func reasoningEffortChanged() {
+        let idx = reasoningEffortControl.selectedSegmentIndex
+        let levels = ReasoningEffortLevel.allCases
+        guard idx >= 0, idx < levels.count else { return }
+        SettingsManager.shared.reasoningEffort = levels[idx]
+    }
+
     @objc private func kimiCNChanged() {
         SettingsManager.shared.kimiUseChinaEndpoint = kimiCNSwitch.isOn
     }
@@ -551,6 +600,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private func applyImportedSettingsToForm() {
         appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
         fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
+        keepScreenOnSwitch.isOn = SettingsManager.shared.keepScreenOn
+        if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
+            reasoningEffortControl.selectedSegmentIndex = idx
+        }
         renderDebugSwitch.isOn = SettingsManager.shared.renderDebugOverlayEnabled
         turnContextBarSwitch.isOn = SettingsManager.shared.turnContextBarEnabled
         deepseekField.text = SettingsManager.shared.deepseekAPIKey

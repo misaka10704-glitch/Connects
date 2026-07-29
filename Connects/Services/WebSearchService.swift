@@ -177,16 +177,19 @@ enum WebSearchService {
             return
         }
 
-        DispatchQueue.main.async { onStatus?("正在搜索…") }
+        let topicQuery = sanitizePlannerQuery(
+            focusTopicPhrase(plan.topic.isEmpty ? (targets.first?.query ?? "") : plan.topic),
+            topic: plan.topic
+        )
+        DispatchQueue.main.async {
+            let label = topicQuery.isEmpty ? "正在搜索…" : "正在搜索：\(topicQuery)"
+            onStatus?(label)
+        }
 
         let group = DispatchGroup()
         let lock = NSLock()
         var allSources: [[Hit]] = []
         var lastError: Error?
-        let topicQuery = sanitizePlannerQuery(
-            focusTopicPhrase(plan.topic.isEmpty ? (targets.first?.query ?? "") : plan.topic),
-            topic: plan.topic
-        )
 
         // Lean strategy: ONE open-web SERP + planner directURLs + Wikipedia.
         // Avoid per-domain site: bursts (they hammer DuckDuckGo into 403 and
@@ -341,9 +344,13 @@ enum WebSearchService {
         }
 
         let toBrowse = pickBrowseTargets(from: hits, limit: maxPageCandidates)
-        DispatchQueue.main.async { onStatus?("正在阅读网页…") }
+        DispatchQueue.main.async {
+            onStatus?("找到 \(hits.count) 条结果，开始阅读 \(toBrowse.count) 个网页…")
+        }
 
-        fetchPages(toBrowse) { pages, _ in
+        fetchPages(toBrowse, onProgress: { line in
+            DispatchQueue.main.async { onStatus?(line) }
+        }) { pages, _ in
             let usableHits = hits
                 .filter { !isExcludedResultHost($0.url) && !isJunkHit($0) }
                 .filter { !shouldBlockOfficialHit($0, topic: topic) }
@@ -1087,6 +1094,7 @@ enum WebSearchService {
 
     private static func fetchPages(
         _ hits: [Hit],
+        onProgress: ((String) -> Void)? = nil,
         completion: @escaping ([PageText], Set<String>) -> Void
     ) {
         guard !hits.isEmpty else {
@@ -1099,6 +1107,7 @@ enum WebSearchService {
         let lock = NSLock()
         var pages: [PageText] = []
         var failedHosts = Set<String>()
+        var readCount = 0
 
         for hit in hits {
             group.enter()
@@ -1106,10 +1115,18 @@ enum WebSearchService {
                 lock.lock()
                 if let text = text, text.count >= 80 {
                     pages.append(PageText(hit: hit, text: text))
+                    readCount += 1
+                    let n = readCount
+                    let title = hit.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let label = title.isEmpty ? hit.url : title
+                    lock.unlock()
+                    onProgress?("已读到 (\(n))：\(String(label.prefix(48)))")
                 } else if let host = URL(string: hit.url)?.host?.lowercased() {
                     failedHosts.insert(host)
+                    lock.unlock()
+                } else {
+                    lock.unlock()
                 }
-                lock.unlock()
                 group.leave()
             }
         }

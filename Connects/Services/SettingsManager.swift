@@ -1,10 +1,28 @@
 import Foundation
+import UIKit
+
+/// Kimi K3 `reasoning_effort` — API supports low / high / max (default on server is max).
+enum ReasoningEffortLevel: String, CaseIterable {
+    case low
+    case high
+    case max
+
+    var displayName: String {
+        switch self {
+        case .low: return "低"
+        case .high: return "高"
+        case .max: return "最大"
+        }
+    }
+}
 
 extension Notification.Name {
     static let chatFontSizeDidChange = Notification.Name("ConnectsChatFontSizeDidChange")
     static let visibleModelsDidChange = Notification.Name("ConnectsVisibleModelsDidChange")
     static let renderDebugDidChange = Notification.Name("ConnectsRenderDebugDidChange")
     static let turnContextBarDidChange = Notification.Name("ConnectsTurnContextBarDidChange")
+    static let keepScreenOnDidChange = Notification.Name("ConnectsKeepScreenOnDidChange")
+    static let reasoningEffortDidChange = Notification.Name("ConnectsReasoningEffortDidChange")
 }
 
 final class SettingsManager {
@@ -92,6 +110,41 @@ final class SettingsManager {
     var webSearchEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "connects_web_search") }
         set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
+    }
+
+    /// Keep the display awake while Connects is in the foreground. Default on.
+    var keepScreenOn: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "connects_keep_screen_on") == nil { return true }
+            return UserDefaults.standard.bool(forKey: "connects_keep_screen_on")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "connects_keep_screen_on")
+            Self.applyIdleTimerSetting()
+            NotificationCenter.default.post(name: .keepScreenOnDidChange, object: nil)
+        }
+    }
+
+    /// Kimi K3 reasoning effort for streaming chat. Default `low` (server default is `max`).
+    var reasoningEffort: ReasoningEffortLevel {
+        get {
+            if let raw = UserDefaults.standard.string(forKey: "connects_reasoning_effort"),
+               let level = ReasoningEffortLevel(rawValue: raw) {
+                return level
+            }
+            return .low
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "connects_reasoning_effort")
+            NotificationCenter.default.post(name: .reasoningEffortDidChange, object: nil)
+        }
+    }
+
+    /// Sync `isIdleTimerDisabled` with `keepScreenOn` (foreground only; caller clears on resign).
+    static func applyIdleTimerSetting() {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = SettingsManager.shared.keepScreenOn
+        }
     }
 
     /// Opt-in device-wide cross-session memory — feature removed; kept for settings migration only.

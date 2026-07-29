@@ -7,11 +7,13 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidToggleStudyCapture(_ enabled: Bool)
     func inputBarDidTapContextUsage()
     func inputBarDidRequestStudyContextScope(from sourceView: UIView)
+    func inputBarDidRequestReasoningEffort(from sourceView: UIView)
     func inputBarDidTapAIOptions()
 }
 
 extension InputBarViewDelegate {
     func inputBarDidRequestStudyContextScope(from sourceView: UIView) {}
+    func inputBarDidRequestReasoningEffort(from sourceView: UIView) {}
     func inputBarDidTapAIOptions() {}
 }
 
@@ -297,8 +299,11 @@ final class InputBarView: UIView, ThemeRefreshable {
         thinkingButton.translatesAutoresizingMaskIntoConstraints = false
         thinkingButton.setImage(ActionIconFactory.image(.think, pointSize: 16), for: .normal)
         thinkingButton.accessibilityLabel = "深度思考"
+        thinkingButton.accessibilityHint = "长按可选择 Kimi K3 思考程度"
         thinkingButton.addTarget(self, action: #selector(thinkingTapped), for: .touchUpInside)
         containerView.addSubview(thinkingButton)
+        let thinkingLong = UILongPressGestureRecognizer(target: self, action: #selector(thinkingLongPressed(_:)))
+        thinkingButton.addGestureRecognizer(thinkingLong)
 
         studyCaptureButton.translatesAutoresizingMaskIntoConstraints = false
         studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
@@ -676,6 +681,11 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    @objc private func thinkingLongPressed(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        delegate?.inputBarDidRequestReasoningEffort(from: thinkingButton)
     }
 
     @objc private func aiOptionsTapped() {

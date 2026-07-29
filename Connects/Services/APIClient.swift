@@ -220,9 +220,13 @@ final class APIClient: NSObject {
                 payload["enable_thinking"] = thinkingOn
             }
         case .reasoningEffort:
-            // K3 always reasons; only send effort on streaming chat (not title/compact helpers).
+            // K3 always reasons. Streaming uses the user-selected effort (default low).
+            // Non-stream helpers (planSearch / title / compact) force low so they stay fast —
+            // omitting the field falls back to the server default of max.
             if stream {
-                payload["reasoning_effort"] = "max"
+                payload["reasoning_effort"] = SettingsManager.shared.reasoningEffort.rawValue
+            } else {
+                payload["reasoning_effort"] = ReasoningEffortLevel.low.rawValue
             }
         case .thinkingType:
             // K2.7 Code rejects disabled thinking; always send enabled when forced.
@@ -295,15 +299,24 @@ final class APIClient: NSObject {
         return SettingsManager.shared.userRulesPrefixedContent(text)
     }
 
-    /// Drop image payloads from all but the last user message that has one.
+    /// Drop image payloads once a durable text description exists, and from all
+    /// but the last user message that still needs a JPEG for vision.
     static func slimMessagesForAPI(_ messages: [ChatMessage]) -> [ChatMessage] {
         var lastImageIndex: Int?
         for (i, m) in messages.enumerated() where m.role == .user && m.hasImage {
-            lastImageIndex = i
+            let hasDescription = !(m.imageDescription?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            if !hasDescription {
+                lastImageIndex = i
+            }
         }
         return messages.enumerated().map { i, m in
             var copy = m
-            if copy.hasImage, i != lastImageIndex {
+            let hasDescription = !(copy.imageDescription?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            if hasDescription {
+                copy.imageJPEGBase64 = nil
+            } else if copy.hasImage, i != lastImageIndex {
                 copy.imageJPEGBase64 = nil
             }
             return injectingImageDescription(into: copy)
@@ -315,14 +328,17 @@ final class APIClient: NSObject {
     static func injectingImageDescription(into message: ChatMessage) -> ChatMessage {
         let description = message.imageDescription?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !description.isEmpty,
-              !message.content.contains("【图片文字描述】") else { return message }
+        guard !description.isEmpty else { return message }
         var copy = message
-        let block = "【图片文字描述】\n\(description)"
-        if copy.content == "[图片]" || copy.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            copy.content = block
-        } else {
-            copy.content += "\n\n" + block
+        // Durable text replaces the JPEG for subsequent API turns.
+        copy.imageJPEGBase64 = nil
+        if !copy.content.contains("【图片文字描述】") {
+            let block = "【图片文字描述】\n\(description)"
+            if copy.content == "[图片]" || copy.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                copy.content = block
+            } else {
+                copy.content += "\n\n" + block
+            }
         }
         return copy
     }

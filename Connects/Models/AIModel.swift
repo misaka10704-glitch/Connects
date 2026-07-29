@@ -24,7 +24,7 @@ enum ThinkingPayloadStyle {
     case thinkingType
     /// `enable_thinking: bool` — DashScope Qwen
     case enableThinking
-    /// `reasoning_effort: "max"` — Kimi K3
+    /// `reasoning_effort: low|high|max` — Kimi K3 (user-selectable; app default low)
     case reasoningEffort
 }
 

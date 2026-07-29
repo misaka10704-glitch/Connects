@@ -926,17 +926,27 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         hasSearch = message.hasSearchProcess || imageActivity
         if hasSearch {
             let liveSearchActivity = !imageActivity && streaming && message.searchProcessPhase != .done
-            // Streaming: always collapsed. Expand only after the turn finishes.
+            // Streaming search: header + 3-line live preview (mirrors thinking chrome).
             searchExpanded = false
             if imageActivity {
                 cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
+                populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
+                setSearch(visible: true, expanded: false)
             } else {
                 cachedSearchTitleCore = liveSearchActivity
                     ? message.searchProcessPhase.headerTitle
                     : SearchProcessPhase.done.headerTitle
+                if liveSearchActivity {
+                    applySearchLivePreview(
+                        text: search,
+                        colors: colors,
+                        thinkFont: thinkFont
+                    )
+                } else {
+                    populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
+                    setSearch(visible: true, expanded: false)
+                }
             }
-            populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
-            setSearch(visible: true, expanded: false)
             applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: colors.textSecondary)
             updateSearchHeaderInteraction(messageIsStreaming: streaming)
             searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
@@ -1760,16 +1770,31 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             cachedSearchText = search
             searchExpanded = false
-            searchBody.attributedText = nil
-            searchBody.text = nil
-            setSearch(visible: true, expanded: false)
             let titleCore = imageActivity
                 ? message.imageTranscriptionPhase.headerTitle
                 : (message.searchProcessPhase != .done
                     ? message.searchProcessPhase.headerTitle
                     : SearchProcessPhase.done.headerTitle)
             cachedSearchTitleCore = titleCore
-            applyChromeHeaderTitle(searchHeader, title: titleCore, color: (cachedThemeColors ?? DSTheme.c).textSecondary)
+            let colors = cachedThemeColors ?? DSTheme.c
+            let thinkFont = cachedThinkingFontSize > 0
+                ? cachedThinkingFontSize
+                : SettingsManager.shared.chatThinkingFontSize
+            let liveSearch = !imageActivity
+                && message.searchProcessPhase != .done
+                && message.searchProcessPhase != .idle
+            if liveSearch {
+                applySearchLivePreview(
+                    text: search,
+                    colors: colors,
+                    thinkFont: thinkFont
+                )
+            } else {
+                searchBody.attributedText = nil
+                searchBody.text = nil
+                setSearch(visible: true, expanded: false)
+            }
+            applyChromeHeaderTitle(searchHeader, title: titleCore, color: colors.textSecondary)
             updateSearchHeaderInteraction(messageIsStreaming: true)
         }
         if !thinkingBox.isHidden {
@@ -1806,6 +1831,19 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             } else if !thinkingBox.isHidden, content.isEmpty {
                 applyThinkingLivePreview(
                     reasoning: message.reasoningContent,
+                    colors: cachedThemeColors ?? DSTheme.c,
+                    thinkFont: cachedThinkingFontSize > 0
+                        ? cachedThinkingFontSize
+                        : SettingsManager.shared.chatThinkingFontSize,
+                    waitingGlyph: glyph
+                )
+            } else if !searchBox.isHidden,
+                      content.isEmpty,
+                      !message.hasImageTranscription,
+                      message.searchProcessPhase != .done,
+                      message.searchProcessPhase != .idle {
+                applySearchLivePreview(
+                    text: message.searchProcessContent,
                     colors: cachedThemeColors ?? DSTheme.c,
                     thinkFont: cachedThinkingFontSize > 0
                         ? cachedThinkingFontSize
