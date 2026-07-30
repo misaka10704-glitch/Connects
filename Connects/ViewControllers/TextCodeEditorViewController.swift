@@ -1,4 +1,5 @@
 import UIKit
+import WebKit
 
 /// Study-mode code / plain-text editor with syntax highlighting.
 final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
@@ -14,6 +15,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let lineNumberView = UITextView()
     private let textView = StudyAskTextView()
     private let spinner = UIActivityIndicatorView(style: .gray)
+    /// Markdown preview only (`language == .markdown`). Transitional WK shell — see markdown-render-engine rule.
+    private var previewWebView: WKWebView!
+    private var previewShellLoaded = false
+    private var pendingPreviewMarkdown: String?
 
     private var currentDocumentID: String?
     private var language: StudyTextLanguage = .plain
@@ -32,6 +37,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var pendingViewportProgress: StudyProgress?
     private var conversationIDForDirty: String?
 
+    // MARK: - Future: AI edit / Tab completion / inline diff (see CodeEditorAIBridge.swift)
+    weak var aiEditing: CodeEditorAIEditing?
+    weak var completionProvider: CodeEditorCompletionProviding?
+    weak var diffPresenter: CodeEditorDiffPresenting?
+
     private static let fontSizeDefaultsKey = "connects.codeEditor.fontSize"
     private static let minFontPointSize: CGFloat = 9
     private static let maxFontPointSize: CGFloat = 28
@@ -48,6 +58,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     var onAskSelection: ((String) -> Void)?
 
     private var lastWrapLayoutWidth: CGFloat = 0
+
+    private var showsMarkdownPreview: Bool {
+        language == .markdown && !isEditMode
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -144,7 +158,23 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         if #available(iOS 11.0, *) {
             textView.contentInsetAdjustmentBehavior = .never
         }
+        textView.editorKeyCommandsProvider = { [weak self] in
+            self?.keyCommands
+        }
         view.addSubview(textView)
+
+        let config = WKWebViewConfiguration()
+        previewWebView = WKWebView(frame: .zero, configuration: config)
+        previewWebView.translatesAutoresizingMaskIntoConstraints = false
+        previewWebView.isOpaque = false
+        previewWebView.backgroundColor = DSTheme.c.background
+        previewWebView.scrollView.backgroundColor = DSTheme.c.background
+        previewWebView.isHidden = true
+        previewWebView.navigationDelegate = self
+        if #available(iOS 11.0, *) {
+            previewWebView.scrollView.contentInsetAdjustmentBehavior = .never
+        }
+        view.addSubview(previewWebView)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
@@ -202,6 +232,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             textView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
             textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            previewWebView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            previewWebView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            previewWebView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            previewWebView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
@@ -214,6 +249,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         textView.isSelectable = true
         refreshModeChrome()
         updateProgressLabel()
+        syncSurfaceVisibility()
     }
 
     override func viewDidLayoutSubviews() {
@@ -270,6 +306,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                 self.updateLineNumbers(force: true)
                 self.syncLineNumberOffset()
                 self.updateProgressLabel()
+                self.syncSurfaceVisibility()
+                if self.showsMarkdownPreview {
+                    self.refreshMarkdownPreview(text: text)
+                }
                 self.spinner.stopAnimating()
                 completion(true)
             }
@@ -281,10 +321,14 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         flushSaveIfNeeded()
         askPinnedRange = nil
         currentDocumentID = nil
+        language = .plain
         textView.text = ""
         lineNumberView.text = ""
         progressLabel.text = nil
         isDirty = false
+        pendingPreviewMarkdown = nil
+        previewWebView.evaluateJavaScript("window.__connectsRender && window.__connectsRender('');", completionHandler: nil)
+        syncSurfaceVisibility()
     }
 
     func pauseReading() {
@@ -384,7 +428,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         guard currentDocumentID != nil else { return "无文档" }
         let lines = max((textView.text as NSString?)?.length ?? 0 > 0
             ? (textView.text as NSString).components(separatedBy: "\n").count : 0, 1)
-        let mode = isEditMode ? "编辑" : "阅读"
+        let mode: String
+        if language == .markdown {
+            mode = isEditMode ? "编辑" : "预览"
+        } else {
+            mode = isEditMode ? "编辑" : "阅读"
+        }
         let dirty = (isEditMode && isDirty) ? " · 未保存" : ""
         return "\(language.displayName) · \(mode) · \(lines) 行\(dirty)"
     }
@@ -408,6 +457,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         applyHighlightedText(textView.text ?? "")
         updateLineNumbers(force: true)
         syncLineNumberOffset()
+        if language == .markdown {
+            previewShellLoaded = false
+            if showsMarkdownPreview {
+                refreshMarkdownPreview(text: textView.text ?? "")
+            }
+        }
     }
 
     private func applyChromeColors() {
@@ -415,6 +470,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         view.backgroundColor = c.background
         topBar.backgroundColor = c.background
         textView.backgroundColor = c.background
+        if previewWebView != nil {
+            previewWebView.backgroundColor = c.background
+            previewWebView.scrollView.backgroundColor = c.background
+        }
         gutterView.backgroundColor = c.sidebarBackground
         gutterSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
         topBarSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
@@ -457,6 +516,32 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
     }
 
+    private func bumpFontSize(by delta: CGFloat) {
+        let next = min(Self.maxFontPointSize, max(Self.minFontPointSize, fontPointSize + delta))
+        guard abs(next - fontPointSize) >= 0.1 else { return }
+        applyFontSize(next, persist: true)
+    }
+
+    /// Shell / hardware keyboard: ⌘+ / ⌘- (VS Code–style zoom).
+    func adjustFontSizeFromKeyboardShortcut(by delta: CGFloat) {
+        bumpFontSize(by: delta)
+    }
+
+    /// Shell / hardware keyboard: ⌘M toggles read(preview) ↔ edit.
+    func toggleEditModeFromKeyboardShortcut() {
+        let next = !isEditMode
+        applyEditMode(next)
+        if next {
+            focusForKeyboardEditing()
+        }
+    }
+
+    /// Leave edit mode without focusing (used when jumping to AI input).
+    func leaveEditModeFromKeyboardShortcut() {
+        guard isEditMode else { return }
+        applyEditMode(false)
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         gestureRecognizer is UIPinchGestureRecognizer
@@ -469,11 +554,22 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     /// Keyboard shortcut: enter edit mode and focus the code text view.
     func focusForKeyboardEditing() {
         applyEditMode(true)
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.isEditMode else { return }
+        // Focus immediately and retry next turn — shell `endEditing` / first-responder
+        // handoff often needs a bounce before UITextView accepts the keyboard.
+        let attemptFocus = { [weak self] in
+            guard let self = self, self.isEditMode, !self.showsMarkdownPreview else { return }
+            self.textView.isHidden = false
+            self.textView.isUserInteractionEnabled = true
             _ = self.textView.becomeFirstResponder()
         }
+        attemptFocus()
+        if !textView.isFirstResponder {
+            DispatchQueue.main.async(execute: attemptFocus)
+        }
     }
+
+    /// True while the editor is in edit mode (keyboard may or may not be up).
+    var isInEditMode: Bool { isEditMode }
 
     var isCodeEditorFirstResponder: Bool {
         textView.isFirstResponder
@@ -496,20 +592,63 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         textView.isSelectable = true
         refreshModeChrome()
         updateProgressLabel()
+        syncSurfaceVisibility()
+        if showsMarkdownPreview {
+            refreshMarkdownPreview(text: textView.text ?? "")
+        }
     }
 
     private func refreshModeChrome() {
         let c = DSTheme.c
-        // Read → pencil (enter edit). Edit → eye (enter read). Same pointSize as save.
+        // Read/preview → pencil (enter edit). Edit → eye (enter read/preview).
         let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
+        modeButton.setTitle(nil, for: .normal)
         modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
         modeButton.tintColor = c.textSecondary
-        modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+        if language == .markdown {
+            modeButton.accessibilityLabel = isEditMode ? "切换到预览模式" : "切换到编辑模式"
+        } else {
+            modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+        }
+        saveButton.setTitle(nil, for: .normal)
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
         saveButton.isHidden = false
         saveButton.isEnabled = isEditMode
         saveButton.alpha = isEditMode ? 1 : 0.35
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+    }
+
+    private func syncSurfaceVisibility() {
+        let preview = showsMarkdownPreview
+        previewWebView.isHidden = !preview
+        textView.isHidden = preview
+        gutterView.isHidden = preview
+        gutterSeparator.isHidden = preview
+        lineNumberView.isHidden = preview
+    }
+
+    private func refreshMarkdownPreview(text: String) {
+        loadPreviewShellIfNeeded()
+        pendingPreviewMarkdown = text
+        tryInjectPendingPreview()
+    }
+
+    private func loadPreviewShellIfNeeded() {
+        guard !previewShellLoaded else { return }
+        let html = MarkdownHTMLRenderer.studyShellHTML(
+            textColor: DSTheme.c.textPrimary,
+            backgroundColor: DSTheme.c.background,
+            secondaryColor: DSTheme.c.textSecondary,
+            fontSize: 17
+        )
+        previewWebView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
+    }
+
+    private func tryInjectPendingPreview() {
+        guard previewShellLoaded, let md = pendingPreviewMarkdown else { return }
+        pendingPreviewMarkdown = nil
+        let js = MarkdownHTMLRenderer.renderJavaScript(content: md)
+        previewWebView.evaluateJavaScript(js, completionHandler: nil)
     }
 
     private var isIMEComposing: Bool {
@@ -748,6 +887,33 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     // MARK: - UITextViewDelegate
 
+    func textView(_ textView: UITextView,
+                  shouldChangeTextIn range: NSRange,
+                  replacementText text: String) -> Bool {
+        guard textView === self.textView, isEditMode else { return true }
+        guard textView.markedTextRange == nil else { return true }
+        guard text == "\n" else { return true }
+
+        let full = textView.text ?? ""
+        let insertion = CodeEditorIndent.insertionAfterNewline(
+            fullText: full,
+            location: range.location,
+            language: language
+        )
+        // Insert via textStorage so existing highlight attributes are kept —
+        // assigning `textView.text` would wipe colors until the next highlight pass.
+        let attrs = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        let attributed = NSAttributedString(string: insertion, attributes: attrs)
+        let caret = range.location + (insertion as NSString).length
+        textView.textStorage.beginEditing()
+        textView.textStorage.replaceCharacters(in: range, with: attributed)
+        textView.textStorage.endEditing()
+        textView.selectedRange = NSRange(location: caret, length: 0)
+        textView.typingAttributes = attrs
+        textViewDidChange(textView)
+        return false
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         guard !isApplyingHighlight else { return }
         if askPinnedRange != nil {
@@ -793,4 +959,147 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
          saveButton.convert(saveButton.bounds, to: view))
     }
 #endif
+}
+
+// MARK: - Hardware keyboard (editor-local)
+
+extension TextCodeEditorViewController {
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var keyCommands: [UIKeyCommand]? {
+        // Published on VC + StudyAskTextView (via provider) so shortcuts work in
+        // read/preview and while the text view is first responder.
+        [
+            makeEditorKeyCommand(input: "=", modifiers: .command,
+                                 action: #selector(shortcutFontLarger), title: "增大代码字号"),
+            makeEditorKeyCommand(input: "+", modifiers: .command,
+                                 action: #selector(shortcutFontLarger), title: "增大代码字号"),
+            makeEditorKeyCommand(input: "+", modifiers: [.command, .shift],
+                                 action: #selector(shortcutFontLarger), title: "增大代码字号"),
+            makeEditorKeyCommand(input: "-", modifiers: .command,
+                                 action: #selector(shortcutFontSmaller), title: "减小代码字号"),
+            makeEditorKeyCommand(input: "_", modifiers: [.command, .shift],
+                                 action: #selector(shortcutFontSmaller), title: "减小代码字号"),
+            makeEditorKeyCommand(input: "m", modifiers: .command,
+                                 action: #selector(shortcutToggleEditMode), title: "切换阅读 / 编辑"),
+            makeEditorKeyCommand(input: UIKeyCommand.inputUpArrow, modifiers: .alternate,
+                                 action: #selector(shortcutJumpLinesUp), title: "上移 5 行"),
+            makeEditorKeyCommand(input: UIKeyCommand.inputDownArrow, modifiers: .alternate,
+                                 action: #selector(shortcutJumpLinesDown), title: "下移 5 行"),
+            makeEditorKeyCommand(input: UIKeyCommand.inputLeftArrow, modifiers: .alternate,
+                                 action: #selector(shortcutLineStart), title: "跳到文字行首"),
+            makeEditorKeyCommand(input: UIKeyCommand.inputRightArrow, modifiers: .alternate,
+                                 action: #selector(shortcutLineEnd), title: "跳到文字行末")
+        ]
+    }
+
+    private func makeEditorKeyCommand(input: String,
+                                      modifiers: UIKeyModifierFlags,
+                                      action: Selector,
+                                      title: String) -> UIKeyCommand {
+        if #available(iOS 13.0, *) {
+            let cmd = UIKeyCommand(title: title, action: action, input: input, modifierFlags: modifiers)
+            if #available(iOS 15.0, *) {
+                cmd.wantsPriorityOverSystemBehavior = true
+            }
+            return cmd
+        }
+        let cmd = UIKeyCommand(input: input, modifierFlags: modifiers, action: action)
+        cmd.discoverabilityTitle = title
+        return cmd
+    }
+
+    @objc private func shortcutJumpLinesUp() {
+        moveCaretByLines(-5)
+    }
+
+    @objc private func shortcutJumpLinesDown() {
+        moveCaretByLines(5)
+    }
+
+    @objc private func shortcutLineStart() {
+        guard isEditMode || textView.isFirstResponder else { return }
+        let ns = (textView.text ?? "") as NSString
+        let loc = min(textView.selectedRange.location, ns.length)
+        let line = ns.lineRange(for: NSRange(location: loc, length: 0))
+        let content = CodeEditorIndent.contentBounds(inLine: line, of: ns)
+        textView.selectedRange = NSRange(location: content.location, length: 0)
+        textView.scrollRangeToVisible(NSRange(location: content.location, length: 0))
+    }
+
+    @objc private func shortcutLineEnd() {
+        guard isEditMode || textView.isFirstResponder else { return }
+        let ns = (textView.text ?? "") as NSString
+        let loc = min(textView.selectedRange.location, ns.length)
+        let line = ns.lineRange(for: NSRange(location: loc, length: 0))
+        let content = CodeEditorIndent.contentBounds(inLine: line, of: ns)
+        let end = NSMaxRange(content)
+        textView.selectedRange = NSRange(location: end, length: 0)
+        textView.scrollRangeToVisible(NSRange(location: end, length: 0))
+    }
+
+    @objc private func shortcutFontLarger() {
+        bumpFontSize(by: 1)
+    }
+
+    @objc private func shortcutFontSmaller() {
+        bumpFontSize(by: -1)
+    }
+
+    @objc private func shortcutToggleEditMode() {
+        toggleEditModeFromKeyboardShortcut()
+    }
+
+    private func moveCaretByLines(_ delta: Int) {
+        guard isEditMode || textView.isFirstResponder else { return }
+        let ns = (textView.text ?? "") as NSString
+        guard ns.length > 0 else { return }
+        var loc = min(textView.selectedRange.location, ns.length)
+        let step = delta > 0 ? 1 : -1
+        let count = abs(delta)
+        for _ in 0..<count {
+            let line = ns.lineRange(for: NSRange(location: loc, length: 0))
+            if step > 0 {
+                let next = NSMaxRange(line)
+                if next >= ns.length {
+                    loc = ns.length
+                    break
+                }
+                loc = next
+            } else {
+                if line.location == 0 {
+                    loc = 0
+                    break
+                }
+                loc = line.location - 1
+                let prev = ns.lineRange(for: NSRange(location: loc, length: 0))
+                loc = prev.location
+            }
+        }
+        textView.selectedRange = NSRange(location: loc, length: 0)
+        textView.scrollRangeToVisible(NSRange(location: loc, length: 0))
+    }
+}
+
+// MARK: - Markdown preview WKNavigationDelegate
+
+extension TextCodeEditorViewController: WKNavigationDelegate {
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === previewWebView else { return }
+        previewShellLoaded = true
+        tryInjectPendingPreview()
+    }
+
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.navigationType == .linkActivated {
+            if let url = navigationAction.request.url {
+                UIApplication.shared.open(url)
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
 }

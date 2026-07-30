@@ -201,6 +201,9 @@ enum CodeSyntaxHighlighter {
                 "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
                 "while", "with", "yield"
             ]
+        case .markdown:
+            // Headings / emphasis handled via patterns; no keyword list.
+            return []
         case .plain:
             return []
         }
@@ -214,9 +217,7 @@ enum CodeSyntaxHighlighter {
             return ["\\b(?:integer|real|time|realtime|logic|bit|byte|shortint|longint|string|chandle|void)\\b"]
         case .c:
             return ["\\b(?:size_t|ssize_t|uint8_t|uint16_t|uint32_t|uint64_t|int8_t|int16_t|int32_t|int64_t|FILE)\\b"]
-        case .python:
-            return []
-        case .plain:
+        case .python, .markdown, .plain:
             return []
         }
     }
@@ -237,6 +238,8 @@ enum CodeSyntaxHighlighter {
                 "\\b0[bB][01_]+\\b",
                 "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b"
             ]
+        case .markdown:
+            return []
         }
     }
 
@@ -249,6 +252,13 @@ enum CodeSyntaxHighlighter {
                 "\"(?:\\\\.|[^\"\\\\])*\"",
                 "'(?:\\\\.|[^'\\\\])*'"
             ]
+        case .markdown:
+            // Fenced blocks + inline code (painted as stringLiteral).
+            return [
+                "```[\\s\\S]*?```",
+                "~~~[\\s\\S]*?~~~",
+                "`[^`\\n]+`"
+            ]
         default:
             return ["\"(?:\\\\.|[^\"\\\\])*\""]
         }
@@ -258,6 +268,9 @@ enum CodeSyntaxHighlighter {
         switch language {
         case .python:
             return ["#[^\n]*"]
+        case .markdown:
+            // ATX headings as soft “comment” tint + HTML comments.
+            return ["(?m)^#{1,6}[^\\n]*", "<!--[\\s\\S]*?-->"]
         case .verilog, .c, .plain:
             return ["//[^\n]*", "/\\*[\\s\\S]*?\\*/"]
         }
@@ -270,7 +283,7 @@ enum CodeSyntaxHighlighter {
         case .c:
             return ["^\\s*#\\s*(?:include|define|ifdef|ifndef|endif|else|elif|pragma|undef)\\b.*",
                     "\\b[A-Z_][A-Z0-9_]{2,}\\b"]
-        case .python, .plain:
+        case .python, .markdown, .plain:
             return []
         }
     }

@@ -55,8 +55,8 @@ enum UsageSimulationHarness {
         SettingsManager.shared.thinkingEnabled = false
         SettingsManager.shared.webSearchEnabled = false
 
-        var issues: [RenderAuditChecks.Issue] = []
-        var toolResults: [ToolResult] = []
+        let issues: [RenderAuditChecks.Issue] = []
+        let toolResults: [ToolResult] = []
 
         let scenarios: [Scenario] = [
             Scenario(

@@ -16,6 +16,7 @@ enum StudyTextLanguage: String, Codable, Equatable {
     case verilog
     case c
     case python
+    case markdown
     case plain
 
     static func infer(fromExtension ext: String) -> StudyTextLanguage {
@@ -23,6 +24,7 @@ enum StudyTextLanguage: String, Codable, Equatable {
         case "v", "vh", "sv", "svh": return .verilog
         case "c", "h", "cpp", "cc", "hpp", "m": return .c
         case "py": return .python
+        case "md", "markdown": return .markdown
         default: return .plain
         }
     }
@@ -32,6 +34,7 @@ enum StudyTextLanguage: String, Codable, Equatable {
         case .verilog: return "Verilog"
         case .c: return "C"
         case .python: return "Python"
+        case .markdown: return "Markdown"
         case .plain: return "文本"
         }
     }
@@ -136,7 +139,7 @@ struct StudyDocument: Codable, Equatable {
 
     static func isTextPath(_ path: String) -> Bool {
         let lower = path.lowercased()
-        let exts = [".v", ".vh", ".sv", ".svh", ".c", ".h", ".cpp", ".cc", ".hpp", ".py", ".txt"]
+        let exts = [".v", ".vh", ".sv", ".svh", ".c", ".h", ".cpp", ".cc", ".hpp", ".py", ".txt", ".md", ".markdown"]
         return exts.contains { lower.hasSuffix($0) }
     }
 

@@ -175,16 +175,19 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         topBar.addSubview(contentsButton)
 
         modeButton.translatesAutoresizingMaskIntoConstraints = false
-        modeButton.setTitle("编辑", for: .normal)
-        modeButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: 18), for: .normal)
+        modeButton.imageView?.contentMode = .scaleAspectFit
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
+        modeButton.accessibilityLabel = "切换到编辑模式"
         topBar.addSubview(modeButton)
 
         saveButton.translatesAutoresizingMaskIntoConstraints = false
-        saveButton.setTitle("保存", for: .normal)
-        saveButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.imageView?.contentMode = .scaleAspectFit
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
-        saveButton.isHidden = true
+        saveButton.accessibilityLabel = "保存"
+        saveButton.isEnabled = false
+        saveButton.alpha = 0.35
         topBar.addSubview(saveButton)
 
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -260,11 +263,15 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
 
-            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -4),
+            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
             modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            modeButton.widthAnchor.constraint(equalToConstant: 40),
+            modeButton.heightAnchor.constraint(equalToConstant: 40),
 
-            saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -4),
+            saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            saveButton.widthAnchor.constraint(equalToConstant: 40),
+            saveButton.heightAnchor.constraint(equalToConstant: 40),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -355,8 +362,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         progressLabel.textColor = DSTheme.c.textSecondary
         sidebarButton.tintColor = DSTheme.c.textSecondary
         contentsButton.tintColor = DSTheme.c.textSecondary
-        modeButton.tintColor = DSTheme.c.accent
-        saveButton.tintColor = DSTheme.c.accent
+        refreshModeChrome()
         contentsPanelHost.backgroundColor = DSTheme.c.background
         contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
         shellLoaded = false
@@ -383,8 +389,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     private func setEditMode(_ editing: Bool) {
         isEditMode = editing
-        modeButton.setTitle(editing ? "阅读" : "编辑", for: .normal)
-        saveButton.isHidden = !editing
+        refreshModeChrome()
         contentsButton.isHidden = editing
         webView.isHidden = editing
         editorView.isHidden = !editing
@@ -398,6 +403,22 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             refreshContentsPanel()
         }
         updateProgressLabel()
+    }
+
+    private func refreshModeChrome() {
+        let c = DSTheme.c
+        let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
+        modeButton.setTitle(nil, for: .normal)
+        modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+        modeButton.tintColor = c.textSecondary
+        modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+        saveButton.setTitle(nil, for: .normal)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.isHidden = false
+        saveButton.isEnabled = isEditMode
+        saveButton.alpha = isEditMode ? 1 : 0.35
+        saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+        saveButton.accessibilityLabel = "保存"
     }
 
     /// Keyboard shortcut: enter Markdown edit mode and focus the editor.

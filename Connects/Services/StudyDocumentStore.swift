@@ -283,10 +283,12 @@ final class StudyDocumentStore {
 
         let ext = sourceURL.pathExtension.lowercased()
         let kind: StudyDocumentKind
-        if let inferred = StudyDocument.kind(forExtension: ext) {
-            kind = inferred
-        } else if forceText {
+        // Code/text picker: force `.text` even for `.md` so Study opens TextCodeEditor
+        // (reading-mode Markdown + assets stays on the dedicated Markdown path).
+        if forceText {
             kind = .text
+        } else if let inferred = StudyDocument.kind(forExtension: ext) {
+            kind = inferred
         } else {
             throw StudyDocumentError.unsupportedType
         }

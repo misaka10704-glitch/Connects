@@ -78,19 +78,19 @@
 		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
 		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
 		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
-		B10000010000000000000010 /* MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* MTMathListIndex.m */; };
-		B10000010000000000000011 /* MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* MTMathListBuilder.m */; };
-		B10000010000000000000012 /* MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* MTMathList.m */; };
-		B10000010000000000000013 /* MTMathAtomFactory.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000013 /* MTMathAtomFactory.m */; };
-		B10000010000000000000014 /* MTUnicode.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000014 /* MTUnicode.m */; };
-		B10000010000000000000015 /* UIColor+HexString.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000015 /* UIColor+HexString.m */; };
-		B10000010000000000000016 /* MTLabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000016 /* MTLabel.m */; };
-		B10000010000000000000017 /* MTFont.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000017 /* MTFont.m */; };
-		B10000010000000000000018 /* MTMathListDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000018 /* MTMathListDisplay.m */; };
-		B10000010000000000000019 /* MTMathUILabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000019 /* MTMathUILabel.m */; };
-		B1000001000000000000001A /* MTFontManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001A /* MTFontManager.m */; };
-		B1000001000000000000001B /* MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* MTTypesetter.m */; };
-		B1000001000000000000001C /* MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* MTFontMathTable.m */; };
+		B10000010000000000000010 /* MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* MTMathListIndex.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000011 /* MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* MTMathListBuilder.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000012 /* MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* MTMathList.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000013 /* MTMathAtomFactory.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000013 /* MTMathAtomFactory.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000014 /* MTUnicode.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000014 /* MTUnicode.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000015 /* UIColor+HexString.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000015 /* UIColor+HexString.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000016 /* MTLabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000016 /* MTLabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000017 /* MTFont.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000017 /* MTFont.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000018 /* MTMathListDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000018 /* MTMathListDisplay.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000019 /* MTMathUILabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000019 /* MTMathUILabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001A /* MTFontManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001A /* MTFontManager.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001B /* MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* MTTypesetter.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001C /* MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* MTFontMathTable.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
 		B10000010000000000000020 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000020 /* mathFonts.bundle */; };
 		C10000010000000000000008 /* DiffPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000008 /* DiffPreviewViewController.swift */; };
 		C1000001000000000000000C /* AgentAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000C /* AgentAppearance.swift */; };
@@ -119,6 +119,8 @@
 		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
 		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
 		S10000010000000000000011 /* StudyAskSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000011 /* StudyAskSupport.swift */; };
+		S10000010000000000000020 /* CodeEditorIndent.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000020 /* CodeEditorIndent.swift */; };
+		S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000021 /* CodeEditorAIBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -237,6 +239,8 @@
 		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000011 /* StudyAskSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAskSupport.swift; sourceTree = "<group>"; };
+		S20000010000000000000020 /* CodeEditorIndent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorIndent.swift; sourceTree = "<group>"; };
+		S20000010000000000000021 /* CodeEditorAIBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorAIBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -373,6 +377,8 @@
 				S20000010000000000000004 /* StudyReadingContext.swift */,
 				S2000001000000000000000B /* PDFBookmarkStore.swift */,
 				S2000001000000000000000E /* CodeSyntaxHighlighter.swift */,
+				S20000010000000000000020 /* CodeEditorIndent.swift */,
+				S20000010000000000000021 /* CodeEditorAIBridge.swift */,
 				S2000001000000000000000F /* StudyFileContextStore.swift */,
 				S20000010000000000000011 /* StudyAskSupport.swift */,
 			);
@@ -677,6 +683,8 @@
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
 				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
 				S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */,
+				S10000010000000000000020 /* CodeEditorIndent.swift in Sources */,
+				S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */,
 				S1000001000000000000000F /* StudyFileContextStore.swift in Sources */,
 				S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */,
 				S10000010000000000000011 /* StudyAskSupport.swift in Sources */,

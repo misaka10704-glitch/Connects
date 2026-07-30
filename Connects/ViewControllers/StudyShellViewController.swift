@@ -639,7 +639,7 @@ final class StudyShellViewController: UIViewController {
     }
 
     private func syncPanelStageCapsuleLayout(layoutNow: Bool = true, reconcileChrome: Bool = false) {
-        // Portrait half/full: ▲▼ floating over chat nav mid. Landscape: seam / top bar.
+        // Portrait half/full: ▲▼ floating over chat nav mid. Landscape: left seam (half/full) or trailing edge (collapsed).
         panelCapsulePortraitSeamY.isActive = false
 
         guard isReaderVisible else {
@@ -701,16 +701,8 @@ final class StudyShellViewController: UIViewController {
                     let visualHalfWidth = size.height / 2
                     self.panelCapsuleLandscapeTrailingX.isActive = true
                     self.panelCapsuleLandscapeTrailingX.constant = -(visualHalfWidth + self.collapsedHandleBottomInset)
-                } else if self.chatPanelStage == .full {
-                    // Full AI: same top-bar row as sidebar / ⋯ (not the left seam).
-                    self.panelStageCapsule.transform = .identity
-                    self.panelStageCapsule.isHidden = false
-                    self.panelStageCapsule.prefersFullBoundsHitTesting = true
-                    self.panelCapsulePortraitCenterX.isActive = true
-                    self.panelCapsulePortraitSeamY.isActive = true
-                    self.panelCapsulePortraitSeamY.constant = 0
                 } else {
-                    // Half: −90° on the reader | AI seam.
+                    // Half / full: −90° on the chat leading edge (left seam), not the top nav.
                     self.panelStageCapsule.transform = self.landscapeCapsuleRotation
                     self.panelStageCapsule.isHidden = false
                     self.panelStageCapsule.prefersFullBoundsHitTesting = false
@@ -1731,13 +1723,28 @@ extension StudyShellViewController {
         ]
         guard isReaderVisible else { return cmds }
 
+        // Panel resize: primary axis matches layout; opposite axis also maps so rotate stays usable.
         cmds += [
-            makeKeyCommand(input: "]", modifiers: .command, action: #selector(shortcutExpandAI), title: "扩大 AI 面板"),
-            makeKeyCommand(input: "[", modifiers: .command, action: #selector(shortcutShrinkAI), title: "缩小 AI 面板"),
+            makeKeyCommand(input: UIKeyCommand.inputUpArrow, modifiers: .command,
+                           action: #selector(shortcutPanelArrowUp), title: "扩大 AI 面板（竖屏）"),
+            makeKeyCommand(input: UIKeyCommand.inputDownArrow, modifiers: .command,
+                           action: #selector(shortcutPanelArrowDown), title: "缩小 AI 面板（竖屏）"),
+            makeKeyCommand(input: UIKeyCommand.inputLeftArrow, modifiers: .command,
+                           action: #selector(shortcutPanelArrowLeft), title: "扩大 AI 面板（横屏）"),
+            makeKeyCommand(input: UIKeyCommand.inputRightArrow, modifiers: .command,
+                           action: #selector(shortcutPanelArrowRight), title: "缩小 AI 面板（横屏）"),
+            // ⌘J — not ⌘` (system window cycle) or ⌘Q (system Quit on Mac).
             makeKeyCommand(input: "j", modifiers: .command, action: #selector(shortcutToggleFocus), title: "切换代码 / AI 输入"),
-            makeKeyCommand(input: "e", modifiers: .command, action: #selector(shortcutFocusCode), title: "编辑代码"),
-            makeKeyCommand(input: "l", modifiers: .command, action: #selector(shortcutFocusAI), title: "聚焦 AI 输入"),
-            makeKeyCommand(input: "s", modifiers: .command, action: #selector(shortcutSave), title: "保存文档")
+            makeKeyCommand(input: "1", modifiers: .command, action: #selector(shortcutFocusCode), title: "编辑代码"),
+            makeKeyCommand(input: "2", modifiers: .command, action: #selector(shortcutFocusAI), title: "聚焦 AI 输入"),
+            makeKeyCommand(input: "s", modifiers: .command, action: #selector(shortcutSave), title: "保存文档"),
+            // Code editor zoom (VS Code–style). Multiple + bindings cover = / Shift+= / numpad.
+            makeKeyCommand(input: "=", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
+            makeKeyCommand(input: "+", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
+            makeKeyCommand(input: "+", modifiers: [.command, .shift], action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
+            makeKeyCommand(input: "-", modifiers: .command, action: #selector(shortcutCodeFontSmaller), title: "减小代码字号"),
+            makeKeyCommand(input: "_", modifiers: [.command, .shift], action: #selector(shortcutCodeFontSmaller), title: "减小代码字号"),
+            makeKeyCommand(input: "m", modifiers: .command, action: #selector(shortcutToggleCodeEditMode), title: "切换阅读 / 编辑")
         ]
         return cmds
     }
@@ -1758,6 +1765,24 @@ extension StudyShellViewController {
         return cmd
     }
 
+    @objc private func shortcutPanelArrowUp() {
+        // Portrait primary: expand. Landscape fallback: same expand (universal).
+        shortcutExpandAI()
+    }
+
+    @objc private func shortcutPanelArrowDown() {
+        shortcutShrinkAI()
+    }
+
+    @objc private func shortcutPanelArrowLeft() {
+        // Landscape primary: expand. Portrait fallback: same expand (universal).
+        shortcutExpandAI()
+    }
+
+    @objc private func shortcutPanelArrowRight() {
+        shortcutShrinkAI()
+    }
+
     @objc private func shortcutExpandAI() {
         guard isReaderVisible else { return }
         stepPanelTowardAI()
@@ -1773,10 +1798,13 @@ extension StudyShellViewController {
             chatVC.focusComposerFromShortcut()
             return
         }
-        if chatVC.isComposerFirstResponder {
-            focusActiveReaderForEditing()
-        } else {
+        // Prefer "where is the user working" over bare composer first-responder:
+        // after panel taps / resize the composer often loses focus while still on AI,
+        // and code read-mode is not first-responder — both used to send ⌘J the wrong way.
+        if isWorkingInCodeEditor {
             shortcutFocusAI()
+        } else {
+            focusActiveReaderForEditing()
         }
     }
 
@@ -1785,10 +1813,28 @@ extension StudyShellViewController {
         focusActiveReaderForEditing()
     }
 
+    /// Code side is the active surface. Composer focus always wins (edit-mode flag alone
+    /// can stay true after tapping into AI, which made ⌘J look like a no-op).
+    private var isWorkingInCodeEditor: Bool {
+        if chatVC.isComposerFirstResponder { return false }
+        switch activeReaderKind {
+        case .text:
+            return textEditorVC.isCodeEditorFirstResponder || textEditorVC.isInEditMode
+        case .markdown:
+            return markdownReaderVC.isMarkdownEditorFirstResponder
+        case .pdf:
+            return false
+        }
+    }
+
     @objc private func shortcutFocusAI() {
         guard isReaderVisible else {
             chatVC.focusComposerFromShortcut()
             return
+        }
+        // Leave code edit mode so the next ⌘J / ⌘1 clearly re-enters editing.
+        if activeReaderKind == .text, textEditorVC.isInEditMode {
+            textEditorVC.leaveEditModeFromKeyboardShortcut()
         }
         chatVC.prepareForStudyPanelControlTap()
         if chatPanelStage == .collapsed {
@@ -1810,6 +1856,21 @@ extension StudyShellViewController {
         }
     }
 
+    @objc private func shortcutCodeFontLarger() {
+        guard isReaderVisible, activeReaderKind == .text else { return }
+        textEditorVC.adjustFontSizeFromKeyboardShortcut(by: 1)
+    }
+
+    @objc private func shortcutCodeFontSmaller() {
+        guard isReaderVisible, activeReaderKind == .text else { return }
+        textEditorVC.adjustFontSizeFromKeyboardShortcut(by: -1)
+    }
+
+    @objc private func shortcutToggleCodeEditMode() {
+        guard isReaderVisible, activeReaderKind == .text else { return }
+        textEditorVC.toggleEditModeFromKeyboardShortcut()
+    }
+
     @objc private func shortcutSend() {
         if isReaderVisible, chatPanelStage == .collapsed {
             applyChatPanelStage(.half, animated: true, focusComposerAfter: false)
@@ -1818,6 +1879,7 @@ extension StudyShellViewController {
     }
 
     private func focusActiveReaderForEditing() {
+        chatVC.dismissComposerKeyboard()
         view.endEditing(true)
         switch activeReaderKind {
         case .text:

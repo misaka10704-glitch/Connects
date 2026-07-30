@@ -790,10 +790,9 @@ enum ScrollStressHarness {
             var clipFailures = 0
             var blankFailures = priorBlankFailures
             var chromeLateFailures = 0
-            var chromeShiftFailures = 0
+            let chromeShiftFailures = 0
             var flickerFailures = 0
             let settleMs = pacing.settleMs
-            let driftAllowance = pacing.driftAllowance
 
             func finish() {
                 chat.debugClearLayoutWidthOverride()
@@ -1362,14 +1361,12 @@ enum ScrollStressHarness {
                 guard let firstUser = chat.debugFirstUserRowIndex() else {
                     log("FAIL \(phase): no user rows")
                     exit(1)
-                    return
                 }
                 let assistantRow = firstUser + 1
                 chat.debugScrollUntilFirstUserAtTopEdge { reached in
                     guard reached else {
                         log("FAIL \(phase): did not reach first user at top")
                         exit(1)
-                        return
                     }
                     let anchor = chat.debugScrollAnchorSnapshot()
                     let assistantY0 = chat.debugRowViewportY(row: assistantRow)
@@ -1414,14 +1411,12 @@ enum ScrollStressHarness {
                             guard let firstUser = chat.debugFirstUserRowIndex() else {
                                 log("FAIL \(phase): no user rows")
                                 exit(1)
-                                return
                             }
                             log("\(phase): firstUserRow=\(firstUser) offset=\(Int(chat.debugContentOffsetY()))")
                             chat.debugScrollUntilFirstUserAtTopEdge { reached in
                                 guard reached else {
                                     log("FAIL \(phase): did not reach first user at top edge")
                                     exit(1)
-                                    return
                                 }
                                 let edge = chat.debugVisibleQAEdgeState()
                                 log("\(phase): reached topUsers=\(edge.userRowsAtTopEdge) nearAssistants=\(edge.assistantRowsNearUserEdge)")

@@ -4590,7 +4590,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 body = message.searchProcessContent
             }
         }
-        let sourceView = (cell as? UITableViewCell)?.contentView
+        let sourceView = cell.contentView
         MessageChromeViewerViewController.present(
             from: self,
             title: title,
@@ -4745,7 +4745,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         pass(unlock: false)
         for (i, delay) in settleDelays.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self = self else { return }
+                guard self != nil else { return }
                 let unlock = unlockScrollWhenDone && i == settleDelays.count - 1
                 pass(unlock: unlock)
             }
@@ -7462,9 +7462,6 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty {
             let layoutWidth = currentRenderWidth()
             let pendingFirstPrep = needsFirstHistoryScrollPrep
-            let prepRows = pendingFirstPrep
-                ? lightOpenBottomPrepRows(in: messages)
-                : []
             if pendingStudyFirstScrollPrep {
                 prepareStudyFirstScrollFromOpen(messages: messages, layoutWidth: layoutWidth)
                 pendingStudyFirstScrollPrep = false
@@ -9208,22 +9205,27 @@ extension ChatViewController {
         if let enabled = studyCaptureEnabled {
             debugSetStudyCaptureEnabled(enabled)
         }
-        var observer: NSObjectProtocol?
+        final class ObserverBox {
+            var observer: NSObjectProtocol?
+        }
+        let box = ObserverBox()
         let timeoutWork = DispatchWorkItem {
-            if let observer = observer {
+            if let observer = box.observer {
                 NotificationCenter.default.removeObserver(observer)
+                box.observer = nil
             }
             completion(false)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
-        observer = NotificationCenter.default.addObserver(
+        box.observer = NotificationCenter.default.addObserver(
             forName: .streamManagerDidFinish,
             object: nil,
             queue: .main
         ) { note in
             guard let id = note.userInfo?["conversationID"] as? String, id == convID else { return }
-            if let observer = observer {
+            if let observer = box.observer {
                 NotificationCenter.default.removeObserver(observer)
+                box.observer = nil
             }
             timeoutWork.cancel()
             completion(true)

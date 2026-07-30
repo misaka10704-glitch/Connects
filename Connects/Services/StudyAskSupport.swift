@@ -55,6 +55,12 @@ enum StudyAskMenu {
 /// UITextView with Ask in the edit menu (code / Markdown editor).
 final class StudyAskTextView: UITextView, StudyAskHandling {
     var onAskSelection: ((String) -> Void)?
+    /// Optional hardware key commands while this view is first responder (code editor).
+    var editorKeyCommandsProvider: (() -> [UIKeyCommand]?)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        editorKeyCommandsProvider?() ?? super.keyCommands
+    }
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)

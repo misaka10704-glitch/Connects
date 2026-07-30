@@ -136,7 +136,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else if indexPath.row == 2 {
             cell.textLabel?.text = "打开代码 / 文本…"
-            cell.detailTextLabel?.text = "优先 .v（Verilog）；亦支持 .c / .py / .txt"
+            cell.detailTextLabel?.text = "优先 .v；亦支持 .c / .py / .txt / .md（Markdown 源码+预览）"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else {
             let doc = documents[indexPath.row - openRowCount]
@@ -365,7 +365,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         pendingAccessRoot = url.deletingLastPathComponent()
 
         let needsImages = MarkdownStudyImporter.referencesLocalImages(in: url)
-        guard let root = pendingAccessRoot else { return }
+        guard pendingAccessRoot != nil else { return }
         if !needsImages {
             openInPlace(url)
             return

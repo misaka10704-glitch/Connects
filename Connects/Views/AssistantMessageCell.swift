@@ -1734,10 +1734,6 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     /// renderer state, or action visibility on every token batch.
     @discardableResult
     func updateStreamingContent(_ message: ChatMessage, waitingGlyph: String? = nil) -> Bool {
-        let searchEmpty = message.searchProcessContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !message.hasSearchProcess
-            && message.imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !message.hasImageTranscription
         let thinkEmpty = message.reasoningContent.isEmpty
         let imageActivity = message.hasImageTranscription
         let wantsSearchChrome = message.hasSearchProcess || imageActivity
