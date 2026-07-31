@@ -29,6 +29,27 @@ enum StudyTextLanguage: String, Codable, Equatable {
         }
     }
 
+    /// Markdown fence language tag → highlighter language.
+    static func infer(fromFenceLanguage raw: String?) -> StudyTextLanguage {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return .plain
+        }
+        let key = raw.lowercased()
+        switch key {
+        case "v", "vh", "verilog", "systemverilog", "sv", "svh":
+            return .verilog
+        case "c", "h", "cpp", "cc", "hpp", "c++", "objc", "objective-c",
+             "swift", "java", "js", "javascript", "ts", "typescript", "go", "rust", "kotlin":
+            return .c
+        case "py", "python":
+            return .python
+        case "md", "markdown":
+            return .markdown
+        default:
+            return infer(fromExtension: key)
+        }
+    }
+
     var displayName: String {
         switch self {
         case .verilog: return "Verilog"
@@ -36,6 +57,16 @@ enum StudyTextLanguage: String, Codable, Equatable {
         case .python: return "Python"
         case .markdown: return "Markdown"
         case .plain: return "文本"
+        }
+    }
+
+    var preferredFileExtension: String {
+        switch self {
+        case .verilog: return "v"
+        case .c: return "c"
+        case .python: return "py"
+        case .markdown: return "md"
+        case .plain: return "txt"
         }
     }
 }

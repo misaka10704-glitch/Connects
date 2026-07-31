@@ -153,9 +153,9 @@ private final class ModelCapsuleDropdownController: UIViewController {
             let btn = UIButton(type: .custom)
             btn.contentHorizontalAlignment = .left
             btn.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: selected ? .semibold : .regular)
-            btn.contentEdgeInsets = UIEdgeInsets(top: 11, left: 16, bottom: 11, right: 16)
             let title = selected ? "\(model.displayName)  ✓" : model.displayName
             btn.setTitle(title, for: .normal)
+            btn.connectsSetContentInsets(top: 11, leading: 16, bottom: 11, trailing: 16)
             btn.tag = idx
             btn.addTarget(self, action: #selector(rowTapped(_:)), for: .touchUpInside)
             btn.addTarget(self, action: #selector(rowDown(_:)), for: .touchDown)

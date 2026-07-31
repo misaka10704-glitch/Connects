@@ -113,7 +113,7 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
         compactButton.translatesAutoresizingMaskIntoConstraints = false
         compactButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         compactButton.layer.cornerRadius = 10
-        compactButton.contentEdgeInsets = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
+        compactButton.connectsSetContentInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
         compactButton.addTarget(self, action: #selector(compactTapped), for: .touchUpInside)
         stack.addArrangedSubview(compactButton)
 

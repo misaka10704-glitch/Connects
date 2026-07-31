@@ -135,3 +135,39 @@ final class ThemeManager {
 protocol ThemeRefreshable: AnyObject {
     func applyTheme()
 }
+
+extension UIButton {
+    /// iOS 15+ replacement for deprecated `contentEdgeInsets`.
+    func connectsSetContentInsets(top: CGFloat, leading: CGFloat, bottom: CGFloat, trailing: CGFloat,
+                                  imagePadding: CGFloat? = nil) {
+        var config = configuration ?? .plain()
+        if let attributed = attributedTitle(for: .normal), attributed.length > 0 {
+            config.attributedTitle = AttributedString(attributed)
+        } else if let title = currentTitle {
+            config.title = title
+        }
+        if let image = currentImage {
+            config.image = image
+        }
+        if let color = titleColor(for: .normal) {
+            config.baseForegroundColor = color
+        }
+        if let font = titleLabel?.font {
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var out = incoming
+                out.font = font
+                return out
+            }
+        }
+        config.contentInsets = NSDirectionalEdgeInsets(
+            top: top,
+            leading: leading,
+            bottom: bottom,
+            trailing: trailing
+        )
+        if let imagePadding {
+            config.imagePadding = imagePadding
+        }
+        configuration = config
+    }
+}

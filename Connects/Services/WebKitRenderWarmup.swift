@@ -1,12 +1,77 @@
 import UIKit
 import WebKit
 
-/// Spins WebKit + marked (and optionally KaTeX) once at launch so the first
-/// rich message cell is not a cold start on iPad Air 1.
-enum WebKitRenderWarmup {
-    /// Shared by every MessageCell WKWebView — keeps one WebContent process warm.
-    static let processPool = WKProcessPool()
+/// Shared iOS 15+ WKWebView setup for Study reading and offscreen snapshot workers.
+/// Chat bubbles stay on Native bitmaps; WebKit must stay out of recycled table cells.
+enum ConnectsWebKit {
+    static func makeConfiguration(userContentController: WKUserContentController? = nil) -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        let prefs = WKWebpagePreferences()
+        prefs.allowsContentJavaScript = true
+        config.defaultWebpagePreferences = prefs
+        config.suppressesIncrementalRendering = false
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        if let userContentController {
+            config.userContentController = userContentController
+        }
+        return config
+    }
 
+    /// Tune scrolling / compositing for long Study documents (single native scroller).
+    static func applyReadingSurfaceTuning(_ webView: WKWebView, background: UIColor) {
+        webView.isOpaque = true
+        webView.backgroundColor = background
+        webView.underPageBackgroundColor = background
+        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsLinkPreview = false
+        if #available(iOS 16.4, *) {
+            webView.isInspectable = false
+        }
+
+        let scroll = webView.scrollView
+        scroll.backgroundColor = background
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.alwaysBounceVertical = true
+        scroll.alwaysBounceHorizontal = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.decelerationRate = .normal
+        // false = finger drag scrolls immediately (Safari-like). true waits ~150ms for
+        // nested controls and feels like "滑了之后页面才跟着动".
+        scroll.delaysContentTouches = false
+        scroll.canCancelContentTouches = true
+        scroll.keyboardDismissMode = .interactive
+        // Avoid a direction-ambiguity pause at gesture start on long docs.
+        scroll.isDirectionalLockEnabled = false
+        scroll.panGestureRecognizer.delaysTouchesBegan = false
+        scroll.panGestureRecognizer.delaysTouchesEnded = false
+        // Avoid nested zoom fighting Study pinch elsewhere.
+        scroll.minimumZoomScale = 1
+        scroll.maximumZoomScale = 1
+        scroll.bouncesZoom = false
+        if #available(iOS 15.0, *) {
+            scroll.automaticallyAdjustsScrollIndicatorInsets = false
+        }
+    }
+
+    /// CSS for long fences / blocks: skip offscreen layout work (Safari 15+).
+    static var scrollPerformanceCSS: String {
+        """
+        @supports (content-visibility: auto) {
+          #c pre, #c table, #c blockquote, #c .katex-display {
+            content-visibility: auto;
+            contain-intrinsic-size: auto 160px;
+          }
+        }
+        #c pre { contain: layout style paint; }
+        #c pre code { white-space: pre; tab-size: 4; }
+        """
+    }
+}
+
+/// Spins WebKit + marked (and optionally KaTeX) once at launch so the first
+/// rich snapshot worker is not a cold start on iPad Air 1.
+enum WebKitRenderWarmup {
     private static var host: UIView?
     private static var lightWebView: WKWebView?
     private static var mathWebView: WKWebView?
@@ -46,9 +111,7 @@ enum WebKitRenderWarmup {
         if includeMath, mathWebView != nil { return }
         if !includeMath, lightWebView != nil { return }
 
-        let config = WKWebViewConfiguration()
-        config.processPool = processPool
-        config.preferences.javaScriptEnabled = true
+        let config = ConnectsWebKit.makeConfiguration()
         let wv = WKWebView(frame: CGRect(x: 0, y: 0, width: 320, height: 1), configuration: config)
         wv.isOpaque = false
         wv.backgroundColor = .clear
@@ -59,7 +122,12 @@ enum WebKitRenderWarmup {
             h.isUserInteractionEnabled = false
             h.alpha = 0.01
             h.clipsToBounds = true
-            UIApplication.shared.keyWindow?.addSubview(h)
+            let window = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows)
+                .first(where: \.isKeyWindow)
+                ?? UIApplication.shared.windows.first
+            window?.addSubview(h)
             host = h
         }
         guard let host = host else { return }

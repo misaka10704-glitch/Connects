@@ -53,8 +53,37 @@ struct NativeTextFragment {
     let linkRects: [(CGRect, URL)]
 }
 
+/// Compact Cursor-style code card in chat; tap opens a keyword-highlighted popup.
+struct NativeCodeFenceFragment {
+    let fullCode: String
+    let language: StudyTextLanguage
+    let languageLabel: String
+    let previewLines: [String]
+    /// Keyword-colored preview (same count as `previewLines`); drawn in the bubble bitmap.
+    let previewAttributedLines: [NSAttributedString]
+    let totalLineCount: Int
+    let cardFrame: CGRect
+    let headerFrame: CGRect
+    let previewFrame: CGRect
+    let font: UIFont
+    let color: UIColor
+    let mutedColor: UIColor
+    let cardFill: UIColor
+    let cardBorder: UIColor
+    let lineStep: CGFloat
+    let showsFade: Bool
+}
+
+struct NativeCodeFenceHit {
+    let frame: CGRect
+    let code: String
+    let language: StudyTextLanguage
+    let title: String
+}
+
 enum NativeDrawCommand {
     case text(NativeTextFragment)
+    case codeFence(NativeCodeFenceFragment)
     case image(UIImage, CGRect)
     case fill(CGRect, UIColor, CGFloat)
     case stroke(CGRect, UIColor, CGFloat)
@@ -66,4 +95,5 @@ struct NativeMessageLayout {
     let size: CGSize
     let commands: [NativeDrawCommand]
     let linkRects: [(CGRect, URL)]
+    let codeFenceHits: [NativeCodeFenceHit]
 }

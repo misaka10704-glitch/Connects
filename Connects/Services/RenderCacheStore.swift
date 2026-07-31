@@ -347,22 +347,24 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
 
     private func ensureWebView() {
         guard webView == nil else { return }
-        let config = WKWebViewConfiguration()
-        config.processPool = WebKitRenderWarmup.processPool
-        config.preferences.javaScriptEnabled = true
+        let config = ConnectsWebKit.makeConfiguration()
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
         view.isOpaque = false
         view.backgroundColor = .clear
+        view.underPageBackgroundColor = .clear
         view.scrollView.isScrollEnabled = false
         view.scrollView.contentInset = .zero
+        view.scrollView.contentInsetAdjustmentBehavior = .never
         // WebKit does not reliably paint/snapshot a clipped 2pt descendant on
         // iOS 12. Keep a real-sized, almost transparent renderer in-window.
         let host = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         host.alpha = 0.01
         host.clipsToBounds = false
-        let window = UIApplication.shared.keyWindow
-            ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow })
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
             ?? UIApplication.shared.windows.first
         window?.addSubview(host)
         host.addSubview(view)

@@ -11,6 +11,7 @@ final class StudyShellViewController: UIViewController {
     private let pdfReaderVC = PDFReaderViewController()
     private let markdownReaderVC = MarkdownReaderViewController()
     private let textEditorVC = TextCodeEditorViewController()
+    private let codeEditCoordinator = CodeEditCoordinator()
     private var activeReaderKind: StudyDocumentKind = .pdf
     private let readerHost = UIView()
     private let chatHost = UIView()
@@ -88,6 +89,9 @@ final class StudyShellViewController: UIViewController {
     private var isAnimatingPanelStage = false
     /// After panel open animation, put keyboard into the AI composer (⌘L / ⌘J).
     private var pendingFocusComposerAfterPanel = false
+    /// Portrait half-panel ratio before a docked soft keyboard temporarily expanded it to ~2/3.
+    private var portraitOverlayRatioBeforeKeyboard: CGFloat?
+    private let portraitKeyboardHalfBoostRatio: CGFloat = 2.0 / 3.0
 
     private var isChatCollapsed: Bool { chatPanelStage == .collapsed }
 
@@ -176,6 +180,11 @@ final class StudyShellViewController: UIViewController {
         // PDF has no Ask (highlighter-only). Code / Markdown keep Ask on selection.
         markdownReaderVC.onAskSelection = askSelection
         textEditorVC.onAskSelection = askSelection
+        codeEditCoordinator.bindEditor(textEditorVC)
+        textEditorVC.completionProvider = codeEditCoordinator
+        codeEditCoordinator.onDiffSessionChange = { [weak self] active, count in
+            self?.chatVC.setCodeDiffReviewBanner(visible: active, changeCount: count)
+        }
         StudyAskMenu.installIfNeeded()
 
         addChild(pdfReaderVC)
@@ -329,8 +338,78 @@ final class StudyShellViewController: UIViewController {
             object: nil
         )
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(studyKeyboardWillChange(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
 
         bindCurrentConversation()
+    }
+
+    @objc private func studyKeyboardWillChange(_ note: Notification) {
+        // Landscape: leave panel ratios alone (plan).
+        guard isPortraitMode, isReaderVisible else {
+            textEditorVC.applyKeyboardBottomInset(0)
+            return
+        }
+        if ConnectsNoteSheet.isVisible { return }
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        else { return }
+
+        let snap = ConnectsKeyboardGeometry.resolve(screenFrame: frame, in: view)
+        switch snap.kind {
+        case .hidden:
+            restorePortraitHalfAfterKeyboard()
+            textEditorVC.applyKeyboardBottomInset(0)
+        case .docked:
+            applyPortraitHalfBoostForDockedKeyboard()
+            let overlap = readerKeyboardOverlap(snap.frameInView)
+            textEditorVC.applyKeyboardBottomInset(overlap)
+        case .floatingMini:
+            // Floating / undocked: do not expand AI panel; only light inset if it covers reader.
+            restorePortraitHalfAfterKeyboard()
+            let overlap = readerKeyboardOverlap(snap.frameInView)
+            textEditorVC.applyKeyboardBottomInset(overlap > 24 ? overlap : 0)
+        }
+
+        let curveRaw = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.intValue
+            ?? UIView.AnimationCurve.easeInOut.rawValue
+        let options = UIView.AnimationOptions(rawValue: UInt(curveRaw << 16))
+        UIView.animate(withDuration: duration, delay: 0, options: options) {
+            self.view.layoutIfNeeded()
+        }
+    }
+
+    private func readerKeyboardOverlap(_ keyboardInShell: CGRect) -> CGFloat {
+        let readerFrame = readerHost.convert(readerHost.bounds, to: view)
+        let hit = readerFrame.intersection(keyboardInShell)
+        guard !hit.isNull else { return 0 }
+        return max(0, hit.height)
+    }
+
+    private func applyPortraitHalfBoostForDockedKeyboard() {
+        guard chatPanelStage == .half else { return }
+        if portraitOverlayRatioBeforeKeyboard == nil {
+            portraitOverlayRatioBeforeKeyboard = portraitOverlayRatio
+        }
+        let boosted = Self.clampOverlayRatio(portraitKeyboardHalfBoostRatio, portrait: true)
+        guard abs(portraitOverlayRatio - boosted) > 0.01 else { return }
+        portraitOverlayRatio = boosted
+        _ = updatePortraitOverlay()
+        view.setNeedsLayout()
+    }
+
+    private func restorePortraitHalfAfterKeyboard() {
+        guard let backup = portraitOverlayRatioBeforeKeyboard else { return }
+        portraitOverlayRatioBeforeKeyboard = nil
+        portraitOverlayRatio = Self.clampOverlayRatio(backup, portrait: true)
+        if chatPanelStage == .half {
+            _ = updatePortraitOverlay()
+            view.setNeedsLayout()
+        }
     }
 
     deinit {
@@ -708,7 +787,16 @@ final class StudyShellViewController: UIViewController {
                     self.panelStageCapsule.prefersFullBoundsHitTesting = false
                     self.panelCapsuleLandscapeCenterY.isActive = true
                     self.panelCapsuleLandscapeLeadingX.isActive = true
-                    self.panelCapsuleLandscapeLeadingX.constant = 0
+                    // Rotated chip visual width ≈ untransformed height. Half stage
+                    // straddles the reader|chat seam (constant 0). Full AI has no
+                    // seam — constant 0 would leave ~half the chip off-screen.
+                    let visualHalfWidth = size.height / 2
+                    if self.chatPanelStage == .full {
+                        self.panelCapsuleLandscapeLeadingX.constant =
+                            visualHalfWidth + self.collapsedHandleBottomInset
+                    } else {
+                        self.panelCapsuleLandscapeLeadingX.constant = 0
+                    }
                 }
                 self.view.bringSubviewToFront(self.chatHost)
                 self.view.bringSubviewToFront(self.panelStageCapsule)
@@ -1666,6 +1754,28 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 customAPIPrefix: prefix
             )
         }
+    }
+
+    var studyCodeAIEditSupported: Bool {
+        isReaderVisible && activeReaderKind == .text
+    }
+
+    @discardableResult
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool {
+        guard studyCodeAIEditSupported else { return false }
+        // Ensure reader is visible for Diff review.
+        if chatPanelStage == .full {
+            applyChatPanelStage(.half, animated: true)
+        }
+        return codeEditCoordinator.presentProposal(proposal)
+    }
+
+    func studyCodeDiffUndoAll() {
+        codeEditCoordinator.undoAll()
+    }
+
+    func studyCodeDiffKeepAll() {
+        codeEditCoordinator.keepAll()
     }
 }
 

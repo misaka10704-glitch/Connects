@@ -78,6 +78,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var finishViewportLocked = false
     private var lastStreamMessageID = ""
     private var lastStreamContentBytes = -1
+    private var lastStreamVisibleBytes = -1
     private var lastStreamReasoningBytes = -1
     private var lastStreamSearchBytes = -1
     private var lastStreamImageTranscriptionBytes = -1
@@ -679,10 +680,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let painted = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
         guard painted > 40 else { return resolved }
         let slack = rowHeightPaintSlackThreshold()
-        // History scroll: read-only clamp so action chrome does not sit in inflated slack.
-        if rowHeights.isScrollHeightFrozen, readingHistory {
-            return resolved > painted + slack ? painted : resolved
-        }
+        // Freeze = stable heights. Mid-scroll paint clamp / shrink shifts content above the
+        // viewport (fast fling is obvious with code cards). Collapse slack at finger-down
+        // and settle instead.
+        if rowHeights.isScrollHeightFrozen { return resolved }
         guard shouldClampCommittedHeightToPaint(for: msg) else { return resolved }
         if let assistant = cell as? AssistantMessageCell, msg.role == .assistant {
             if !assistant.hasVisibleBodyPaint, !assistant.hasReservedActionChromeSpace {
@@ -1747,27 +1748,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             layoutWidth: layoutWidth
         )
         if readingHistory {
-            if usesStudyHeightBucketPolicy() {
-                let thread = messages ?? ConversationStore.shared.currentConversation?.messages ?? []
-                let pairedUser = pairedUserMessage(forAssistantAt: row, in: thread)
-                let allowSync = AssistantMessageLayout.hasCachedNativeLayout(
-                    for: message,
-                    layoutWidth: layoutWidth
-                )
-                if let layoutCol = AssistantMessageLayout.estimatedColumnContentHeight(
-                    for: message,
-                    layoutWidth: layoutWidth,
-                    isLastRow: row == messageCount - 1,
-                    allowSyncLayout: allowSync,
-                    pairedUser: pairedUser
-                ), layoutCol > 40,
-                   rowHeights.shrinkFrozenRowHeightIfNeeded(
-                       messageID: message.id,
-                       columnHeight: layoutCol
-                   ) {
-                    scheduleStudyFrozenShrinkRemeasure()
-                }
-            }
+            // Do not shrink the frozen map mid-fling (Study + code cards). Finger-down
+            // prep already collapsed inflated rows; settle shrinks with viewport preserve.
             return
         }
         if let committed = rowHeights.committedColumnHeight(for: message.id), committed > 40 {
@@ -1920,9 +1902,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Grow frozen rows while the finger is down — Air 1–slow scroll exposes clip if we only fix at gesture end.
     private func scheduleFrozenAssistantGeometrySync() {
+        // Mid-scroll geometry sync + beginUpdates causes whole-page hitch on fence-dense threads.
+        // Queued grows apply in performScrollHeightSettling / finalizeFrozenHistoryScrollSettle.
         guard rowHeights.isScrollHeightFrozen else { return }
+        guard !tableView.isDragging, !tableView.isDecelerating else { return }
         guard !readingHistory else { return }
-        guard tableView.isDragging || tableView.isDecelerating else { return }
         guard scrollFreezeGeometryWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
@@ -1978,18 +1962,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if rowHeights.growFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: columnH) {
                 changed = true
             }
-            // Study panels: only shrink frozen map during history scroll; settle applies layout.
-            if usesStudyHeightBucketPolicy(), readingHistory, cell.hasVisibleBodyPaint {
-                let rowH = tableView.rectForRow(at: path).height
-                var slack = rowH - (columnH + ChatRowHeightResolver.cellVerticalMargin)
-                if cell.hasReservedActionChromeSpace, !cell.hasVisibleActionButtons {
-                    slack -= Self.actionChromeHeightSlack
-                }
-                if slack > 72,
-                   rowHeights.shrinkFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: columnH) {
-                    changed = true
-                }
-            }
+            // Mid-scroll Study shrink removed — it remeasures during fling and jumps the viewport.
+            // Inflated slack is handled at finger-down prep and history settle.
         }
         if changed, readingHistory { return }
         // Avoid per-frame chrome refresh — it hitchs when crossing short QA turns.
@@ -2010,6 +1984,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if readingHistory {
                 return
             } else {
+                #if DEBUG
+                ChatHeavyScrollDiagnostics.midScrollBeginUpdates += 1
+                #endif
                 UIView.performWithoutAnimation {
                     tableView.beginUpdates()
                     tableView.endUpdates()
@@ -2826,11 +2803,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     @discardableResult
     private func hydrateVisibleDeferredNativeCells(maxCount: Int = 1) -> Bool {
         var pending: [(row: Int, cell: AssistantMessageCell)] = []
+        let layoutWidth = currentRenderWidth()
+        let scrolling = tableView.isDragging || tableView.isDecelerating
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             guard cell.hasPendingDeferredNativeRender,
                   let path = tableView.indexPath(for: cell) else { continue }
+            // Mid-scroll: only hydrate when layout is already warm (no sync layout+rasterize hitch).
+            if scrolling,
+               let messages = ConversationStore.shared.currentConversation?.messages,
+               path.row < messages.count,
+               !AssistantMessageLayout.hasCachedNativeLayout(
+                   for: messages[path.row],
+                   layoutWidth: layoutWidth
+               ) {
+                continue
+            }
             pending.append((path.row, cell))
         }
+        #if DEBUG
+        ChatHeavyScrollDiagnostics.gestureDeferredVisiblePeak = max(
+            ChatHeavyScrollDiagnostics.gestureDeferredVisiblePeak,
+            pending.count
+        )
+        #endif
         guard !pending.isEmpty else { return false }
         pending.sort { scrollBiasUp ? $0.row > $1.row : $0.row < $1.row }
         let batch = pending.prefix(max(1, maxCount))
@@ -2845,8 +2840,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 let prior = rowHeights.bestKnownColumnHeight(for: msg.id)
                 if measured > prior + 2 {
                     rowHeights.commitMeasured(columnHeight: measured, messageID: msg.id, allowShrink: false)
-                    _ = rowHeights.growFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: measured)
-                    grew = true
+                    if rowHeights.growFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: measured) {
+                        grew = true
+                        #if DEBUG
+                        ChatHeavyScrollDiagnostics.midScrollHydrateGrew += 1
+                        #endif
+                    }
                 }
             }
             if !rowHeights.isCommitted(msg.id) {
@@ -2855,10 +2854,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 _ = item.cell.ensureActionButtonsVisible(for: msg)
             }
         }
-        if grew, !readingHistory {
-            applyFrozenRelayoutPreservingLockedAnchor()
-        } else if grew {
-            remeasureRowsPreservingViewport(anchorPath: viewportScrollAnchorPath())
+        // Never beginUpdates / remasure while the finger is still moving.
+        if grew, !scrolling {
+            if !readingHistory {
+                applyFrozenRelayoutPreservingLockedAnchor()
+            } else {
+                remeasureRowsPreservingViewport(anchorPath: viewportScrollAnchorPath())
+            }
         }
         return pending.count > batch.count
     }
@@ -3450,7 +3452,37 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   openGen == self.openGeneration,
                   openID == self.renderedConversationID else { return }
             self.eagerPreparePendingHistoryHeightsAtBottom()
+            self.prewarmFenceHeavyLayoutsForCurrentConversation()
         }
+    }
+
+    /// Fence-dense transcripts: warm layout cache before the first upward scroll.
+    private func prewarmFenceHeavyLayoutsForCurrentConversation() {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              !messages.isEmpty else { return }
+        let layoutWidth = currentRenderWidth()
+        #if DEBUG
+        ChatHeavyScrollDiagnostics.logConversationProfile(messages, label: "open")
+        #endif
+        let fenceHeavy = messages.filter {
+            $0.role == .assistant
+                && !$0.isStreaming
+                && AssistantMessageLayout.codeFenceMarkerCount(in: $0.chatDisplayBody) >= 2
+        }
+        guard !fenceHeavy.isEmpty else { return }
+        // Sync a small batch so the first visible cards bind from cache; rest async.
+        let syncBatch = Array(fenceHeavy.suffix(8))
+        AssistantMessageLayout.prewarmFenceHeavyLayouts(
+            for: syncBatch,
+            targetWidth: layoutWidth,
+            layoutLimit: syncBatch.count
+        )
+        let asyncBatch = fenceHeavy.filter { msg in !syncBatch.contains(where: { $0.id == msg.id }) }
+        if !asyncBatch.isEmpty {
+            scheduleAsyncLayoutPrewarm(assistants: Array(asyncBatch.prefix(24)), layoutWidth: layoutWidth)
+        }
+        // Fill deferred paints on visible rows without waiting for finger-down.
+        _ = hydrateVisibleDeferredNativeCells(maxCount: 4)
     }
 
     /// Live-tail chase: relayout table, then pin to content + tail cell bottom.
@@ -4821,12 +4853,129 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             unlockScrollAfterFinishPin()
         }
         maybeAutoCompactContext()
+        handleCodeEditProposalIfNeeded(conversationID: id, finishedMessage: last)
+    }
+
+    /// Strip CONNECTS_EDIT from the chat bubble; present Diff only when「AI 编辑」is on.
+    /// Always strip on finish — otherwise `chatVisibleContent` keeps showing a fake “proposed edit”
+    /// even when the toggle is off and the file never changes.
+    private func handleCodeEditProposalIfNeeded(conversationID: String, finishedMessage: ChatMessage) {
+        guard finishedMessage.role == .assistant,
+              !finishedMessage.isStreaming else { return }
+        let raw = finishedMessage.content
+        let mentionsEdit = raw.range(of: "CONNECTS_EDIT", options: .caseInsensitive) != nil
+        guard mentionsEdit else { return }
+
+        let editEnabled = inputBar.codeAIEditEnabled
+        let proposal = CodeEditApplyTools.parseEditBlock(from: raw)
+
+        if !editEnabled {
+            let prose = (proposal?.displayContent ?? CodeEditApplyTools.chatVisibleContent(raw))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let note = "（未开启「AI 编辑」，编辑块已忽略，文件未改）"
+            let persisted = (prose.isEmpty || prose == "（文件编辑内容已隐藏）" || prose == "（已提出文件编辑）")
+                ? note
+                : prose + "\n\n" + note
+            persistStrippedEditMessage(
+                conversationID: conversationID,
+                messageID: finishedMessage.id,
+                content: persisted
+            )
+            return
+        }
+
+        guard let proposal else {
+            let cleaned = CodeEditApplyTools.chatVisibleContent(raw)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let note = CodeEditApplyTools.hasIncompleteEditBlock(raw)
+                ? "（编辑块被截断未闭合，文件未改 — 可点重跑）"
+                : "（编辑提案格式无效，未改文件）"
+            let persisted = (cleaned.isEmpty
+                             || cleaned == "（文件编辑内容已隐藏）"
+                             || cleaned == "（已提出文件编辑）")
+                ? note
+                : cleaned + "\n\n" + note
+            persistStrippedEditMessage(
+                conversationID: conversationID,
+                messageID: finishedMessage.id,
+                content: persisted
+            )
+            ConnectsToast.show("编辑提案不完整（CONNECTS_EDIT 未闭合或格式错误）。可点重跑，或再发一次「继续」。", in: view, duration: 2.6)
+            return
+        }
+
+        let presented = studyContextProvider?.presentStudyCodeEditProposal(proposal) ?? false
+        let prose = proposal.displayContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emptyProse = prose.isEmpty
+            || prose == "（文件编辑内容已隐藏）"
+            || prose == "（已提出文件编辑）"
+        let persisted: String
+        if presented {
+            // Diff is the real product; don't claim “已提出” with an empty bubble.
+            persisted = emptyProse ? "（已打开 Diff，请在阅读器中 Keep / Undo）" : prose
+            ConnectsToast.show("Diff 已打开 — 按块 Keep / Undo，或用输入栏 Keep All", in: view, duration: 1.6)
+        } else if studyContextProvider?.studyCodeAIEditSupported != true {
+            persisted = emptyProse
+                ? "（已生成编辑提案，但当前不是代码/文本页，未改文件）"
+                : prose + "\n\n（当前不是代码/文本页，未打开 Diff）"
+            ConnectsToast.show("请先打开代码或文本文件，再让 AI 编辑", in: view, duration: 2.2)
+        } else {
+            persisted = emptyProse
+                ? "（编辑提案未打开 Diff，文件未改）"
+                : prose + "\n\n（Diff 未打开，文件未改）"
+        }
+        persistStrippedEditMessage(
+            conversationID: conversationID,
+            messageID: finishedMessage.id,
+            content: persisted
+        )
+    }
+
+    private func persistStrippedEditMessage(conversationID: String, messageID: String, content: String) {
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { conv in
+            guard let idx = conv.messages.lastIndex(where: { $0.id == messageID }) else { return }
+            conv.messages[idx].content = content
+            if !conv.messages[idx].versions.isEmpty,
+               conv.messages[idx].versions.indices.contains(conv.messages[idx].versionIndex) {
+                conv.messages[idx].versions[conv.messages[idx].versionIndex].content = content
+            }
+        }
+        if renderedConversationID == conversationID {
+            refreshAssistantRowAfterEditStrip(messageID: messageID)
+        }
+    }
+
+    private func refreshAssistantRowAfterEditStrip(messageID: String) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let row = messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let message = messages[row]
+        rowHeights.invalidate(messageID: messageID)
+        let path = IndexPath(row: row, section: 0)
+        let layoutWidth = currentRenderWidth()
+        // Rebuild layout/bitmap for the rewritten body before the next scroll freeze.
+        AssistantMessageLayout.rematerializeLayout(for: message, layoutWidth: layoutWidth)
+        let pairedUser = pairedUserMessage(forAssistantAt: row, in: messages)
+        UIView.performWithoutAnimation {
+            if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
+                cell.configure(
+                    with: message,
+                    preferredHeight: nil,
+                    layoutWidth: layoutWidth,
+                    pairedUser: pairedUser
+                )
+                tableView.beginUpdates()
+                tableView.endUpdates()
+            } else if path.row < tableView.numberOfRows(inSection: 0) {
+                tableView.reloadRows(at: [path], with: .none)
+            }
+        }
     }
 
     private func ensureStreamUITimer() {
         guard streamUITimer == nil, isCurrentStreaming else { return }
         lastStreamMessageID = ""
         lastStreamContentBytes = -1
+        lastStreamVisibleBytes = -1
         lastStreamReasoningBytes = -1
         lastStreamSearchBytes = -1
         lastStreamImageTranscriptionBytes = -1
@@ -4860,19 +5009,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // Streams only append text. Comparing whole growing Strings at 25 fps
         // becomes quadratic on long replies and can itself freeze an A7 iPad.
         let contentBytes = last.content.utf8.count
+        let visibleBytes = last.chatDisplayBody.utf8.count
         let reasoningBytes = last.reasoningContent.utf8.count
         let searchBytes = last.searchProcessContent.utf8.count
         let imageTranscriptionBytes = last.imageTranscriptionContent.utf8.count
-        let changed = last.id != lastStreamMessageID
-            || contentBytes != lastStreamContentBytes
-            || reasoningBytes != lastStreamReasoningBytes
+        let idChanged = last.id != lastStreamMessageID
+        let contentChanged = contentBytes != lastStreamContentBytes
+        let visibleChanged = visibleBytes != lastStreamVisibleBytes || idChanged
+        let chromeChanged = reasoningBytes != lastStreamReasoningBytes
             || searchBytes != lastStreamSearchBytes
             || imageTranscriptionBytes != lastStreamImageTranscriptionBytes
             || last.searchProcessPhase != lastStreamPhase
             || last.imageTranscriptionPhase != lastStreamImageTranscriptionPhase
+        let changed = idChanged || contentChanged || chromeChanged || visibleChanged
         if changed {
+            // Hidden CONNECTS_EDIT payload growth: update byte cursors, skip cell work.
+            if contentChanged, !visibleChanged, !chromeChanged, !idChanged {
+                lastStreamContentBytes = contentBytes
+                lastStreamProgressAt = Date()
+                return
+            }
+            let visibleGrew = visibleChanged
             lastStreamMessageID = last.id
             lastStreamContentBytes = contentBytes
+            lastStreamVisibleBytes = visibleBytes
             lastStreamReasoningBytes = reasoningBytes
             lastStreamSearchBytes = searchBytes
             lastStreamImageTranscriptionBytes = imageTranscriptionBytes
@@ -4880,14 +5040,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             lastStreamImageTranscriptionPhase = last.imageTranscriptionPhase
             lastStreamProgressAt = Date()
             let now = Date()
-            // While following the live tail, relayout every tick so row height keeps up.
-            let shouldRelayout = stickToBottom
-                || finishViewportLocked
-                || now.timeIntervalSince(lastStreamLayoutAt) >= 0.18
+            // Otherwise throttle relayout (~0.15s) even while stick-to-bottom.
+            let shouldRelayout = visibleGrew && (
+                now.timeIntervalSince(lastStreamLayoutAt) >= 0.15
+                    || lastStreamLayoutAt == .distantPast
+            )
             if shouldRelayout {
                 lastStreamLayoutAt = now
             }
-            refreshStreamingRow(waitingGlyph: nil, relayout: shouldRelayout)
+            refreshStreamingRow(
+                waitingGlyph: nil,
+                relayout: shouldRelayout,
+                chaseViewport: shouldRelayout
+            )
             return
         }
         // The provider is still connected but has not produced a delta. Animate
@@ -4898,11 +5063,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let glyphs = ["◐", "◓", "◑", "◒"]
         refreshStreamingRow(
             waitingGlyph: glyphs[(streamSpinnerFrame / 3) % glyphs.count],
-            relayout: false
+            relayout: false,
+            chaseViewport: false
         )
     }
 
-    private func refreshStreamingRow(waitingGlyph: String?, relayout: Bool) {
+    private func refreshStreamingRow(waitingGlyph: String?,
+                                     relayout: Bool,
+                                     chaseViewport: Bool = true) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               let last = messages.last, last.isStreaming else {
             return
@@ -4926,16 +5094,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 }
             } else if !readingHistory,
                       path.row < tableView.numberOfRows(inSection: 0) {
-                // iOS 12 may not materialize a just-inserted self-sizing row.
-                // Reconcile the whole table: reloadRows can throw if the store
-                // already has new rows but UITableView's old snapshot does not.
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
             }
-            // UILabel content can grow beyond the existing self-sized row. Merely
-            // changing its text leaves the new tail clipped until a conversation
-            // reload. Re-measure, then follow the live tail.
-            if finishViewportLocked || isCurrentStreaming {
+            if chaseViewport, (finishViewportLocked || isCurrentStreaming) {
                 chaseLiveTailToBottom(messages: messages, layoutWidth: currentRenderWidth())
             } else if relayout, stickToBottom, !isViewportPinned() {
                 scrollToBottom(animated: false, force: true)
@@ -5238,6 +5400,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         readingHistory = false
         viewportPinnedByUser = false
 
+        CodeEditApplyTools.clearVisibleCache()
+
         streamUIWork?.cancel()
         streamUIWork = nil
         stopStreamUITimer()
@@ -5271,6 +5435,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             inputBar.studyCaptureVisible = false
             inputBar.studyPageCaptureEnabled = false
             inputBar.setAskSelectionSlotVisible(false)
+            inputBar.codeAIEditVisible = false
             return
         }
         let hasDoc = conv.studyDocumentID != nil
@@ -5283,6 +5448,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return kind == .markdown || kind == .text
         }()
         inputBar.setAskSelectionSlotVisible(askSupported)
+        // AI 编辑 authorization: Study code/text only (not PDF / reading-md path).
+        let codeEditSupported: Bool = {
+            guard let docID = conv.studyDocumentID,
+                  let kind = StudyDocumentStore.shared.document(id: docID)?.kind else { return false }
+            return kind == .text
+        }()
+        inputBar.codeAIEditVisible = codeEditSupported
         let armed = askSupported
             && StudyAskSelectionStore.shared.pendingText(for: conv.id) != nil
         inputBar.setAskSelectionArmed(armed)
@@ -5293,6 +5465,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         applyStudyChrome()
     }
+
+    /// Whether the InputBar「AI 编辑」toggle is on (permission only).
+    var inputBarCodeAIEditEnabled: Bool { inputBar.codeAIEditEnabled }
 
     func reloadChat() {
         isReloadingFromStore = true
@@ -5443,7 +5618,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         present(activity, animated: true)
     }
 
-    @objc private func toggleSidebar() { onToggleSidebar?() }
+    @objc private func toggleChatSidebar() { onToggleSidebar?() }
 
     @objc private func moreTapped() {
         guard let conv = ConversationStore.shared.currentConversation else { return }
@@ -5533,7 +5708,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         modelButton.titleLabel?.lineBreakMode = .byTruncatingTail
         modelButton.titleLabel?.textAlignment = .center
-        modelButton.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+        modelButton.connectsSetContentInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
         modelButton.layer.cornerRadius = 16
         modelButton.clipsToBounds = true
         modelButton.isUserInteractionEnabled = true
@@ -5554,7 +5729,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         sidebarToggleItem = ActionIconFactory.barItem(
             kind: .sidebarOpen,
             target: self,
-            action: #selector(toggleSidebar),
+            action: #selector(toggleChatSidebar),
             accessibility: "关闭侧栏"
         )
         let moreItem = ActionIconFactory.barItem(
@@ -6133,8 +6308,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     persist: true,
                     capture: studyCapture
                 )
+                self.applyCodeAIEditAuthorization(
+                    in: &messages,
+                    conversationID: conversationID,
+                    persist: true
+                )
                 completion(messages)
             }
+        }
+    }
+
+    /// Re-inject「AI 编辑」permission on the last user turn (send + retry share this path).
+    /// Independent of 深度思考 — only `inputBar.codeAIEditEnabled` matters.
+    private func applyCodeAIEditAuthorization(
+        in messages: inout [ChatMessage],
+        conversationID: String,
+        persist: Bool
+    ) {
+        guard conversationID == currentConversationID,
+              inputBar.codeAIEditEnabled,
+              let idx = messages.lastIndex(where: { $0.role == .user }) else { return }
+        var msg = messages[idx]
+        let auth = CodeEditApplyTools.authorizationPrefix
+        let rest = CodeEditApplyTools.strippingAuthorization(from: msg.apiContextPrefix ?? "")
+        let next = rest.isEmpty ? auth : auth + "\n\n" + rest
+        guard msg.apiContextPrefix != next else { return }
+        msg.apiContextPrefix = next
+        messages[idx] = msg
+        guard persist else { return }
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            guard let storeIdx = draft.messages.lastIndex(where: { $0.id == msg.id })
+                    ?? draft.messages.lastIndex(where: { $0.role == .user }) else { return }
+            draft.messages[storeIdx].apiContextPrefix = next
         }
     }
 
@@ -6158,6 +6363,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let resolvedCapture: StudyPageCapture?
         if let capture = capture {
             resolvedCapture = capture
+        } else if inputBar.codeAIEditEnabled, conversationID == currentConversationID {
+            // Retry / async rebuild: AI edit always needs a fresh file snapshot.
+            resolvedCapture = studyPageCapturePayload()
         } else if isStudyPageCaptureEnabled(for: conversationID) {
             resolvedCapture = studyPageCapturePayload()
         } else {
@@ -6839,7 +7047,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         let resolvedStudyCapture: StudyPageCapture?
         var shouldClearAskChrome = false
-        if isStudyPageCaptureEnabled(for: conversationID) {
+        if inputBar.codeAIEditEnabled {
+            // AI 编辑 must see the live file. Don't depend on the separate「文档」toggle —
+            // users often arm AI edit then turn document context off, and the first write
+            // then emits an empty/useless CONNECTS_EDIT.
+            guard let capture = studyPageCapturePayload() else {
+                notifyStudyCaptureFailure(for: conversationID)
+                ConnectsToast.show("AI 编辑需要可读的代码/文本文件", in: view, duration: 2.0)
+                return
+            }
+            resolvedStudyCapture = capture
+            _ = StudyAskSelectionStore.shared.consume(for: conversationID)
+            shouldClearAskChrome = true
+        } else if isStudyPageCaptureEnabled(for: conversationID) {
             if let capture = studyPageCapturePayload() {
                 resolvedStudyCapture = capture
                 _ = StudyAskSelectionStore.shared.consume(for: conversationID)
@@ -6858,7 +7078,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         let finalImage = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64
-        let studyPrefix = resolvedStudyCapture?.apiContextPrefix()
+        var studyPrefix = resolvedStudyCapture?.apiContextPrefix()
+        // Auth is also re-applied in buildAPIContextAsync (covers retry). Keep here for
+        // the persisted user message on first send.
+        if inputBar.codeAIEditEnabled {
+            let auth = CodeEditApplyTools.authorizationPrefix
+            let rest = CodeEditApplyTools.strippingAuthorization(from: studyPrefix ?? "")
+            studyPrefix = rest.isEmpty ? auth : auth + "\n\n" + rest
+        }
         let trimmedUserText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
@@ -6981,6 +7208,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if let live = ConversationStore.shared.currentConversation?.messages,
                !live.isEmpty {
                 chaseLiveTailToBottom(messages: live, layoutWidth: currentRenderWidth())
+                let last = IndexPath(row: live.count - 1, section: 0)
+                if last.row < tableView.numberOfRows(inSection: 0) {
+                    tableView.scrollToRow(at: last, at: .bottom, animated: false)
+                }
+                snapTableContentOffsetToBottom()
             } else {
                 scrollToBottom(animated: false, force: true)
             }
@@ -6993,10 +7225,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             followStreamingViewportToBottom()
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                self.readingHistory = false
+                self.viewportPinnedByUser = false
+                self.stickToBottom = true
                 self.followStreamingViewportToBottom()
                 if let live = ConversationStore.shared.currentConversation?.messages,
                    !live.isEmpty {
                     self.chaseLiveTailToBottom(messages: live, layoutWidth: self.currentRenderWidth())
+                    // Study narrow panel: heights often settle one frame late — re-pin.
+                    if self.isStudyNarrowPanelActive() || self.studyChromeMode != .none {
+                        self.pinOpenViewportToBottom(live, layoutWidth: self.currentRenderWidth())
+                    }
+                }
+            }
+            if isStudyNarrowPanelActive() || studyChromeMode != .none {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                    guard let self = self else { return }
+                    guard self.stickToBottom else { return }
+                    self.readingHistory = false
+                    self.viewportPinnedByUser = false
+                    if let live = ConversationStore.shared.currentConversation?.messages,
+                       !live.isEmpty {
+                        self.pinOpenViewportToBottom(live, layoutWidth: self.currentRenderWidth())
+                    }
                 }
             }
         }
@@ -7482,13 +7733,15 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 freezeRows.formUnion(0..<visibleMin)
             }
             let lookahead = freezeRows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+            // Collapse stale/char-count heights to layout-cache (code cards) before freeze —
+            // mid-fling must not shrink or the viewport jumps.
+            _ = shrinkInflatedCommittedRows(
+                messages: messages,
+                rows: lookahead,
+                layoutWidth: layoutWidth,
+                slackThreshold: usesStudyHeightBucketPolicy() ? 10 : 20
+            )
             if usesStudyHeightBucketPolicy() {
-                _ = shrinkInflatedCommittedRows(
-                    messages: messages,
-                    rows: lookahead,
-                    layoutWidth: layoutWidth,
-                    slackThreshold: 16
-                )
                 var needsRemeasure = false
                 for row in visibleRows {
                     let path = IndexPath(row: row, section: 0)
@@ -7519,11 +7772,16 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 layoutWidth: layoutWidth,
                 excludeRows: visibleRows
             )
+            #if DEBUG
+            ChatHeavyScrollDiagnostics.resetGesture()
+            #endif
+            NativeMessageRenderView.suppressSyncRasterize = true
+            // Always queue frozen grows — mid-scroll beginUpdates kills 跟手 on fence-heavy threads.
             rowHeights.beginScrollHeightFreeze(
                 messages: messages,
                 layoutWidth: layoutWidth,
                 rows: lookahead,
-                deferLiveFrozenMapUpdates: readingHistory
+                deferLiveFrozenMapUpdates: true
             )
             pinVisibleFrozenRowsForScrollFreeze(messages: messages)
             setVisibleNativeScrollRasterization(true)
@@ -7651,6 +7909,15 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         guard !scrollGestureGeometryFinished else { return }
         scrollGestureGeometryFinished = true
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
+        // Allow pending bitmaps to paint once the finger lifts (before async settle).
+        NativeMessageRenderView.suppressSyncRasterize = false
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            if cell.hasPendingDeferredNativeRender {
+                cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
+            } else {
+                cell.flushDeferredNativeRasterizeIfNeeded()
+            }
+        }
         if readingHistory {
             for case let cell as AssistantMessageCell in tableView.visibleCells {
                 guard let msg = messages.first(where: { $0.id == cell.messageID }),
@@ -7708,6 +7975,21 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         DispatchQueue.main.async(execute: work)
     }
 
+    /// Clear mid-scroll rasterize suppression and paint any deferred/skipped bitmaps.
+    private func endScrollGesturePaintSuppression() {
+        NativeMessageRenderView.suppressSyncRasterize = false
+        for case let cell as AssistantMessageCell in tableView.visibleCells {
+            if cell.hasPendingDeferredNativeRender {
+                cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
+            } else {
+                cell.flushDeferredNativeRasterizeIfNeeded()
+            }
+        }
+        #if DEBUG
+        ChatHeavyScrollDiagnostics.logGestureSummary("settle")
+        #endif
+    }
+
     private func viewportYForAnchorRow(_ row: Int) -> CGFloat? {
         let path = IndexPath(row: row, section: 0)
         guard row >= 0, row < tableView.numberOfRows(inSection: 0) else { return nil }
@@ -7761,6 +8043,26 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         var mapChanged = false
         if lightSettle {
             rowHeights.discardDeferredFrozenRowGrows()
+            // Study: one settle-time shrink with viewport lock (never mid-fling).
+            if studyLightSettle {
+                for case let cell as AssistantMessageCell in tableView.visibleCells {
+                    guard let path = tableView.indexPath(for: cell),
+                          path.row < messages.count else { continue }
+                    let msg = messages[path.row]
+                    guard msg.role == .assistant, !msg.isStreaming, cell.hasVisibleBodyPaint else { continue }
+                    let columnH = frozenScrollColumnHeight(for: cell, message: msg, layoutWidth: currentRenderWidth())
+                    guard columnH > 40 else { continue }
+                    let rowH = tableView.rectForRow(at: path).height
+                    var slack = rowH - (columnH + ChatRowHeightResolver.cellVerticalMargin)
+                    if cell.hasReservedActionChromeSpace, !cell.hasVisibleActionButtons {
+                        slack -= Self.actionChromeHeightSlack
+                    }
+                    if slack > 28,
+                       rowHeights.shrinkFrozenRowHeightIfNeeded(messageID: msg.id, columnHeight: columnH) {
+                        mapChanged = true
+                    }
+                }
+            }
         } else {
             mapChanged = rowHeights.beginFrozenHistorySettle(
                 minDeferredSlack: slackThreshold,
@@ -7785,7 +8087,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             }
         }
         pinAllVisibleFrozenRowsAtHistorySettle(messages: messages)
-        if mapChanged, !lightSettle {
+        if mapChanged {
             if let edge = historyEdgeSettleAnchor() {
                 gestureLockedScrollAnchorRow = edge.row
             }
@@ -7799,6 +8101,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             pendingReadingHistoryFormulaSync = false
         }
         rowHeights.commitFrozenHeightsBeforeUnfreeze()
+        endScrollGesturePaintSuppression()
         rowHeights.endScrollHeightFreeze()
         rowHeights.publishCommittedToDisplay()
         setVisibleNativeScrollRasterization(false)
@@ -7845,6 +8148,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if wasFrozen {
             rowHeights.commitFrozenHeightsBeforeUnfreeze()
         }
+        endScrollGesturePaintSuppression()
         rowHeights.endScrollHeightFreeze()
         rowHeights.publishCommittedToDisplay()
         setVisibleNativeScrollRasterization(false)
@@ -8397,6 +8701,29 @@ extension ChatViewController: InputBarViewDelegate {
         }
     }
 
+    func inputBarDidToggleCodeAIEdit(_ enabled: Bool) {
+        if enabled {
+            ConnectsToast.show("已授权可改代码（与深度思考无关；重跑也会带上权限）", in: view, duration: 1.8)
+        }
+    }
+
+    func inputBarDidTapDiffUndoAll() {
+        studyContextProvider?.studyCodeDiffUndoAll()
+    }
+
+    func inputBarDidTapDiffKeepAll() {
+        studyContextProvider?.studyCodeDiffKeepAll()
+    }
+
+    /// Slim Keep strip inside the composer while a Study Diff session is active.
+    func setCodeDiffReviewBanner(visible: Bool, changeCount: Int) {
+        guard isViewLoaded else { return }
+        inputBar.setDiffReviewBanner(visible: visible, changeCount: changeCount)
+        if visible {
+            view.bringSubviewToFront(inputBar)
+        }
+    }
+
     func inputBarDidTapAIOptions() {
         prepareForStudyPanelControlTap()
         presentModelPicker(anchor: inputBar.aiOptionsAnchorView)
@@ -8920,7 +9247,8 @@ extension ChatViewController {
         tick(0)
     }
 
-    /// Seed committed row heights from layout cache before scroll stress (math-heavy).
+    /// Seed committed row heights from layout cache before scroll stress (math/code-heavy).
+    /// `allowShrink: true` so narrow Study panels can drop stale full-width heights (code cards).
     func debugSeedCommittedHeightsFromLayoutCache() {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
         let layoutWidth = currentRenderWidth()
@@ -8933,7 +9261,7 @@ extension ChatViewController {
                 isLastRow: row == count - 1,
                 allowSyncLayout: true
             ), column > 40 else { continue }
-            rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: false)
+            rowHeights.commitMeasured(columnHeight: column, messageID: msg.id, allowShrink: true)
         }
         rowHeights.publishCommittedToDisplay()
         UIView.performWithoutAnimation {
@@ -9101,6 +9429,14 @@ extension ChatViewController {
     }
 
     func debugWaitForStudyRelayoutStable(completion: @escaping () -> Void) {
+        if let messages = ConversationStore.shared.currentConversation?.messages {
+            let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming }
+            AssistantMessageLayout.prewarmLayouts(
+                for: assistants,
+                targetWidth: currentRenderWidth(),
+                layoutLimit: assistants.count
+            )
+        }
         func tick(_ attempt: Int) {
             guard attempt < 400 else {
                 completion()
@@ -9132,6 +9468,144 @@ extension ChatViewController {
         }
         scrollToLastRowReliable(messages)
         DispatchQueue.main.async(execute: completion)
+    }
+
+    /// Visual QA: append a finished user+assistant turn and force Study send-path pin-to-bottom.
+    func debugVisualAppendOutgoingTurn(user: String,
+                                       assistant: String,
+                                       completion: @escaping () -> Void) {
+        guard let convID = ConversationStore.shared.currentConversation?.id else {
+            completion()
+            return
+        }
+        let userMsg = ChatMessage(role: .user, content: user)
+        let assistantMsg = ChatMessage(role: .assistant, content: assistant, isStreaming: false)
+        let firstNewRow = ConversationStore.shared.currentConversation?.messages.count ?? 0
+        let layoutWidth = currentRenderWidth()
+        if let userH = ChatRowHeightResolver.estimatedUserColumnContentHeight(
+            for: userMsg,
+            layoutWidth: layoutWidth
+        ), userH > 40 {
+            rowHeights.commitMeasured(columnHeight: userH, messageID: userMsg.id, allowShrink: true)
+        }
+        let assistantFloor = max(
+            ChatRowHeightResolver.cheapColumnEstimate(for: assistantMsg, layoutWidth: layoutWidth),
+            120
+        )
+        rowHeights.commitMeasured(
+            columnHeight: assistantFloor,
+            messageID: assistantMsg.id,
+            allowShrink: true
+        )
+        ConversationStore.shared.updateConversationQuietly(id: convID) { c in
+            c.messages.append(userMsg)
+            c.messages.append(assistantMsg)
+        }
+        readingHistory = false
+        viewportPinnedByUser = false
+        stickToBottom = true
+        finishViewportLocked = false
+        if rowHeights.isScrollHeightFrozen {
+            rowHeights.endScrollHeightFreeze()
+        }
+        let expectedRows = firstNewRow + 2
+        UIView.performWithoutAnimation {
+            if tableView.numberOfRows(inSection: 0) == firstNewRow {
+                tableView.insertRows(
+                    at: [
+                        IndexPath(row: firstNewRow, section: 0),
+                        IndexPath(row: firstNewRow + 1, section: 0)
+                    ],
+                    with: .none
+                )
+            } else {
+                tableView.reloadData()
+            }
+            tableView.layoutIfNeeded()
+        }
+        stickToBottom = true
+        readingHistory = false
+        viewportPinnedByUser = false
+        if let live = ConversationStore.shared.currentConversation?.messages, !live.isEmpty {
+            pinOpenViewportToBottom(live, layoutWidth: layoutWidth)
+            let last = IndexPath(row: max(0, live.count - 1), section: 0)
+            if last.row < tableView.numberOfRows(inSection: 0) {
+                tableView.scrollToRow(at: last, at: .bottom, animated: false)
+            }
+            snapTableContentOffsetToBottom()
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                completion()
+                return
+            }
+            self.stickToBottom = true
+            self.readingHistory = false
+            self.viewportPinnedByUser = false
+            if let live = ConversationStore.shared.currentConversation?.messages, !live.isEmpty {
+                self.pinOpenViewportToBottom(live, layoutWidth: self.currentRenderWidth())
+                let last = IndexPath(row: max(0, live.count - 1), section: 0)
+                if last.row < self.tableView.numberOfRows(inSection: 0) {
+                    self.tableView.scrollToRow(at: last, at: .bottom, animated: false)
+                }
+                self.snapTableContentOffsetToBottom()
+            }
+            _ = expectedRows
+            completion()
+        }
+    }
+
+    /// Whether the last assistant row's bottom edge sits near the table viewport bottom.
+    func debugLastAssistantNearBottom(tolerance: CGFloat) -> Bool {
+        let rows = tableView.numberOfRows(inSection: 0)
+        guard rows > 0 else { return false }
+        let path = IndexPath(row: rows - 1, section: 0)
+        tableView.layoutIfNeeded()
+        let rowRect = tableView.rectForRow(at: path)
+        guard rowRect.height > 1 else { return false }
+        let visibleBottom = tableView.contentOffset.y
+            + tableView.bounds.height
+            - tableView.adjustedContentInset.bottom
+        let rowBottom = rowRect.maxY
+        return abs(rowBottom - visibleBottom) <= tolerance || rowBottom <= visibleBottom + tolerance
+    }
+
+    /// One history walk + seed so narrow Study + code-card paint matches committed heights
+    /// before CrossQA jump steps (avoids mid-scroll estimate→paint collapse).
+    func debugWarmScrollHeightsThenPin(completion: @escaping () -> Void) {
+        func walkUp() {
+            let minY = -tableView.adjustedContentInset.top
+            let remaining = tableView.contentOffset.y - minY
+            if remaining < 48 {
+                debugSeedCommittedHeightsFromLayoutCache()
+                if let messages = ConversationStore.shared.currentConversation?.messages {
+                    _ = syncVisibleRowHeightsToPaint(messages: messages, allowShrink: true)
+                    UIView.performWithoutAnimation {
+                        tableView.beginUpdates()
+                        tableView.endUpdates()
+                        tableView.layoutIfNeeded()
+                    }
+                }
+                debugPinToBottom(completion: completion)
+                return
+            }
+            let distance = min(420, remaining)
+            debugSimulateSlowScrollUp(distance: distance, duration: 0.22) { [weak self] in
+                guard let self = self else {
+                    completion()
+                    return
+                }
+                self.debugSeedCommittedHeightsFromLayoutCache()
+                if let messages = ConversationStore.shared.currentConversation?.messages {
+                    _ = self.syncVisibleRowHeightsToPaint(messages: messages, allowShrink: true)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    walkUp()
+                }
+            }
+        }
+        debugSeedCommittedHeightsFromLayoutCache()
+        walkUp()
     }
 
     func debugScrollToRow(_ row: Int, completion: @escaping () -> Void) {

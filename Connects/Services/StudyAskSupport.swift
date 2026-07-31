@@ -62,6 +62,22 @@ final class StudyAskTextView: UITextView, StudyAskHandling {
         editorKeyCommandsProvider?() ?? super.keyCommands
     }
 
+    /// Code Diff: full-line red/green via `DiffFullLineBackgroundLayoutManager`.
+    convenience init(frame: CGRect = .zero, fullLineBackgrounds: Bool) {
+        if fullLineBackgrounds {
+            let storage = NSTextStorage()
+            let layout = DiffFullLineBackgroundLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+            container.widthTracksTextView = true
+            container.heightTracksTextView = false
+            storage.addLayoutManager(layout)
+            layout.addTextContainer(container)
+            self.init(frame: frame, textContainer: container)
+        } else {
+            self.init(frame: frame, textContainer: nil)
+        }
+    }
+
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         StudyAskMenu.installIfNeeded()
@@ -89,6 +105,17 @@ final class StudyAskTextView: UITextView, StudyAskHandling {
               let text = text(in: range)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
         return text
+    }
+
+    /// Prefer Diff Keep/Undo (and other) chrome subviews over text selection hit-testing.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        for sub in subviews.reversed() where !sub.isHidden && sub.alpha > 0.01 && sub.isUserInteractionEnabled {
+            let local = convert(point, to: sub)
+            if let hit = sub.hitTest(local, with: event) {
+                return hit
+            }
+        }
+        return super.hitTest(point, with: event)
     }
 }
 

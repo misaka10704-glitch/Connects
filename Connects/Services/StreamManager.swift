@@ -276,15 +276,35 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             #if DEBUG
             print("[Connects] length limit — auto-continue #\(lengthContinueCount)")
             #endif
+            let openEdit = CodeEditApplyTools.hasIncompleteEditBlock(last?.content ?? "")
             startContinuation(
                 assistantContent: last?.content ?? "",
                 assistantReasoning: last?.reasoningContent ?? "",
-                userNudge: """
-                上一段因长度上限被截断了。请从中断处继续写完整正文：
-                - 不要重复已经写过的内容
-                - 不要再写开场白或目录标题（若上一段已有）
-                - 直接接着写
-                """
+                userNudge: openEdit
+                    ? CodeEditApplyTools.incompleteEditContinueNudge
+                    : """
+                    上一段因长度上限被截断了。请从中断处继续写完整正文：
+                    - 不要重复已经写过的内容
+                    - 不要再写开场白或目录标题（若上一段已有）
+                    - 直接接着写
+                    """
+            )
+            return
+        }
+
+        // CONNECTS_EDIT opened but never closed (common on first full-file write).
+        // finish_reason may be "stop" even though the machine block is incomplete.
+        if error == nil, !isCancel, lengthContinueCount < maxLengthContinues,
+           CodeEditApplyTools.hasIncompleteEditBlock(body) {
+            lengthContinueCount += 1
+            ended = false
+            #if DEBUG
+            print("[Connects] incomplete CONNECTS_EDIT — auto-continue #\(lengthContinueCount)")
+            #endif
+            startContinuation(
+                assistantContent: last?.content ?? "",
+                assistantReasoning: last?.reasoningContent ?? "",
+                userNudge: CodeEditApplyTools.incompleteEditContinueNudge
             )
             return
         }

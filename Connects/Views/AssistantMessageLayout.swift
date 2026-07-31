@@ -53,7 +53,7 @@ enum AssistantMessageLayout {
         for message in messages.suffix(limit)
             where message.role == .assistant &&
                   !message.isStreaming {
-            _ = NativeMarkdownParser.shared.parse(message.content)
+            _ = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
         }
         _ = style
     }
@@ -72,17 +72,56 @@ enum AssistantMessageLayout {
         for message in messages.suffix(limit)
             where message.role == .assistant &&
                   !message.isStreaming {
-            let document = NativeMarkdownParser.shared.parse(message.content)
+            let document = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
             if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
                 _ = NativeMessageLayouter.shared.layout(document: document, style: style)
             }
         }
     }
 
+    /// Count of ``` markers (fence-dense rows score high).
+    static func codeFenceMarkerCount(in body: String) -> Int {
+        guard !body.isEmpty else { return 0 }
+        var count = 0
+        var search = body.startIndex
+        while let range = body.range(of: "```", range: search..<body.endIndex) {
+            count += 1
+            search = range.upperBound
+        }
+        return count
+    }
+
+    /// Prefer fence-heavy assistants so scroll-freeze binds from cache instead of blank shells.
+    static func prewarmFenceHeavyLayouts(for messages: [ChatMessage],
+                                         targetWidth: CGFloat,
+                                         layoutLimit: Int = 32) {
+        let assistants = messages.filter { $0.role == .assistant && !$0.isStreaming && !$0.chatDisplayBody.isEmpty }
+        guard !assistants.isEmpty else { return }
+        let ranked = assistants.sorted {
+            codeFenceMarkerCount(in: $0.chatDisplayBody) > codeFenceMarkerCount(in: $1.chatDisplayBody)
+        }
+        let limit = min(max(1, layoutLimit), ranked.count)
+        prewarmLayouts(for: Array(ranked.prefix(limit)), targetWidth: targetWidth, layoutLimit: limit)
+    }
+
+    /// Rematerialize one message after body rewrite (CONNECTS_EDIT strip / regen).
+    static func rematerializeLayout(for message: ChatMessage, layoutWidth: CGFloat) {
+        guard message.role == .assistant, !message.isStreaming else { return }
+        let width = nativeLayoutWidth(for: max(layoutWidth, 120))
+        let style = NativeLayoutStyle(
+            width: width,
+            bodyFontSize: SettingsManager.shared.chatBodyFontSize,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+        let document = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
+        _ = NativeMessageLayouter.shared.layout(document: document, style: style)
+    }
+
     /// One sync parse + layout for the open tail — preview when formulas are still warming.
     @discardableResult
     static func prewarmOpenTailLayoutSync(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {
-        guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
+        guard message.role == .assistant, !message.isStreaming, !message.chatDisplayBody.isEmpty else {
             return false
         }
         let width = nativeLayoutWidth(for: max(layoutWidth, 120))
@@ -92,7 +131,7 @@ enum AssistantMessageLayout {
             appearance: SettingsManager.shared.appearanceMode.rawValue,
             colors: DSTheme.c
         )
-        let document = NativeMarkdownParser.shared.parse(message.content)
+        let document = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
         if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) != nil {
             return true
         }
@@ -163,7 +202,7 @@ enum AssistantMessageLayout {
             )
             for message in batch where message.role == .assistant && !message.isStreaming {
                 autoreleasepool {
-                    let document = NativeMarkdownParser.shared.parse(message.content)
+                    let document = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
                     if NativeMessageLayouter.shared.cachedLayout(document: document, style: style) == nil {
                         if formulasReady(in: document, style: style) {
                             _ = NativeMessageLayouter.shared.layout(document: document, style: style)
@@ -285,13 +324,13 @@ enum AssistantMessageLayout {
     }
 
     static func hasCachedNativeLayout(for message: ChatMessage, layoutWidth: CGFloat) -> Bool {
-        guard message.role == .assistant, !message.isStreaming, !message.content.isEmpty else {
+        guard message.role == .assistant, !message.isStreaming, !message.chatDisplayBody.isEmpty else {
             return false
         }
         let width = nativeLayoutWidth(for: max(layoutWidth, 120))
         // Called from `cellForRowAt` while scrolling. Never parse here: a
-        // cache miss must remain constant-time and use the plain fallback.
-        guard let document = NativeMarkdownParser.shared.cachedDocument(message.content) else {
+        // cache miss must remain constant-time.
+        guard let document = NativeMarkdownParser.shared.cachedDocument(message.chatDisplayBody) else {
             return false
         }
         let style = NativeLayoutStyle(
@@ -335,10 +374,10 @@ enum AssistantMessageLayout {
         )
 
         var bodyHeight: CGFloat = 0
-        if message.content.isEmpty {
+        if message.chatDisplayBody.isEmpty {
             return nil
         }
-        let document = NativeMarkdownParser.shared.parse(message.content)
+        let document = NativeMarkdownParser.shared.parse(message.chatDisplayBody)
         if let cached = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) {
             bodyHeight = cached.size.height
         } else if allowSyncLayout {
@@ -736,13 +775,13 @@ enum AssistantMessageLayout {
         ), body > 0 {
             if chromeBeforeBody > 0 { total += 10 }
             total += body
-        } else if !message.content.isEmpty {
+        } else if !message.chatDisplayBody.isEmpty {
             if chromeBeforeBody > 0 { total += 10 }
-            let lines = max(1, message.content.count / 48)
+            let lines = max(1, message.chatDisplayBody.count / 48)
             total += CGFloat(36 + lines * 18)
         }
 
-        let showActions = !message.content.isEmpty
+        let showActions = !message.chatDisplayBody.isEmpty
             || !reasoning.isEmpty
             || message.hasSearchProcess
             || message.hasImageTranscription
@@ -788,7 +827,7 @@ enum AssistantMessageLayout {
 
         let width = nativeLayoutWidth(for: max(layoutWidth, 120))
         let font = UIFont.systemFont(ofSize: SettingsManager.shared.chatBodyFontSize)
-        let content = message.content
+        let content = message.chatDisplayBody
         if !content.isEmpty {
             let textHeight = ceil(
                 (content as NSString).boundingRect(
@@ -802,7 +841,7 @@ enum AssistantMessageLayout {
             total += bodyTop + textHeight
         }
 
-        let showActions = !message.content.isEmpty
+        let showActions = !message.chatDisplayBody.isEmpty
             || !reasoning.isEmpty
             || message.hasSearchProcess
             || message.hasImageTranscription

@@ -187,18 +187,6 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     func tableView(
         _ tableView: UITableView,
-        editActionsForRowAt indexPath: IndexPath
-    ) -> [UITableViewRowAction]? {
-        guard indexPath.row >= openRowCount else { return nil }
-        let doc = documents[indexPath.row - openRowCount]
-        let delete = UITableViewRowAction(style: .destructive, title: "移除") { [weak self] _, _ in
-            self?.confirmDelete(document: doc)
-        }
-        return [delete]
-    }
-
-    func tableView(
-        _ tableView: UITableView,
         commit editingStyle: UITableViewCell.EditingStyle,
         forRowAt indexPath: IndexPath
     ) {
@@ -443,7 +431,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         tableView.isUserInteractionEnabled = !busy
         navigationItem.leftBarButtonItem?.isEnabled = !busy
         if busy {
-            let indicator = UIActivityIndicatorView(style: .gray)
+            let indicator = UIActivityIndicatorView(style: .medium)
             indicator.startAnimating()
             navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
         } else {

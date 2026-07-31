@@ -1,10 +1,17 @@
 # Connects
 
-面向 **老旧 iPad**（尤其是 **iPad Air 1 / iOS 12**）的 AI 聊天客户端。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
+面向 **iPad** 的 AI 聊天客户端（**iOS 15+**）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
 
-**当前版本：3.2.0**
+**当前版本：4.0.0**
 
 介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
+
+## 4.0 亮点（大版本）
+
+- **系统底线 iOS 15**：部署目标从 12 升至 15，清理旧系统旁路，换用更稳的现代 API。
+- **Study AI Diff**：`CONNECTS_EDIT` 提案进入按块 Keep / Undo 的阅读 Diff；`n/N` 与操作条锚在 hunk 末行，全行红绿底；滚动跟手不漂。
+- **编辑链路可靠**：聊天脱敏编辑载荷；未闭合编辑块自动续写；开「AI 编辑」时强制附带文件上下文；失败文案说清「未改文件」，不再空喊「已提出」。
+- **聊天与 Study 体验**：长代码块折叠与测高、流式脱敏缓存、Markdown 阅读外层滚动、快捷键与 QA harness 等一并加固。
 
 ## 3.2 亮点（功能增强 + 稳定版）
 
@@ -18,22 +25,22 @@
 - **打开原文件（非导入副本）**：Study 用 security-scoped bookmark 直接读写原 PDF / Markdown / 代码；列表移除不影响外部文件。备份含 registry 与 bookmark，**不含**外部原文件本体。
 - **Markdown 编辑**：阅读 / 编辑切换，写回原 `.md`（或旧副本）。
 - **PDF 划线 + 注释**：选区高亮与文字注释写入原 PDF；发送时优先选区文字与 notes，有文本层时可不截图。
-- **代码 Study（先 Verilog）**：等宽编辑器 + 多色语法高亮；AI 上下文为**全文文本**（pin / FILE_REF / delta），无截图。长按「附带文档上下文」可选手动范围。
+- **代码 Study（先 Verilog）**：等宽编辑器 + 多色语法高亮；AI 上下文为**全文文本**（pin / FILE_REF / delta），无截图。长按「附带文档上下文」可选手动范围。输入栏「AI 编辑」（深度思考右侧）默认关：开=**授权**模型可提出改文件（非每条必改）；有 `CONNECTS_EDIT` 提案时进**阅读 Diff**（按块接受/拒绝，Cursor 风格浮条）；全部决议后写入并进入编辑。编辑模式 Tab 补全：建议条在光标下方，末尾点「确认」接受（顶栏 Tab 仅开关）。
 
 ## 动机
 
 市面上主流 AI 客户端几乎都默认「新系统 + 新设备」：依赖较新的 iOS、只适配大屏或手机，对仍在服役的旧 iPad 支持很差。
 
-我这边还有一台 **iPad Air 1（iOS 12.5.x）**，屏幕与续航仍然适合长时间阅读和推导，却很难找到能稳定跑起来的双模型聊天应用。现成 App 要么装不上，要么界面为手机裁切，要么把 Key 绑死在封闭生态里。
+早期版本曾瞄准 **iPad Air 1 / iOS 12**；自 **4.0** 起底线为 **iOS 15+**，以便 Diff、WebKit 与布局路径更干净。现成 App 仍常把 Key 绑死在封闭生态里，或界面为手机裁切。
 
 **Connects** 因此做了这些取舍：
 
-1. **兼容优先**：UIKit + iOS 12，不追求 SwiftUI / 最新 API。
+1. **UIKit 可读优先**：不追求 SwiftUI / 最新系统专属花活；4.0 起要求 iOS 15+。
 2. **自己带 Key**：各提供商 Key 放进本机钥匙串，不经第三方中转。
 3. **为阅读而排版**：居中阅读列、可调字号、思考过程可折叠，数学与 Markdown 尽量渲染完整。
 4. **会话可带走**：对话自动命名、可分叉、可导出完整 Markdown，方便备份与二次整理。
 
-这不是要替代官方网页版，而是给「旧硬件也想正经用模型」的人一个能装上、能用顺的本地壳。
+这不是要替代官方网页版，而是给「想正经用模型 + Study 读改文件」的人一个能装上、能用顺的本地壳。
 
 ## 3.0 亮点
 
@@ -77,14 +84,14 @@
 | 项目 | 说明 |
 |------|------|
 | 目标设备 | iPad（主）/ iPhone（可安装，UI 仍为 iPad 布局） |
-| 最低系统 | iOS 12.0 |
+| 最低系统 | iOS 15.0 |
 | 布局 | 全宽聊天 / 阅读区 + 左缘浮动侧栏抽屉 |
 
 ### 构建路线（源码相同）
 
 | 路线 | Scheme | 设备 | 配置 |
 |------|--------|------|------|
-| iPad | `Connects-iPad` | iPad（含 Air 1） | Debug / Release |
+| iPad | `Connects-iPad` | iPad（iOS 15+） | Debug / Release |
 | iPhone | `Connects-iPhone` | iPhone（iOS 26 等） | Debug-iPhone / Release-iPhone |
 
 `Connects` scheme 为 **iPad 路线** 的别名。
@@ -119,7 +126,7 @@ Key 只存本机 Keychain，不会打进仓库或上传。
 
 ## 技术栈
 
-- UIKit（兼容 iOS 12，无 SwiftUI / Combine）
+- UIKit（iOS 15+，无 SwiftUI / Combine）
 - `URLSession` SSE；已完成消息：`NativeMarkdownParser` + `NativeMessageLayouter` + vendored **iosMath 0.9.x**
 - 会话本地持久化；Markdown 自动落盘与导出
 

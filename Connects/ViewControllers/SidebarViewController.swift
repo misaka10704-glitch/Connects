@@ -403,8 +403,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         newChatButton.layer.cornerRadius = 12
         newChatButton.layer.borderWidth = 1
         newChatButton.contentHorizontalAlignment = .left
-        newChatButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 14)
-        newChatButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 6)
+        newChatButton.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 14, imagePadding: 6)
         newChatButton.addTarget(self, action: #selector(newChatTapped), for: .touchUpInside)
         headerBar.addSubview(newChatButton)
 
@@ -446,7 +445,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         settingsButton.setImage(ActionIconFactory.image(.settings, pointSize: 16), for: .normal)
         settingsButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
         settingsButton.contentHorizontalAlignment = .left
-        settingsButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 18)
+        settingsButton.connectsSetContentInsets(top: 0, leading: 16, bottom: 0, trailing: 18)
         settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
         footerBar.addSubview(settingsButton)
 

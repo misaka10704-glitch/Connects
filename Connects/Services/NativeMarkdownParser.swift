@@ -1003,6 +1003,7 @@ enum NativeRendererSelfTest {
             let maxX: CGFloat
             switch command {
             case .text(let fragment): maxX = fragment.frame.maxX
+            case .codeFence(let fence): maxX = fence.cardFrame.maxX
             case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                 maxX = frame.maxX
             case .line(let start, let end, _, let width):
@@ -1067,6 +1068,7 @@ enum NativeRendererSelfTest {
                     let maxY: CGFloat
                     switch command {
                     case .text(let fragment): maxY = fragment.frame.maxY
+                    case .codeFence(let fence): maxY = fence.cardFrame.maxY
                     case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                         maxY = frame.maxY
                     case .line(let start, let end, _, let lineWidth):

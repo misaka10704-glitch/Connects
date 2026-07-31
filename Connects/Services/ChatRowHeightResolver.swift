@@ -85,6 +85,7 @@ final class ChatRowHeightResolver {
         deferredFrozenRowGrows = nil
         deferFrozenMapLiveUpdates = false
         gesturePinnedFrozenIDs.removeAll()
+        NativeMessageRenderView.suppressSyncRasterize = false
     }
 
     func setGesturePinnedFrozenMessages(_ ids: Set<String>) {

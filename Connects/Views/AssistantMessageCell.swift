@@ -611,6 +611,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             layoutWidth: bind.layoutWidth,
             allowDefer: false
         )
+        nativeRenderView.flushPendingRasterizeIfNeeded()
         if cellDelegate?.messageCellShouldLayoutActionChromeNow(self) != false {
             ensureActionButtonsVisible(for: bind.message)
         } else {
@@ -623,6 +624,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         if !suppressHeightNotify {
             scheduleMeasuredHeightNotify(for: messageID)
         }
+    }
+
+    /// Settle path: paint bitmaps skipped while `suppressSyncRasterize` was on.
+    func flushDeferredNativeRasterizeIfNeeded() {
+        nativeRenderView.flushPendingRasterizeIfNeeded()
     }
 
     /// Cached expand delta — avoids boundingRect on the tap path when prewarm ran.
@@ -782,7 +788,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textPrimary
                 assistantLabel.font = UIFont.systemFont(ofSize: font)
-                assistantLabel.text = message.content.isEmpty ? nil : message.content
+                assistantLabel.text = message.content.isEmpty ? nil : message.chatDisplayBody
             } else if message.content.isEmpty, hasThinking || hasSearch {
                 assistantLabel.attributedText = nil
                 assistantLabel.textColor = c.textSecondary
@@ -1041,7 +1047,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
     private static func shouldShowActionButtons(for message: ChatMessage, streaming: Bool) -> Bool {
         !streaming && (
-            !message.content.isEmpty
+            !message.chatDisplayBody.isEmpty
             || !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || message.hasSearchProcess
             || message.hasImageTranscription
@@ -1482,7 +1488,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             )
             if hasCachedLayout,
                let height = nativeRenderView.bindCachedLayoutIfAvailable(
-                   content: message.content,
+                   content: message.chatDisplayBody,
                    width: width,
                    fontSize: font,
                    appearance: SettingsManager.shared.appearanceMode.rawValue,
@@ -1508,12 +1514,33 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 layoutWidth: layoutWidth
             )
             bindNativeBodyLayout(hasThinking: hasThinking, hasSearch: hasSearch, hasImage: hasImage)
-            nativeMessageForRemeasure = message
             lastNativeLayoutWidth = width
-            hideNativeRender()
+            let keepH = max(nativeHeight.constant, configuredPreferredHeight ?? 0, 64)
+            // Same message already painted: keep bitmap (no blank-out → hydrate → grow hitch).
+            if hasVisibleNativePaint, nativeMessageForRemeasure?.id == message.id {
+                nativeMessageForRemeasure = message
+                nativeHeight.constant = max(keepH, nativeHeight.constant)
+                nativeRenderView.isHidden = false
+                assistantLabel.isHidden = true
+                assistantLabel.text = nil
+                assistantLabel.attributedText = nil
+                #if DEBUG
+                ChatHeavyScrollDiagnostics.scrollFreezeKeptPaint += 1
+                #endif
+                return
+            }
+            nativeMessageForRemeasure = message
+            // Recycled onto a different message without cache: hide wrong paint, keep height slot.
+            // Do not sync-layout/plain-fallback during freeze (contentSize thrash).
+            nativeRenderView.clear()
+            nativeRenderView.isHidden = true
+            nativeHeight.constant = keepH
             assistantLabel.isHidden = true
             assistantLabel.text = nil
             assistantLabel.attributedText = nil
+            #if DEBUG
+            ChatHeavyScrollDiagnostics.scrollFreezeBlankShell += 1
+            #endif
             return
         }
         deferredNativeBind = nil
@@ -1521,7 +1548,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeMessageForRemeasure = message
         lastNativeLayoutWidth = width
         let renderResult = nativeRenderView.configure(
-            content: message.content,
+            content: message.chatDisplayBody,
             width: width,
             fontSize: font,
             appearance: SettingsManager.shared.appearanceMode.rawValue,
@@ -1596,7 +1623,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantLabel.textColor = colors.textPrimary
         assistantLabel.font = UIFont.systemFont(ofSize: font)
         // Long plain UILabel layout hitches scroll; truncate only on the deferred path.
-        let content = message.content
+        let content = message.chatDisplayBody
         if allowTruncate, !scheduleHeightNotify, content.count > 900 {
             assistantLabel.text = String(content.prefix(900)) + "\n…"
         } else {
@@ -1753,7 +1780,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             return false
         }
         streamingPresentation = true
-        let content = message.content
+        let content = message.chatDisplayBody
         assistantLabel.attributedText = nil
         assistantLabel.text = content.isEmpty
             ? nil
@@ -1886,7 +1913,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
         let pager = message.showsVersionPager
         showActions(
-            !message.content.isEmpty || !think.isEmpty || !search.isEmpty,
+            !message.chatDisplayBody.isEmpty || !think.isEmpty || !search.isEmpty,
             versionText: pager ? message.versionPagerText : nil,
             canPrev: pager && message.versionIndex > 0,
             canNext: pager && message.versionIndex < message.versions.count - 1
@@ -2325,7 +2352,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchHeader.translatesAutoresizingMaskIntoConstraints = false
         searchHeader.contentHorizontalAlignment = .left
         searchHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        searchHeader.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        searchHeader.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
         searchHeader.addTarget(self, action: #selector(openSearchChrome), for: .touchUpInside)
         searchBox.addSubview(searchHeader)
 
@@ -2344,7 +2371,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         thinkingHeader.translatesAutoresizingMaskIntoConstraints = false
         thinkingHeader.contentHorizontalAlignment = .left
         thinkingHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        thinkingHeader.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        thinkingHeader.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
         thinkingHeader.addTarget(self, action: #selector(openThinkingChrome), for: .touchUpInside)
         thinkingBox.addSubview(thinkingHeader)
 
@@ -2361,6 +2388,22 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         nativeRenderView.translatesAutoresizingMaskIntoConstraints = false
         nativeRenderView.isHidden = true
+        nativeRenderView.onCodeFenceTap = { [weak self] hit in
+            guard let self = self else { return }
+            var responder: UIResponder? = self
+            while let current = responder {
+                if let vc = current as? UIViewController {
+                    ChatCodeFencePopupViewController.present(
+                        from: vc,
+                        code: hit.code,
+                        language: hit.language,
+                        title: hit.title
+                    )
+                    return
+                }
+                responder = current.next
+            }
+        }
         nativeRenderView.onHeightChange = { [weak self] height in
             guard let self = self, !self.messageID.isEmpty else { return }
             let target = ceil(height)

@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Connects — 为旧 iPad 而做的 AI 聊天</title>
-  <meta name="description" content="Connects 是面向 iPad Air 1 / iOS 12 的本地 AI 聊天客户端。自带 API Key，原生数学渲染，会话可导出。" />
-  <meta property="og:title" content="Connects 1.7" />
-  <meta property="og:description" content="旧 iPad 也能正经用模型：原生 Markdown / TeX、流式对话、多会话与导出。" />
+  <title>Connects — iPad 上的 AI 聊天与 Study</title>
+  <meta name="description" content="Connects 是面向 iPad（iOS 15+）的本地 AI 聊天客户端。自带 API Key，Study AI Diff，原生数学渲染，会话可导出。" />
+  <meta property="og:title" content="Connects 4.0" />
+  <meta property="og:description" content="iPad 上的正经 AI 阅读壳：自带 Key、Study Diff、原生 Markdown / TeX、流式对话与导出。" />
   <meta property="og:image" content="assets/icon.png" />
   <link rel="icon" href="assets/logo-120.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -432,10 +432,10 @@
       <img src="assets/logo.png" alt="" />
     </div>
     <div class="hero-inner" id="top">
-      <p class="hero-kicker">Version 1.7 · iPad / iOS 12+</p>
+      <p class="hero-kicker">Version 4.0 · iPad / iOS 15+</p>
       <h1>Connects</h1>
-      <p class="hero-lead">旧平板上的正经 AI 阅读壳。</p>
-      <p class="hero-sub">为仍在服役的 iPad Air 1 而写：自带 Key、流式对话、原生数学与 Markdown，会话随时带走。</p>
+      <p class="hero-lead">平板上的正经 AI 阅读壳。</p>
+      <p class="hero-sub">自带 Key、流式对话、Study 读改文件与 AI Diff，原生数学与 Markdown，会话随时带走。</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="https://github.com/misaka10704-glitch/Connects">打开仓库</a>
         <a class="btn btn-ghost" href="#features">了解能力</a>
@@ -447,12 +447,12 @@
     <div>
       <p class="section-label">动机</p>
       <h2>主流客户端默认新设备。旧硬件被落在后面。</h2>
-      <p class="section-lead">屏幕与续航仍适合长时间推导，却很难找到能稳定装上、又能自管 Key 的双模型聊天应用。Connects 把兼容性放在第一位。</p>
+      <p class="section-lead">主流客户端默认新设备与封闭 Key。Connects 把自管 Key、Study 读改与可读排版放在第一位（4.0 起要求 iOS 15+）。</p>
     </div>
     <ol class="why-list">
       <li>
-        <strong>兼容优先</strong>
-        <span>UIKit + iOS 12，不为 SwiftUI / 最新 API 牺牲旧机。</span>
+        <strong>UIKit 可读优先</strong>
+        <span>UIKit + iOS 15+，不追求 SwiftUI / 最新系统专属花活。</span>
       </li>
       <li>
         <strong>自己带 Key</strong>
@@ -467,8 +467,8 @@
 
   <section class="section" id="features">
     <p class="section-label">能力</p>
-    <h2>1.7 起，已完成回复走原生渲染主路径。</h2>
-    <p class="section-lead">流式仍轻量更新；定稿后由 Native Markdown + iosMath 绘制，减少旧机 WebKit 闪烁与截断。</p>
+    <h2>4.0：Study AI Diff 与更稳的编辑链路。</h2>
+    <p class="section-lead">开「AI 编辑」后模型可提出 CONNECTS_EDIT；按块 Keep / Undo。聊天脱敏编辑载荷，未闭合块自动续写。</p>
     <article class="feature">
       <div class="feature-index">01</div>
       <div>
@@ -554,7 +554,7 @@
     <h2>用 Xcode 打开即可跑。</h2>
     <ol class="start-steps">
       <li>克隆仓库，打开 <code>Connects.xcodeproj</code>。</li>
-      <li>Signing 选择你的 Team，目标选真机 iPad 或 iOS 12+ 模拟器。</li>
+      <li>Signing 选择你的 Team，目标选真机 iPad 或 iOS 15+ 模拟器。</li>
       <li>首次真机安装后，在「设置 → 通用 → 设备管理」信任开发者证书。</li>
       <li>侧栏设置里填入 API Key，开始对话。</li>
     </ol>

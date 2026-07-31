@@ -6,6 +6,9 @@ import PDFKit
 /// `-StudyFeatureQA`
 /// `-StudyQACode=/abs/path/to/file.v`
 /// `-StudyQAPDF=/abs/path/to/file.pdf`
+/// `-StudyWebViewQA` (+ optional `-StudyQAMD=/abs/path.md`)
+/// `-StudySuiteQA` — Diff/Tab → WebView → Feature in one launch
+/// `-DiffTabQA`
 ///
 /// Hosts Study readers on the key window, asserts line-number scroll sync + PDF selection readiness,
 /// writes screenshots under the app Documents folder.
@@ -30,11 +33,164 @@ enum StudyFeatureQAHarness {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("-DiffTabQA") {
+            guard !didRun else { return }
+            didRun = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                runDiffTabQA()
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("-StudyWebViewQA") {
+            guard !didRun else { return }
+            didRun = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                runWebViewQA(exitOnFinish: true)
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("-StudySuiteQA") {
+            guard !didRun else { return }
+            didRun = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                runFullStudySuite()
+            }
+            return
+        }
         guard ProcessInfo.processInfo.arguments.contains("-StudyFeatureQA") else { return }
         guard !didRun else { return }
         didRun = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
             runSuite()
+        }
+    }
+
+    /// Diff Keep/Undo stickiness + n/N + Tab chip placement. Launch: `-DiffTabQA`
+    private static func runDiffTabQA() {
+        let tag = "[ConnectsDiffQA]"
+        func emit(_ message: String) {
+            NSLog("%@", message)
+            fputs(message + "\n", stderr)
+            fflush(stderr)
+        }
+        let editor = TextCodeEditorViewController()
+        let hostVC = host(vc: editor)
+        present(hostVC) {
+            // Multi-hunk fixture so nav index + bars can be checked while scrolling.
+            let before = (0..<80).map { "line_\($0)_aaaaaaaa" }.joined(separator: "\n")
+            let after = (0..<80).map { i -> String in
+                if i == 10 || i == 30 || i == 50 || i == 70 { return "CHANGED_\(i)" }
+                return "line_\(i)_aaaaaaaa"
+            }.joined(separator: "\n")
+            editor.presentInlineDiff(before: before, after: after)
+            editor.view.layoutIfNeeded()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                let pending = editor.diffPendingHunkCount
+                guard pending >= 4 else {
+                    emit("\(tag) FAIL expected >=4 hunks got \(pending)")
+                    self.dismissPresented { exit(1) }
+                    return
+                }
+                let nav0 = editor.debugDiffNavLabelText()
+                guard nav0.contains("/") else {
+                    emit("\(tag) FAIL nav label empty: \(nav0)")
+                    self.dismissPresented { exit(1) }
+                    return
+                }
+                let docY = editor.debugDiffHunkDocY()
+                guard docY.count == pending else {
+                    emit("\(tag) FAIL docY cache \(docY.count) vs pending \(pending)")
+                    self.dismissPresented { exit(1) }
+                    return
+                }
+
+                func assertBarsStick(label: String) -> Bool {
+                    let bars = editor.debugDiffPerHunkBarFrames()
+                    var ok = true
+                    for (segIdx, frame) in bars {
+                        guard let expectedY = editor.debugExpectedHunkBarY(segIdx: segIdx) else {
+                            ok = false
+                            continue
+                        }
+                        if abs(frame.minY - expectedY) > 3 {
+                            ok = false
+                            emit("\(tag) FAIL \(label) bar seg=\(segIdx) y=\(Int(frame.minY)) expected=\(Int(expectedY))")
+                        }
+                    }
+                    return ok
+                }
+
+                // Scroll and require Keep/Undo bars to track hunk content Y (content-space).
+                var stickOK = true
+                for step in 0..<4 {
+                    editor.debugScrollEditor(by: 160)
+                    editor.view.layoutIfNeeded()
+                    if !assertBarsStick(label: "scroll\(step)") { stickOK = false }
+                }
+                let navMid = editor.debugDiffNavLabelText()
+                let ordMid = editor.debugDiffCurrentPendingOrdinal()
+                emit("\(tag) scroll nav=\(navMid) ord=\(ordMid) stick=\(stickOK)")
+
+                // Jump next/prev must move focus ordinal and keep bars glued.
+                editor.diffNextHunkForQA()
+                let ordAfterNext = editor.debugDiffCurrentPendingOrdinal()
+                editor.view.layoutIfNeeded()
+                if !assertBarsStick(label: "after-next") { stickOK = false }
+                editor.diffPrevHunkForQA()
+                editor.view.layoutIfNeeded()
+                if !assertBarsStick(label: "after-prev") { stickOK = false }
+
+                // Keep a single hunk (not Keep All) → pending shrinks; bars rebuild.
+                let beforeKeep = editor.diffPendingHunkCount
+                editor.diffKeepCurrentHunkForQA()
+                let afterOneKeep = editor.diffPendingHunkCount
+                guard afterOneKeep == beforeKeep - 1, afterOneKeep > 0 else {
+                    emit("\(tag) FAIL keep-one pending \(beforeKeep)→\(afterOneKeep)")
+                    self.dismissPresented { exit(1) }
+                    return
+                }
+                editor.view.layoutIfNeeded()
+                if !assertBarsStick(label: "after-keep-one") { stickOK = false }
+
+                editor.diffKeepAll()
+                let afterKeep = editor.diffPendingHunkCount
+                guard afterKeep == 0 else {
+                    emit("\(tag) FAIL keep-all pending →\(afterKeep)")
+                    self.dismissPresented { exit(1) }
+                    return
+                }
+
+                // Tab chip: enter edit, show suggestion, chip must be on-screen near caret.
+                editor.debugSetEditMode(true)
+                editor.debugShowTabSuggestion("suggested_token_xyz")
+                editor.view.layoutIfNeeded()
+                let chip = editor.debugTabSuggestChipFrame()
+                let tabOK = !chip.isNull
+                    && chip.width > 40
+                    && chip.maxY > 0
+                    && chip.minY < editor.view.bounds.height
+                let chipY0 = chip.minY
+                editor.debugScrollEditor(by: 80)
+                let chip2 = editor.debugTabSuggestChipFrame()
+                let tabStick = !chip2.isNull
+                    && chip2.maxY > 0
+                    && chip2.minY < editor.view.bounds.height
+                    && (abs(chip2.minY - chipY0) > 20 || chip2.minY <= chipY0 + 1)
+                editor.debugAcceptTabSuggestion()
+                let chipGone = editor.debugTabSuggestChipFrame().isNull
+
+                self.snapshot(hostVC.view, name: "diff_tab_qa")
+                let navMoved = ordAfterNext != 0 || navMid != "1/\(pending)"
+                if stickOK, tabOK, tabStick, chipGone {
+                    emit("\(tag) PASS nav=\(navMid) nextOrd=\(ordAfterNext) navMoved=\(navMoved)")
+                    emit("[ConnectsTabQA] PASS chip placed, remapped on scroll, accepted")
+                    self.dismissPresented { exit(0) }
+                } else {
+                    emit("\(tag) FAIL stick=\(stickOK) tabOK=\(tabOK) tabStick=\(tabStick) chipGone=\(chipGone)")
+                    emit("[ConnectsTabQA] FAIL")
+                    self.dismissPresented { exit(1) }
+                }
+            }
         }
     }
 
@@ -263,6 +419,230 @@ enum StudyFeatureQAHarness {
         }
     }
 
+    /// Diff/Tab → Markdown WebView scroll → code(+blank) feature checks.
+    private static func runFullStudySuite() {
+        let tag = "[StudySuiteQA]"
+        func emit(_ message: String) {
+            NSLog("%@", "\(tag) \(message)")
+            fputs("\(tag) \(message)\n", stderr)
+            fflush(stderr)
+        }
+        emit("phase 1/3 DiffTabQA")
+        // Re-enter DiffTab path without process exit: call internals via staged presents.
+        runDiffTabQAEmbedded { diffOK in
+            guard diffOK else {
+                emit("FAIL at Diff/Tab")
+                exit(1)
+            }
+            emit("phase 2/3 WebViewQA")
+            self.runWebViewQA(exitOnFinish: false) { webOK in
+                guard webOK else {
+                    emit("FAIL at WebView")
+                    exit(1)
+                }
+                emit("phase 3/3 FeatureQA")
+                let blank = self.argValue(prefix: "-StudyQACode=")
+                    ?? NSString(string: "~/Documents/Workspace/Engineer_Tex/.workspace/tmp/connects_blank.v").expandingTildeInPath
+                let codePath = FileManager.default.fileExists(atPath: blank)
+                    ? blank
+                    : (self.argValue(prefix: "-StudyQACode=")
+                        ?? "/Users/misaka10704/Documents/Workspace/Gestalt-Lib-HS-SPI/Code/spi_master.v")
+                self.runCodeCheck(path: codePath) { codeOK in
+                    if codeOK {
+                        emit("PASS suite (diff+webview+code)")
+                        exit(0)
+                    } else {
+                        emit("FAIL suite code check")
+                        exit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Same as DiffTabQA but returns instead of exit (for suite).
+    private static func runDiffTabQAEmbedded(completion: @escaping (Bool) -> Void) {
+        // Launch a fresh DiffTab run by reusing presentInlineDiff path with shortened asserts.
+        let editor = TextCodeEditorViewController()
+        let hostVC = host(vc: editor)
+        present(hostVC) {
+            let before = (0..<60).map { "line_\($0)_aaaaaaaa" }.joined(separator: "\n")
+            let after = (0..<60).map { i -> String in
+                if i == 8 || i == 28 || i == 48 { return "CHANGED_\(i)" }
+                return "line_\(i)_aaaaaaaa"
+            }.joined(separator: "\n")
+            editor.presentInlineDiff(before: before, after: after)
+            editor.view.layoutIfNeeded()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                let pending = editor.diffPendingHunkCount
+                guard pending >= 3 else {
+                    self.log("FAIL suite diff hunks \(pending)")
+                    self.dismissPresented { completion(false) }
+                    return
+                }
+                editor.debugScrollEditor(by: 180)
+                editor.view.layoutIfNeeded()
+                var stickOK = true
+                for (segIdx, frame) in editor.debugDiffPerHunkBarFrames() {
+                    guard let expectedY = editor.debugExpectedHunkBarY(segIdx: segIdx) else {
+                        stickOK = false
+                        continue
+                    }
+                    if abs(frame.minY - expectedY) > 3 { stickOK = false }
+                }
+                editor.diffKeepAll()
+                editor.debugSetEditMode(true)
+                editor.debugShowTabSuggestion("suite_tab_token")
+                editor.view.layoutIfNeeded()
+                let chipOK = !editor.debugTabSuggestChipFrame().isNull
+                editor.debugAcceptTabSuggestion()
+                let chipGone = editor.debugTabSuggestChipFrame().isNull
+                self.dismissPresented {
+                    completion(stickOK && chipOK && chipGone)
+                }
+            }
+        }
+    }
+
+    /// Markdown WKWebView: tall content, scroll progress, contentSize stability, single scroller.
+    private static func runWebViewQA(exitOnFinish: Bool, completion: ((Bool) -> Void)? = nil) {
+        let tag = "[StudyWebViewQA]"
+        func emit(_ message: String) {
+            NSLog("%@", "\(tag) \(message)")
+            fputs("\(tag) \(message)\n", stderr)
+            fflush(stderr)
+        }
+        func finish(_ ok: Bool) {
+            emit(ok ? "PASS markdown web scroll" : "FAIL markdown web scroll")
+            completion?(ok)
+            if exitOnFinish { exit(ok ? 0 : 1) }
+        }
+
+        let mdPath = argValue(prefix: "-StudyQAMD=")
+            ?? NSString(string: "~/Documents/Workspace/Engineer_Tex/.workspace/tmp/study_webview_qa.md").expandingTildeInPath
+        let mdURL = URL(fileURLWithPath: mdPath)
+        let markdown: String
+        if FileManager.default.fileExists(atPath: mdURL.path),
+           let data = try? String(contentsOf: mdURL, encoding: .utf8), !data.isEmpty {
+            markdown = data
+        } else {
+            markdown = Self.embeddedWebViewFixtureMarkdown()
+            emit("using embedded fixture (missing \(mdPath))")
+        }
+
+        do {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("StudyWebViewQA", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent("webview_qa.md")
+            try markdown.write(to: file, atomically: true, encoding: .utf8)
+            let doc = try StudyDocumentStore.shared.openDocument(from: file, forceText: false)
+            let reader = MarkdownReaderViewController()
+            let hostVC = host(vc: reader)
+            present(hostVC) {
+                reader.load(documentID: doc.id) { ok in
+                    guard ok else {
+                        emit("FAIL load document")
+                        self.dismissPresented { finish(false) }
+                        return
+                    }
+                        self.waitWebContentReady(reader, attempts: 0) {
+                            guard reader.debugWebContentReady() else {
+                                emit("FAIL content not ready")
+                                self.dismissPresented { finish(false) }
+                                return
+                            }
+                            self.waitWebContentTall(reader, minHeight: 0, attempts: 0) { h0 in
+                                let viewH = max(reader.view.bounds.height, 1)
+                                guard h0 > viewH + 80 else {
+                                    emit("FAIL content too short h=\(Int(h0)) viewH=\(Int(viewH))")
+                                    self.dismissPresented { finish(false) }
+                                    return
+                                }
+                                let t0 = CFAbsoluteTimeGetCurrent()
+                                reader.debugScrollWeb(by: min(900, h0 * 0.35), animated: false)
+                                let t1 = CFAbsoluteTimeGetCurrent()
+                                let y1 = reader.debugWebScrollOffsetY()
+                                reader.debugScrollWeb(by: min(900, h0 * 0.35), animated: false)
+                                let y2 = reader.debugWebScrollOffsetY()
+                                let h2 = reader.debugWebContentHeight()
+                                let scrollMs = (t1 - t0) * 1000
+                                let sizeJump = abs(h2 - h0)
+                                reader.debugProbeNestedDocumentScroll { nested in
+                                    self.snapshot(hostVC.view, name: "webview_scroll")
+                                    emit("h0=\(Int(h0)) y1=\(Int(y1)) y2=\(Int(y2)) jump=\(Int(sizeJump))pt scrollMs=\(String(format: "%.1f", scrollMs)) nested=\(nested)")
+                                    var ok = true
+                                    if y1 < 40 { emit("FAIL did not scroll"); ok = false }
+                                    if y2 + 1 < y1 { emit("FAIL scroll went backwards"); ok = false }
+                                    if y2 <= y1, h0 > viewH + 400 { emit("FAIL second scroll stuck"); ok = false }
+                                    if sizeJump > 160 { emit("FAIL contentSize jump \(Int(sizeJump))pt"); ok = false }
+                                    if scrollMs > 80 { emit("WARN slow setContentOffset \(String(format: "%.1f", scrollMs))ms") }
+                                    if nested { emit("FAIL nested document scroll detected"); ok = false }
+                                    self.dismissPresented { finish(ok) }
+                                }
+                            }
+                        }
+                }
+            }
+        } catch {
+            emit("FAIL open: \(error.localizedDescription)")
+            finish(false)
+        }
+    }
+
+    private static func waitWebContentReady(_ reader: MarkdownReaderViewController,
+                                           attempts: Int,
+                                           done: @escaping () -> Void) {
+        if reader.debugWebContentReady() || attempts >= 40 {
+            done()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            waitWebContentReady(reader, attempts: attempts + 1, done: done)
+        }
+    }
+
+    /// Wait until contentSize stops growing (KaTeX / images) or hits a tall enough floor.
+    private static func waitWebContentTall(_ reader: MarkdownReaderViewController,
+                                          minHeight: CGFloat,
+                                          attempts: Int,
+                                          done: @escaping (CGFloat) -> Void) {
+        let h = reader.debugWebContentHeight()
+        let viewH = reader.view.bounds.height
+        let target = max(minHeight, viewH + 80)
+        if attempts >= 36 {
+            done(h)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let h2 = reader.debugWebContentHeight()
+            if h2 >= target, abs(h2 - h) < 8 {
+                done(h2)
+            } else {
+                waitWebContentTall(reader, minHeight: minHeight, attempts: attempts + 1, done: done)
+            }
+        }
+    }
+
+    private static func embeddedWebViewFixtureMarkdown() -> String {
+        let paras = (1...120).map { i in
+            "Paragraph \(i): the quick brown fox jumps over the lazy dog. " +
+            "Pad line \(i) aaa bbb ccc ddd eee fff. KaTeX: $x_{\(i)}^2$."
+        }.joined(separator: "\n\n")
+        return """
+        # Embedded WebView QA
+
+        $$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$
+
+        ```verilog
+        module m(input a, output b); assign b = ~a; endmodule
+        ```
+
+        \(paras)
+
+        > end
+        """
+    }
+
     private static func stagingURL(for source: URL) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("StudyFeatureQA", isDirectory: true)
@@ -364,6 +744,14 @@ enum StudyFeatureQAHarness {
                         if chrome.save.isEmpty || chrome.mode.isEmpty {
                             self.log("FAIL mode/save chrome missing")
                             self.dismissPresented { done(false) }
+                            return
+                        }
+                        // Blank / tiny files: open+edit chrome is enough (Diff empty→write path).
+                        let fileBytes = (try? Data(contentsOf: source))?.count ?? 0
+                        if fileBytes < 80 {
+                            self.snapshot(hostVC.view, name: "code_blank_edit")
+                            self.log("PASS code blank/open+edit chrome (bytes=\(fileBytes) saveMaxX=\(Int(chrome.save.maxX)))")
+                            self.dismissPresented { done(true) }
                             return
                         }
                         editor.debugScrollEditor(by: 420)

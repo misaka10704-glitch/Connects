@@ -34,7 +34,7 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = 18, color: UIColor = .black) -> UIImage {
-        let key = "\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
+        let key = "v3-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
         let canvas = ceil(pointSize + 8)
@@ -451,25 +451,36 @@ enum ActionIconFactory {
             tip.fill()
 
         case .editMode:
-            // Standalone pencil — same optical weight as readMode / save.
+            // Document + pencil — clearer “enter edit” than a bare pencil.
+            let page = UIBezierPath(
+                roundedRect: CGRect(
+                    x: r.minX + pointSize * 0.14,
+                    y: r.minY + pointSize * 0.10,
+                    width: pointSize * 0.52,
+                    height: pointSize * 0.78
+                ),
+                cornerRadius: 1.8
+            )
+            page.lineWidth = 1.55
+            page.stroke()
+            let lines = UIBezierPath()
+            for yFrac: CGFloat in [0.34, 0.50, 0.66] {
+                lines.move(to: CGPoint(x: r.minX + pointSize * 0.24, y: r.minY + pointSize * yFrac))
+                lines.addLine(to: CGPoint(x: r.minX + pointSize * 0.52, y: r.minY + pointSize * yFrac))
+            }
+            lines.lineWidth = 1.2
+            lines.stroke()
             let pen = UIBezierPath()
-            pen.move(to: CGPoint(x: r.minX + pointSize * 0.22, y: r.maxY - pointSize * 0.22))
-            pen.addLine(to: CGPoint(x: r.maxX - pointSize * 0.28, y: r.minY + pointSize * 0.28))
+            pen.move(to: CGPoint(x: r.minX + pointSize * 0.48, y: r.maxY - pointSize * 0.22))
+            pen.addLine(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.minY + pointSize * 0.22))
             pen.lineWidth = 1.7
             pen.stroke()
             let tip = UIBezierPath()
-            tip.move(to: CGPoint(x: r.maxX - pointSize * 0.28, y: r.minY + pointSize * 0.28))
-            tip.addLine(to: CGPoint(x: r.maxX - pointSize * 0.14, y: r.minY + pointSize * 0.38))
-            tip.addLine(to: CGPoint(x: r.maxX - pointSize * 0.24, y: r.minY + pointSize * 0.48))
+            tip.move(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.minY + pointSize * 0.22))
+            tip.addLine(to: CGPoint(x: r.maxX - pointSize * 0.04, y: r.minY + pointSize * 0.30))
+            tip.addLine(to: CGPoint(x: r.maxX - pointSize * 0.12, y: r.minY + pointSize * 0.40))
             tip.close()
             tip.fill()
-            let eraser = UIBezierPath(
-                roundedRect: CGRect(x: r.minX + pointSize * 0.16, y: r.maxY - pointSize * 0.34,
-                                    width: pointSize * 0.22, height: pointSize * 0.16),
-                cornerRadius: 1.2
-            )
-            eraser.lineWidth = 1.3
-            eraser.stroke()
 
         case .readMode:
             // Eye — same inset envelope as editMode/save (~0.16 padding).

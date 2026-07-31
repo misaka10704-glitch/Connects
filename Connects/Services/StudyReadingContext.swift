@@ -98,6 +98,12 @@ protocol StudyReadingContextProviding: AnyObject {
     var studyIsPortraitLayout: Bool { get }
     /// Clear Ask range highlight in the active reader (code / markdown).
     func clearAskSelectionHighlightInReader()
+    /// Study text/code: whether「AI 编辑」authorization is meaningful.
+    var studyCodeAIEditSupported: Bool { get }
+    /// Present a parsed CONNECTS_EDIT proposal in the code reader Diff surface.
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool
+    func studyCodeDiffUndoAll()
+    func studyCodeDiffKeepAll()
 }
 
 extension StudyReadingContextProviding {
@@ -106,6 +112,10 @@ extension StudyReadingContextProviding {
     var studyChatPanelStage: StudyChatPanelStage { .collapsed }
     var studyIsPortraitLayout: Bool { true }
     func clearAskSelectionHighlightInReader() {}
+    var studyCodeAIEditSupported: Bool { false }
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool { false }
+    func studyCodeDiffUndoAll() {}
+    func studyCodeDiffKeepAll() {}
 }
 
 /// Nav `titleView` host that pins itself to the bar’s horizontal center
@@ -201,16 +211,14 @@ final class StudyPanelStageCapsule: UIView {
         downButton.addTarget(self, action: #selector(downTapped), for: .touchUpInside)
         upButton.accessibilityLabel = "展开 AI"
         downButton.accessibilityLabel = "收起 AI"
-        upButton.adjustsImageWhenHighlighted = false
-        downButton.adjustsImageWhenHighlighted = false
         upButton.addTarget(self, action: #selector(stageTouchDown(_:)), for: .touchDown)
         downButton.addTarget(self, action: #selector(stageTouchDown(_:)), for: .touchDown)
         upButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         downButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         upButton.setImage(ActionIconFactory.image(.chevronUp, pointSize: 12), for: .normal)
         downButton.setImage(ActionIconFactory.image(.chevronDown, pointSize: 12), for: .normal)
-        upButton.contentEdgeInsets = UIEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-        downButton.contentEdgeInsets = UIEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        upButton.connectsSetContentInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+        downButton.connectsSetContentInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
 
         setAxis(.horizontal)
         applyTheme()

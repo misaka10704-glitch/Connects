@@ -7,6 +7,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UserDefaults.standard.register(defaults: ["connects_sidebar_collapsed": true])
+        // Warm Study Markdown WKWebView (marked/KaTeX) off the critical path — chat stays Native.
+        WebKitRenderWarmup.prepare()
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = DSTheme.c.background
         NativeRendererSelfTest.installFixtureIfRequested()
@@ -20,6 +22,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         self.window = window
         NativeRendererSelfTest.run()
         #if DEBUG
+        StudyVisualQAHarness.runIfRequested()
         StudyFeatureQAHarness.runIfRequested()
         #endif
         SettingsManager.applyIdleTimerSetting()

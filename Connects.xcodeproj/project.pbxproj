@@ -69,6 +69,7 @@
 		B10000010000000000000006 /* ScrollStressHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ScrollStressHarness.swift */; };
 		B10000010000000000000007 /* RenderAuditHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* RenderAuditHarness.swift */; };
 		S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000012 /* StudyFeatureQAHarness.swift */; };
+		V10000010000000000000001 /* StudyVisualQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = V20000010000000000000001 /* StudyVisualQAHarness.swift */; };
 		S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000013 /* PDFCustomTextSelector.swift */; };
 		S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */; };
 		B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* DebugAPIBootstrap.swift */; };
@@ -98,6 +99,7 @@
 		C1000001000000000000000E /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000E /* ProjectStore.swift */; };
 		C1000001000000000000000F /* ProjectListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000F /* ProjectListViewController.swift */; };
 		D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000003 /* ConversationRenderSwitchTests.swift */; };
+		D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000004 /* CodeDiffModeTests.swift */; };
 		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
@@ -118,9 +120,14 @@
 		S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000E /* CodeSyntaxHighlighter.swift */; };
 		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
 		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
+		F100000100000000000000C1 /* ChatCodeFencePopupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */; };
 		S10000010000000000000011 /* StudyAskSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000011 /* StudyAskSupport.swift */; };
 		S10000010000000000000020 /* CodeEditorIndent.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000020 /* CodeEditorIndent.swift */; };
 		S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000021 /* CodeEditorAIBridge.swift */; };
+		S10000010000000000000024 /* CodeEditCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000024 /* CodeEditCoordinator.swift */; };
+		S10000010000000000000023 /* CodeEditApplyTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000023 /* CodeEditApplyTools.swift */; };
+		S10000010000000000000022 /* CodeTextDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000022 /* CodeTextDiff.swift */; };
+		DFL100010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -188,6 +195,7 @@
 		B20000010000000000000006 /* ScrollStressHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollStressHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000007 /* RenderAuditHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditHarness.swift; sourceTree = "<group>"; };
 		S20000010000000000000012 /* StudyFeatureQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFeatureQAHarness.swift; sourceTree = "<group>"; };
+		V20000010000000000000001 /* StudyVisualQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyVisualQAHarness.swift; sourceTree = "<group>"; };
 		S20000010000000000000013 /* PDFCustomTextSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFCustomTextSelector.swift; sourceTree = "<group>"; };
 		S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsKeyboardGeometry.swift; sourceTree = "<group>"; };
 		B20000010000000000000008 /* DebugAPIBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugAPIBootstrap.swift; sourceTree = "<group>"; };
@@ -217,6 +225,7 @@
 		C2000001000000000000000E /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		C2000001000000000000000F /* ProjectListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListViewController.swift; sourceTree = "<group>"; };
 		D20000010000000000000003 /* ConversationRenderSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRenderSwitchTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000004 /* CodeDiffModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeDiffModeTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
@@ -238,9 +247,14 @@
 		S2000001000000000000000E /* CodeSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
+		F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCodeFencePopupViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000011 /* StudyAskSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAskSupport.swift; sourceTree = "<group>"; };
 		S20000010000000000000020 /* CodeEditorIndent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorIndent.swift; sourceTree = "<group>"; };
 		S20000010000000000000021 /* CodeEditorAIBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorAIBridge.swift; sourceTree = "<group>"; };
+		S20000010000000000000024 /* CodeEditCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditCoordinator.swift; sourceTree = "<group>"; };
+		S20000010000000000000023 /* CodeEditApplyTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditApplyTools.swift; sourceTree = "<group>"; };
+		S20000010000000000000022 /* CodeTextDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeTextDiff.swift; sourceTree = "<group>"; };
+		DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFullLineBackgroundLayoutManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -326,6 +340,7 @@
 			isa = PBXGroup;
 			children = (
 				D20000010000000000000003 /* ConversationRenderSwitchTests.swift */,
+				D20000010000000000000004 /* CodeDiffModeTests.swift */,
 			);
 			path = ConnectsTests;
 			sourceTree = "<group>";
@@ -359,6 +374,7 @@
 				B20000010000000000000006 /* ScrollStressHarness.swift */,
 				B20000010000000000000007 /* RenderAuditHarness.swift */,
 				S20000010000000000000012 /* StudyFeatureQAHarness.swift */,
+				V20000010000000000000001 /* StudyVisualQAHarness.swift */,
 				S20000010000000000000013 /* PDFCustomTextSelector.swift */,
 				S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */,
 				B20000010000000000000008 /* DebugAPIBootstrap.swift */,
@@ -379,6 +395,10 @@
 				S2000001000000000000000E /* CodeSyntaxHighlighter.swift */,
 				S20000010000000000000020 /* CodeEditorIndent.swift */,
 				S20000010000000000000021 /* CodeEditorAIBridge.swift */,
+				S20000010000000000000024 /* CodeEditCoordinator.swift */,
+				S20000010000000000000023 /* CodeEditApplyTools.swift */,
+				S20000010000000000000022 /* CodeTextDiff.swift */,
+				DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */,
 				S2000001000000000000000F /* StudyFileContextStore.swift */,
 				S20000010000000000000011 /* StudyAskSupport.swift */,
 			);
@@ -401,6 +421,7 @@
 				S20000010000000000000009 /* MarkdownReaderViewController.swift */,
 				S2000001000000000000000C /* MarkdownContentsViewController.swift */,
 				S20000010000000000000010 /* TextCodeEditorViewController.swift */,
+				F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */,
 				S20000010000000000000006 /* StudyShellViewController.swift */,
 				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
 			);
@@ -640,6 +661,7 @@
 				B10000010000000000000006 /* ScrollStressHarness.swift in Sources */,
 				B10000010000000000000007 /* RenderAuditHarness.swift in Sources */,
 				S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */,
+				V10000010000000000000001 /* StudyVisualQAHarness.swift in Sources */,
 				S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */,
 				S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */,
 				B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */,
@@ -685,8 +707,13 @@
 				S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */,
 				S10000010000000000000020 /* CodeEditorIndent.swift in Sources */,
 				S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */,
+				S10000010000000000000024 /* CodeEditCoordinator.swift in Sources */,
+				S10000010000000000000023 /* CodeEditApplyTools.swift in Sources */,
+				S10000010000000000000022 /* CodeTextDiff.swift in Sources */,
+				DFL100010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift in Sources */,
 				S1000001000000000000000F /* StudyFileContextStore.swift in Sources */,
 				S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */,
+				F100000100000000000000C1 /* ChatCodeFencePopupViewController.swift in Sources */,
 				S10000010000000000000011 /* StudyAskSupport.swift in Sources */,
 				C1000001000000000000000F /* ProjectListViewController.swift in Sources */,
 			);
@@ -697,6 +724,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */,
+				D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -719,7 +747,7 @@
 					"DEBUG=1",
 					"$(inherited)",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -739,7 +767,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -889,7 +917,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -910,7 +938,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

@@ -13,8 +13,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let gutterSeparator = UIView()
     /// Non-interactive twin of the editor; contentOffset stays locked to `textView`.
     private let lineNumberView = UITextView()
-    private let textView = StudyAskTextView()
-    private let spinner = UIActivityIndicatorView(style: .gray)
+    private let textView = StudyAskTextView(fullLineBackgrounds: true)
+    private let spinner = UIActivityIndicatorView(style: .medium)
     /// Markdown preview only (`language == .markdown`). Transitional WK shell — see markdown-render-engine rule.
     private var previewWebView: WKWebView!
     private var previewShellLoaded = false
@@ -27,6 +27,48 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var gutterWidthConstraint: NSLayoutConstraint!
     private var isEditMode = false
     private var isDirty = false
+    /// Reading sub-state. `diff` = hunk UI; `diffPreview` = all-kept plain preview (still in Diff session).
+    private enum ReadSurface { case plain, diff, diffPreview }
+    private var readSurface: ReadSurface = .plain
+    private var tabCompletionEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: "connects.codeEditor.tabCompletion") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "connects.codeEditor.tabCompletion")
+    }()
+    private var ghostSuggestion: String?
+    private var tabCompleteWorkItem: DispatchWorkItem?
+    private var tabCompleteGeneration: UInt = 0
+    private let tabToggleButton = UIButton(type: .system)
+    /// Caret-trailing Tab accept chip (not a bottom dock).
+    private let tabSuggestChip = UIView()
+    private let tabSuggestLabel = UILabel()
+    private let tabConfirmButton = UIButton(type: .system)
+    private let tabDismissButton = UIButton(type: .system)
+    /// Legacy floating nav container — kept hidden; ▲ n/N ▼ sit on every hunk Undo/Keep bar.
+    private let diffHunkBar = UIView()
+    private let diffNavLabel = UILabel()
+    private let diffPrevButton = UIButton(type: .system)
+    private let diffNextButton = UIButton(type: .system)
+    /// Per-pending-hunk Undo/Keep chips — subviews of `textView` in **content** coords
+    /// so UIScrollView scrolls them with the hunk (no per-frame remapping).
+    private var diffPerHunkBars: [UIView] = []
+    private var textBottomToView: NSLayoutConstraint!
+    private var gutterBottomToView: NSLayoutConstraint!
+    private var gutterSepBottomToView: NSLayoutConstraint!
+    private var diffBeforeSnapshot: String?
+    private var diffAfterSnapshot: String?
+    private var diffSegments: [CodeDiffSegment] = []
+    private var diffHunkRanges: [Int: NSRange] = [:]
+    /// Document-space Y (text-container + inset) for pending hunks — scroll converts via contentOffset.
+    private var diffHunkDocY: [Int: (minY: CGFloat, maxY: CGFloat)] = [:]
+    private var lastDiffSyncOffsetY: CGFloat = -10_000
+    private var lastDiffSyncAt: CFTimeInterval = 0
+    private var diffChromeZOrdered = false
+    private var diffFocusHighlightWork: DispatchWorkItem?
+    private var diffCurrentPendingIndex = 0
+    /// Bumps when a new Diff session is presented / cancelled (async compute guard).
+    private var diffPresentGeneration: UInt = 0
+    /// Extra bottom inset while a soft keyboard covers the reader (portrait Study).
+    private var keyboardBottomInset: CGFloat = 0
     private var highlightWorkItem: DispatchWorkItem?
     /// Ask 选区：语法高亮之上的持久背景，不依赖系统选区（用户可先读后开 AI）。
     private var askPinnedRange: NSRange?
@@ -37,10 +79,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var pendingViewportProgress: StudyProgress?
     private var conversationIDForDirty: String?
 
-    // MARK: - Future: AI edit / Tab completion / inline diff (see CodeEditorAIBridge.swift)
-    weak var aiEditing: CodeEditorAIEditing?
-    weak var completionProvider: CodeEditorCompletionProviding?
-    weak var diffPresenter: CodeEditorDiffPresenting?
+    // MARK: - AI edit / Tab / inline diff (CodeEditorAIBridge)
+    // Implemented on this VC; coordinator drives Diff + Keep/Reject.
 
     private static let fontSizeDefaultsKey = "connects.codeEditor.fontSize"
     private static let minFontPointSize: CGFloat = 9
@@ -60,8 +100,15 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var lastWrapLayoutWidth: CGFloat = 0
 
     private var showsMarkdownPreview: Bool {
-        language == .markdown && !isEditMode
+        language == .markdown && !isEditMode && readSurface == .plain
     }
+
+    var onDiffDecision: ((Bool) -> Void)?
+    /// Called with final file text when all hunks are resolved; `nil` = cancel / all undone to before.
+    var onDiffFinished: ((String?) -> Void)?
+    /// `(active, pendingHunkCount)` — drives the chat InputBar review banner.
+    var onDiffSessionChange: ((Bool, Int) -> Void)?
+    weak var completionProvider: CodeEditorCompletionProviding?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -94,6 +141,15 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
         topBar.addSubview(saveButton)
+
+        tabToggleButton.translatesAutoresizingMaskIntoConstraints = false
+        tabToggleButton.setTitle("Tab", for: .normal)
+        tabToggleButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .bold)
+        tabToggleButton.addTarget(self, action: #selector(tabToggleTapped), for: .touchUpInside)
+        tabToggleButton.accessibilityLabel = "Tab 补全"
+        tabToggleButton.accessibilityHint = "关闭后编辑时不再出现灰字建议"
+        topBar.addSubview(tabToggleButton)
+        refreshTabToggleChrome()
 
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
         progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
@@ -163,17 +219,60 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
         view.addSubview(textView)
 
-        let config = WKWebViewConfiguration()
+        // Caret-trailing Tab accept chip (frame-based; subviews use Auto Layout).
+        tabSuggestChip.translatesAutoresizingMaskIntoConstraints = true
+        tabSuggestChip.isHidden = true
+        tabSuggestChip.backgroundColor = DSTheme.c.surface
+        tabSuggestChip.layer.cornerRadius = 10
+        tabSuggestChip.layer.borderWidth = 1 / UIScreen.main.scale
+        tabSuggestChip.layer.borderColor = DSTheme.c.border.cgColor
+        tabSuggestChip.clipsToBounds = true
+        view.addSubview(tabSuggestChip)
+
+        tabSuggestLabel.translatesAutoresizingMaskIntoConstraints = false
+        tabSuggestLabel.font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        tabSuggestLabel.textColor = DSTheme.c.textTertiary
+        tabSuggestLabel.numberOfLines = 2
+        tabSuggestLabel.lineBreakMode = .byTruncatingTail
+        tabSuggestChip.addSubview(tabSuggestLabel)
+
+        tabConfirmButton.translatesAutoresizingMaskIntoConstraints = false
+        tabConfirmButton.setTitle("Accept", for: .normal)
+        tabConfirmButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        tabConfirmButton.addTarget(self, action: #selector(acceptGhostTapped), for: .touchUpInside)
+        tabSuggestChip.addSubview(tabConfirmButton)
+
+        tabDismissButton.translatesAutoresizingMaskIntoConstraints = false
+        tabDismissButton.setTitle("×", for: .normal)
+        tabDismissButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        tabDismissButton.addTarget(self, action: #selector(dismissGhostTapped), for: .touchUpInside)
+        tabSuggestChip.addSubview(tabDismissButton)
+
+        NSLayoutConstraint.activate([
+            tabSuggestLabel.leadingAnchor.constraint(equalTo: tabSuggestChip.leadingAnchor, constant: 10),
+            tabSuggestLabel.topAnchor.constraint(equalTo: tabSuggestChip.topAnchor, constant: 8),
+            tabSuggestLabel.bottomAnchor.constraint(equalTo: tabSuggestChip.bottomAnchor, constant: -8),
+            tabConfirmButton.leadingAnchor.constraint(equalTo: tabSuggestLabel.trailingAnchor, constant: 8),
+            tabConfirmButton.centerYAnchor.constraint(equalTo: tabSuggestChip.centerYAnchor),
+            tabConfirmButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            tabDismissButton.leadingAnchor.constraint(equalTo: tabConfirmButton.trailingAnchor, constant: 4),
+            tabDismissButton.trailingAnchor.constraint(equalTo: tabSuggestChip.trailingAnchor, constant: -6),
+            tabDismissButton.centerYAnchor.constraint(equalTo: tabSuggestChip.centerYAnchor),
+            tabDismissButton.widthAnchor.constraint(equalToConstant: 28)
+        ])
+
+        // Floating top-right nav retired — ▲ n/N ▼ sit on the focused hunk's Undo/Keep bar.
+        diffHunkBar.isHidden = true
+        diffHunkBar.isUserInteractionEnabled = false
+        diffPrevButton.addTarget(self, action: #selector(diffPrevHunk), for: .touchUpInside)
+        diffNextButton.addTarget(self, action: #selector(diffNextHunk), for: .touchUpInside)
+
+        let config = ConnectsWebKit.makeConfiguration()
         previewWebView = WKWebView(frame: .zero, configuration: config)
         previewWebView.translatesAutoresizingMaskIntoConstraints = false
-        previewWebView.isOpaque = false
-        previewWebView.backgroundColor = DSTheme.c.background
-        previewWebView.scrollView.backgroundColor = DSTheme.c.background
+        ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.c.background)
         previewWebView.isHidden = true
         previewWebView.navigationDelegate = self
-        if #available(iOS 11.0, *) {
-            previewWebView.scrollView.contentInsetAdjustmentBehavior = .never
-        }
         view.addSubview(previewWebView)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -194,9 +293,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
+            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
 
-            // Far-right chrome: [mode][save], fixed 40pt slots (never collapse).
+            // Far-right chrome: [Tab][mode][save]
             saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             saveButton.widthAnchor.constraint(equalToConstant: 40),
@@ -207,6 +306,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             modeButton.widthAnchor.constraint(equalToConstant: 40),
             modeButton.heightAnchor.constraint(equalToConstant: 40),
 
+            tabToggleButton.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -2),
+            tabToggleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            tabToggleButton.widthAnchor.constraint(equalToConstant: 40),
+            tabToggleButton.heightAnchor.constraint(equalToConstant: 32),
+
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBarSeparator.topAnchor.constraint(equalTo: topBar.bottomAnchor),
@@ -214,7 +318,6 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
             gutterView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             gutterView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
-            gutterView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             gutterWidthConstraint,
 
             lineNumberView.leadingAnchor.constraint(equalTo: gutterView.leadingAnchor),
@@ -224,13 +327,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
             gutterSeparator.leadingAnchor.constraint(equalTo: gutterView.trailingAnchor, constant: 6),
             gutterSeparator.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
-            gutterSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             gutterSeparator.widthAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
 
             textView.leadingAnchor.constraint(equalTo: gutterSeparator.trailingAnchor, constant: 10),
             textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             textView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
-            textView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             previewWebView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewWebView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -240,6 +341,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
+
+        textBottomToView = textView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        gutterBottomToView = gutterView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        gutterSepBottomToView = gutterSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        textBottomToView.isActive = true
+        gutterBottomToView.isActive = true
+        gutterSepBottomToView.isActive = true
 
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
         applyChromeColors()
@@ -260,6 +368,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             updateLineNumbers(force: true)
         }
         syncLineNumberOffset()
+        if readSurface == .diff {
+            layoutPerHunkActionBarsInContent()
+            placeDiffNavChrome()
+        }
     }
 
     deinit {
@@ -291,6 +403,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     func load(documentID: String, completion: @escaping (Bool) -> Void) {
+        // Switching documents mid-Diff used to leave readSurface=.diff while
+        // replacing text (or no-op after the highlight guard) — mode toggle stuck.
+        cancelDiffReviewForExternalMutation()
         loadGeneration &+= 1
         let gen = loadGeneration
         currentDocumentID = documentID
@@ -319,6 +434,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     func clearDocument() {
         loadGeneration &+= 1
         flushSaveIfNeeded()
+        cancelDiffReviewForExternalMutation()
+        readSurface = .plain
+        syncDiffChrome(show: false)
+        clearGhostSuggestion()
         askPinnedRange = nil
         currentDocumentID = nil
         language = .plain
@@ -429,7 +548,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let lines = max((textView.text as NSString?)?.length ?? 0 > 0
             ? (textView.text as NSString).components(separatedBy: "\n").count : 0, 1)
         let mode: String
-        if language == .markdown {
+        if readSurface == .diff {
+            mode = "Diff"
+        } else if readSurface == .diffPreview {
+            mode = "阅读 · 提案预览"
+        } else if language == .markdown {
             mode = isEditMode ? "编辑" : "预览"
         } else {
             mode = isEditMode ? "编辑" : "阅读"
@@ -454,7 +577,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     @objc private func themeChanged() {
         applyChromeColors()
-        applyHighlightedText(textView.text ?? "")
+        refreshTextPresentationPreservingDiff()
         updateLineNumbers(force: true)
         syncLineNumberOffset()
         if language == .markdown {
@@ -508,12 +631,37 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fontPointSize = size
         lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
-        applyHighlightedText(textView.text ?? "")
+        // Diff uses its own attributed paint — never wipe it with plain highlight
+        // (that left readSurface=.diff, mode toggle locked, and no way back to edit).
+        refreshTextPresentationPreservingDiff()
         updateLineNumbers(force: true)
         syncLineNumberOffset()
         if persist {
             UserDefaults.standard.set(Double(fontPointSize), forKey: Self.fontSizeDefaultsKey)
         }
+        if !tabSuggestChip.isHidden {
+            repositionTabSuggestChip()
+        }
+    }
+
+    /// Re-paint editor text at the current font/theme without exiting Diff review.
+    private func refreshTextPresentationPreservingDiff() {
+        switch readSurface {
+        case .diff:
+            guard !diffSegments.isEmpty else { return }
+            reloadDiffRendering()
+            positionDiffHunkBar(animatedScroll: false)
+        case .diffPreview:
+            let text = diffAfterSnapshot
+                ?? CodeTextDiff.compose(diffSegments, pendingAsUndone: false)
+            applyHighlightedText(text)
+        case .plain:
+            applyHighlightedText(textView.text ?? "")
+        }
+    }
+
+    private var isDiffSessionActive: Bool {
+        readSurface == .diff || readSurface == .diffPreview
     }
 
     private func bumpFontSize(by delta: CGFloat) {
@@ -527,8 +675,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         bumpFontSize(by: delta)
     }
 
-    /// Shell / hardware keyboard: ⌘M toggles read(preview) ↔ edit.
+    /// Shell / hardware keyboard: ⌘M toggles read(preview) ↔ edit (or Diff ↔ 预览 while reviewing).
     func toggleEditModeFromKeyboardShortcut() {
+        if isDiffSessionActive {
+            toggleDiffVersusKeptPreview()
+            return
+        }
         let next = !isEditMode
         applyEditMode(next)
         if next {
@@ -548,7 +700,49 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     @objc private func modeTapped() {
+        if isDiffSessionActive {
+            toggleDiffVersusKeptPreview()
+            return
+        }
         applyEditMode(!isEditMode)
+    }
+
+    /// Diff session: mode key switches Diff hunks ↔ read preview (all Keep). Edit stays locked.
+    private func toggleDiffVersusKeptPreview() {
+        if readSurface == .diff {
+            enterDiffKeptPreview()
+        } else if readSurface == .diffPreview {
+            enterDiffHunkSurface()
+        }
+    }
+
+    private func enterDiffKeptPreview() {
+        guard diffBeforeSnapshot != nil else { return }
+        readSurface = .diffPreview
+        diffHunkBar.isHidden = true
+        clearPerHunkActionBars()
+        let text = diffAfterSnapshot
+            ?? CodeTextDiff.compose(diffSegments, pendingAsUndone: false)
+        applyHighlightedText(text)
+        updateLineNumbers(force: true)
+        refreshModeChrome()
+        refreshTabToggleChrome()
+        updateProgressLabel()
+        syncSurfaceVisibility()
+        notifyDiffSessionChange()
+    }
+
+    private func enterDiffHunkSurface() {
+        guard diffBeforeSnapshot != nil, !diffSegments.isEmpty else { return }
+        readSurface = .diff
+        reloadDiffRendering()
+        syncDiffChrome(show: true)
+        refreshModeChrome()
+        refreshTabToggleChrome()
+        updateProgressLabel()
+        syncSurfaceVisibility()
+        positionDiffHunkBar(animatedScroll: false)
+        notifyDiffSessionChange()
     }
 
     /// Keyboard shortcut: enter edit mode and focus the code text view.
@@ -580,17 +774,24 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func applyEditMode(_ editing: Bool) {
+        if isDiffSessionActive {
+            // Diff session: never enter edit; mode key toggles Diff ↔ preview instead.
+            if editing { return }
+            // Allow leaving edit if somehow stuck (should not happen).
+        }
         if !editing {
             // Avoid flush/resign during viewDidLoad (view not in a window yet).
             if isViewLoaded, view.window != nil {
                 flushSaveIfNeeded(force: true)
                 textView.resignFirstResponder()
             }
+            clearGhostSuggestion()
         }
         isEditMode = editing
-        textView.isEditable = editing
+        textView.isEditable = editing && !isDiffSessionActive
         textView.isSelectable = true
         refreshModeChrome()
+        refreshTabToggleChrome()
         updateProgressLabel()
         syncSurfaceVisibility()
         if showsMarkdownPreview {
@@ -600,22 +801,35 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     private func refreshModeChrome() {
         let c = DSTheme.c
-        // Read/preview → pencil (enter edit). Edit → eye (enter read/preview).
-        let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
-        modeButton.setTitle(nil, for: .normal)
-        modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
-        modeButton.tintColor = c.textSecondary
-        if language == .markdown {
-            modeButton.accessibilityLabel = isEditMode ? "切换到预览模式" : "切换到编辑模式"
+        if isDiffSessionActive {
+            // During Diff: button means "switch Diff / 阅读预览".
+            let showingDiff = readSurface == .diff
+            let modeKind: ActionIconFactory.Kind = showingDiff ? .readMode : .editMode
+            modeButton.setTitle(nil, for: .normal)
+            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+            modeButton.tintColor = c.accent
+            modeButton.isEnabled = true
+            modeButton.alpha = 1
+            modeButton.accessibilityLabel = showingDiff ? "查看提案预览（全部 Keep）" : "返回 Diff"
         } else {
-            modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+            let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
+            modeButton.setTitle(nil, for: .normal)
+            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+            modeButton.tintColor = c.textSecondary
+            modeButton.isEnabled = true
+            modeButton.alpha = 1
+            if language == .markdown {
+                modeButton.accessibilityLabel = isEditMode ? "切换到预览模式" : "切换到编辑模式"
+            } else {
+                modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
+            }
         }
         saveButton.setTitle(nil, for: .normal)
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
         saveButton.isHidden = false
-        saveButton.isEnabled = isEditMode
-        saveButton.alpha = isEditMode ? 1 : 0.35
-        saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+        saveButton.isEnabled = isEditMode && !isDiffSessionActive
+        saveButton.alpha = saveButton.isEnabled ? 1 : 0.35
+        saveButton.tintColor = saveButton.isEnabled ? c.accent : c.textTertiary
     }
 
     private func syncSurfaceVisibility() {
@@ -689,6 +903,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func applyHighlightedText(_ text: String) {
+        // Diff review owns the attributed string; callers that need a font/theme
+        // refresh must use `refreshTextPresentationPreservingDiff` instead.
+        guard readSurface != .diff else { return }
         guard !isIMEComposing else { return }
         let caret = captureCaretSnapshot()
         let editing = textView.isFirstResponder
@@ -754,6 +971,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         highlightWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
+            if self.readSurface == .diff { return }
             if self.isIMEComposing {
                 // Keep waiting until composition ends — do not paint over marked text.
                 self.scheduleHighlight()
@@ -928,6 +1146,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         guard !isIMEComposing else { return }
         scheduleHighlight()
         scheduleAutosave()
+        clearGhostSuggestion()
+        scheduleTabCompletion()
     }
 
     func textViewDidEndEditing(_ textView: UITextView) {
@@ -938,6 +1158,23 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard scrollView === textView else { return }
         syncLineNumberOffset()
+        if !tabSuggestChip.isHidden {
+            repositionTabSuggestChip()
+        }
+        if readSurface == .diff {
+            // Bars live in textView content space — only refresh focus / trailing X, not Y remap.
+            syncDiffIndexFromViewport()
+            layoutPerHunkActionBarsInContent()
+        }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard scrollView === textView else { return }
+        if !decelerate { onPageChanged?() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        guard scrollView === textView else { return }
         onPageChanged?()
     }
 
@@ -949,6 +1186,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                     max(0, textView.contentSize.height - textView.bounds.height))
         textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
         syncLineNumberOffset()
+        if readSurface == .diff {
+            syncDiffIndexFromViewport()
+            layoutPerHunkActionBarsInContent()
+        }
+        if !tabSuggestChip.isHidden {
+            repositionTabSuggestChip()
+        }
     }
     func debugSetEditMode(_ editing: Bool) {
         applyEditMode(editing)
@@ -958,6 +1202,53 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         (modeButton.convert(modeButton.bounds, to: view),
          saveButton.convert(saveButton.bounds, to: view))
     }
+
+    /// Pending-ord label text (`"2/16"`) for Diff nav QA.
+    func debugDiffNavLabelText() -> String { diffNavLabel.text ?? "" }
+
+    /// Per-hunk Keep/Undo bar frames in editor view coords, keyed by segment index.
+    func debugDiffPerHunkBarFrames() -> [Int: CGRect] {
+        var out: [Int: CGRect] = [:]
+        for bar in diffPerHunkBars where !bar.isHidden {
+            out[bar.tag] = textView.convert(bar.frame, to: view)
+        }
+        return out
+    }
+
+    /// Content-space Y cache for pending hunks.
+    func debugDiffHunkDocY() -> [Int: (minY: CGFloat, maxY: CGFloat)] { diffHunkDocY }
+
+    func debugShowTabSuggestion(_ text: String) {
+        showGhostSuggestion(text)
+    }
+
+    func debugSetSelectedLocation(_ location: Int) {
+        let len = (textView.text as NSString?)?.length ?? 0
+        let loc = min(max(0, location), len)
+        textView.selectedRange = NSRange(location: loc, length: 0)
+    }
+
+    func debugTabSuggestChipFrame() -> CGRect {
+        tabSuggestChip.isHidden ? .null : tabSuggestChip.frame
+    }
+
+    func debugAcceptTabSuggestion() {
+        acceptGhostSuggestion()
+    }
+
+    /// Expected Keep/Undo bar origin.y in **editor view** coords for a pending hunk (content-space host).
+    func debugExpectedHunkBarY(segIdx: Int) -> CGFloat? {
+        guard let doc = diffHunkDocY[segIdx] else { return nil }
+        let barH: CGFloat = 34
+        let yContent = doc.maxY - barH * 0.5
+        return textView.convert(CGPoint(x: 0, y: yContent), to: view).y
+    }
+
+    func debugDiffCurrentPendingOrdinal() -> Int { diffCurrentPendingIndex }
+
+    func diffNextHunkForQA() { diffNextHunk() }
+    func diffPrevHunkForQA() { diffPrevHunk() }
+    func diffKeepCurrentHunkForQA() { decideCurrentHunk(keep: true) }
 #endif
 }
 
@@ -989,23 +1280,36 @@ extension TextCodeEditorViewController {
             makeEditorKeyCommand(input: UIKeyCommand.inputLeftArrow, modifiers: .alternate,
                                  action: #selector(shortcutLineStart), title: "跳到文字行首"),
             makeEditorKeyCommand(input: UIKeyCommand.inputRightArrow, modifiers: .alternate,
-                                 action: #selector(shortcutLineEnd), title: "跳到文字行末")
+                                 action: #selector(shortcutLineEnd), title: "跳到文字行末"),
+            makeEditorKeyCommand(input: "\t", modifiers: [],
+                                 action: #selector(shortcutAcceptGhost), title: "Accept Tab"),
+            makeEditorKeyCommand(input: "y", modifiers: [],
+                                 action: #selector(shortcutDiffAccept), title: "Keep Diff"),
+            makeEditorKeyCommand(input: "n", modifiers: [],
+                                 action: #selector(shortcutDiffReject), title: "Undo Diff")
         ]
+    }
+
+    @objc private func shortcutAcceptGhost() {
+        _ = keyCommandsAcceptGhostOrPass()
+    }
+
+    @objc private func shortcutDiffAccept() {
+        guard readSurface == .diff else { return }
+        diffKeepHunk()
+    }
+
+    @objc private func shortcutDiffReject() {
+        guard readSurface == .diff else { return }
+        diffUndoHunk()
     }
 
     private func makeEditorKeyCommand(input: String,
                                       modifiers: UIKeyModifierFlags,
                                       action: Selector,
                                       title: String) -> UIKeyCommand {
-        if #available(iOS 13.0, *) {
-            let cmd = UIKeyCommand(title: title, action: action, input: input, modifierFlags: modifiers)
-            if #available(iOS 15.0, *) {
-                cmd.wantsPriorityOverSystemBehavior = true
-            }
-            return cmd
-        }
-        let cmd = UIKeyCommand(input: input, modifierFlags: modifiers, action: action)
-        cmd.discoverabilityTitle = title
+        let cmd = UIKeyCommand(title: title, action: action, input: input, modifierFlags: modifiers)
+        cmd.wantsPriorityOverSystemBehavior = true
         return cmd
     }
 
@@ -1078,6 +1382,941 @@ extension TextCodeEditorViewController {
         }
         textView.selectedRange = NSRange(location: loc, length: 0)
         textView.scrollRangeToVisible(NSRange(location: loc, length: 0))
+    }
+
+    // MARK: - AI edit / Diff / Tab
+
+    func aiEditSnapshot() -> (text: String, selectedRange: NSRange) {
+        let text = textView.text ?? ""
+        var range = textView.selectedRange
+        if let pinned = askPinnedRange, pinned.length > 0 {
+            range = pinned
+        }
+        return (text, range)
+    }
+
+    func applyAIEdit(range: NSRange, replacement: String) {
+        let before = textView.text ?? ""
+        let ns = before as NSString
+        let safe = NSIntersectionRange(range, NSRange(location: 0, length: ns.length))
+        let after = ns.replacingCharacters(in: safe, with: replacement)
+        applyResolvedDiffText(after)
+    }
+
+    func applyResolvedDiffText(_ text: String) {
+        readSurface = .plain
+        syncDiffChrome(show: false)
+        applyHighlightedText(text)
+        updateLineNumbers(force: true)
+        isDirty = true
+        updateProgressLabel()
+        scheduleAutosave()
+        onContentEdited?()
+        if let conv = conversationIDForDirty {
+            StudyFileContextStore.shared.markDirty(conversationID: conv)
+        }
+    }
+
+    @discardableResult
+    func presentInlineDiff(before: String, after: String) -> Bool {
+        clearGhostSuggestion()
+        textView.resignFirstResponder()
+        isEditMode = false
+        textView.isEditable = false
+        readSurface = .diff
+        diffBeforeSnapshot = before
+        diffAfterSnapshot = after
+        diffPresentGeneration &+= 1
+        let gen = diffPresentGeneration
+
+        // Heavy LCS/Myers off the main thread for large files; tiny edits stay sync
+        // so unit tests (and snappy small patches) still apply immediately.
+        let heavy = before.utf16.count + after.utf16.count > 24_000
+        let apply: ([CodeDiffSegment]) -> Bool = { [weak self] segments in
+            guard let self = self, gen == self.diffPresentGeneration else { return false }
+            self.diffSegments = segments
+            let pending = CodeTextDiff.pendingHunkIndices(in: segments)
+            self.diffCurrentPendingIndex = 0
+            if pending.isEmpty {
+                self.spinner.stopAnimating()
+                self.dismissInlineDiff(accept: false)
+                return false
+            }
+            self.reloadDiffRendering()
+            self.syncDiffChrome(show: true)
+            self.refreshModeChrome()
+            self.refreshTabToggleChrome()
+            self.updateProgressLabel()
+            self.syncSurfaceVisibility()
+            self.notifyDiffSessionChange()
+            self.spinner.stopAnimating()
+            // Gutter ensureLayout + hunk bar placement are expensive — next turn
+            // so the highlighted diff paints first without a hitch.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, gen == self.diffPresentGeneration, self.readSurface == .diff else { return }
+                self.updateLineNumbers(force: true, allowImmediateLayout: false)
+                self.positionDiffHunkBar(animatedScroll: false)
+            }
+            return true
+        }
+
+        if heavy {
+            spinner.startAnimating()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let lines = CodeTextDiff.lines(before: before, after: after)
+                let segments = CodeTextDiff.segments(from: lines)
+                DispatchQueue.main.async {
+                    _ = apply(segments)
+                }
+            }
+            // Async path: caller already rejected identical text; treat as opened.
+            return true
+        }
+        let lines = CodeTextDiff.lines(before: before, after: after)
+        return apply(CodeTextDiff.segments(from: lines))
+    }
+
+    func dismissInlineDiff(accept: Bool) {
+        diffPresentGeneration &+= 1
+        spinner.stopAnimating()
+        if !accept, let before = diffBeforeSnapshot {
+            applyHighlightedText(before)
+            updateLineNumbers(force: true)
+        }
+        diffBeforeSnapshot = nil
+        diffAfterSnapshot = nil
+        diffSegments = []
+        diffHunkRanges = [:]
+        diffHunkDocY = [:]
+        diffChromeZOrdered = false
+        readSurface = .plain
+        syncDiffChrome(show: false)
+        textView.isEditable = isEditMode
+        refreshModeChrome()
+        refreshTabToggleChrome()
+        updateProgressLabel()
+        syncSurfaceVisibility()
+        notifyDiffSessionChange()
+    }
+
+    func diffKeepAll() {
+        guard isDiffSessionActive else { return }
+        for i in diffSegments.indices {
+            guard case .hunk(var hunk) = diffSegments[i], hunk.decision == .pending else { continue }
+            hunk.decision = .kept
+            diffSegments[i] = .hunk(hunk)
+        }
+        finishDiffSession()
+    }
+
+    func diffUndoAll() {
+        guard isDiffSessionActive else { return }
+        for i in diffSegments.indices {
+            guard case .hunk(var hunk) = diffSegments[i], hunk.decision == .pending else { continue }
+            hunk.decision = .undone
+            diffSegments[i] = .hunk(hunk)
+        }
+        finishDiffSession()
+    }
+
+    /// Scroll the current pending hunk into the editor viewport.
+    func focusCurrentDiffHunk() {
+        if readSurface == .diffPreview {
+            enterDiffHunkSurface()
+        }
+        guard readSurface == .diff else { return }
+        positionDiffHunkBar(animatedScroll: true)
+    }
+
+    var diffPendingHunkCount: Int {
+        CodeTextDiff.pendingHunkIndices(in: diffSegments).count
+    }
+
+    /// Abort Diff review when the document is replaced / cleared externally.
+    /// Restores `before` text, unlocks mode toggle, notifies coordinator + banner.
+    func cancelDiffReviewForExternalMutation() {
+        guard readSurface == .diff else { return }
+        let finished = onDiffFinished
+        let decision = onDiffDecision
+        onDiffFinished = nil
+        onDiffDecision = nil
+        dismissInlineDiff(accept: false)
+        // Prefer the Diff-finished channel (coordinator) so banner / isPresentingDiff clear.
+        if let finished = finished {
+            finished(nil)
+        } else {
+            decision?(false)
+        }
+        notifyDiffSessionChange()
+    }
+
+    func enterEditModeAfterKeep() {
+        readSurface = .plain
+        syncDiffChrome(show: false)
+        applyEditMode(true)
+        focusForKeyboardEditing()
+    }
+
+    private func reloadDiffRendering() {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        let highlight: Int? = {
+            guard !pending.isEmpty else { return nil }
+            let idx = min(diffCurrentPendingIndex, pending.count - 1)
+            return pending[idx]
+        }()
+        let font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        let (attr, ranges) = CodeTextDiff.attributedString(
+            segments: diffSegments,
+            font: font,
+            textColor: DSTheme.c.textPrimary,
+            highlightHunkIndex: highlight
+        )
+        diffHunkRanges = ranges
+        textView.textStorage.setAttributedString(attr)
+        updateDiffNavLabel()
+        // Glyph metrics needed before anchoring per-hunk chips.
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        rebuildDiffHunkDocYCache()
+        rebuildPerHunkActionBars()
+        ensureDiffChromeZOrder()
+    }
+
+    /// Cache hunk vertical extents in **content** space (layoutManager + textContainerInset).
+    private func rebuildDiffHunkDocYCache() {
+        diffHunkDocY = [:]
+        guard readSurface == .diff else { return }
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        let lm = textView.layoutManager
+        let tc = textView.textContainer
+        let insetTop = textView.textContainerInset.top
+        let textLen = (textView.text as NSString?)?.length ?? 0
+        for segIdx in pending {
+            guard var range = diffHunkRanges[segIdx], range.length > 0 else { continue }
+            if range.location >= textLen { continue }
+            range.length = min(range.length, textLen - range.location)
+            let glyphRange = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard glyphRange.length > 0 else { continue }
+            let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            guard rect.height.isFinite, rect.width.isFinite else { continue }
+            // Container coords → document content Y (stable across scroll).
+            diffHunkDocY[segIdx] = (
+                minY: rect.minY + insetTop,
+                maxY: rect.maxY + insetTop
+            )
+        }
+    }
+
+    private func ensureDiffChromeZOrder() {
+        guard readSurface == .diff else {
+            diffChromeZOrdered = false
+            return
+        }
+        for bar in diffPerHunkBars {
+            textView.bringSubviewToFront(bar)
+        }
+        view.bringSubviewToFront(topBar)
+        view.bringSubviewToFront(topBarSeparator)
+        diffChromeZOrdered = true
+    }
+
+    private func updateDiffNavLabel() {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        let text: String
+        if pending.isEmpty {
+            text = "—"
+        } else {
+            let i = min(diffCurrentPendingIndex, pending.count - 1) + 1
+            text = "\(i)/\(pending.count)"
+        }
+        diffNavLabel.text = text
+        let c = DSTheme.c
+        diffPrevButton.tintColor = c.textSecondary
+        diffNextButton.tintColor = c.textSecondary
+        diffNavLabel.textColor = c.textPrimary
+        // Each bar shows its own ordinal (1-based) / total — always visible, not only when focused.
+        for bar in diffPerHunkBars {
+            if let label = bar.viewWithTag(9102) as? UILabel {
+                if let ord = pending.firstIndex(of: bar.tag) {
+                    label.text = "\(ord + 1)/\(pending.count)"
+                } else {
+                    label.text = "—"
+                }
+                label.textColor = c.textPrimary
+            }
+            if let prev = bar.viewWithTag(9101) as? UIButton {
+                prev.tintColor = c.textSecondary
+                prev.setTitleColor(c.textSecondary, for: .normal)
+            }
+            if let next = bar.viewWithTag(9103) as? UIButton {
+                next.tintColor = c.textSecondary
+                next.setTitleColor(c.textSecondary, for: .normal)
+            }
+        }
+    }
+
+    private func focusedPendingSegmentIndex() -> Int? {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return nil }
+        return pending[min(diffCurrentPendingIndex, pending.count - 1)]
+    }
+
+    private func notifyDiffSessionChange() {
+        let active = isDiffSessionActive
+        let count = CodeTextDiff.pendingHunkIndices(in: diffSegments).count
+        onDiffSessionChange?(active, count)
+    }
+
+    private func clearPerHunkActionBars() {
+        diffPerHunkBars.forEach { $0.removeFromSuperview() }
+        diffPerHunkBars.removeAll()
+    }
+
+    /// Undo/Keep chips hosted on `textView` in content coordinates (scroll with hunks).
+    private func rebuildPerHunkActionBars() {
+        clearPerHunkActionBars()
+        guard readSurface == .diff else { return }
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return }
+
+        rebuildDiffHunkDocYCache()
+        for segIdx in pending {
+            let bar = makePerHunkActionBar(segIdx: segIdx)
+            textView.addSubview(bar)
+            diffPerHunkBars.append(bar)
+        }
+        layoutPerHunkActionBarsInContent()
+        ensureDiffChromeZOrder()
+    }
+
+    /// Place chips in **textView content space** at hunk end. Y scrolls with UITextView; only X tracks trailing edge.
+    private func layoutPerHunkActionBarsInContent() {
+        guard readSurface == .diff, !diffPerHunkBars.isEmpty else { return }
+        if diffHunkDocY.count < diffPerHunkBars.count {
+            rebuildDiffHunkDocYCache()
+        }
+        let barH: CGFloat = 34
+        let barW: CGFloat = 228 // ▲ n/N ▼ + Undo + Keep — always shown
+        let trailingPad: CGFloat = 10
+        let contentOffsetX = textView.contentOffset.x
+        let visibleWidth = textView.bounds.width
+
+        for bar in diffPerHunkBars {
+            let segIdx = bar.tag
+            guard let doc = diffHunkDocY[segIdx] else {
+                bar.isHidden = true
+                continue
+            }
+            // Content coords: Y locked to hunk bottom; X follows visible trailing edge.
+            let x = contentOffsetX + visibleWidth - barW - trailingPad
+            let y = doc.maxY - barH * 0.5
+            bar.frame = CGRect(x: x, y: y, width: barW, height: barH)
+            // Hide when fully above/below the visible band (optional; subview still scrolls correctly).
+            let visibleMin = textView.contentOffset.y - 80
+            let visibleMax = textView.contentOffset.y + textView.bounds.height + 80
+            bar.isHidden = doc.maxY < visibleMin || doc.minY > visibleMax
+        }
+    }
+
+    /// Update `n/N` from viewport; avoid destroying bars every frame (causes scroll hitch / perceived drift).
+    private func syncDiffIndexFromViewport() {
+        guard readSurface == .diff else { return }
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return }
+
+        let offsetY = textView.contentOffset.y
+        let focusY = offsetY + textView.bounds.height * 0.35
+
+        var bestPendingOrd = 0
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for (ord, segIdx) in pending.enumerated() {
+            guard let doc = diffHunkDocY[segIdx] else { continue }
+            let dist: CGFloat
+            if focusY >= doc.minY, focusY <= doc.maxY {
+                dist = 0
+            } else {
+                dist = min(abs(focusY - doc.minY), abs(focusY - doc.maxY))
+            }
+            if dist < bestDist {
+                bestDist = dist
+                bestPendingOrd = ord
+            }
+        }
+        guard bestPendingOrd != diffCurrentPendingIndex else { return }
+        diffCurrentPendingIndex = bestPendingOrd
+        // n/N is per-hunk and always on the bar — no rebuild needed on focus change.
+
+        let dragging = textView.isDragging || textView.isDecelerating
+        guard !dragging else {
+            updateDiffNavLabel()
+            return
+        }
+        let now = CACurrentMediaTime()
+        let dy = abs(offsetY - lastDiffSyncOffsetY)
+        let shouldRefreshHighlight = dy >= 24 || (now - lastDiffSyncAt) >= 0.08
+        if shouldRefreshHighlight {
+            lastDiffSyncOffsetY = offsetY
+            lastDiffSyncAt = now
+            scheduleDiffFocusHighlightRefresh()
+        } else {
+            updateDiffNavLabel()
+        }
+    }
+
+    private func scheduleDiffFocusHighlightRefresh() {
+        diffFocusHighlightWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshDiffFocusHighlightOnly()
+        }
+        diffFocusHighlightWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    }
+
+    /// Repaint focus wash + `n/N` without rebuilding action bar views.
+    private func refreshDiffFocusHighlightOnly() {
+        guard readSurface == .diff else { return }
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        let highlight: Int? = {
+            guard !pending.isEmpty else { return nil }
+            return pending[min(diffCurrentPendingIndex, pending.count - 1)]
+        }()
+        let font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        let (attr, ranges) = CodeTextDiff.attributedString(
+            segments: diffSegments,
+            font: font,
+            textColor: DSTheme.c.textPrimary,
+            highlightHunkIndex: highlight
+        )
+        diffHunkRanges = ranges
+        textView.textStorage.setAttributedString(attr)
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        rebuildDiffHunkDocYCache()
+        layoutPerHunkActionBarsInContent()
+        updateDiffNavLabel()
+    }
+
+    private func makePerHunkActionBar(segIdx: Int) -> UIView {
+        let bar = UIView()
+        bar.translatesAutoresizingMaskIntoConstraints = true
+        bar.backgroundColor = DSTheme.c.surface.withAlphaComponent(0.82)
+        bar.layer.cornerRadius = 8
+        bar.layer.borderWidth = 1 / UIScreen.main.scale
+        bar.layer.borderColor = DSTheme.c.border.withAlphaComponent(0.55).cgColor
+        bar.clipsToBounds = true
+        bar.tag = segIdx
+
+        let c = DSTheme.c
+        var leading: NSLayoutXAxisAnchor = bar.leadingAnchor
+        var leadingConstant: CGFloat = 5
+
+        // Always show ▲ n/N ▼ (this hunk's ordinal) — not only when scrolled into focus.
+        let prev = UIButton(type: .system)
+        prev.translatesAutoresizingMaskIntoConstraints = false
+        prev.setTitle("▲", for: .normal)
+        prev.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
+        prev.setTitleColor(c.textSecondary, for: .normal)
+        prev.tag = 9101
+        prev.addTarget(self, action: #selector(diffPrevHunk), for: .touchUpInside)
+
+        let nav = UILabel()
+        nav.translatesAutoresizingMaskIntoConstraints = false
+        nav.font = UIFont.systemFont(ofSize: 11, weight: .medium)
+        nav.textAlignment = .center
+        nav.textColor = c.textPrimary
+        nav.tag = 9102
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        if let ord = pending.firstIndex(of: segIdx) {
+            nav.text = "\(ord + 1)/\(pending.count)"
+        } else {
+            nav.text = "—"
+        }
+
+        let next = UIButton(type: .system)
+        next.translatesAutoresizingMaskIntoConstraints = false
+        next.setTitle("▼", for: .normal)
+        next.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
+        next.setTitleColor(c.textSecondary, for: .normal)
+        next.tag = 9103
+        next.addTarget(self, action: #selector(diffNextHunk), for: .touchUpInside)
+
+        bar.addSubview(prev)
+        bar.addSubview(nav)
+        bar.addSubview(next)
+        NSLayoutConstraint.activate([
+            prev.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 4),
+            prev.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            prev.widthAnchor.constraint(equalToConstant: 24),
+            prev.heightAnchor.constraint(equalToConstant: 26),
+            nav.leadingAnchor.constraint(equalTo: prev.trailingAnchor, constant: 0),
+            nav.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            nav.widthAnchor.constraint(equalToConstant: 36),
+            next.leadingAnchor.constraint(equalTo: nav.trailingAnchor, constant: 0),
+            next.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            next.widthAnchor.constraint(equalToConstant: 24),
+            next.heightAnchor.constraint(equalToConstant: 26)
+        ])
+        leading = next.trailingAnchor
+        leadingConstant = 6
+
+        let undo = UIButton(type: .system)
+        undo.translatesAutoresizingMaskIntoConstraints = false
+        undo.setTitle("Undo", for: .normal)
+        undo.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        undo.backgroundColor = UIColor(red: 0.75, green: 0.18, blue: 0.18, alpha: 0.88)
+        undo.setTitleColor(.white, for: .normal)
+        undo.layer.cornerRadius = 6
+        undo.tag = segIdx
+        undo.addTarget(self, action: #selector(diffUndoHunkAtButton(_:)), for: .touchUpInside)
+
+        let keep = UIButton(type: .system)
+        keep.translatesAutoresizingMaskIntoConstraints = false
+        keep.setTitle("Keep", for: .normal)
+        keep.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        keep.backgroundColor = UIColor(red: 0.10, green: 0.55, blue: 0.28, alpha: 0.88)
+        keep.setTitleColor(.white, for: .normal)
+        keep.layer.cornerRadius = 6
+        keep.tag = segIdx
+        keep.addTarget(self, action: #selector(diffKeepHunkAtButton(_:)), for: .touchUpInside)
+
+        bar.addSubview(undo)
+        bar.addSubview(keep)
+        // Fixed equal widths — "Undo"/"Keep" intrinsic sizes differ and looked uneven.
+        let btnW: CGFloat = 56
+        NSLayoutConstraint.activate([
+            undo.leadingAnchor.constraint(equalTo: leading, constant: leadingConstant),
+            undo.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            undo.heightAnchor.constraint(equalToConstant: 26),
+            undo.widthAnchor.constraint(equalToConstant: btnW),
+            keep.leadingAnchor.constraint(equalTo: undo.trailingAnchor, constant: 5),
+            keep.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -5),
+            keep.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            keep.heightAnchor.constraint(equalToConstant: 26),
+            keep.widthAnchor.constraint(equalToConstant: btnW)
+        ])
+        return bar
+    }
+
+    /// Scroll focus hunk into view; rebuild chips. Corner floating nav stays hidden.
+    private func positionDiffHunkBar(animatedScroll: Bool = false) {
+        guard readSurface == .diff else {
+            diffHunkBar.isHidden = true
+            clearPerHunkActionBars()
+            return
+        }
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else {
+            diffHunkBar.isHidden = true
+            clearPerHunkActionBars()
+            return
+        }
+        let hunkIdx = pending[min(diffCurrentPendingIndex, pending.count - 1)]
+        if let range = diffHunkRanges[hunkIdx] {
+            scrollDiffHunkIntoView(range, animated: animatedScroll)
+        }
+
+        let place: () -> Void = { [weak self] in
+            guard let self = self, self.readSurface == .diff else { return }
+            self.textView.layoutManager.ensureLayout(for: self.textView.textContainer)
+            self.rebuildPerHunkActionBars()
+            self.placeDiffNavChrome()
+        }
+
+        if animatedScroll {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: place)
+        } else {
+            place()
+        }
+    }
+
+    /// Corner floating nav removed — n/N lives on every hunk bar.
+    private func placeDiffNavChrome() {
+        diffHunkBar.isHidden = true
+        updateDiffNavLabel()
+    }
+
+    private func scrollDiffHunkIntoView(_ range: NSRange, animated: Bool) {
+        let ns = (textView.text ?? "") as NSString
+        let safeLoc = max(0, min(range.location, ns.length))
+        let safeLen = max(1, min(range.length, ns.length - safeLoc))
+        let safe = NSRange(location: safeLoc, length: safeLen)
+
+        guard let start = textView.position(from: textView.beginningOfDocument, offset: safe.location),
+              let end = textView.position(from: start, offset: min(safe.length, 1)) else {
+            textView.scrollRangeToVisible(NSRange(location: safeLoc, length: 1))
+            return
+        }
+        let caret = textView.caretRect(for: start)
+        let visibleH = max(1, textView.bounds.height - textView.contentInset.top - textView.contentInset.bottom)
+        let targetY = caret.midY - visibleH * 0.28
+        let maxOffset = max(
+            0,
+            textView.contentSize.height - textView.bounds.height + textView.contentInset.bottom
+        )
+        let offset = CGPoint(x: 0, y: min(max(0, targetY - textView.contentInset.top), maxOffset))
+        if abs(offset.y - textView.contentOffset.y) > 2 {
+            textView.setContentOffset(offset, animated: animated)
+        } else {
+            _ = end
+            textView.scrollRangeToVisible(safe)
+        }
+    }
+
+    private func syncDiffChrome(show: Bool) {
+        if !show {
+            diffHunkBar.isHidden = true
+            clearPerHunkActionBars()
+            diffChromeZOrdered = false
+        }
+        textBottomToView.isActive = true
+        gutterBottomToView.isActive = true
+        gutterSepBottomToView.isActive = true
+        view.layoutIfNeeded()
+        if show {
+            positionDiffHunkBar(animatedScroll: false)
+            ensureDiffChromeZOrder()
+        }
+    }
+
+    private func decideCurrentHunk(keep: Bool) {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return }
+        let cursor = min(diffCurrentPendingIndex, pending.count - 1)
+        decideHunk(segIdx: pending[cursor], keep: keep)
+    }
+
+    private func decideHunk(segIdx: Int, keep: Bool) {
+        guard segIdx >= 0, segIdx < diffSegments.count,
+              case .hunk(var hunk) = diffSegments[segIdx],
+              hunk.decision == .pending else { return }
+        // Cancel deferred focus-wash so a kept hunk never briefly keeps the blue overlay.
+        diffFocusHighlightWork?.cancel()
+        diffFocusHighlightWork = nil
+        hunk.decision = keep ? .kept : .undone
+        diffSegments[segIdx] = .hunk(hunk)
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        notifyDiffSessionChange()
+        if pending.isEmpty {
+            finishDiffSession()
+            return
+        }
+        // Prefer the next pending after the one just decided.
+        if let next = pending.first(where: { $0 > segIdx }) {
+            diffCurrentPendingIndex = pending.firstIndex(of: next) ?? 0
+        } else {
+            diffCurrentPendingIndex = min(diffCurrentPendingIndex, pending.count - 1)
+        }
+        reloadDiffRendering()
+        rebuildDiffHunkDocYCache()
+        layoutPerHunkActionBarsInContent()
+        // Do not auto-scroll after Keep/Undo — keeps the decided hunk in view for visual QA
+        // and avoids yanking the viewport under the user's finger.
+        updateDiffNavLabel()
+        refreshDiffFocusHighlightOnly()
+    }
+
+    private func finishDiffSession() {
+        let before = diffBeforeSnapshot ?? ""
+        let final = CodeTextDiff.compose(diffSegments, pendingAsUndone: true)
+        let anyKept = diffSegments.contains { seg in
+            if case .hunk(let h) = seg, h.decision == .kept { return true }
+            return false
+        }
+        diffFocusHighlightWork?.cancel()
+        diffFocusHighlightWork = nil
+        diffBeforeSnapshot = nil
+        diffAfterSnapshot = nil
+        diffSegments = []
+        diffHunkRanges = [:]
+        diffHunkDocY = [:]
+        diffChromeZOrdered = false
+        readSurface = .plain
+        syncDiffChrome(show: false)
+        notifyDiffSessionChange()
+        if let onDiffFinished = onDiffFinished {
+            if anyKept {
+                // Coordinator applies final text + enters edit mode.
+                onDiffFinished(final)
+            } else {
+                applyHighlightedText(before)
+                updateLineNumbers(force: true)
+                textView.isEditable = isEditMode
+                refreshModeChrome()
+                refreshTabToggleChrome()
+                updateProgressLabel()
+                onDiffFinished(nil)
+            }
+        } else if anyKept {
+            applyResolvedDiffText(final)
+            enterEditModeAfterKeep()
+            onDiffDecision?(true)
+        } else {
+            applyHighlightedText(before)
+            updateLineNumbers(force: true)
+            textView.isEditable = isEditMode
+            refreshModeChrome()
+            refreshTabToggleChrome()
+            updateProgressLabel()
+            onDiffDecision?(false)
+        }
+    }
+
+    @objc private func diffPrevHunk() {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return }
+        diffCurrentPendingIndex = (diffCurrentPendingIndex - 1 + pending.count) % pending.count
+        reloadDiffRendering()
+        positionDiffHunkBar(animatedScroll: true)
+    }
+
+    @objc private func diffNextHunk() {
+        let pending = CodeTextDiff.pendingHunkIndices(in: diffSegments)
+        guard !pending.isEmpty else { return }
+        diffCurrentPendingIndex = (diffCurrentPendingIndex + 1) % pending.count
+        reloadDiffRendering()
+        positionDiffHunkBar(animatedScroll: true)
+    }
+
+    @objc private func diffUndoHunk() {
+        decideCurrentHunk(keep: false)
+    }
+
+    @objc private func diffKeepHunk() {
+        decideCurrentHunk(keep: true)
+    }
+
+    @objc private func diffUndoHunkAtButton(_ sender: UIButton) {
+        decideHunk(segIdx: sender.tag, keep: false)
+    }
+
+    @objc private func diffKeepHunkAtButton(_ sender: UIButton) {
+        decideHunk(segIdx: sender.tag, keep: true)
+    }
+
+    @objc private func tabToggleTapped() {
+        tabCompletionEnabled.toggle()
+        UserDefaults.standard.set(tabCompletionEnabled, forKey: "connects.codeEditor.tabCompletion")
+        refreshTabToggleChrome()
+        if !tabCompletionEnabled { clearGhostSuggestion() }
+    }
+
+    private func refreshTabToggleChrome() {
+        let c = DSTheme.c
+        let usable = isEditMode && !isDiffSessionActive
+        let on = tabCompletionEnabled && usable
+        tabToggleButton.isHidden = false
+        tabToggleButton.alpha = usable ? 1 : 0.35
+        tabToggleButton.isEnabled = usable
+        tabToggleButton.setTitleColor(on ? c.accent : c.textSecondary, for: .normal)
+        tabToggleButton.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
+        tabToggleButton.layer.cornerRadius = 8
+        tabToggleButton.accessibilityValue = tabCompletionEnabled ? "开" : "关"
+        tabToggleButton.accessibilityHint = "仅开关补全；接受请用光标旁 Accept"
+        tabConfirmButton.setTitleColor(c.accent, for: .normal)
+        tabDismissButton.setTitleColor(c.textSecondary, for: .normal)
+        tabSuggestChip.backgroundColor = c.surface
+        tabSuggestChip.layer.borderColor = c.border.cgColor
+        diffHunkBar.backgroundColor = c.surface.withAlphaComponent(0.78)
+        diffHunkBar.layer.borderColor = c.border.withAlphaComponent(0.55).cgColor
+    }
+
+    private func clearGhostSuggestion() {
+        ghostSuggestion = nil
+        tabSuggestLabel.text = nil
+        tabSuggestChip.isHidden = true
+        tabCompleteWorkItem?.cancel()
+    }
+
+    @objc private func acceptGhostTapped() {
+        acceptGhostSuggestion()
+    }
+
+    @objc private func dismissGhostTapped() {
+        clearGhostSuggestion()
+    }
+
+    private func acceptGhostSuggestion() {
+        guard let ghost = ghostSuggestion, !ghost.isEmpty, isEditMode else { return }
+        let range = textView.selectedRange
+        let attrs = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
+        let attributed = NSAttributedString(string: ghost, attributes: attrs)
+        textView.textStorage.beginEditing()
+        textView.textStorage.replaceCharacters(in: range, with: attributed)
+        textView.textStorage.endEditing()
+        textView.selectedRange = NSRange(location: range.location + (ghost as NSString).length, length: 0)
+        clearGhostSuggestion()
+        textViewDidChange(textView)
+    }
+
+    private func scheduleTabCompletion() {
+        guard tabCompletionEnabled, isEditMode, !isDiffSessionActive else { return }
+        tabCompleteWorkItem?.cancel()
+        tabCompleteGeneration &+= 1
+        let gen = tabCompleteGeneration
+        let work = DispatchWorkItem { [weak self] in
+            self?.requestTabCompletion(generation: gen)
+        }
+        tabCompleteWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: work)
+    }
+
+    private func requestTabCompletion(generation: UInt) {
+        guard generation == tabCompleteGeneration,
+              tabCompletionEnabled,
+              isEditMode,
+              !isDiffSessionActive,
+              let provider = completionProvider else { return }
+        let text = textView.text ?? ""
+        let loc = textView.selectedRange.location
+        let ns = text as NSString
+        let lineRange = ns.lineRange(for: NSRange(location: min(loc, ns.length), length: 0))
+        let lineContext = ns.substring(with: lineRange)
+        let prefix = ns.substring(with: NSRange(location: lineRange.location,
+                                                length: max(0, min(loc, ns.length) - lineRange.location)))
+        let caretPrefix = ns.substring(to: min(loc, ns.length))
+        let fileName: String = {
+            if let id = currentDocumentID,
+               let doc = StudyDocumentStore.shared.document(id: id) {
+                return doc.title
+            }
+            return "untitled.\(language.preferredFileExtension)"
+        }()
+        provider.requestCompletions(
+            fileName: fileName,
+            language: language.rawValue,
+            caretPrefix: String(caretPrefix.suffix(6_000)),
+            fullText: String(text.prefix(12_000)),
+            lineContext: lineContext,
+            linePrefix: prefix
+        ) { [weak self] suggestions in
+            DispatchQueue.main.async {
+                guard let self = self,
+                      generation == self.tabCompleteGeneration,
+                      let first = suggestions.first, !first.isEmpty else { return }
+                self.showGhostSuggestion(first)
+            }
+        }
+    }
+
+    private func showGhostSuggestion(_ text: String) {
+        // Cap display — avoid dumping huge blobs that look like “double code”.
+        let capped = text.count > 240 ? String(text.prefix(240)) + "…" : text
+        ghostSuggestion = text
+        tabSuggestLabel.font = CodeSyntaxHighlighter.font(size: max(11, fontPointSize - 1))
+        tabSuggestLabel.text = capped.replacingOccurrences(of: "\n", with: " ⏎ ")
+        tabSuggestChip.isHidden = false
+        view.bringSubviewToFront(tabSuggestChip)
+        repositionTabSuggestChip(scrollCaretFirst: true)
+    }
+
+    /// Place the Tab accept chip under the caret (trailing when room allows).
+    private func repositionTabSuggestChip(scrollCaretFirst: Bool = false) {
+        guard !tabSuggestChip.isHidden, ghostSuggestion != nil else { return }
+        let caretRange = textView.selectedRange
+        if scrollCaretFirst {
+            textView.scrollRangeToVisible(NSRange(location: caretRange.location, length: max(1, caretRange.length)))
+            view.layoutIfNeeded()
+        }
+
+        let chipH: CGFloat = 40
+        let maxChipW = min(320, max(160, textView.bounds.width - 24))
+        tabSuggestChip.bounds = CGRect(x: 0, y: 0, width: maxChipW, height: chipH)
+        tabSuggestChip.setNeedsLayout()
+        tabSuggestChip.layoutIfNeeded()
+        let fitted = tabSuggestChip.systemLayoutSizeFitting(
+            CGSize(width: maxChipW, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .fittingSizeLevel,
+            verticalFittingPriority: .required
+        )
+        let chipW = min(maxChipW, max(140, ceil(fitted.width)))
+        let chipSize = CGSize(width: chipW, height: max(chipH, ceil(fitted.height)))
+
+        var visible = textView.convert(textView.bounds, to: view).intersection(view.bounds)
+        if visible.isNull {
+            visible = textView.frame.intersection(view.bounds)
+        }
+        // Keep above soft-keyboard inset inside the text view.
+        let kbPad = keyboardBottomInset
+        if kbPad > 0 {
+            visible = CGRect(
+                x: visible.minX,
+                y: visible.minY,
+                width: visible.width,
+                height: max(chipSize.height + 8, visible.height - kbPad)
+            )
+        }
+
+        let nsLen = (textView.text as NSString?)?.length ?? 0
+        let loc = min(max(0, caretRange.location), nsLen)
+        guard let caretPos = textView.position(from: textView.beginningOfDocument, offset: loc) else {
+            tabSuggestChip.frame = CGRect(
+                x: visible.minX + 8,
+                y: min(visible.maxY - chipSize.height - 4, visible.minY + 8),
+                width: chipSize.width,
+                height: chipSize.height
+            )
+            return
+        }
+        let caret = textView.convert(textView.caretRect(for: caretPos), to: view)
+
+        // Prefer under the caret line; if that clips, try same-line trailing, else above.
+        let yBelow = caret.maxY + 4
+        let yAbove = caret.minY - chipSize.height - 4
+        let ySame = caret.minY + (caret.height - chipSize.height) * 0.5
+        let trailingX = caret.maxX + 8
+        let leadingX = visible.minX + 8
+
+        var origin: CGPoint
+        if yBelow + chipSize.height <= visible.maxY - 4 {
+            // Under caret; start near caret x, clamp into visible.
+            origin = CGPoint(
+                x: min(max(leadingX, caret.minX), visible.maxX - chipSize.width - 8),
+                y: yBelow
+            )
+        } else if trailingX + chipSize.width <= visible.maxX - 8,
+                  ySame >= visible.minY + 4,
+                  ySame + chipSize.height <= visible.maxY - 4 {
+            origin = CGPoint(x: trailingX, y: ySame)
+        } else if yAbove >= visible.minY + 4 {
+            origin = CGPoint(
+                x: min(max(leadingX, caret.minX), visible.maxX - chipSize.width - 8),
+                y: yAbove
+            )
+        } else {
+            origin = CGPoint(
+                x: min(max(leadingX, caret.minX), visible.maxX - chipSize.width - 8),
+                y: min(max(visible.minY + 4, yBelow), visible.maxY - chipSize.height - 4)
+            )
+        }
+        origin.x = min(max(visible.minX + 8, origin.x), max(visible.minX + 8, visible.maxX - chipSize.width - 8))
+        origin.y = min(max(visible.minY + 4, origin.y), max(visible.minY + 4, visible.maxY - chipSize.height - 4))
+        tabSuggestChip.frame = CGRect(origin: origin, size: chipSize)
+        view.bringSubviewToFront(tabSuggestChip)
+    }
+
+    /// Portrait Study: raise the code viewport above a docked soft keyboard.
+    func applyKeyboardBottomInset(_ inset: CGFloat) {
+        keyboardBottomInset = max(0, inset)
+        let bottom = keyboardBottomInset
+        var insets = textView.contentInset
+        insets.bottom = bottom
+        textView.contentInset = insets
+        textView.scrollIndicatorInsets = insets
+        var gutterInsets = lineNumberView.contentInset
+        gutterInsets.bottom = bottom
+        lineNumberView.contentInset = gutterInsets
+        lineNumberView.scrollIndicatorInsets = gutterInsets
+        if isEditMode, textView.isFirstResponder, bottom > 0 {
+            let range = textView.selectedRange
+            textView.scrollRangeToVisible(NSRange(location: range.location, length: max(1, range.length)))
+        }
+        if !tabSuggestChip.isHidden {
+            repositionTabSuggestChip()
+        }
+    }
+
+    func keyCommandsAcceptGhostOrPass() -> Bool {
+        guard ghostSuggestion != nil else { return false }
+        acceptGhostSuggestion()
+        return true
     }
 }
 

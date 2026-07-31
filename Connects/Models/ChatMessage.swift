@@ -352,4 +352,10 @@ struct ChatMessage: Codable, Equatable {
             try c.encode(versionIndex, forKey: .versionIndex)
         }
     }
+
+    /// Bubble / layout body: strips CONNECTS_EDIT machine blocks (assistant only).
+    var chatDisplayBody: String {
+        guard role == .assistant else { return content }
+        return CodeEditApplyTools.chatVisibleContent(for: id, raw: content)
+    }
 }

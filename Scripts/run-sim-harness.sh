@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UDID="${SIM_UDID:-2EF57063-B52F-4CC8-8671-F1ECDD622290}"
+UDID="${SIM_UDID:-DB356EF5-941E-42D3-AC17-9B255BFBA6E1}"
 BUNDLE_ID="com.misamisa.connects"
 SCHEME="Connects-iPad"
 TIMEOUT_SEC="${HARNESS_TIMEOUT_SEC:-600}"
@@ -59,7 +59,7 @@ while kill -0 "$APP_PID" 2>/dev/null; do
     break
   fi
   # Early exit if harness printed PASS/FAIL summary and exited.
-  if grep -qE '\[ConnectsUsageSim\] (PASS|FAIL|done)|\[ConnectsScrollStress\].*(PASS|FAIL)|\[StudyFeatureQA\].*(PASS|FAIL)|exit=' "$LOG" 2>/dev/null; then
+  if grep -qE '\[StudyVisualQA\] (PASS|FAIL) visual suite|\[ConnectsUsageSim\] (PASS|FAIL|done)|\[ConnectsScrollStress\].*(PASS|FAIL)|\[StudyFeatureQA\].*(PASS|FAIL)|\[ConnectsDiffQA\].*(PASS|FAIL)|\[ConnectsTabQA\].*(PASS|FAIL)' "$LOG" 2>/dev/null; then
     sleep 2
     if ! pgrep -f 'Connects.app/Connects' >/dev/null 2>&1; then
       break
@@ -72,5 +72,10 @@ wait "$APP_PID" 2>/dev/null || true
 sleep 1
 
 echo "==> Tail log"
-grep -E '\[ConnectsUsageSim\]|\[ConnectsScrollStress\]|\[StudyFeatureQA\]|\[ConnectsRenderAudit\]|FAIL|PASS|NativeFormulaRenderer' "$LOG" | tail -80 || true
+grep -E '\[ConnectsUsageSim\]|\[ConnectsScrollStress\]|\[StudyFeatureQA\]|\[StudyVisualQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|\[ConnectsRenderAudit\]|FAIL|PASS|NativeFormulaRenderer' "$LOG" | tail -80 || true
+echo "==> Console"
+grep -E '\[StudyVisualQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|PASS|FAIL' /tmp/connects-sim-console.log 2>/dev/null | tail -40 || true
+if [[ " $* " == *" -StudyVisualQA "* ]]; then
+  "$(cd "$(dirname "$0")" && pwd)/pull-visual-qa.sh" || true
+fi
 echo "==> Full log: $LOG"

@@ -15,23 +15,35 @@ struct NativeLayoutStyle {
 final class NativeMessageLayouter {
     static let shared = NativeMessageLayouter()
 
+    /// Bump together with layout shape changes so store/lookup never diverge.
+    private static let layoutCacheVersion = "v15"
+
     private final class Box: NSObject {
         let layout: NativeMessageLayout
         init(_ layout: NativeMessageLayout) { self.layout = layout }
     }
 
     private let cache = NSCache<NSString, Box>()
+    /// Highlighted preview lines only (≤5); never full fence source.
+    private let fencePreviewAttrCache = NSCache<NSString, NSAttributedString>()
 
     private init() {
         cache.countLimit = 140
         cache.totalCostLimit = 32 * 1024 * 1024
+        fencePreviewAttrCache.countLimit = 256
+    }
+
+    static func layoutCacheKey(phase: String,
+                               document: NativeMarkdownDocument,
+                               style: NativeLayoutStyle) -> String {
+        "native_layout_\(layoutCacheVersion)|\(phase)|\(document.stamp)|\(style.keySuffix)"
     }
 
     func layout(document: NativeMarkdownDocument,
                 style: NativeLayoutStyle,
                 renderMissingFormulas: Bool = true) -> NativeMessageLayout {
         let phase = renderMissingFormulas ? "final" : "preview"
-        let key = "native_layout_v11|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        let key = Self.layoutCacheKey(phase: phase, document: document, style: style)
         if let hit = cache.object(forKey: key as NSString) {
             return hit.layout
         }
@@ -51,12 +63,14 @@ final class NativeMessageLayouter {
     }
 
     func cachedLayout(document: NativeMarkdownDocument, style: NativeLayoutStyle) -> NativeMessageLayout? {
-        let key = "native_layout_v11|final|\(document.stamp)|\(style.keySuffix)"
+        let key = Self.layoutCacheKey(phase: "final", document: document, style: style)
         return cache.object(forKey: key as NSString)?.layout
     }
 
     func clear() {
         cache.removeAllObjects()
+        fencePreviewAttrCache.removeAllObjects()
+        NativeMessageRenderView.clearBitmapCache()
     }
 
     private func allFormulaSyntaxRenderable(_ document: NativeMarkdownDocument,
@@ -237,26 +251,16 @@ final class NativeMessageLayouter {
                 )))
                 y += height + 10
 
-            case .codeBlock(_, let code):
+            case .codeBlock(let language, let code):
                 expectReferencesList = false
-                let padding: CGFloat = 12
-                let mono = DSTheme.monoFont(size: style.bodyFontSize * 0.88)
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.lineSpacing = 3
-                paragraph.lineBreakMode = .byCharWrapping
-                let attributed = NSAttributedString(string: code, attributes: [
-                    .font: mono,
-                    .foregroundColor: style.colors.textPrimary,
-                    .paragraphStyle: paragraph
-                ])
-                let textH = textHeight(attributed, width: width - padding * 2)
-                let frame = CGRect(x: 0, y: y, width: width, height: textH + padding * 2)
-                commands.append(.fill(frame, style.colors.surfaceHover.withAlphaComponent(0.56), 10))
-                commands.append(.text(fragment(
-                    attributed,
-                    frame: frame.insetBy(dx: padding, dy: padding)
-                )))
-                y += frame.height + 11
+                y += layoutCodeBlock(
+                    language: language,
+                    code: code,
+                    originY: y,
+                    width: width,
+                    style: style,
+                    commands: &commands
+                )
 
             case .displayMath(let tex):
                 expectReferencesList = false
@@ -321,10 +325,20 @@ final class NativeMessageLayouter {
             if case .text(let fragment) = command { return fragment.linkRects }
             return []
         }
+        let fenceHits: [NativeCodeFenceHit] = commands.compactMap { command in
+            guard case .codeFence(let fence) = command else { return nil }
+            return NativeCodeFenceHit(
+                frame: fence.cardFrame,
+                code: fence.fullCode,
+                language: fence.language,
+                title: fence.languageLabel
+            )
+        }
         let contentBottom = commands.reduce(CGFloat(0)) { bottom, command in
             let commandBottom: CGFloat
             switch command {
             case .text(let fragment): commandBottom = fragment.frame.maxY
+            case .codeFence(let fence): commandBottom = fence.cardFrame.maxY
             case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                 commandBottom = frame.maxY
             case .line(let start, let end, _, let width):
@@ -336,7 +350,8 @@ final class NativeMessageLayouter {
             key: key,
             size: CGSize(width: width, height: ceilToPixel(max(max(y, contentBottom + 8), 1))),
             commands: commands,
-            linkRects: links
+            linkRects: links,
+            codeFenceHits: fenceHits
         )
         return layout
     }
@@ -518,6 +533,97 @@ final class NativeMessageLayouter {
 
     private func bodyFont(_ style: NativeLayoutStyle) -> UIFont {
         UIFont.systemFont(ofSize: style.bodyFontSize)
+    }
+
+    /// Compact preview card; full source opens in a highlighted popup on tap.
+    private func layoutCodeBlock(language: String?,
+                                 code: String,
+                                 originY: CGFloat,
+                                 width: CGFloat,
+                                 style: NativeLayoutStyle,
+                                 commands: inout [NativeDrawCommand]) -> CGFloat {
+        let padding: CGFloat = 12
+        let headerH: CGFloat = 28
+        let previewLineCap = 5
+        let mono = DSTheme.monoFont(size: style.bodyFontSize * 0.88)
+        let lineSpacing: CGFloat = 3
+        let lineStep = mono.lineHeight + lineSpacing
+        let sourceLines = code.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let totalLines = max(sourceLines.count, code.isEmpty ? 0 : 1)
+        let lang = StudyTextLanguage.infer(fromFenceLanguage: language)
+        let preview = Array(sourceLines.prefix(previewLineCap))
+        let previewLines = preview.isEmpty ? [""] : preview
+        let attributedPreview = previewLines.map {
+            attributedFencePreviewLine($0, language: lang, font: mono)
+        }
+        let showsFade = totalLines > preview.count
+        let previewH = ceilToPixel(CGFloat(max(previewLines.count, 1)) * lineStep)
+        let cardH = headerH + padding + previewH + padding + (showsFade ? 10 : 0)
+        let card = CGRect(x: 0, y: originY, width: width, height: cardH)
+        let header = CGRect(x: padding, y: originY + 6, width: width - padding * 2, height: 20)
+        let previewFrame = CGRect(
+            x: padding,
+            y: originY + headerH + 4,
+            width: max(width - padding * 2, 1),
+            height: previewH
+        )
+        let langLabel: String = {
+            if let language = language?.trimmingCharacters(in: .whitespacesAndNewlines), !language.isEmpty {
+                return language
+            }
+            return lang.displayName
+        }()
+        commands.append(.codeFence(NativeCodeFenceFragment(
+            fullCode: code,
+            language: lang,
+            languageLabel: langLabel,
+            previewLines: previewLines,
+            previewAttributedLines: attributedPreview,
+            totalLineCount: totalLines,
+            cardFrame: card,
+            headerFrame: header,
+            previewFrame: previewFrame,
+            font: mono,
+            color: style.colors.textPrimary,
+            mutedColor: style.colors.textSecondary,
+            cardFill: style.colors.surfaceHover.withAlphaComponent(0.72),
+            cardBorder: style.colors.border.withAlphaComponent(0.55),
+            lineStep: lineStep,
+            showsFade: showsFade
+        )))
+        return cardH + 11
+    }
+
+    /// Highlight at most one preview line (≤96 chars). Full fence highlighting stays in the popup.
+    private func attributedFencePreviewLine(_ line: String,
+                                            language: StudyTextLanguage,
+                                            font: UIFont) -> NSAttributedString {
+        let display: String
+        if line.count > 96 {
+            display = String(line.prefix(96)) + "…"
+        } else {
+            display = line.isEmpty ? " " : line
+        }
+        let key = "\(language.rawValue)|\(Int(font.pointSize * 10))|\(display)" as NSString
+        if let hit = fencePreviewAttrCache.object(forKey: key) {
+            return hit
+        }
+        let highlighted = NSMutableAttributedString(
+            attributedString: CodeSyntaxHighlighter.highlight(
+                display,
+                language: language,
+                fontSize: font.pointSize
+            )
+        )
+        if highlighted.length > 0 {
+            highlighted.addAttribute(
+                .font,
+                value: font,
+                range: NSRange(location: 0, length: highlighted.length)
+            )
+        }
+        fencePreviewAttrCache.setObject(highlighted, forKey: key)
+        return highlighted
     }
 
     private func textHeight(_ text: NSAttributedString, width: CGFloat) -> CGFloat {

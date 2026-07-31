@@ -13,7 +13,7 @@ final class PDFReaderViewController: UIViewController {
     private let invertOverlay = PassthroughOverlayView()
     /// After invert, lift pure black paper to app dark-gray (softer than #000).
     private let paperLiftOverlay = PassthroughOverlayView()
-    private let spinner = UIActivityIndicatorView(style: .gray)
+    private let spinner = UIActivityIndicatorView(style: .medium)
     private let pageLabel = UILabel()
     private let contentsPanelHost = UIView()
     private let contentsDim = UIControl()

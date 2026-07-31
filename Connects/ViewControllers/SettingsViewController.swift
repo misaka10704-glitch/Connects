@@ -622,7 +622,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         exportBackupButton.isEnabled = !busy
         importBackupButton.isEnabled = !busy
         if busy {
-            let indicator = UIActivityIndicatorView(style: .gray)
+            let indicator = UIActivityIndicatorView(style: .medium)
             indicator.startAnimating()
             navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
         } else {

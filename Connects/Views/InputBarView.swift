@@ -5,26 +5,44 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapStop()
     func inputBarDidTapAttach()
     func inputBarDidToggleStudyCapture(_ enabled: Bool)
+    func inputBarDidToggleCodeAIEdit(_ enabled: Bool)
     func inputBarDidTapContextUsage()
     func inputBarDidRequestStudyContextScope(from sourceView: UIView)
     func inputBarDidRequestReasoningEffort(from sourceView: UIView)
     func inputBarDidTapAIOptions()
+    func inputBarDidTapDiffUndoAll()
+    func inputBarDidTapDiffKeepAll()
 }
 
 extension InputBarViewDelegate {
     func inputBarDidRequestStudyContextScope(from sourceView: UIView) {}
     func inputBarDidRequestReasoningEffort(from sourceView: UIView) {}
     func inputBarDidTapAIOptions() {}
+    func inputBarDidToggleCodeAIEdit(_ enabled: Bool) {}
+    func inputBarDidTapDiffUndoAll() {}
+    func inputBarDidTapDiffKeepAll() {}
 }
 
 /// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
 final class InputBarView: UIView, ThemeRefreshable {
     weak var delegate: InputBarViewDelegate?
 
+    /// Slim Undo All / Keep All strip inside the composer capsule (not a separate wide bar).
+    private let diffReviewBanner = UIView()
+    private let diffChangesLabel = UILabel()
+    private let diffUndoAllButton = UIButton(type: .system)
+    private let diffKeepAllButton = UIButton(type: .system)
+    private var diffBannerHeightConstraint: NSLayoutConstraint?
+    private var toolsTopToBanner: NSLayoutConstraint?
+    private var toolsTopToContainer: NSLayoutConstraint?
+    private var diffBannerVisible = false
+
     private let containerView = UIView()
     private let attachButton = UIButton(type: .system)
     private let webSearchButton = UIButton(type: .system)
     private let thinkingButton = UIButton(type: .system)
+    /// Study code/text: grants the model permission to propose file edits (not forced).
+    private let codeAIEditButton = UIButton(type: .system)
     private let studyCaptureButton = UIButton(type: .system)
     private let askSelectionButton = UIButton(type: .system)
     private let contextUsageButton = UIButton(type: .system)
@@ -47,6 +65,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     private var textTopToChip: NSLayoutConstraint?
     private var textTopToContainer: NSLayoutConstraint?
     private var studyCaptureWidthConstraint: NSLayoutConstraint?
+    private var codeAIEditWidthConstraint: NSLayoutConstraint?
     private var askSelectionWidthConstraint: NSLayoutConstraint?
     private var aiOptionsWidthConstraint: NSLayoutConstraint?
     private var contextUsageWidthConstraint: NSLayoutConstraint?
@@ -116,6 +135,39 @@ final class InputBarView: UIView, ThemeRefreshable {
         }
     }
 
+    /// When true, Study chat may inject edit-authorization and honor CONNECTS_EDIT proposals.
+    private(set) var codeAIEditEnabled = false
+
+    /// Show the「AI 编辑」slot (Study code/text docs only).
+    var codeAIEditVisible = false {
+        didSet {
+            codeAIEditButton.isHidden = !codeAIEditVisible
+            codeAIEditWidthConstraint?.constant = codeAIEditVisible ? btnSize : 0
+            if !codeAIEditVisible, codeAIEditEnabled {
+                setCodeAIEditEnabled(false, notify: true)
+            }
+            setNeedsLayout()
+        }
+    }
+
+    func setCodeAIEditEnabled(_ enabled: Bool, notify: Bool = false) {
+        guard codeAIEditEnabled != enabled else {
+            updateCodeAIEditAppearance()
+            return
+        }
+        codeAIEditEnabled = enabled
+        updateCodeAIEditAppearance()
+        // One-way bind: arming AI edit also turns on document context so the model can see the file.
+        // Turning AI edit off (or toggling document alone) does not change the other switch.
+        if enabled, studyCaptureVisible, !studyPageCaptureEnabled {
+            studyPageCaptureEnabled = true
+            delegate?.inputBarDidToggleStudyCapture(true)
+        }
+        if notify {
+            delegate?.inputBarDidToggleCodeAIEdit(enabled)
+        }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         setup()
@@ -144,14 +196,33 @@ final class InputBarView: UIView, ThemeRefreshable {
         chipLabel.textColor = c.textSecondary
         chipRemove.tintColor = c.textSecondary
         chipRemove.backgroundColor = c.surface.withAlphaComponent(0.92)
+        applyDiffBannerTheme()
         updateAskSelectionAppearance()
         updateFocusBorder()
         updateSendEnabled()
         updateWebSearchAppearance()
         updateThinkingAppearance()
+        updateCodeAIEditAppearance()
         updateStudyCaptureAppearance()
         updateAIOptionsAppearance()
         contextRing.applyTheme()
+    }
+
+    /// Show/hide the slim Keep strip inside the composer capsule.
+    func setDiffReviewBanner(visible: Bool, changeCount: Int = 0) {
+        let show = visible && changeCount > 0
+        diffBannerVisible = show
+        diffReviewBanner.isHidden = !show
+        diffBannerHeightConstraint?.constant = show ? 30 : 0
+        toolsTopToBanner?.isActive = show
+        toolsTopToContainer?.isActive = !show
+        if show {
+            let n = changeCount
+            diffChangesLabel.text = n == 1 ? "1 change" : "\(n) changes"
+        }
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+        UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
     }
 
     func updateContextUsage(_ usage: ContextBuilder.Usage, visible: Bool, animated: Bool = false) {
@@ -264,6 +335,27 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.clipsToBounds = true
         addSubview(containerView)
 
+        // Keep strip lives inside the capsule so width/corners match the composer.
+        diffReviewBanner.translatesAutoresizingMaskIntoConstraints = false
+        diffReviewBanner.isHidden = true
+        diffReviewBanner.clipsToBounds = true
+        containerView.addSubview(diffReviewBanner)
+
+        diffChangesLabel.translatesAutoresizingMaskIntoConstraints = false
+        diffChangesLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        diffChangesLabel.text = "0 changes"
+        diffReviewBanner.addSubview(diffChangesLabel)
+
+        for btn in [diffUndoAllButton, diffKeepAllButton] {
+            btn.translatesAutoresizingMaskIntoConstraints = false
+            btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+            diffReviewBanner.addSubview(btn)
+        }
+        diffUndoAllButton.setTitle("Undo All", for: .normal)
+        diffKeepAllButton.setTitle("Keep All", for: .normal)
+        diffUndoAllButton.addTarget(self, action: #selector(diffUndoAllTapped), for: .touchUpInside)
+        diffKeepAllButton.addTarget(self, action: #selector(diffKeepAllTapped), for: .touchUpInside)
+
         chip.translatesAutoresizingMaskIntoConstraints = false
         chip.layer.cornerRadius = 12
         chip.layer.borderWidth = 1 / UIScreen.main.scale
@@ -314,6 +406,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         let thinkingLong = UILongPressGestureRecognizer(target: self, action: #selector(thinkingLongPressed(_:)))
         thinkingButton.addGestureRecognizer(thinkingLong)
 
+        codeAIEditButton.translatesAutoresizingMaskIntoConstraints = false
+        codeAIEditButton.setImage(ActionIconFactory.image(.editMode, pointSize: 16), for: .normal)
+        codeAIEditButton.accessibilityLabel = "AI 编辑"
+        codeAIEditButton.accessibilityHint = "开启后允许模型提出改文件提案，并同时打开文档上下文；关闭则仅问答（不影响文档开关）。默认关闭。"
+        codeAIEditButton.addTarget(self, action: #selector(codeAIEditTapped), for: .touchUpInside)
+        codeAIEditButton.isHidden = true
+        containerView.addSubview(codeAIEditButton)
+
         studyCaptureButton.translatesAutoresizingMaskIntoConstraints = false
         studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
         studyCaptureButton.accessibilityLabel = "附带文档上下文"
@@ -336,7 +436,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionButton.isHidden = true
         containerView.addSubview(askSelectionButton)
 
-        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, askSelectionButton] {
+        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, codeAIEditButton, askSelectionButton] {
             styleIconToolButton(tool)
         }
 
@@ -352,10 +452,8 @@ final class InputBarView: UIView, ThemeRefreshable {
 
         aiOptionsButton.translatesAutoresizingMaskIntoConstraints = false
         aiOptionsButton.titleLabel?.lineBreakMode = .byTruncatingTail
-        aiOptionsButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 7, bottom: 0, right: 9)
-        aiOptionsButton.titleEdgeInsets = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: -2)
-        aiOptionsButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -1, bottom: 0, right: 2)
-        aiOptionsButton.adjustsImageWhenHighlighted = false
+        aiOptionsButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        aiOptionsButton.titleLabel?.minimumScaleFactor = 0.85
         aiOptionsButton.accessibilityLabel = "选择模型"
         aiOptionsButton.accessibilityHint = "Kimi、Qwen 等"
         aiOptionsButton.layer.cornerRadius = btnSize / 2
@@ -408,13 +506,18 @@ final class InputBarView: UIView, ThemeRefreshable {
         textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 36)
         chipHeightConstraint = chip.heightAnchor.constraint(equalToConstant: 0)
         textTopToChip = textView.topAnchor.constraint(equalTo: chip.bottomAnchor, constant: 4)
-        textTopToContainer = textView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 39)
+        textTopToContainer = textView.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 5)
         studyCaptureWidthConstraint = studyCaptureButton.widthAnchor.constraint(equalToConstant: 0)
+        codeAIEditWidthConstraint = codeAIEditButton.widthAnchor.constraint(equalToConstant: 0)
         askSelectionWidthConstraint = askSelectionButton.widthAnchor.constraint(equalToConstant: 0)
         aiOptionsWidthConstraint = aiOptionsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68)
         let aiOptionsMaxW = aiOptionsButton.widthAnchor.constraint(lessThanOrEqualToConstant: 132)
         contextUsageWidthConstraint = contextUsageButton.widthAnchor.constraint(equalToConstant: 0)
         textTopToContainer?.isActive = true
+        diffBannerHeightConstraint = diffReviewBanner.heightAnchor.constraint(equalToConstant: 0)
+        toolsTopToBanner = attachButton.topAnchor.constraint(equalTo: diffReviewBanner.bottomAnchor, constant: 4)
+        toolsTopToContainer = attachButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4)
+        toolsTopToContainer?.isActive = true
 
         NSLayoutConstraint.activate([
             containerView.topAnchor.constraint(equalTo: topAnchor),
@@ -423,7 +526,21 @@ final class InputBarView: UIView, ThemeRefreshable {
             containerView.bottomAnchor.constraint(equalTo: bottomAnchor),
             containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
-            chip.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 40),
+            diffReviewBanner.topAnchor.constraint(equalTo: containerView.topAnchor),
+            diffReviewBanner.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            diffReviewBanner.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            diffBannerHeightConstraint!,
+
+            diffChangesLabel.leadingAnchor.constraint(equalTo: diffReviewBanner.leadingAnchor, constant: 12),
+            diffChangesLabel.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
+
+            diffKeepAllButton.trailingAnchor.constraint(equalTo: diffReviewBanner.trailingAnchor, constant: -12),
+            diffKeepAllButton.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
+            diffUndoAllButton.trailingAnchor.constraint(equalTo: diffKeepAllButton.leadingAnchor, constant: -12),
+            diffUndoAllButton.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
+            diffUndoAllButton.leadingAnchor.constraint(greaterThanOrEqualTo: diffChangesLabel.trailingAnchor, constant: 8),
+
+            chip.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 6),
             chip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
             chip.trailingAnchor.constraint(lessThanOrEqualTo: sendButton.leadingAnchor, constant: -8),
             chipWidthConstraint(),
@@ -446,7 +563,6 @@ final class InputBarView: UIView, ThemeRefreshable {
             // Composer tools live in a compact row above the editor, leaving the
             // input line its full width while keeping send in its usual place.
             attachButton.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 8),
-            attachButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4),
             attachButton.widthAnchor.constraint(equalToConstant: btnSize),
             attachButton.heightAnchor.constraint(equalToConstant: btnSize),
 
@@ -465,8 +581,14 @@ final class InputBarView: UIView, ThemeRefreshable {
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
 
+            // AI 编辑 sits right of 深度思考; grants optional file-edit permission.
+            codeAIEditButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
+            codeAIEditButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            codeAIEditWidthConstraint!,
+            codeAIEditButton.heightAnchor.constraint(equalToConstant: btnSize),
+
             // Ask sits at the end of the left tool cluster as a round slot.
-            askSelectionButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
+            askSelectionButton.leadingAnchor.constraint(equalTo: codeAIEditButton.trailingAnchor, constant: 2),
             askSelectionButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             askSelectionWidthConstraint!,
             askSelectionButton.heightAnchor.constraint(equalToConstant: btnSize),
@@ -526,6 +648,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         webSearchButton.alpha = isStreaming ? 0.35 : 1
         thinkingButton.isEnabled = !isStreaming
         thinkingButton.alpha = isStreaming ? 0.35 : 1
+        codeAIEditButton.isEnabled = !isStreaming && codeAIEditVisible
+        codeAIEditButton.alpha = (!codeAIEditVisible || isStreaming) ? 0.35 : 1
         studyCaptureButton.isEnabled = !isStreaming && studyCaptureVisible
         studyCaptureButton.alpha = studyCaptureButton.isEnabled ? 1 : 0.35
         // Gray placeholder stays visible; only armed Ask clears on tap.
@@ -563,10 +687,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func refreshModelChipAppearance() {
         let c = DSTheme.c
-        aiOptionsButton.setImage(
-            ActionIconFactory.image(.ai, pointSize: 11, color: c.accent),
-            for: .normal
-        )
+        let image = ActionIconFactory.image(.ai, pointSize: 11, color: c.accent)
         let name = NSAttributedString(
             string: modelChipDisplayName,
             attributes: [
@@ -583,7 +704,17 @@ final class InputBarView: UIView, ThemeRefreshable {
         )
         let combined = NSMutableAttributedString(attributedString: name)
         combined.append(chevron)
-        aiOptionsButton.setAttributedTitle(combined, for: .normal)
+
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 7, bottom: 0, trailing: 9)
+        config.imagePadding = 4
+        config.image = image
+        config.attributedTitle = AttributedString(combined)
+        config.titleLineBreakMode = .byTruncatingTail
+        config.baseForegroundColor = c.textPrimary
+        aiOptionsButton.configuration = config
+        aiOptionsButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         let baseFill = c.accent.withAlphaComponent(0.08)
         aiOptionsButton.backgroundColor = modelChipPressed
             ? c.accent.withAlphaComponent(0.16)
@@ -606,6 +737,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func updateThinkingAppearance() {
         updateToggleAppearance(thinkingButton, on: thinkingEnabled)
+    }
+
+    private func updateCodeAIEditAppearance() {
+        updateToggleAppearance(codeAIEditButton, on: codeAIEditEnabled)
     }
 
     /// Shows current model on the input-bar capsule (Kimi / Qwen / …).
@@ -690,6 +825,32 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    @objc private func codeAIEditTapped() {
+        guard codeAIEditVisible else { return }
+        setCodeAIEditEnabled(!codeAIEditEnabled, notify: true)
+        if codeAIEditEnabled {
+            placeholderLabel.text = "提问；需要改代码时模型可提案…"
+        } else {
+            placeholderLabel.text = "问任何问题…"
+        }
+    }
+
+    @objc private func diffUndoAllTapped() {
+        delegate?.inputBarDidTapDiffUndoAll()
+    }
+
+    @objc private func diffKeepAllTapped() {
+        delegate?.inputBarDidTapDiffKeepAll()
+    }
+
+    private func applyDiffBannerTheme() {
+        let c = DSTheme.c
+        diffReviewBanner.backgroundColor = c.surfaceHover.withAlphaComponent(0.55)
+        diffChangesLabel.textColor = c.textSecondary
+        diffUndoAllButton.setTitleColor(c.textPrimary, for: .normal)
+        diffKeepAllButton.setTitleColor(c.accent, for: .normal)
     }
 
     @objc private func thinkingLongPressed(_ gesture: UILongPressGestureRecognizer) {

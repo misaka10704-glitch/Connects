@@ -6,16 +6,26 @@ struct NativeConfigureResult {
     let isProvisional: Bool
 }
 
+/// Chat bubble paint: one cached UIImage (origin approach). Scroll only composites a texture.
+/// Code fences are compact preview cards; tap opens a keyword-highlighted popup.
 final class NativeMessageRenderView: UIView {
     var onHeightChange: ((CGFloat) -> Void)?
     /// Return true when a host view controller handled the link internally.
     var onLinkTap: ((URL) -> Bool)?
+    /// Open full code fence (keyword-highlighted popup).
+    var onCodeFenceTap: ((NativeCodeFenceHit) -> Void)?
+
     private let bitmapView = UIImageView()
     private(set) var layout: NativeMessageLayout?
     private var layoutKey: String?
     private var requestKey: String?
     private var rasterKey: String?
     private var renderGeneration = 0
+    /// True while UITableView scroll gesture is active — skip sync CPU rasterize (settle flushes).
+    static var suppressSyncRasterize = false
+
+    /// Shared bitmap cache — scrolling back to a tall code bubble must not re-rasterize.
+    private static let bitmapCache = NSCache<NSString, UIImage>()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -33,11 +43,13 @@ final class NativeMessageRenderView: UIView {
         isUserInteractionEnabled = true
         clipsToBounds = true
         layer.drawsAsynchronously = false
-        bitmapView.contentMode = .top
+        bitmapView.contentMode = .topLeft
         bitmapView.clipsToBounds = true
         bitmapView.isUserInteractionEnabled = false
         bitmapView.backgroundColor = .clear
         addSubview(bitmapView)
+        Self.bitmapCache.countLimit = 48
+        Self.bitmapCache.totalCostLimit = 96 * 1024 * 1024
     }
 
     @discardableResult
@@ -127,6 +139,10 @@ final class NativeMessageRenderView: UIView {
         invalidateIntrinsicContentSize()
     }
 
+    static func clearBitmapCache() {
+        bitmapCache.removeAllObjects()
+    }
+
     /// Bind a warmed layout without parsing markdown — scroll hot path only.
     @discardableResult
     func bindCachedLayoutIfAvailable(content: String,
@@ -179,7 +195,7 @@ final class NativeMessageRenderView: UIView {
         publishRasterizedBitmap()
     }
 
-    /// Rasterize once per layout key — UIImageView stays fixed height; scroll never repaints.
+    /// One UIImage per layout key. Cache hits make back-and-forth scroll free of re-paint.
     private func publishRasterizedBitmap() {
         guard let layout = layout,
               layout.size.width > 0.5,
@@ -189,16 +205,76 @@ final class NativeMessageRenderView: UIView {
             return
         }
         guard rasterKey != layout.key else { return }
+
+        let cacheKey = layout.key as NSString
+        if let hit = Self.bitmapCache.object(forKey: cacheKey) {
+            rasterKey = layout.key
+            bitmapView.image = hit
+            setNeedsLayout()
+            return
+        }
+
+        // Finger still down: never sync-rasterize tall fence-heavy bitmaps (main-thread hitch).
+        if Self.suppressSyncRasterize {
+            #if DEBUG
+            ChatHeavyScrollDiagnostics.skippedRasterizeDuringScroll += 1
+            #endif
+            return
+        }
+
         rasterKey = layout.key
         let size = layout.size
         let scale = UIScreen.main.scale
+        // Cap extreme bitmaps: still full content, but avoid multi-ten-MB surfaces on A7.
+        // Above ~4096pt we slice into a vertically concatenated image drawn once into cache.
+        let image = Self.rasterize(layout: layout, size: size, scale: scale)
+        guard let image = image else {
+            bitmapView.image = nil
+            return
+        }
+        let cost = Int(size.width * size.height * scale * scale * 4)
+        Self.bitmapCache.setObject(image, forKey: cacheKey, cost: max(cost, 1))
+        bitmapView.image = image
+        setNeedsLayout()
+    }
+
+    /// After scroll settle: paint any layout that skipped sync rasterize mid-gesture.
+    func flushPendingRasterizeIfNeeded() {
+        guard let layout = layout, rasterKey != layout.key else { return }
+        let saved = Self.suppressSyncRasterize
+        Self.suppressSyncRasterize = false
+        publishRasterizedBitmap()
+        Self.suppressSyncRasterize = saved
+    }
+
+    private static func rasterize(layout: NativeMessageLayout,
+                                 size: CGSize,
+                                 scale: CGFloat) -> UIImage? {
+        let maxTile: CGFloat = 2048
+        if size.height <= maxTile {
+            UIGraphicsBeginImageContextWithOptions(size, false, scale)
+            defer { UIGraphicsEndImageContext() }
+            guard let context = UIGraphicsGetCurrentContext() else { return nil }
+            NativeMessagePainter.draw(
+                layout: layout,
+                in: context,
+                clipRect: CGRect(origin: .zero, size: size)
+            )
+            return UIGraphicsGetImageFromCurrentImageContext()
+        }
+
+        // Tall: draw strip-by-strip into one context so the cell still hosts a single UIImageView.
         UIGraphicsBeginImageContextWithOptions(size, false, scale)
         defer { UIGraphicsEndImageContext() }
-        guard let context = UIGraphicsGetCurrentContext() else { return }
-        draw(layout: layout, in: context, clipRect: CGRect(origin: .zero, size: size))
-        guard let cgImage = UIGraphicsGetImageFromCurrentImageContext()?.cgImage else { return }
-        bitmapView.image = UIImage(cgImage: cgImage, scale: scale, orientation: .up)
-        setNeedsLayout()
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        var y: CGFloat = 0
+        while y < size.height {
+            let h = min(maxTile, size.height - y)
+            let clip = CGRect(x: 0, y: y, width: size.width, height: h)
+            NativeMessagePainter.draw(layout: layout, in: context, clipRect: clip)
+            y += h
+        }
+        return UIGraphicsGetImageFromCurrentImageContext()
     }
 
     override func layoutSubviews() {
@@ -207,8 +283,7 @@ final class NativeMessageRenderView: UIView {
             bitmapView.frame = .zero
             return
         }
-        let painted = layout.size
-        bitmapView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: painted.height)
+        bitmapView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: layout.size.height)
     }
 
     private func warm(formulas: [(tex: String, display: Bool)],
@@ -310,7 +385,29 @@ final class NativeMessageRenderView: UIView {
         layout?.size ?? .zero
     }
 
-    private func draw(layout: NativeMessageLayout, in context: CGContext, clipRect: CGRect) {
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let point = touches.first?.location(in: self) else {
+            super.touchesEnded(touches, with: event)
+            return
+        }
+        if let hit = layout?.codeFenceHits.first(where: { $0.frame.insetBy(dx: -4, dy: -4).contains(point) }) {
+            onCodeFenceTap?(hit)
+            return
+        }
+        if let url = layout?.linkRects.first(where: { $0.0.insetBy(dx: -5, dy: -5).contains(point) })?.1 {
+            if onLinkTap?(url) != true {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            return
+        }
+        super.touchesEnded(touches, with: event)
+    }
+}
+
+// MARK: - Painter
+
+enum NativeMessagePainter {
+    static func draw(layout: NativeMessageLayout, in context: CGContext, clipRect: CGRect) {
         context.saveGState()
         context.clip(to: clipRect)
         for command in layout.commands {
@@ -322,6 +419,11 @@ final class NativeMessageRenderView: UIView {
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     context: nil
                 )
+            case .codeFence(let fence):
+                guard fence.cardFrame.intersects(clipRect) else { continue }
+                context.saveGState()
+                drawCodeFence(fence, clipRect: clipRect)
+                context.restoreGState()
             case .image(let image, let frame):
                 guard frame.intersects(clipRect) else { continue }
                 image.draw(in: frame)
@@ -354,14 +456,139 @@ final class NativeMessageRenderView: UIView {
         context.restoreGState()
     }
 
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let point = touches.first?.location(in: self),
-              let url = layout?.linkRects.first(where: { $0.0.insetBy(dx: -5, dy: -5).contains(point) })?.1 else {
-            super.touchesEnded(touches, with: event)
-            return
+    private static func drawCodeFence(_ fence: NativeCodeFenceFragment, clipRect: CGRect) {
+        let card = fence.cardFrame
+        guard card.intersects(clipRect) else { return }
+
+        fence.cardFill.setFill()
+        UIBezierPath(roundedRect: card, cornerRadius: 12).fill()
+        fence.cardBorder.setStroke()
+        let border = UIBezierPath(roundedRect: card.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 11.5)
+        border.lineWidth = 1 / UIScreen.main.scale
+        border.stroke()
+
+        let title = fence.languageLabel
+        let meta = "\(fence.totalLineCount) lines"
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: max(12, fence.font.pointSize * 0.95), weight: .semibold),
+            .foregroundColor: fence.color
+        ]
+        let metaAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: max(11, fence.font.pointSize * 0.85), weight: .medium),
+            .foregroundColor: fence.mutedColor
+        ]
+        let titleSize = (title as NSString).size(withAttributes: titleAttrs)
+        let metaSize = (meta as NSString).size(withAttributes: metaAttrs)
+        let titleOrigin = CGPoint(
+            x: fence.headerFrame.minX,
+            y: fence.headerFrame.midY - titleSize.height * 0.5
+        )
+        (title as NSString).draw(at: titleOrigin, withAttributes: titleAttrs)
+        let metaOrigin = CGPoint(
+            x: fence.headerFrame.maxX - metaSize.width,
+            y: fence.headerFrame.midY - metaSize.height * 0.5
+        )
+        if metaOrigin.x > titleOrigin.x + titleSize.width + 8 {
+            (meta as NSString).draw(at: metaOrigin, withAttributes: metaAttrs)
         }
-        if onLinkTap?(url) != true {
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+
+        let step = max(fence.lineStep, 1)
+        let ctx = UIGraphicsGetCurrentContext()
+        ctx?.saveGState()
+        UIRectClip(fence.previewFrame.intersection(clipRect))
+        let plainAttrs: [NSAttributedString.Key: Any] = [
+            .font: fence.font,
+            .foregroundColor: fence.color
+        ]
+        for (idx, line) in fence.previewLines.enumerated() {
+            let y = fence.previewFrame.minY + CGFloat(idx) * step
+            let origin = CGPoint(x: fence.previewFrame.minX, y: y)
+            if idx < fence.previewAttributedLines.count {
+                fence.previewAttributedLines[idx].draw(at: origin)
+            } else {
+                let display: String
+                if line.count > 96 {
+                    display = String(line.prefix(96)) + "…"
+                } else {
+                    display = line.isEmpty ? " " : line
+                }
+                (display as NSString).draw(at: origin, withAttributes: plainAttrs)
+            }
+        }
+        ctx?.restoreGState()
+
+        if fence.showsFade {
+            let fadeH: CGFloat = 28
+            let fade = CGRect(
+                x: card.minX + 1,
+                y: card.maxY - fadeH - 1,
+                width: card.width - 2,
+                height: fadeH
+            )
+            let colors = [
+                fence.cardFill.withAlphaComponent(0).cgColor,
+                fence.cardFill.cgColor
+            ] as CFArray
+            if let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: colors,
+                locations: [0, 1]
+            ) {
+                ctx?.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: fade.midX, y: fade.minY),
+                    end: CGPoint(x: fade.midX, y: fade.maxY),
+                    options: []
+                )
+            }
         }
     }
 }
+
+#if DEBUG
+/// Counters for heavy-transcript scroll diagnosis (fence-dense + post-edit cache miss).
+enum ChatHeavyScrollDiagnostics {
+    static var skippedRasterizeDuringScroll = 0
+    static var scrollFreezeKeptPaint = 0
+    static var scrollFreezeBlankShell = 0
+    static var midScrollBeginUpdates = 0
+    static var midScrollHydrateGrew = 0
+    static var gestureDeferredVisiblePeak = 0
+
+    static func resetGesture() {
+        skippedRasterizeDuringScroll = 0
+        scrollFreezeKeptPaint = 0
+        scrollFreezeBlankShell = 0
+        midScrollBeginUpdates = 0
+        midScrollHydrateGrew = 0
+        gestureDeferredVisiblePeak = 0
+    }
+
+    static func logConversationProfile(_ messages: [ChatMessage], label: String) {
+        var assistants = 0
+        var fenceMarks = 0
+        var maxBody = 0
+        var fenceHeavy = 0
+        for msg in messages where msg.role == .assistant && !msg.isStreaming {
+            assistants += 1
+            let body = msg.chatDisplayBody
+            maxBody = max(maxBody, body.utf8.count)
+            let marks = AssistantMessageLayout.codeFenceMarkerCount(in: body)
+            fenceMarks += marks
+            if marks >= 2 { fenceHeavy += 1 }
+        }
+        print(
+            "[ChatHeavyScroll] \(label) assistants=\(assistants) fenceHeavy=\(fenceHeavy) " +
+            "fenceMarks=\(fenceMarks) maxBodyUTF8=\(maxBody)"
+        )
+    }
+
+    static func logGestureSummary(_ label: String) {
+        print(
+            "[ChatHeavyScroll] \(label) keptPaint=\(scrollFreezeKeptPaint) blankShell=\(scrollFreezeBlankShell) " +
+            "skipRaster=\(skippedRasterizeDuringScroll) beginUpdates=\(midScrollBeginUpdates) " +
+            "hydrateGrew=\(midScrollHydrateGrew) deferredPeak=\(gestureDeferredVisiblePeak)"
+        )
+    }
+}
+#endif
