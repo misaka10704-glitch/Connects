@@ -20,6 +20,9 @@ final class StudyShellViewController: UIViewController {
 
     private var chatWidthConstraint: NSLayoutConstraint!
     private var portraitChatHeightConstraint: NSLayoutConstraint!
+    private var readerHostBottomConstraint: NSLayoutConstraint!
+    /// Active chatHost.bottom → view.bottom (portrait / landscape / fullscreen).
+    private var chatHostBottomConstraint: NSLayoutConstraint?
     private var chatLandscapeConstraints: [NSLayoutConstraint] = []
     private var chatPortraitConstraints: [NSLayoutConstraint] = []
     private var chatNavTopBelowSeamSpacer: NSLayoutConstraint!
@@ -89,9 +92,8 @@ final class StudyShellViewController: UIViewController {
     private var isAnimatingPanelStage = false
     /// After panel open animation, put keyboard into the AI composer (⌘L / ⌘J).
     private var pendingFocusComposerAfterPanel = false
-    /// Portrait half-panel ratio before a docked soft keyboard temporarily expanded it to ~2/3.
-    private var portraitOverlayRatioBeforeKeyboard: CGFloat?
-    private let portraitKeyboardHalfBoostRatio: CGFloat = 2.0 / 3.0
+    /// Docked soft keyboard: raise reader + chat together (not contentInset cover).
+    private var shellKeyboardLift: CGFloat = 0
 
     private var isChatCollapsed: Bool { chatPanelStage == .collapsed }
 
@@ -258,11 +260,12 @@ final class StudyShellViewController: UIViewController {
             equalToConstant: panelCapsuleHorizontalSize.height
         )
 
+        readerHostBottomConstraint = readerHost.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         NSLayoutConstraint.activate([
             readerHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             readerHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             readerHost.topAnchor.constraint(equalTo: view.topAnchor),
-            readerHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            readerHostBottomConstraint,
 
             panelCapsuleWidthConstraint,
             panelCapsuleHeightConstraint,
@@ -349,32 +352,59 @@ final class StudyShellViewController: UIViewController {
     }
 
     @objc private func studyKeyboardWillChange(_ note: Notification) {
-        // Landscape: leave panel ratios alone (plan).
-        guard isPortraitMode, isReaderVisible else {
-            textEditorVC.applyKeyboardBottomInset(0)
-            return
-        }
         if ConnectsNoteSheet.isVisible { return }
+        // Chat-only: do not touch Study layout (launch used to freeze on spurious keyboard frames).
+        guard isReaderVisible, isViewLoaded, readerHostBottomConstraint != nil else { return }
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
               let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
         else { return }
 
         let snap = ConnectsKeyboardGeometry.resolve(screenFrame: frame, in: view)
+        let lift: CGFloat
         switch snap.kind {
-        case .hidden:
-            restorePortraitHalfAfterKeyboard()
-            textEditorVC.applyKeyboardBottomInset(0)
+        case .hidden, .floatingMini:
+            lift = 0
         case .docked:
-            applyPortraitHalfBoostForDockedKeyboard()
-            let overlap = readerKeyboardOverlap(snap.frameInView)
-            textEditorVC.applyKeyboardBottomInset(overlap)
-        case .floatingMini:
-            // Floating / undocked: do not expand AI panel; only light inset if it covers reader.
-            restorePortraitHalfAfterKeyboard()
-            let overlap = readerKeyboardOverlap(snap.frameInView)
-            textEditorVC.applyKeyboardBottomInset(overlap > 24 ? overlap : 0)
+            // Cap lift — full-screen / bogus frames on launch must not crush the UI to 0 height.
+            let maxLift = max(120, view.bounds.height * 0.55)
+            lift = min(max(0, snap.bottomOverlap), maxLift)
+            if snap.bottomOverlap >= view.bounds.height - 40 {
+                // Misclassified “keyboard” covering the whole window (common at cold start).
+                applyShellKeyboardLiftIfNeeded(0, duration: duration, note: note)
+                return
+            }
         }
+        applyShellKeyboardLiftIfNeeded(lift, duration: duration, note: note)
+    }
 
+    /// Raise reader + chat bottoms together so the keyboard never covers prior content.
+    private func applyShellKeyboardLift(_ lift: CGFloat) {
+        applyShellKeyboardLiftIfNeeded(lift, duration: 0, note: nil)
+    }
+
+    private func applyShellKeyboardLiftIfNeeded(_ lift: CGFloat, duration: Double, note: Notification?) {
+        guard isViewLoaded, readerHostBottomConstraint != nil else { return }
+        let next = max(0, lift)
+        let liftChanged = abs(shellKeyboardLift - next) > 0.5
+        guard liftChanged else {
+            if next == 0 { textEditorVC.applyKeyboardBottomInset(0) }
+            return
+        }
+        shellKeyboardLift = next
+        readerHostBottomConstraint.constant = -next
+        chatHostBottomConstraint?.constant = -next
+        textEditorVC.applyKeyboardBottomInset(0)
+        if isPortraitMode, isReaderVisible, !isChatCollapsed, portraitChatHeightConstraint.isActive {
+            let available = max(view.bounds.height - next, 1)
+            let target = overlayLength(for: available, portrait: true)
+            if abs(portraitChatHeightConstraint.constant - target) > 0.5 {
+                portraitChatHeightConstraint.constant = target
+            }
+        }
+        guard let note = note, duration > 0 else {
+            view.setNeedsLayout()
+            return
+        }
         let curveRaw = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.intValue
             ?? UIView.AnimationCurve.easeInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: UInt(curveRaw << 16))
@@ -383,33 +413,10 @@ final class StudyShellViewController: UIViewController {
         }
     }
 
-    private func readerKeyboardOverlap(_ keyboardInShell: CGRect) -> CGFloat {
-        let readerFrame = readerHost.convert(readerHost.bounds, to: view)
-        let hit = readerFrame.intersection(keyboardInShell)
-        guard !hit.isNull else { return 0 }
-        return max(0, hit.height)
-    }
-
-    private func applyPortraitHalfBoostForDockedKeyboard() {
-        guard chatPanelStage == .half else { return }
-        if portraitOverlayRatioBeforeKeyboard == nil {
-            portraitOverlayRatioBeforeKeyboard = portraitOverlayRatio
-        }
-        let boosted = Self.clampOverlayRatio(portraitKeyboardHalfBoostRatio, portrait: true)
-        guard abs(portraitOverlayRatio - boosted) > 0.01 else { return }
-        portraitOverlayRatio = boosted
-        _ = updatePortraitOverlay()
-        view.setNeedsLayout()
-    }
-
-    private func restorePortraitHalfAfterKeyboard() {
-        guard let backup = portraitOverlayRatioBeforeKeyboard else { return }
-        portraitOverlayRatioBeforeKeyboard = nil
-        portraitOverlayRatio = Self.clampOverlayRatio(backup, portrait: true)
-        if chatPanelStage == .half {
-            _ = updatePortraitOverlay()
-            view.setNeedsLayout()
-        }
+    private func makeChatHostBottomConstraint() -> NSLayoutConstraint {
+        let c = chatHost.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -shellKeyboardLift)
+        chatHostBottomConstraint = c
+        return c
     }
 
     deinit {
@@ -983,6 +990,7 @@ final class StudyShellViewController: UIViewController {
             // 新对话. Skipping remount here left an empty PDF shell ("无文档") on screen.
             isReaderVisible = false
             chatPanelStage = .collapsed
+            applyShellKeyboardLift(0)
         }
 
         // Re-sync orientation when entering study — rotation while chat-only used to skip updates.
@@ -1187,7 +1195,7 @@ final class StudyShellViewController: UIViewController {
             chatHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             chatHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             chatHost.topAnchor.constraint(equalTo: view.topAnchor),
-            chatHost.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            makeChatHostBottomConstraint()
         ]
         NSLayoutConstraint.activate(chatLandscapeConstraints)
         chatHost.layer.shadowOpacity = 0
@@ -1210,7 +1218,7 @@ final class StudyShellViewController: UIViewController {
         chatLandscapeConstraints = [
             chatHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             chatHost.topAnchor.constraint(equalTo: view.topAnchor),
-            chatHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            makeChatHostBottomConstraint(),
             chatWidthConstraint
         ]
         NSLayoutConstraint.activate(chatLandscapeConstraints)
@@ -1225,13 +1233,13 @@ final class StudyShellViewController: UIViewController {
         chatWidthConstraint.constant = 0
         attachChatHostToViewIfNeeded()
         portraitChatHeightConstraint.isActive = true
-        let total = layoutHeight ?? max(view.bounds.height, 1)
-        portraitChatHeightConstraint.constant = overlayLength(for: total, portrait: true)
+        let available = max((layoutHeight ?? view.bounds.height) - shellKeyboardLift, 1)
+        portraitChatHeightConstraint.constant = overlayLength(for: available, portrait: true)
         NSLayoutConstraint.deactivate(chatPortraitConstraints)
         chatPortraitConstraints = [
             chatHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             chatHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            chatHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            makeChatHostBottomConstraint(),
             portraitChatHeightConstraint
         ]
         NSLayoutConstraint.activate(chatPortraitConstraints)
@@ -1315,7 +1323,7 @@ final class StudyShellViewController: UIViewController {
     @discardableResult
     private func updatePortraitOverlay(layoutHeight: CGFloat? = nil) -> Bool {
         guard isReaderVisible, isPortraitMode else { return false }
-        let total = layoutHeight ?? max(view.bounds.height, 1)
+        let total = layoutHeight ?? max(view.bounds.height - shellKeyboardLift, 1)
         let target = isChatCollapsed ? 0 : overlayLength(for: total)
         let hideHost = isChatCollapsed
         let lengthChanged = abs(portraitChatHeightConstraint.constant - target) > 0.5
@@ -1662,9 +1670,10 @@ final class StudyShellViewController: UIViewController {
 }
 
 extension StudyShellViewController: StudyReadingContextProviding {
-    /// Portrait study panel owns keyboard lift (composer pinned to panel bottom, not full-screen safe area).
+    /// Study shell owns docked-keyboard lift only while a document reader is showing
+    /// and the AI panel is open. Chat-only / full-reading must not route through shell lift.
     var managesPortraitKeyboardLayout: Bool {
-        isReaderVisible && isPortraitMode && !isChatCollapsed
+        isReaderVisible && !isChatCollapsed
     }
 
     var studyChatPanelStage: StudyChatPanelStage { chatPanelStage }
@@ -1761,13 +1770,17 @@ extension StudyShellViewController: StudyReadingContextProviding {
     }
 
     @discardableResult
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool {
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool {
         guard studyCodeAIEditSupported else { return false }
         // Ensure reader is visible for Diff review.
         if chatPanelStage == .full {
             applyChatPanelStage(.half, animated: true)
         }
-        return codeEditCoordinator.presentProposal(proposal)
+        return codeEditCoordinator.presentProposal(proposal, assistantMessageID: assistantMessageID)
+    }
+
+    func revertStudyCodeEditIfNeeded(forAssistantMessageID id: String) {
+        _ = codeEditCoordinator.revertForRetry(assistantMessageID: id)
     }
 
     func studyCodeDiffUndoAll() {

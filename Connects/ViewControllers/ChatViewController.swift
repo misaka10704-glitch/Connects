@@ -4904,7 +4904,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        let presented = studyContextProvider?.presentStudyCodeEditProposal(proposal) ?? false
+        let presented = studyContextProvider?.presentStudyCodeEditProposal(
+            proposal,
+            assistantMessageID: finishedMessage.id
+        ) ?? false
         let prose = proposal.displayContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let emptyProse = prose.isEmpty
             || prose == "（文件编辑内容已隐藏）"
@@ -5023,7 +5026,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             || last.imageTranscriptionPhase != lastStreamImageTranscriptionPhase
         let changed = idChanged || contentChanged || chromeChanged || visibleChanged
         if changed {
-            // Hidden CONNECTS_EDIT payload growth: update byte cursors, skip cell work.
+            // Hidden CONNECTS_EDIT payload used to skip UI while the bubble stayed
+            // on a static「正在生成文件编辑…」. Live stats/tail now change `visibleBytes`.
             if contentChanged, !visibleChanged, !chromeChanged, !idChanged {
                 lastStreamContentBytes = contentBytes
                 lastStreamProgressAt = Date()
@@ -5041,6 +5045,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             lastStreamProgressAt = Date()
             let now = Date()
             // Otherwise throttle relayout (~0.15s) even while stick-to-bottom.
+            // Edit-stream status/tail updates often — keep the same throttle as prose.
             let shouldRelayout = visibleGrew && (
                 now.timeIntervalSince(lastStreamLayoutAt) >= 0.15
                     || lastStreamLayoutAt == .distantPast
@@ -6103,22 +6108,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func applyPortraitStudyComposerBottom(keyboardFrame: CGRect) {
         refreshComposerBottomAnchorIfNeeded()
         let snap = ConnectsKeyboardGeometry.resolve(screenFrame: keyboardFrame, in: view)
-        // Portrait panel anchors to view.bottom — do not subtract safeArea again.
-        let lift = ConnectsKeyboardGeometry.composerLift(
-            snapshot: snap,
-            in: view,
-            safeAreaAlreadyInAnchor: false
-        )
         switch snap.kind {
-        case .hidden:
+        case .hidden, .docked:
+            // Docked: StudyShell already raised reader + chat above the keyboard.
+            // Keep composer at the panel bottom — do not lift again inside the panel.
             keyboardVisible = false
             bottomConstraint?.constant = restingComposerBottomConstant()
-        case .docked:
-            keyboardVisible = lift > 20
-            bottomConstraint?.constant = keyboardVisible
-                ? -(lift + DSTheme.inputBarBottomPadding)
-                : restingComposerBottomConstant()
         case .floatingMini:
+            let lift = ConnectsKeyboardGeometry.composerLift(
+                snapshot: snap,
+                in: view,
+                safeAreaAlreadyInAnchor: false
+            )
             keyboardVisible = lift > 12
             bottomConstraint?.constant = keyboardVisible
                 ? -(lift + DSTheme.inputBarBottomPadding)
@@ -6464,6 +6465,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
         let convID = conv.id
         let oldRowCount = tableView.numberOfRows(inSection: 0)
+
+        // Restore file text from before this assistant turn's Keep (or cancel open Diff).
+        let assistantIndex = userIndex + 1
+        if assistantIndex < conv.messages.count, conv.messages[assistantIndex].role == .assistant {
+            studyContextProvider?.revertStudyCodeEditIfNeeded(
+                forAssistantMessageID: conv.messages[assistantIndex].id
+            )
+        } else {
+            // No assistant yet — still clear a stray open Diff from a prior attempt.
+            studyContextProvider?.revertStudyCodeEditIfNeeded(forAssistantMessageID: "")
+        }
 
         ConversationStore.shared.updateConversationQuietly(id: convID) { c in
             let assistantIndex = userIndex + 1

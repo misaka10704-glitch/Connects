@@ -90,7 +90,7 @@ enum StudyChatPanelStage: Int {
 
 protocol StudyReadingContextProviding: AnyObject {
     func captureCurrentStudyPage() -> StudyPageCapture?
-    /// When true, ChatVC should not apply full-screen keyboard lift; the shell resizes the portrait panel.
+    /// When true, ChatVC skips docked-keyboard composer lift — StudyShell raises reader+chat as one page.
     var managesPortraitKeyboardLayout: Bool { get }
     func applyStudyChatPanelStage(_ stage: StudyChatPanelStage, animated: Bool)
     var studyChatPanelStage: StudyChatPanelStage { get }
@@ -101,7 +101,9 @@ protocol StudyReadingContextProviding: AnyObject {
     /// Study text/code: whether「AI 编辑」authorization is meaningful.
     var studyCodeAIEditSupported: Bool { get }
     /// Present a parsed CONNECTS_EDIT proposal in the code reader Diff surface.
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool
+    /// On「重跑」: undo open Diff and/or restore the pre-Keep file for that assistant turn.
+    func revertStudyCodeEditIfNeeded(forAssistantMessageID: String)
     func studyCodeDiffUndoAll()
     func studyCodeDiffKeepAll()
 }
@@ -113,7 +115,8 @@ extension StudyReadingContextProviding {
     var studyIsPortraitLayout: Bool { true }
     func clearAskSelectionHighlightInReader() {}
     var studyCodeAIEditSupported: Bool { false }
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal) -> Bool { false }
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool { false }
+    func revertStudyCodeEditIfNeeded(forAssistantMessageID: String) {}
     func studyCodeDiffUndoAll() {}
     func studyCodeDiffKeepAll() {}
 }

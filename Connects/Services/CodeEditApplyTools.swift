@@ -168,12 +168,15 @@ enum CodeEditApplyTools {
         return arrows.lowerBound..<marker.upperBound
     }
 
-    /// Chat-bubble text: never show CONNECTS_EDIT payload / fences (streaming or finished).
+    /// Chat-bubble text: never show raw CONNECTS_EDIT fences (streaming or finished).
+    /// While the edit block is open, surface live size/line stats + a short code tail
+    /// (same idea as deep-thinking live preview) so large writes do not look frozen.
     /// Hot-path: after begin locks, only the newly streamed suffix is scanned for the end marker.
     private static var visUTF8 = -1
     private static var visBeginUTF16 = -1
     private static var visScannedUTF16 = 0
     private static var visOpen = false
+    private static var visBefore = ""
     private static var visResult = ""
     /// Per-message `(utf8Count → visible)` so cells/layout skip re-scan on reuse.
     private static var displayByMessage: [String: (utf8: Int, visible: String)] = [:]
@@ -197,7 +200,8 @@ enum CodeEditApplyTools {
         let beginOpts: String.CompareOptions = [.caseInsensitive]
         let endMarker = "CONNECTS_EDIT>>>"
 
-        // Reuse half-open result: only probe the newly appended UTF-16 tail for end.
+        // Reuse half-open session: probe only the newly appended UTF-16 tail for end,
+        // but refresh the live status whenever bytes grew.
         if visOpen, visBeginUTF16 >= 0, utf8 >= visUTF8, visUTF8 >= 0 {
             let u16 = raw.utf16
             if visBeginUTF16 <= u16.count {
@@ -213,9 +217,17 @@ enum CodeEditApplyTools {
                         options: beginOpts,
                         range: fromIdx..<raw.endIndex
                     ) == nil {
+                        let payload: String = {
+                            if let begin = findConnectsEditBegin(in: raw) {
+                                return String(raw[begin.upperBound...])
+                            }
+                            return ""
+                        }()
+                        let result = openEditStreamStatus(before: visBefore, payload: payload)
                         visScannedUTF16 = u16.count
                         visUTF8 = utf8
-                        return visResult
+                        visResult = result
+                        return result
                     }
                     // Fall through — block just closed.
                 }
@@ -250,19 +262,64 @@ enum CodeEditApplyTools {
             visBeginUTF16 = beginUTF16
             visScannedUTF16 = raw.utf16.count
             visOpen = false
+            visBefore = ""
             visResult = result
             return result
         }
 
-        let result = before.isEmpty
-            ? "（正在生成文件编辑…）"
-            : before + "\n\n（正在生成文件编辑…）"
+        let payload = String(raw[begin.upperBound...])
+        let result = openEditStreamStatus(before: before, payload: payload)
         visUTF8 = utf8
         visBeginUTF16 = beginUTF16
         visScannedUTF16 = raw.utf16.count
         visOpen = true
+        visBefore = before
         visResult = result
         return result
+    }
+
+    /// Live bubble while `<<<CONNECTS_EDIT` is open: stats + last few code lines.
+    private static func openEditStreamStatus(before: String, payload: String) -> String {
+        let bytes = payload.utf8.count
+        let lineBreaks = payload.reduce(into: 0) { count, ch in
+            if ch == "\n" { count += 1 }
+        }
+        let lines = payload.isEmpty ? 0 : lineBreaks + 1
+        let sizeLabel: String
+        if bytes < 1024 {
+            sizeLabel = "\(bytes) B"
+        } else if bytes < 1024 * 1024 {
+            sizeLabel = String(format: "%.1f KB", Double(bytes) / 1024.0)
+        } else {
+            sizeLabel = String(format: "%.2f MB", Double(bytes) / (1024.0 * 1024.0))
+        }
+        let header = "（正在生成文件编辑 · \(sizeLabel) · \(lines) 行）"
+        let tail = editStreamTailPreview(payload)
+        var parts: [String] = []
+        if !before.isEmpty { parts.append(before) }
+        parts.append(header)
+        if !tail.isEmpty { parts.append(tail) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Last few non-meta lines of the in-flight edit payload (thinking-style tail).
+    private static func editStreamTailPreview(_ payload: String, maxLines: Int = 3, lineCharCap: Int = 96) -> String {
+        let rows = payload.components(separatedBy: "\n").filter { line in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty { return false }
+            let lower = t.lowercased()
+            if lower.hasPrefix("path:") || lower.hasPrefix("range:") { return false }
+            if t.hasPrefix("```") { return false }
+            return true
+        }
+        guard !rows.isEmpty else { return "" }
+        let slice = Array(rows.suffix(maxLines))
+        let clipped = slice.map { line -> String in
+            if line.count <= lineCharCap { return line }
+            return "…" + String(line.suffix(lineCharCap))
+        }
+        let body = clipped.joined(separator: "\n")
+        return rows.count > maxLines ? "…\n" + body : body
     }
 
     private static func resetStreamVisibleCache() {
@@ -270,6 +327,7 @@ enum CodeEditApplyTools {
         visBeginUTF16 = -1
         visScannedUTF16 = 0
         visOpen = false
+        visBefore = ""
         visResult = ""
     }
 

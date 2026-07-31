@@ -27,6 +27,10 @@ enum ConnectsKeyboardGeometry {
         if overlapH < 16 || screenFrame.isEmpty || screenFrame.height < 1 {
             return Snapshot(kind: .hidden, frameInView: .zero, bottomOverlap: 0)
         }
+        // Cold-start / rotation sometimes reports a near-full-window frame as "keyboard".
+        if overlapH >= view.bounds.height - 48 {
+            return Snapshot(kind: .hidden, frameInView: .zero, bottomOverlap: 0)
+        }
 
         let widthRatio = intersection.width / max(view.bounds.width, 1)
         // Docked keyboards sit flush (or nearly) with the view bottom and span most of the width.

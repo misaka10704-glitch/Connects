@@ -9,7 +9,10 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
 
     private(set) var isPresentingDiff = false
     private var pendingBefore: String = ""
+    private var pendingAssistantMessageID: String?
     private var generation: UInt = 0
+    /// Kept edits keyed by assistant message id — used to restore file text on「重跑」.
+    private var appliedRollbackByMessageID: [String: (documentID: String, before: String)] = [:]
 
     func bindEditor(_ editor: TextCodeEditorViewController?) {
         self.editor = editor
@@ -30,7 +33,7 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
     private(set) var lastPresentFailure: PresentFailure?
 
     @discardableResult
-    func presentProposal(_ proposal: CodeEditProposal) -> Bool {
+    func presentProposal(_ proposal: CodeEditProposal, assistantMessageID: String = "") -> Bool {
         lastPresentFailure = nil
         guard let editor = editor else {
             lastPresentFailure = .noEditor
@@ -70,6 +73,7 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
 
         generation &+= 1
         pendingBefore = snap.text
+        pendingAssistantMessageID = assistantMessageID.isEmpty ? nil : assistantMessageID
         isPresentingDiff = true
         editor.onDiffSessionChange = { [weak self] active, count in
             self?.onDiffSessionChange?(active, count)
@@ -85,6 +89,7 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             isPresentingDiff = false
             editor.onDiffFinished = nil
             pendingBefore = ""
+            pendingAssistantMessageID = nil
             lastPresentFailure = .noHunks
             ConnectsToast.show("未检测到可审阅的改动块", in: editor.view, duration: 1.8)
             return false
@@ -97,8 +102,13 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
         isPresentingDiff = false
         editor.onDiffFinished = nil
         let before = pendingBefore
+        let messageID = pendingAssistantMessageID
         pendingBefore = ""
+        pendingAssistantMessageID = nil
         if let final = finalText, final != before {
+            if let messageID, let docID = editor.activeDocumentID {
+                appliedRollbackByMessageID[messageID] = (docID, before)
+            }
             editor.applyResolvedDiffText(final)
             editor.enterEditModeAfterKeep()
             ConnectsToast.show("Kept", in: editor.view, duration: 1.0)
@@ -120,7 +130,34 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
         editor?.onDiffFinished = nil
         editor?.dismissInlineDiff(accept: false)
         pendingBefore = ""
+        pendingAssistantMessageID = nil
         onDiffSessionChange?(false, 0)
+    }
+
+    /// On「重跑」: cancel open Diff and/or restore the pre-Keep file for that assistant turn.
+    @discardableResult
+    func revertForRetry(assistantMessageID: String) -> Bool {
+        var didRevert = false
+        if isPresentingDiff {
+            // Pending review — restore `before` via dismiss.
+            cancelIfNeeded()
+            didRevert = true
+        }
+        if let entry = appliedRollbackByMessageID.removeValue(forKey: assistantMessageID) {
+            if let editor = editor, editor.activeDocumentID == entry.documentID {
+                editor.restoreDocumentText(entry.before)
+            } else {
+                try? StudyDocumentStore.shared.writeTextContent(entry.before, for: entry.documentID)
+                if let editor = editor, editor.activeDocumentID == entry.documentID {
+                    editor.restoreDocumentText(entry.before)
+                }
+            }
+            didRevert = true
+            if let host = editor?.view {
+                ConnectsToast.show("已还原本轮 AI 改动", in: host, duration: 1.4)
+            }
+        }
+        return didRevert
     }
 
     func keepAll() {

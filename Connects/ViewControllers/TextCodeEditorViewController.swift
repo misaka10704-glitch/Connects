@@ -678,6 +678,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     /// Shell / hardware keyboard: ⌘M toggles read(preview) ↔ edit (or Diff ↔ 预览 while reviewing).
     func toggleEditModeFromKeyboardShortcut() {
         if isDiffSessionActive {
+            // Broken / empty Diff: escape instead of trapping ⌘M.
+            if readSurface == .diff,
+               (diffSegments.isEmpty || CodeTextDiff.pendingHunkIndices(in: diffSegments).isEmpty) {
+                abandonDiffReviewReturningToRead()
+                return
+            }
             toggleDiffVersusKeptPreview()
             return
         }
@@ -701,13 +707,36 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     @objc private func modeTapped() {
         if isDiffSessionActive {
+            // Diff ↔ 提案预览 only — never abandon Diff here (Keep/Undo exits).
+            if readSurface == .diff,
+               (diffSegments.isEmpty || CodeTextDiff.pendingHunkIndices(in: diffSegments).isEmpty) {
+                abandonDiffReviewReturningToRead()
+                return
+            }
             toggleDiffVersusKeptPreview()
             return
         }
-        applyEditMode(!isEditMode)
+        let next = !isEditMode
+        applyEditMode(next)
+        if next {
+            focusForKeyboardEditing()
+        }
     }
 
-    /// Diff session: mode key switches Diff hunks ↔ read preview (all Keep). Edit stays locked.
+    /// Leave Diff review and restore normal read mode (pending hunks discarded like Undo All).
+    private func abandonDiffReviewReturningToRead() {
+        if isDiffSessionActive,
+           !diffSegments.isEmpty,
+           !CodeTextDiff.pendingHunkIndices(in: diffSegments).isEmpty {
+            diffUndoAll()
+        } else {
+            cancelDiffReviewForExternalMutation()
+            ConnectsToast.show("已退出 Diff", in: view, duration: 1.0)
+        }
+        applyEditMode(false)
+    }
+
+    /// Mode / ⌘M while reviewing: Diff hunks ↔ kept preview (Diff stays active).
     private func toggleDiffVersusKeptPreview() {
         if readSurface == .diff {
             enterDiffKeptPreview()
@@ -717,7 +746,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func enterDiffKeptPreview() {
-        guard diffBeforeSnapshot != nil else { return }
+        guard diffBeforeSnapshot != nil else {
+            abandonDiffReviewReturningToRead()
+            return
+        }
         readSurface = .diffPreview
         diffHunkBar.isHidden = true
         clearPerHunkActionBars()
@@ -733,7 +765,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func enterDiffHunkSurface() {
-        guard diffBeforeSnapshot != nil, !diffSegments.isEmpty else { return }
+        guard diffBeforeSnapshot != nil, !diffSegments.isEmpty else {
+            abandonDiffReviewReturningToRead()
+            return
+        }
         readSurface = .diff
         reloadDiffRendering()
         syncDiffChrome(show: true)
@@ -810,7 +845,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             modeButton.tintColor = c.accent
             modeButton.isEnabled = true
             modeButton.alpha = 1
-            modeButton.accessibilityLabel = showingDiff ? "查看提案预览（全部 Keep）" : "返回 Diff"
+            modeButton.accessibilityLabel = showingDiff
+                ? "查看提案预览（全部 Keep）"
+                : "返回 Diff"
         } else {
             let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
@@ -1403,6 +1440,19 @@ extension TextCodeEditorViewController {
         applyResolvedDiffText(after)
     }
 
+    /// Document currently loaded in the editor (nil when empty).
+    var activeDocumentID: String? { currentDocumentID }
+
+    /// Replace buffer + disk after「重跑」rollback (cancels any open Diff).
+    func restoreDocumentText(_ text: String) {
+        cancelDiffReviewForExternalMutation()
+        applyResolvedDiffText(text)
+        flushSaveIfNeeded(force: true)
+        applyEditMode(false)
+        refreshModeChrome()
+        syncSurfaceVisibility()
+    }
+
     func applyResolvedDiffText(_ text: String) {
         readSurface = .plain
         syncDiffChrome(show: false)
@@ -1477,6 +1527,12 @@ extension TextCodeEditorViewController {
     }
 
     func dismissInlineDiff(accept: Bool) {
+        // Capture before mutating — empty present / cancel must still clear the coordinator.
+        let wasDiffSurface = readSurface == .diff || readSurface == .diffPreview
+        let finished = onDiffFinished
+        onDiffFinished = nil
+        onDiffDecision = nil
+
         diffPresentGeneration &+= 1
         spinner.stopAnimating()
         if !accept, let before = diffBeforeSnapshot {
@@ -1497,6 +1553,10 @@ extension TextCodeEditorViewController {
         updateProgressLabel()
         syncSurfaceVisibility()
         notifyDiffSessionChange()
+        // Notify only when leaving a Diff surface. Avoids double-finish if already plain.
+        if wasDiffSurface {
+            finished?(nil)
+        }
     }
 
     func diffKeepAll() {
@@ -1535,19 +1595,9 @@ extension TextCodeEditorViewController {
     /// Abort Diff review when the document is replaced / cleared externally.
     /// Restores `before` text, unlocks mode toggle, notifies coordinator + banner.
     func cancelDiffReviewForExternalMutation() {
-        guard readSurface == .diff else { return }
-        let finished = onDiffFinished
-        let decision = onDiffDecision
-        onDiffFinished = nil
-        onDiffDecision = nil
+        guard readSurface == .diff || readSurface == .diffPreview else { return }
+        // dismissInlineDiff notifies onDiffFinished so the coordinator banner clears.
         dismissInlineDiff(accept: false)
-        // Prefer the Diff-finished channel (coordinator) so banner / isPresentingDiff clear.
-        if let finished = finished {
-            finished(nil)
-        } else {
-            decision?(false)
-        }
-        notifyDiffSessionChange()
     }
 
     func enterEditModeAfterKeep() {
@@ -2031,10 +2081,14 @@ extension TextCodeEditorViewController {
         readSurface = .plain
         syncDiffChrome(show: false)
         notifyDiffSessionChange()
-        if let onDiffFinished = onDiffFinished {
+        let finished = onDiffFinished
+        let decision = onDiffDecision
+        onDiffFinished = nil
+        onDiffDecision = nil
+        if let finished {
             if anyKept {
                 // Coordinator applies final text + enters edit mode.
-                onDiffFinished(final)
+                finished(final)
             } else {
                 applyHighlightedText(before)
                 updateLineNumbers(force: true)
@@ -2042,12 +2096,12 @@ extension TextCodeEditorViewController {
                 refreshModeChrome()
                 refreshTabToggleChrome()
                 updateProgressLabel()
-                onDiffFinished(nil)
+                finished(nil)
             }
         } else if anyKept {
             applyResolvedDiffText(final)
             enterEditModeAfterKeep()
-            onDiffDecision?(true)
+            decision?(true)
         } else {
             applyHighlightedText(before)
             updateLineNumbers(force: true)
@@ -2055,7 +2109,7 @@ extension TextCodeEditorViewController {
             refreshModeChrome()
             refreshTabToggleChrome()
             updateProgressLabel()
-            onDiffDecision?(false)
+            decision?(false)
         }
     }
 
@@ -2292,25 +2346,26 @@ extension TextCodeEditorViewController {
         view.bringSubviewToFront(tabSuggestChip)
     }
 
-    /// Portrait Study: raise the code viewport above a docked soft keyboard.
+    /// Portrait Study / editor: reserved API — shell now raises the whole page above the
+    /// keyboard, so inset cover is no longer used. Kept as a no-op reset for callers.
     func applyKeyboardBottomInset(_ inset: CGFloat) {
-        keyboardBottomInset = max(0, inset)
-        let bottom = keyboardBottomInset
+        keyboardBottomInset = 0
         var insets = textView.contentInset
-        insets.bottom = bottom
-        textView.contentInset = insets
-        textView.scrollIndicatorInsets = insets
+        if insets.bottom != 0 {
+            insets.bottom = 0
+            textView.contentInset = insets
+            textView.scrollIndicatorInsets = insets
+        }
         var gutterInsets = lineNumberView.contentInset
-        gutterInsets.bottom = bottom
-        lineNumberView.contentInset = gutterInsets
-        lineNumberView.scrollIndicatorInsets = gutterInsets
-        if isEditMode, textView.isFirstResponder, bottom > 0 {
-            let range = textView.selectedRange
-            textView.scrollRangeToVisible(NSRange(location: range.location, length: max(1, range.length)))
+        if gutterInsets.bottom != 0 {
+            gutterInsets.bottom = 0
+            lineNumberView.contentInset = gutterInsets
+            lineNumberView.scrollIndicatorInsets = gutterInsets
         }
         if !tabSuggestChip.isHidden {
             repositionTabSuggestChip()
         }
+        _ = inset
     }
 
     func keyCommandsAcceptGhostOrPass() -> Bool {

@@ -107,6 +107,7 @@ final class CodeDiffModeTests: XCTestCase {
     }
 
     func testChatVisibleContentOpenBlockStreaming() {
+        CodeEditApplyTools.clearVisibleCache()
         let raw = """
         先改主逻辑。
 
@@ -118,7 +119,28 @@ final class CodeDiffModeTests: XCTestCase {
         let visible = CodeEditApplyTools.chatVisibleContent(raw)
         XCTAssertTrue(visible.contains("先改主逻辑"))
         XCTAssertTrue(visible.contains("正在生成文件编辑"))
-        XCTAssertFalse(visible.contains("module huge"))
+        XCTAssertTrue(visible.contains("B") || visible.contains("KB"))
+        XCTAssertTrue(visible.contains("行"))
+        // Live tail (thinking-style) may show recent code lines — fences/meta stay hidden.
+        XCTAssertFalse(visible.contains("<<<CONNECTS_EDIT"))
+        XCTAssertFalse(visible.contains("range:"))
+        XCTAssertTrue(visible.contains("module huge"))
+    }
+
+    func testChatVisibleContentOpenBlockProgressUpdates() {
+        CodeEditApplyTools.clearVisibleCache()
+        var raw = """
+        <<<CONNECTS_EDIT
+        range: full
+        ```
+        a
+        """
+        let v1 = CodeEditApplyTools.chatVisibleContent(raw)
+        raw += "\nb\nc\nd\n"
+        let v2 = CodeEditApplyTools.chatVisibleContent(raw)
+        XCTAssertNotEqual(v1, v2)
+        XCTAssertTrue(v2.contains("正在生成文件编辑"))
+        XCTAssertTrue(v2.contains("d") || v2.contains("c"))
     }
 
     func testChatVisibleContentEmptyProsePlaceholder() {
