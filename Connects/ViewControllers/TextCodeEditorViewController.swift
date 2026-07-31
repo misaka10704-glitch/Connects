@@ -1600,11 +1600,18 @@ extension TextCodeEditorViewController {
         dismissInlineDiff(accept: false)
     }
 
-    func enterEditModeAfterKeep() {
+    /// After Keep: stay in reading mode (no keyboard). User can tap mode to edit.
+    func enterReadingModeAfterKeep() {
         readSurface = .plain
         syncDiffChrome(show: false)
-        applyEditMode(true)
-        focusForKeyboardEditing()
+        applyEditMode(false)
+        if textView.isFirstResponder {
+            textView.resignFirstResponder()
+        }
+        refreshModeChrome()
+        refreshTabToggleChrome()
+        updateProgressLabel()
+        syncSurfaceVisibility()
     }
 
     private func reloadDiffRendering() {
@@ -2087,7 +2094,7 @@ extension TextCodeEditorViewController {
         onDiffDecision = nil
         if let finished {
             if anyKept {
-                // Coordinator applies final text + enters edit mode.
+                // Coordinator applies final text + stays in reading mode.
                 finished(final)
             } else {
                 applyHighlightedText(before)
@@ -2100,7 +2107,7 @@ extension TextCodeEditorViewController {
             }
         } else if anyKept {
             applyResolvedDiffText(final)
-            enterEditModeAfterKeep()
+            enterReadingModeAfterKeep()
             decision?(true)
         } else {
             applyHighlightedText(before)

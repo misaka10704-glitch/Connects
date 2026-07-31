@@ -110,7 +110,7 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
                 appliedRollbackByMessageID[messageID] = (docID, before)
             }
             editor.applyResolvedDiffText(final)
-            editor.enterEditModeAfterKeep()
+            editor.enterReadingModeAfterKeep()
             ConnectsToast.show("Kept", in: editor.view, duration: 1.0)
         } else {
             // Editor already restored `before` in finishDiffSession when undoing.
