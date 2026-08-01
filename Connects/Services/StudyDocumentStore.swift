@@ -20,7 +20,7 @@ enum StudyDocumentError: LocalizedError {
         case .invalidMarkdown: return "无法读取 Markdown 文件。"
         case .invalidText: return "无法读取文本文件。"
         case .unsupportedType: return "支持 PDF、Markdown、Verilog（.v）及常见代码文本。"
-        case .markdownImportAsyncOnly: return "请使用「打开 Markdown」选择文件。"
+        case .markdownImportAsyncOnly: return "请使用「打开代码 / 文本」选择 Markdown。"
         case .bookmarkUnavailable: return "无法访问原文件，请重新打开该文档。"
         case .writeFailed: return "无法写入文件。"
         }
@@ -283,8 +283,8 @@ final class StudyDocumentStore {
 
         let ext = sourceURL.pathExtension.lowercased()
         let kind: StudyDocumentKind
-        // Code/text picker: force `.text` even for `.md` so Study opens TextCodeEditor
-        // (reading-mode Markdown + assets stays on the dedicated Markdown path).
+        // Code/text picker: force `.text` even when extension inference is ambiguous.
+        // Markdown always uses TextCodeEditor (preview + edit), never PDF reading.
         if forceText {
             kind = .text
         } else if let inferred = StudyDocument.kind(forExtension: ext) {

@@ -576,7 +576,7 @@ enum StudyFeatureQAHarness {
                                     if y2 <= y1, h0 > viewH + 400 { emit("FAIL second scroll stuck"); ok = false }
                                     if sizeJump > 160 { emit("FAIL contentSize jump \(Int(sizeJump))pt"); ok = false }
                                     if scrollMs > 80 { emit("WARN slow setContentOffset \(String(format: "%.1f", scrollMs))ms") }
-                                    if nested { emit("FAIL nested document scroll detected"); ok = false }
+                                    if nested { emit("FAIL unexpected CSS overflow:auto/scroll (prefer WK contentSize scroll)"); ok = false }
                                     self.dismissPresented { finish(ok) }
                                 }
                             }

@@ -981,7 +981,9 @@ final class StudyShellViewController: UIViewController {
             if !wasInStudy || docChanged {
                 chatPanelStage = .collapsed
             }
-            let kind = StudyDocumentStore.shared.document(id: docID)?.kind ?? .pdf
+            let rawKind = StudyDocumentStore.shared.document(id: docID)?.kind ?? .pdf
+            // Legacy `.markdown` docs open in the code editor (preview + edit).
+            let kind: StudyDocumentKind = (rawKind == .markdown) ? .text : rawKind
             showReader(kind: kind)
             // Keep shell in the responder chain so ⌘ shortcuts work before any text field is focused.
             _ = becomeFirstResponder()

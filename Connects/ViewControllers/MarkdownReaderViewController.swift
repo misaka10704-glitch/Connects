@@ -10,10 +10,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private let saveButton = UIButton(type: .system)
     private let progressLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
-    /// Outer native scroller — WKWebView only paints (internal scroll disabled).
-    private let readerScrollView = UIScrollView()
     private var webView: StudyAskWebView!
-    private var webViewHeightConstraint: NSLayoutConstraint!
     private let editorView = StudyAskTextView()
     private var isEditMode = false
     private var isDirty = false
@@ -208,33 +205,15 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         controller.add(WeakScriptMessageHandler(delegate: self), name: "studyAsset")
         let config = ConnectsWebKit.makeConfiguration(userContentController: controller)
 
-        readerScrollView.translatesAutoresizingMaskIntoConstraints = false
-        readerScrollView.backgroundColor = DSTheme.c.background
-        readerScrollView.delegate = self
-        readerScrollView.alwaysBounceVertical = true
-        readerScrollView.alwaysBounceHorizontal = false
-        readerScrollView.showsHorizontalScrollIndicator = false
-        readerScrollView.delaysContentTouches = false
-        readerScrollView.canCancelContentTouches = true
-        readerScrollView.decelerationRate = .normal
-        readerScrollView.keyboardDismissMode = .interactive
-        readerScrollView.contentInsetAdjustmentBehavior = .never
-        if #available(iOS 15.0, *) {
-            readerScrollView.automaticallyAdjustsScrollIndicatorInsets = false
-        }
-        view.addSubview(readerScrollView)
-
         webView = StudyAskWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
         ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.c.background)
-        // Scroll is owned by `readerScrollView` — disables WK async-touch lag on long docs.
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
+        webView.scrollView.delegate = self
         webView.onAskSelection = { [weak self] text in
             self?.onAskSelection?(text)
         }
-        readerScrollView.addSubview(webView)
+        view.addSubview(webView)
 
         editorView.translatesAutoresizingMaskIntoConstraints = false
         editorView.font = UIFont(name: "Menlo-Regular", size: 14) ?? UIFont.systemFont(ofSize: 14)
@@ -291,16 +270,10 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             contentsButton.widthAnchor.constraint(equalToConstant: 40),
             contentsButton.heightAnchor.constraint(equalToConstant: 40),
 
-            readerScrollView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            readerScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            readerScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            readerScrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            webView.topAnchor.constraint(equalTo: readerScrollView.contentLayoutGuide.topAnchor),
-            webView.leadingAnchor.constraint(equalTo: readerScrollView.contentLayoutGuide.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: readerScrollView.contentLayoutGuide.trailingAnchor),
-            webView.bottomAnchor.constraint(equalTo: readerScrollView.contentLayoutGuide.bottomAnchor),
-            webView.widthAnchor.constraint(equalTo: readerScrollView.frameLayoutGuide.widthAnchor),
+            webView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             editorView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             editorView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -310,8 +283,6 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
-        webViewHeightConstraint = webView.heightAnchor.constraint(equalToConstant: 1)
-        webViewHeightConstraint.isActive = true
 
         installContentsPanel()
         syncContentsOverlayZOrder()
@@ -377,10 +348,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     @objc private func themeChanged() {
         view.backgroundColor = DSTheme.c.background
         topBar.backgroundColor = DSTheme.c.background
-        readerScrollView.backgroundColor = DSTheme.c.background
         ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.c.background)
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
+        webView.scrollView.delegate = self
         editorView.backgroundColor = DSTheme.c.background
         editorView.textColor = DSTheme.c.textPrimary
         progressLabel.textColor = DSTheme.c.textSecondary
@@ -415,7 +384,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         isEditMode = editing
         refreshModeChrome()
         contentsButton.isHidden = editing
-        readerScrollView.isHidden = editing
+        webView.isHidden = editing
         editorView.isHidden = !editing
         if editing {
             editorView.text = markdownSource
@@ -572,23 +541,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         let js = "window.__connectsScrollToHeading && window.__connectsScrollToHeading('\(escaped)');"
-        webView.evaluateJavaScript(js) { [weak self] result, _ in
+        webView.evaluateJavaScript(js) { [weak self] _, _ in
             guard let self = self else { return }
-            let y: CGFloat
-            if let n = result as? NSNumber {
-                y = CGFloat(truncating: n)
-            } else if let d = result as? Double {
-                y = CGFloat(d)
-            } else {
-                y = -1
-            }
-            if y >= 0 {
-                let maxY = max(self.readerScrollView.contentSize.height - self.readerScrollView.bounds.height, 0)
-                self.readerScrollView.setContentOffset(
-                    CGPoint(x: 0, y: min(y, maxY)),
-                    animated: true
-                )
-            }
             self.setContentsPanelVisible(false, animated: true)
             self.updateProgressLabel()
             self.scheduleProgressSave()
@@ -729,8 +683,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             isRestoringViewport = false
             return
         }
-        // Width changed — remasure document height, then restore reading offset.
-        syncDocumentHeightThenRestore(snapshot)
+        // Width changed — restore reading offset after layout.
+        beginViewportRestore(using: snapshot)
     }
 
     func realignVisibleViewport(using progress: StudyProgress?) {
@@ -739,8 +693,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             return
         }
         guard readerSurfaceActive,
-              readerScrollView.bounds.width > 64,
-              readerScrollView.bounds.height > 64 else {
+              webView.bounds.width > 64,
+              webView.bounds.height > 64 else {
             pendingViewportProgress = progress
             return
         }
@@ -761,7 +715,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     func captureReadingProgress() -> StudyProgress? {
         guard currentDocumentID != nil, contentReady else { return nil }
-        let offset = readerScrollView.contentOffset
+        let offset = webView.scrollView.contentOffset
         return StudyProgress(
             pageIndex: 0,
             pageOffsetY: offset.y,
@@ -824,7 +778,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     func captureCurrentPageImageJPEG() -> String? {
         if isEditMode { return nil }
-        let bounds = readerScrollView.bounds
+        let bounds = webView.bounds
         guard contentReady, bounds.width > 1, bounds.height > 1 else { return nil }
         let format = UIGraphicsImageRendererFormat()
         format.scale = min(UIScreen.main.scale, 2)
@@ -833,7 +787,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let image = renderer.image { ctx in
             DSTheme.c.background.setFill()
             ctx.fill(bounds)
-            readerScrollView.drawHierarchy(in: bounds, afterScreenUpdates: true)
+            webView.drawHierarchy(in: bounds, afterScreenUpdates: true)
         }
         return ImageAttachmentHelper.prepareJPEGBase64(from: image)
     }
@@ -940,58 +894,18 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         spinner.stopAnimating()
         let pending = pendingViewportProgress
         pendingViewportProgress = nil
-        let reportedHeight: CGFloat?
-        if let n = message.body as? NSNumber {
-            reportedHeight = CGFloat(truncating: n)
-        } else if let d = message.body as? Double {
-            reportedHeight = CGFloat(d)
-        } else {
-            reportedHeight = nil
-        }
-        applyDocumentHeight(reportedHeight)
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.syncDocumentHeightThenRestore(pending)
+            self.beginViewportRestore(using: pending)
             self.updateProgressLabel()
             self.onPageChanged?()
         }
     }
 
-    private func applyDocumentHeight(_ height: CGFloat?) {
-        guard let height, height > 1 else { return }
-        let target = ceil(height)
-        if abs(webViewHeightConstraint.constant - target) > 0.5 {
-            webViewHeightConstraint.constant = target
-        }
-    }
-
-    private func syncDocumentHeightThenRestore(_ progress: StudyProgress?, attempts: Int = 0) {
-        webView.evaluateJavaScript(MarkdownHTMLRenderer.measureJavaScript()) { [weak self] result, _ in
-            guard let self = self else { return }
-            var measured: CGFloat = 0
-            if let n = result as? NSNumber {
-                measured = CGFloat(truncating: n)
-            } else if let d = result as? Double {
-                measured = CGFloat(d)
-            }
-            if measured > 1 {
-                self.applyDocumentHeight(measured)
-            }
-            self.view.layoutIfNeeded()
-            if self.webViewHeightConstraint.constant > 32 || attempts >= 24 {
-                self.beginViewportRestore(using: progress)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.syncDocumentHeightThenRestore(progress, attempts: attempts + 1)
-            }
-        }
-    }
-
-    // MARK: - UIScrollViewDelegate (outer reader scroller)
+    // MARK: - UIScrollViewDelegate (WKWebView scroller)
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === readerScrollView, !isRestoringViewport, !isShellRotating else { return }
+        guard scrollView === webView.scrollView, !isRestoringViewport, !isShellRotating else { return }
         let now = CACurrentMediaTime()
         let pct = Int((scrollFraction() * 100).rounded())
         if pct != lastProgressLabelPct, now - lastProgressLabelAt >= 0.08 {
@@ -1002,12 +916,12 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        guard scrollView === readerScrollView, !decelerate else { return }
+        guard scrollView === webView.scrollView, !decelerate else { return }
         handleReaderScrollSettled()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        guard scrollView === readerScrollView else { return }
+        guard scrollView === webView.scrollView else { return }
         handleReaderScrollSettled()
     }
 
@@ -1050,16 +964,17 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         guard let progress = progress else { return }
         let y = progress.pageOffsetY ?? 0
         let x = progress.pageOffsetX ?? 0
-        let maxY = max(readerScrollView.contentSize.height - readerScrollView.bounds.height, 0)
-        let maxX = max(readerScrollView.contentSize.width - readerScrollView.bounds.width, 0)
-        readerScrollView.contentOffset = CGPoint(
+        let scroll = webView.scrollView
+        let maxY = max(scroll.contentSize.height - scroll.bounds.height, 0)
+        let maxX = max(scroll.contentSize.width - scroll.bounds.width, 0)
+        scroll.contentOffset = CGPoint(
             x: min(max(x, 0), maxX),
             y: min(max(y, 0), maxY)
         )
     }
 
     private func scrollFraction() -> CGFloat {
-        let scroll = readerScrollView
+        let scroll = webView.scrollView
         let maxY = max(scroll.contentSize.height - scroll.bounds.height, 1)
         return min(max(scroll.contentOffset.y / maxY, 0), 1)
     }
@@ -1099,16 +1014,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
 #if DEBUG
     func debugWebContentReady() -> Bool { contentReady }
-    func debugWebScrollOffsetY() -> CGFloat { readerScrollView.contentOffset.y }
-    func debugWebContentHeight() -> CGFloat { webViewHeightConstraint.constant }
+    func debugWebScrollOffsetY() -> CGFloat { webView.scrollView.contentOffset.y }
+    func debugWebContentHeight() -> CGFloat { webView.scrollView.contentSize.height }
     func debugScrollWeb(by dy: CGFloat, animated: Bool) {
-        let scroll = readerScrollView
+        let scroll = webView.scrollView
         let maxY = max(0, scroll.contentSize.height - scroll.bounds.height)
         let y = min(max(0, scroll.contentOffset.y + dy), maxY)
         scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: animated)
         scroll.layoutIfNeeded()
     }
-    /// True if the HTML document itself is scrolling (nested) instead of only the outer scroller.
+    /// True when document CSS uses overflow scroll/auto (expected for WK-owned scrolling).
     func debugProbeNestedDocumentScroll(completion: @escaping (Bool) -> Void) {
         let js = """
         (function(){

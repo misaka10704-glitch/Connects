@@ -8,20 +8,15 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     weak var delegate: StudyDocumentPickerDelegate?
 
     private enum OpenKind {
-        case pdf
-        case markdown
+        case reading
         case text
-        case markdownImages
         case rebind(documentID: String)
     }
 
-    private let openRowCount = 3
+    private let openRowCount = 2
     private let tableView = UITableView(frame: .zero, style: .grouped)
     private var documents: [StudyDocument] = []
-    private var pendingOpenKind: OpenKind = .pdf
-    private var isImportingMarkdown = false
-    private var pendingMarkdownURL: URL?
-    private var pendingAccessRoot: URL?
+    private var pendingOpenKind: OpenKind = .reading
     private var rowLongPress: UILongPressGestureRecognizer?
     private let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -127,16 +122,12 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         cell.detailTextLabel?.textColor = DSTheme.c.textSecondary
         cell.accessoryType = .none
         if indexPath.row == 0 {
-            cell.textLabel?.text = "打开 PDF…"
-            cell.detailTextLabel?.text = "直接编辑原文件（划线与注释写回 PDF）"
+            cell.textLabel?.text = "打开阅读…"
+            cell.detailTextLabel?.text = "打开 PDF（划线与注释写回原文件）"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else if indexPath.row == 1 {
-            cell.textLabel?.text = "打开 Markdown…"
-            cell.detailTextLabel?.text = "直接编辑原 .md；有图可再选 assets"
-            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
-        } else if indexPath.row == 2 {
             cell.textLabel?.text = "打开代码 / 文本…"
-            cell.detailTextLabel?.text = "优先 .v；亦支持 .c / .py / .txt / .md（Markdown 源码+预览）"
+            cell.detailTextLabel?.text = "优先 .v；亦支持 .c / .py / .txt / .md（Markdown 预览+编辑）"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
         } else {
             let doc = documents[indexPath.row - openRowCount]
@@ -153,14 +144,10 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if indexPath.row == 0 {
-            presentOpenPicker(kind: .pdf)
+            presentOpenPicker(kind: .reading)
             return
         }
         if indexPath.row == 1 {
-            presentOpenPicker(kind: .markdown)
-            return
-        }
-        if indexPath.row == 2 {
             presentOpenPicker(kind: .text)
             return
         }
@@ -271,35 +258,36 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     private func presentOpenPicker(kind: OpenKind) {
         pendingOpenKind = kind
         let types: [String]
-        let multi: Bool
         let sourceRow: Int
         switch kind {
-        case .pdf, .rebind:
+        case .reading:
             types = ["com.adobe.pdf", "public.item", "public.data"]
-            multi = false
             sourceRow = 0
-        case .markdown:
+        case .rebind:
+            types = [
+                "com.adobe.pdf",
+                "public.plain-text",
+                "public.source-code",
+                "public.text",
+                "public.item",
+                "public.data"
+            ]
+            sourceRow = 0
+        case .text:
             types = [
                 "net.daringfireball.markdown",
                 "public.markdown",
                 "public.plain-text",
+                "public.source-code",
                 "public.text",
-                "public.item"
+                "public.item",
+                "public.data"
             ]
-            multi = false
-            sourceRow = 1
-        case .text:
-            types = ["public.plain-text", "public.source-code", "public.text", "public.item", "public.data"]
-            multi = false
-            sourceRow = 2
-        case .markdownImages:
-            types = ["public.image", "public.png", "public.jpeg", "com.compuserve.gif", "public.tiff"]
-            multi = true
             sourceRow = 1
         }
         let picker = UIDocumentPickerViewController(documentTypes: types, in: .open)
         picker.delegate = self
-        picker.allowsMultipleSelection = multi
+        picker.allowsMultipleSelection = false
         if let pop = picker.popoverPresentationController {
             pop.sourceView = tableView
             pop.sourceRect = tableView.rectForRow(at: IndexPath(row: sourceRow, section: 0))
@@ -308,22 +296,13 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard !urls.isEmpty else { return }
+        guard let url = urls.first else { return }
         switch pendingOpenKind {
-        case .pdf:
-            guard let url = urls.first else { return }
-            openInPlace(url)
+        case .reading:
+            handlePickedReading(url)
         case .text:
-            guard let url = urls.first else { return }
             openInPlace(url, forceText: true)
-        case .markdown:
-            guard let url = urls.first else { return }
-            handlePickedMarkdown(url)
-        case .markdownImages:
-            guard let md = pendingMarkdownURL, let root = pendingAccessRoot else { return }
-            beginMarkdownImport(markdownURL: md, accessRoot: root, extraImages: urls)
         case .rebind(let documentID):
-            guard let url = urls.first else { return }
             do {
                 let doc = try StudyDocumentStore.shared.rebindBookmark(documentID: documentID, from: url)
                 delegate?.studyDocumentPicker(self, didSelect: doc.id)
@@ -333,11 +312,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         }
     }
 
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        if case .markdownImages = pendingOpenKind, let md = pendingMarkdownURL, let root = pendingAccessRoot {
-            beginMarkdownImport(markdownURL: md, accessRoot: root, extraImages: [])
-        }
-    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {}
 
     private func openInPlace(_ url: URL, forceText: Bool = false) {
         do {
@@ -348,95 +323,18 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         }
     }
 
-    private func handlePickedMarkdown(_ url: URL) {
-        pendingMarkdownURL = url
-        pendingAccessRoot = url.deletingLastPathComponent()
-
-        let needsImages = MarkdownStudyImporter.referencesLocalImages(in: url)
-        guard pendingAccessRoot != nil else { return }
-        if !needsImages {
-            openInPlace(url)
+    private func handlePickedReading(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        guard StudyDocument.kind(forExtension: ext) == .pdf else {
+            let err = NSError(
+                domain: "Connects.Study",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "阅读入口仅支持 PDF。Markdown 请用「打开代码 / 文本」。"]
+            )
+            presentOpenError(err)
             return
         }
-
-        let alert = UIAlertController(
-            title: "这篇引用了本地插图",
-            message: """
-            可直接打开原文件编辑正文；若需在阅读器中预览插图，可再选 assets（按文件名匹配，会复制进应用内副本）。
-
-            推荐：无图预览时直接打开原文件。
-            """,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "打开原文件", style: .default) { [weak self] _ in
-            guard let url = self?.pendingMarkdownURL else { return }
-            self?.pendingMarkdownURL = nil
-            self?.pendingAccessRoot = nil
-            self?.openInPlace(url)
-        })
-        alert.addAction(UIAlertAction(title: "选择插图并导入副本", style: .default) { [weak self] _ in
-            self?.presentOpenPicker(kind: .markdownImages)
-        })
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
-            self?.pendingMarkdownURL = nil
-            self?.pendingAccessRoot = nil
-        })
-        present(alert, animated: true)
-    }
-
-    private func beginMarkdownImport(markdownURL: URL, accessRoot: URL, extraImages: [URL]) {
-        guard !isImportingMarkdown else { return }
-        isImportingMarkdown = true
-        setMarkdownImportBusy(true)
-        StudyDocumentStore.shared.importMarkdown(
-            markdownURL: markdownURL,
-            accessRoot: accessRoot,
-            extraImageFiles: extraImages
-        ) { [weak self] result in
-            guard let self else { return }
-            self.isImportingMarkdown = false
-            self.setMarkdownImportBusy(false)
-            self.pendingMarkdownURL = nil
-            self.pendingAccessRoot = nil
-            switch result {
-            case .failure(let error):
-                self.presentOpenError(error)
-            case .success(let outcome):
-                let docID = outcome.document.id
-                let finish = { [weak self] in
-                    guard let self else { return }
-                    self.delegate?.studyDocumentPicker(self, didSelect: docID)
-                }
-                if outcome.missingImagePaths.isEmpty {
-                    finish()
-                } else {
-                    let sample = outcome.missingImagePaths.prefix(5).joined(separator: "\n")
-                    let more = outcome.missingImagePaths.count > 5 ? "\n…" : ""
-                    let alert = UIAlertController(
-                        title: "已打开（仍有图未匹配）",
-                        message: """
-                        未匹配 \(outcome.missingImagePaths.count) 张：
-                        \(sample)\(more)
-                        """,
-                        preferredStyle: .alert
-                    )
-                    alert.addAction(UIAlertAction(title: "好", style: .default) { _ in finish() })
-                    self.present(alert, animated: true)
-                }
-            }
-        }
-    }
-
-    private func setMarkdownImportBusy(_ busy: Bool) {
-        tableView.isUserInteractionEnabled = !busy
-        navigationItem.leftBarButtonItem?.isEnabled = !busy
-        if busy {
-            let indicator = UIActivityIndicatorView(style: .medium)
-            indicator.startAnimating()
-            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
-        } else {
-            navigationItem.rightBarButtonItem = nil
-        }
+        openInPlace(url)
     }
 
     private func presentOpenError(_ error: Error) {

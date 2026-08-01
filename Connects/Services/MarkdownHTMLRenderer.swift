@@ -466,13 +466,12 @@ enum MarkdownHTMLRenderer {
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
         <link rel="stylesheet" href="katex/katex.min.css"/>
         <style>
-          /* Native UIScrollView scrolls the page. Avoid touch-action / nested overflow —
-             those force WebKit async touch IPC and feel like "划完才动". */
+          /* Content defines height; WKWebView.scrollView owns finger scrolling.
+             Avoid height:100% + overflow:auto — that often yields a non-scrollable viewport. */
           html, body { margin:0; padding:0; background:\(bg); color:\(fg);
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
             font-size:\(String(format: "%.1f", fontSize))px; line-height:1.7;
-            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
-            height:auto; min-height:0; overflow:visible; }
+            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%; }
           #c { padding:18px 22px 64px; max-width:52em; margin:0 auto; display:flow-root; }
           #c h1,#c h2,#c h3,#c h4 { font-weight:600; line-height:1.3; margin:1em 0 0.4em; }
           #c h1 { font-size:1.45em; } #c h2 { font-size:1.25em; }
@@ -486,12 +485,12 @@ enum MarkdownHTMLRenderer {
           #c code { font-family:Menlo, Monaco, monospace; font-size:0.9em;
             background:rgba(127,127,127,0.16); padding:0.12em 0.35em; border-radius:4px; }
           #c pre { background:rgba(127,127,127,0.12); padding:12px 14px; border-radius:10px;
-            margin:0.75em 0; overflow:visible; }
+            overflow-x:auto; margin:0.75em 0; -webkit-overflow-scrolling:touch; }
           #c pre code { background:transparent; padding:0; white-space:pre-wrap; word-break:break-word; tab-size:4; }
           #c blockquote { margin:0.65em 0; padding:0.1em 0 0.1em 0.9em;
             border-left:3px solid \(border); color:\(sec); }
           #c table { border-collapse:collapse; width:100%; margin:0.8em 0; font-size:0.95em;
-            table-layout:fixed; word-break:break-word; }
+            table-layout:fixed; word-break:break-word; display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
           #c th, #c td { border:1px solid \(border); padding:7px 10px; text-align:left; }
           #c th { background:rgba(127,127,127,0.1); font-weight:600; }
           #c hr { border:none; border-top:1px solid \(border); margin:1em 0; }
@@ -505,7 +504,7 @@ enum MarkdownHTMLRenderer {
             background:rgba(127,127,127,0.10); text-decoration:none;
             font-size:0.92em; line-height:1.4;
           }
-          .katex-display { margin:0.75em 0; overflow:visible; }
+          .katex-display { margin:0.75em 0; overflow-x:auto; overflow-y:hidden; }
           img, video { max-width:100%; height:auto; }
         </style>
         <script src="markdown/marked.min.js"></script>
@@ -627,11 +626,10 @@ enum MarkdownHTMLRenderer {
               el.textContent = md;
             }
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.studyReady) {
-              // Double-rAF so KaTeX/layout settle before native measures height.
               requestAnimationFrame(function() {
                 requestAnimationFrame(function() {
                   try { void el.offsetHeight; } catch (e2) {}
-                  window.webkit.messageHandlers.studyReady.postMessage(__measure());
+                  window.webkit.messageHandlers.studyReady.postMessage(1);
                 });
               });
             }
@@ -661,17 +659,12 @@ enum MarkdownHTMLRenderer {
             }
             return JSON.stringify(out);
           };
-          // Returns Y in document space for the outer native UIScrollView (WK scroll disabled).
+          // Scroll heading into view inside the WKWebView document scroller.
           window.__connectsScrollToHeading = function(id) {
             var el = document.getElementById(id);
-            if (!el) return -1;
-            var y = 0;
-            var n = el;
-            while (n) {
-              y += n.offsetTop || 0;
-              n = n.offsetParent;
-            }
-            return Math.max(0, Math.floor(y));
+            if (!el) return false;
+            el.scrollIntoView(true);
+            return true;
           };
           window.__connectsReady = true;
         </script>

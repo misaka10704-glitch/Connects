@@ -271,6 +271,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         previewWebView = WKWebView(frame: .zero, configuration: config)
         previewWebView.translatesAutoresizingMaskIntoConstraints = false
         ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.c.background)
+        previewWebView.scrollView.isScrollEnabled = true
         previewWebView.isHidden = true
         previewWebView.navigationDelegate = self
         view.addSubview(previewWebView)
@@ -412,9 +413,16 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         spinner.startAnimating()
         DispatchQueue.global(qos: .userInitiated).async {
             let text = StudyDocumentStore.shared.textContent(for: documentID) ?? ""
-            let lang = StudyDocumentStore.shared.document(id: documentID)?.textLanguage ?? .plain
             DispatchQueue.main.async {
                 guard self.loadGeneration == gen else { return }
+                let doc = StudyDocumentStore.shared.document(id: documentID)
+                var lang = doc?.textLanguage ?? .plain
+                // Legacy StudyDocumentKind.markdown (or missing language) → Markdown preview/edit.
+                let path = doc?.displayPath ?? doc?.localRelativePath ?? ""
+                let pathExt = (path as NSString).pathExtension
+                if doc?.kind == .markdown || StudyTextLanguage.infer(fromExtension: pathExt) == .markdown {
+                    lang = .markdown
+                }
                 self.language = lang
                 self.isDirty = false
                 self.applyHighlightedText(text)
@@ -470,10 +478,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     func captureReadingProgress() -> StudyProgress? {
         guard currentDocumentID != nil else { return nil }
+        let scroll: UIScrollView = showsMarkdownPreview ? previewWebView.scrollView : textView
         return StudyProgress(
             pageIndex: 0,
-            pageOffsetY: textView.contentOffset.y,
-            pageOffsetX: textView.contentOffset.x,
+            pageOffsetY: scroll.contentOffset.y,
+            pageOffsetX: scroll.contentOffset.x,
             scaleFactor: nil,
             updatedAt: Date()
         )
@@ -486,8 +495,14 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     func realignVisibleViewport(using progress: StudyProgress?) {
         guard let y = progress?.pageOffsetY else { return }
-        textView.setContentOffset(CGPoint(x: 0, y: max(0, y)), animated: false)
-        syncLineNumberOffset()
+        if showsMarkdownPreview {
+            let scroll = previewWebView.scrollView
+            let maxY = max(0, scroll.contentSize.height - scroll.bounds.height)
+            scroll.setContentOffset(CGPoint(x: 0, y: min(max(0, y), maxY)), animated: false)
+        } else {
+            textView.setContentOffset(CGPoint(x: 0, y: max(0, y)), animated: false)
+            syncLineNumberOffset()
+        }
     }
 
     func setReaderSurfaceActiveForCapture(_ active: Bool) {
@@ -876,12 +891,21 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         gutterView.isHidden = preview
         gutterSeparator.isHidden = preview
         lineNumberView.isHidden = preview
+        if preview {
+            previewWebView.scrollView.isScrollEnabled = true
+            view.bringSubviewToFront(previewWebView)
+            view.bringSubviewToFront(spinner)
+            view.bringSubviewToFront(topBar)
+            view.bringSubviewToFront(topBarSeparator)
+        }
     }
 
     private func refreshMarkdownPreview(text: String) {
         loadPreviewShellIfNeeded()
         pendingPreviewMarkdown = text
         tryInjectPendingPreview()
+        // Ensure WK scroll is live after shell (re)load / theme.
+        previewWebView.scrollView.isScrollEnabled = true
     }
 
     private func loadPreviewShellIfNeeded() {
@@ -2388,6 +2412,7 @@ extension TextCodeEditorViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard webView === previewWebView else { return }
         previewShellLoaded = true
+        previewWebView.scrollView.isScrollEnabled = true
         tryInjectPendingPreview()
     }
 

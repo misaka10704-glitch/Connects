@@ -18,7 +18,7 @@ enum ConnectsWebKit {
         return config
     }
 
-    /// Tune scrolling / compositing for long Study documents (single native scroller).
+    /// Tune scrolling / compositing for long Study documents (WKWebView owns scroll).
     static func applyReadingSurfaceTuning(_ webView: WKWebView, background: UIColor) {
         webView.isOpaque = true
         webView.backgroundColor = background
@@ -30,6 +30,7 @@ enum ConnectsWebKit {
         }
 
         let scroll = webView.scrollView
+        scroll.isScrollEnabled = true
         scroll.backgroundColor = background
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.alwaysBounceVertical = true

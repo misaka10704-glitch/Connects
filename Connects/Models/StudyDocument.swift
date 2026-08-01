@@ -177,8 +177,10 @@ struct StudyDocument: Codable, Equatable {
     static func kind(forExtension ext: String) -> StudyDocumentKind? {
         switch ext.lowercased() {
         case "pdf": return .pdf
-        case "md", "markdown": return .markdown
-        case "v", "vh", "sv", "svh", "c", "h", "cpp", "cc", "hpp", "py", "txt": return .text
+        // Markdown opens in the code editor (preview + edit), not the PDF reading path.
+        case "md", "markdown",
+             "v", "vh", "sv", "svh", "c", "h", "cpp", "cc", "hpp", "py", "txt":
+            return .text
         default: return nil
         }
     }
