@@ -572,61 +572,10 @@ final class StudyWorkspaceStore {
     }
 
     /// Names for the Study title / options switcher.
-    /// Same-directory leaf names from **disk**. Never treat "already opened docs" as a successful listing.
+    /// Names for the Study title / options switcher — same-directory leaf names only.
     func listSwitcherFileNames(ofDocumentID documentID: String?, in workspaceID: String) -> [String] {
-        if let documentID {
-            _ = try? StudyDocumentStore.shared.resolvedURL(forID: documentID)
-        }
-        _ = try? folderURL(for: workspaceID)
-
-        if let documentID,
-           let disk = listSiblingFileNamesFromDisk(ofDocumentID: documentID, in: workspaceID) {
-            return Self.uniqueLeafNames(disk)
-        }
-
-        // Last resort: previously opened docs — keep full relative/display path when leaf
-        // names collide (two spi_master.v in different folders).
-        var names: [String] = []
-        var seenLeaf = Set<String>()
-        var leafCounts: [String: Int] = [:]
-        if let ws = workspace(id: workspaceID) {
-            for id in ws.documentIDs {
-                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { continue }
-                let leaf = URL(fileURLWithPath: path).lastPathComponent
-                leafCounts[leaf, default: 0] += 1
-            }
-            for id in ws.documentIDs {
-                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { continue }
-                let leaf = URL(fileURLWithPath: path).lastPathComponent
-                let label: String = {
-                    if leafCounts[leaf, default: 0] > 1,
-                       let root = try? folderURL(for: workspaceID),
-                       let rel = Self.relativePath(of: URL(fileURLWithPath: path), under: root) {
-                        return rel
-                    }
-                    return leaf
-                }()
-                if seenLeaf.insert(label).inserted {
-                    names.append(label)
-                }
-            }
-        }
-        if let documentID,
-           let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath {
-            let leaf = URL(fileURLWithPath: path).lastPathComponent
-            let label: String = {
-                if let root = try? folderURL(for: workspaceID),
-                   let rel = Self.relativePath(of: URL(fileURLWithPath: path), under: root),
-                   names.contains(where: { ($0 as NSString).lastPathComponent == leaf && $0 != rel }) {
-                    return rel
-                }
-                return leaf
-            }()
-            if !names.contains(label) {
-                names.append(label)
-            }
-        }
-        return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        guard let documentID else { return [] }
+        return listSiblingFileNames(ofDocumentID: documentID, in: workspaceID)
     }
 
     private static func uniqueLeafNames(_ names: [String]) -> [String] {
@@ -685,7 +634,9 @@ final class StudyWorkspaceStore {
         return fallbackOpenedLeafNames(documentID: documentID, workspaceID: workspaceID)
     }
 
-    /// Disk listing of same-folder study files. `nil` = enumeration failed (do not treat as "only opened files").
+    /// Disk listing of same-folder study files. `nil` = enumeration failed.
+    /// Always lists the **current file's parent directory**. Project-folder grant is only
+    /// warmed for security scope — never used as the listing root identity.
     func listSiblingFileNamesFromDisk(ofDocumentID documentID: String, in workspaceID: String) -> [String]? {
         let fileURL: URL? = {
             if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath,
@@ -699,40 +650,46 @@ final class StudyWorkspaceStore {
         }()
         guard let fileURL else { return nil }
 
-        // Warm covering grant / workspace security scope first.
-        let coveringID = workspaceWithDirectoryAccess(coveringFilePath: fileURL.path)?.id ?? workspaceID
-        let root = try? folderURL(for: coveringID)
+        // Warm grant scope if it covers this file (authorization only).
+        if let grantID = workspaceWithDirectoryAccess(coveringFilePath: fileURL.path)?.id
+            ?? primaryGrantedWorkspace()?.id {
+            _ = try? folderURL(for: grantID)
+        } else {
+            _ = try? folderURL(for: workspaceID)
+        }
 
         let fileAccess = fileURL.startAccessingSecurityScopedResource()
         defer { if fileAccess { fileURL.stopAccessingSecurityScopedResource() } }
 
-        var parents: [URL] = []
-        if let root, let scoped = Self.parentDirectoryURL(of: fileURL, underGrantedRoot: root) {
-            parents.append(scoped)
-        }
-        let rawParent = fileURL.deletingLastPathComponent()
-        if parents.contains(where: { Self.normalizedPath($0.path) == Self.normalizedPath(rawParent.path) }) == false {
-            parents.append(rawParent)
+        let parent = fileURL.deletingLastPathComponent()
+        if Self.isAppInternalPath(parent.path) {
+            return nil
         }
 
-        for parent in parents {
-            // Imported copies live under ConnectsStudy/<id>/ — listing that folder is useless.
-            if Self.isAppInternalPath(parent.path) {
-                continue
-            }
-            if let names = Self.shallowStudyFileNamesViaURL(in: parent) {
+        // Prefer listing via grant-derived parent URL when the file sits under a grant
+        // (keeps security scope on iOS); otherwise list the raw parent path.
+        var parents: [URL] = [parent]
+        if let grant = workspaceWithDirectoryAccess(coveringFilePath: fileURL.path)
+            ?? primaryGrantedWorkspace(),
+           let root = try? folderURL(for: grant.id),
+           let scoped = Self.parentDirectoryURL(of: fileURL, underGrantedRoot: root) {
+            parents.insert(scoped, at: 0)
+        }
+
+        for dir in parents {
+            if let names = Self.shallowStudyFileNamesViaURL(in: dir) {
                 return names.isEmpty ? [fileURL.lastPathComponent] : names
             }
             var coordinated: [String]?
             var coordError: NSError?
-            NSFileCoordinator().coordinate(readingItemAt: parent, options: [], error: &coordError) { url in
+            NSFileCoordinator().coordinate(readingItemAt: dir, options: [], error: &coordError) { url in
                 coordinated = Self.shallowStudyFileNamesViaURL(in: url)
                     ?? Self.shallowStudyFileNames(in: url)
             }
             if let names = coordinated {
                 return names.isEmpty ? [fileURL.lastPathComponent] : names
             }
-            if let names = Self.shallowStudyFileNames(in: parent) {
+            if let names = Self.shallowStudyFileNames(in: dir) {
                 return names.isEmpty ? [fileURL.lastPathComponent] : names
             }
         }
@@ -768,19 +725,32 @@ final class StudyWorkspaceStore {
     }
 
     private func fallbackOpenedLeafNames(documentID: String, workspaceID: String) -> [String] {
+        // Only siblings that share the *current file's parent* — never dump the whole grant/workspace.
+        _ = workspaceID
+        let currentParent: String? = {
+            guard let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath,
+                  !path.isEmpty else { return nil }
+            return Self.normalizedPath(URL(fileURLWithPath: path).deletingLastPathComponent().path)
+        }()
+
         var names: [String] = []
-        if let ws = workspace(id: workspaceID) {
-            names = ws.documentIDs.compactMap { id in
-                StudyDocumentStore.shared.document(id: id)?.displayPath.map {
-                    URL(fileURLWithPath: $0).lastPathComponent
-                }
-            }
+        var seen = Set<String>()
+        let consider: (String) -> Void = { path in
+            let url = URL(fileURLWithPath: path)
+            let parent = Self.normalizedPath(url.deletingLastPathComponent().path)
+            if let currentParent, parent != currentParent { return }
+            let leaf = url.lastPathComponent
+            if seen.insert(leaf).inserted { names.append(leaf) }
         }
+
         if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath {
-            let leaf = URL(fileURLWithPath: path).lastPathComponent
-            if !names.contains(leaf) { names.append(leaf) }
+            consider(path)
         }
-        return Self.uniqueLeafNames(names)
+        for doc in StudyDocumentStore.shared.recentDocuments(limit: 200) {
+            guard let path = doc.displayPath, !path.isEmpty else { continue }
+            consider(path)
+        }
+        return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     /// Path-string listing (may fail under sandbox even when URL listing works).
@@ -820,6 +790,131 @@ final class StudyWorkspaceStore {
     func fileURL(relativePath: String, in workspaceID: String) throws -> URL {
         let folder = try folderURL(for: workspaceID)
         return Self.absoluteURL(relativePath: relativePath, under: folder)
+    }
+
+    /// Resolve a menu name (leaf or relative path) to a real on-disk URL.
+    /// Prefers already-registered displayPaths so we don't invent `Connects/spi_master.v`
+    /// when the real file lives under an external project folder.
+    func resolveOpenableFileURL(
+        named name: String,
+        in workspaceID: String,
+        nearDocumentID: String? = nil
+    ) throws -> URL {
+        let leaf = (name as NSString).lastPathComponent
+        let normalizedName = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // 1) Exact / suffix match against registered docs in this workspace.
+        if let ws = workspace(id: workspaceID) {
+            for id in ws.documentIDs {
+                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath,
+                      !path.isEmpty else { continue }
+                let fileURL = URL(fileURLWithPath: path)
+                let pathNorm = Self.normalizedPath(path)
+                if pathNorm.hasSuffix("/" + Self.normalizedPath(normalizedName))
+                    || pathNorm == Self.normalizedPath(normalizedName)
+                    || fileURL.lastPathComponent.compare(leaf, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                    if FileManager.default.fileExists(atPath: path) {
+                        // For leaf-only names, prefer the file in the same folder as the current doc.
+                        if !normalizedName.contains("/"),
+                           let nearID = nearDocumentID,
+                           let nearPath = StudyDocumentStore.shared.document(id: nearID)?.displayPath {
+                            let nearParent = Self.normalizedPath(
+                                URL(fileURLWithPath: nearPath).deletingLastPathComponent().path
+                            )
+                            let candidateParent = Self.normalizedPath(fileURL.deletingLastPathComponent().path)
+                            if nearParent == candidateParent {
+                                return fileURL
+                            }
+                            // Keep looking for a same-folder match; remember first hit as fallback.
+                            continue
+                        }
+                        return fileURL
+                    }
+                }
+            }
+            // Second pass: leaf match anywhere in workspace (after same-folder preference failed).
+            if !normalizedName.contains("/") {
+                for id in ws.documentIDs {
+                    guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath,
+                          !path.isEmpty else { continue }
+                    let fileURL = URL(fileURLWithPath: path)
+                    if fileURL.lastPathComponent.compare(leaf, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame,
+                       FileManager.default.fileExists(atPath: path) {
+                        return fileURL
+                    }
+                }
+            }
+        }
+
+        // 2) Global registry: relative path or unique leaf.
+        var leafHits: [URL] = []
+        for doc in StudyDocumentStore.shared.recentDocuments(limit: 400) {
+            guard let path = doc.displayPath, !path.isEmpty else { continue }
+            let fileURL = URL(fileURLWithPath: path)
+            let pathNorm = Self.normalizedPath(path)
+            if pathNorm.hasSuffix("/" + Self.normalizedPath(normalizedName))
+                || pathNorm == Self.normalizedPath(normalizedName) {
+                if FileManager.default.fileExists(atPath: path) { return fileURL }
+            }
+            if fileURL.lastPathComponent.compare(leaf, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame,
+               FileManager.default.fileExists(atPath: path) {
+                leafHits.append(fileURL)
+            }
+        }
+        if normalizedName.contains("/"), let hit = leafHits.first(where: {
+            Self.normalizedPath($0.path).hasSuffix("/" + Self.normalizedPath(normalizedName))
+        }) {
+            return hit
+        }
+
+        // 3) Build path candidates from workspace root + current file parent.
+        var candidates: [URL] = []
+        let root = try? folderURL(for: workspaceID)
+        if let root {
+            candidates.append(Self.absoluteURL(relativePath: normalizedName, under: root))
+            if !normalizedName.contains("/") {
+                candidates.append(root.appendingPathComponent(leaf))
+            }
+        }
+        if let nearID = nearDocumentID {
+            let nearURL: URL? = {
+                if let path = StudyDocumentStore.shared.document(id: nearID)?.displayPath, !path.isEmpty {
+                    return URL(fileURLWithPath: path)
+                }
+                return try? StudyDocumentStore.shared.resolvedURL(forID: nearID)
+            }()
+            if let nearURL {
+                candidates.append(nearURL.deletingLastPathComponent().appendingPathComponent(leaf))
+                if let root,
+                   let rel = Self.relativePath(of: nearURL, under: root) {
+                    let parentRel = (rel as NSString).deletingLastPathComponent
+                    let combined = (parentRel.isEmpty || parentRel == ".")
+                        ? leaf
+                        : (parentRel as NSString).appendingPathComponent(leaf)
+                    candidates.append(Self.absoluteURL(relativePath: combined, under: root))
+                }
+            }
+        }
+        // Same-folder leaf preference among global hits.
+        if let nearID = nearDocumentID,
+           let nearPath = StudyDocumentStore.shared.document(id: nearID)?.displayPath {
+            let nearParent = Self.normalizedPath(
+                URL(fileURLWithPath: nearPath).deletingLastPathComponent().path
+            )
+            if let sameFolder = leafHits.first(where: {
+                Self.normalizedPath($0.deletingLastPathComponent().path) == nearParent
+            }) {
+                return sameFolder
+            }
+        }
+        if leafHits.count == 1 { return leafHits[0] }
+
+        for url in candidates {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        throw StudyWorkspaceError.notFound
     }
 
     /// Relative path of a document inside the workspace, if it lives there.

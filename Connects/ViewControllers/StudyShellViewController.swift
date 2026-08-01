@@ -1913,14 +1913,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
             return
         }
 
-        // Bind project folder synchronously so listing can use workspace + disk.
-        if conv.isWorkspaceStudySession != true,
-           let path = StudyDocumentStore.shared.document(id: docID)?.displayPath,
-           !path.isEmpty {
-            openFileBindingParentWorkspace(fileURL: URL(fileURLWithPath: path), showSwitcher: false)
-        }
-
-        let bound = ConversationStore.shared.currentConversation
+        // Warm project-folder *authorization* only (security scope). Do NOT rebind the
+        // conversation / menu identity to the grant root — that mixes grant with the
+        // current file's folder.
         let filePath: String = {
             if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath, !path.isEmpty {
                 return path
@@ -1930,37 +1925,18 @@ extension StudyShellViewController: StudyReadingContextProviding {
             }
             return ""
         }()
-        // Always prefer the widest covering grant (Workspace/), never the leaf DSP(NJU) bind.
-        let grant = filePath.isEmpty
-            ? StudyWorkspaceStore.shared.primaryGrantedWorkspace()
-            : StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: filePath)
-        let wsID = grant?.id
-            ?? bound?.activeStudyWorkspaceID
-            ?? (filePath.isEmpty ? nil : StudyWorkspaceStore.shared.workspaceContaining(filePath: filePath)?.id)
+        if !filePath.isEmpty,
+           let grant = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: filePath)
+            ?? StudyWorkspaceStore.shared.primaryGrantedWorkspace() {
+            _ = try? StudyWorkspaceStore.shared.folderURL(for: grant.id)
+        }
+
+        // Session workspace is only for agent / bookkeeping — file menu uses the file's parent.
+        let sessionWSID = conv.activeStudyWorkspaceID
             ?? StudyWorkspaceStore.shared.defaultWorkspace().id
 
-        // If conversation still points at a leaf workspace, silently reattach to the wider grant.
-        if let grant,
-           bound?.studyWorkspaceID != grant.id,
-           let convID = bound?.id {
-            ConversationStore.shared.updateConversation(id: convID) { draft in
-                draft.studyWorkspaceID = grant.id
-                draft.studySessionKind = .workspace
-                draft.studyDocumentID = docID
-            }
-            StudyWorkspaceStore.shared.addDocument(docID, to: grant.id)
-        }
-
-        let ws = StudyWorkspaceStore.shared.workspace(id: wsID) ?? StudyWorkspaceStore.shared.defaultWorkspace()
-        _ = try? StudyWorkspaceStore.shared.folderURL(for: ws.id)
-
-        // Disk siblings when possible; otherwise already-opened names (never auto-push folder picker —
-        // that looped when listing still failed after grant / cancel).
-        var names = StudyWorkspaceStore.shared.listSwitcherFileNames(ofDocumentID: docID, in: ws.id)
-        if let disk = StudyWorkspaceStore.shared.listSiblingFileNamesFromDisk(ofDocumentID: docID, in: ws.id),
-           disk.count > names.count {
-            names = disk
-        }
+        // Options = same-directory siblings of the *current file* (not the grant root tree).
+        var names = StudyWorkspaceStore.shared.listSiblingFileNames(ofDocumentID: docID, in: sessionWSID)
 
         if names.isEmpty {
             if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath {
@@ -1972,27 +1948,35 @@ extension StudyShellViewController: StudyReadingContextProviding {
             }
         }
 
-        let activeName: String? = {
-            StudyWorkspaceStore.shared.relativePath(ofDocumentID: docID, in: ws.id)
-                ?? StudyDocumentStore.shared.document(id: docID).flatMap { doc in
-                    doc.displayPath.map { URL(fileURLWithPath: $0).lastPathComponent }
-                }
+        let activeLeaf: String? = {
+            if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path).lastPathComponent
+            }
+            return try? StudyDocumentStore.shared.resolvedURL(forID: docID).lastPathComponent
         }()
+        let menuTitle: String = {
+            if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
+            }
+            if let url = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
+                return url.deletingLastPathComponent().lastPathComponent
+            }
+            return StudyWorkspaceStore.shared.workspace(id: sessionWSID)?.title ?? "文件"
+        }()
+
         var items: [ConnectsMenuItem] = []
         for name in names {
-            let fileName = name
+            let fileName = (name as NSString).lastPathComponent
             let isPDF = fileName.lowercased().hasSuffix(".pdf")
-            let leaf = (fileName as NSString).lastPathComponent
-            let activeLeaf = activeName.map { ($0 as NSString).lastPathComponent }
             items.append(ConnectsMenuItem(
                 title: fileName,
                 icon: isPDF ? .book : .edit,
-                isSelected: fileName == activeName || leaf == activeName || leaf == activeLeaf,
+                isSelected: fileName == activeLeaf,
                 longPressHandler: { [weak self] in
-                    self?.presentWorkspaceFileActions(named: fileName, workspaceID: ws.id)
+                    self?.presentWorkspaceFileActions(named: fileName, workspaceID: sessionWSID)
                 },
                 handler: { [weak self] in
-                    self?.openWorkspaceFileNamed(fileName, workspaceID: ws.id)
+                    self?.openSiblingFileNamed(fileName)
                 }
             ))
         }
@@ -2008,7 +1992,7 @@ extension StudyShellViewController: StudyReadingContextProviding {
             ?? textEditorVC.view
         ConnectsMenu.present(
             from: self,
-            title: ws.title,
+            title: menuTitle,
             items: items,
             sourceView: anchor,
             sourceRect: sourceView?.bounds ?? fallbackRect,
@@ -2377,47 +2361,63 @@ extension StudyShellViewController: StudyReadingContextProviding {
         present(picker, animated: true)
     }
 
-    private func openWorkspaceFileNamed(_ name: String, workspaceID: String) {
+    /// Open a leaf file in the *same directory as the current study file*.
+    /// Project-folder grant is only used to warm security scope — never as the path root.
+    private func openSiblingFileNamed(_ name: String) {
+        let leaf = (name as NSString).lastPathComponent
+        guard let nearID = ConversationStore.shared.currentConversation?.studyDocumentID else {
+            ConnectsToast.show("没有当前文件。", in: view, duration: 1.6)
+            return
+        }
+        let nearURL: URL? = {
+            if let path = StudyDocumentStore.shared.document(id: nearID)?.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path)
+            }
+            return try? StudyDocumentStore.shared.resolvedURL(forID: nearID)
+        }()
+        guard let nearURL else {
+            ConnectsToast.show("无法定位当前文件目录。", in: view, duration: 1.8)
+            return
+        }
+
+        // Authorization only: keep grant access alive if it covers this path.
+        if let grant = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: nearURL.path)
+            ?? StudyWorkspaceStore.shared.primaryGrantedWorkspace() {
+            _ = try? StudyWorkspaceStore.shared.folderURL(for: grant.id)
+        }
+
+        let url = nearURL.deletingLastPathComponent().appendingPathComponent(leaf)
         do {
-            let root = try StudyWorkspaceStore.shared.folderURL(for: workspaceID)
-            let url: URL
-            if name.contains("/") {
-                url = try StudyWorkspaceStore.shared.fileURL(relativePath: name, in: workspaceID)
-            } else {
-                let docID = ConversationStore.shared.currentConversation?.studyDocumentID
-                let fileURL: URL? = {
-                    if let docID, let resolved = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
-                        return resolved
-                    }
-                    if let docID,
-                       let path = StudyDocumentStore.shared.document(id: docID)?.displayPath,
-                       !path.isEmpty {
-                        return URL(fileURLWithPath: path)
-                    }
-                    return nil
-                }()
-                if let fileURL,
-                   let rel = StudyWorkspaceStore.relativePath(of: fileURL, under: root) {
-                    let parentRel = (rel as NSString).deletingLastPathComponent
-                    let combined = (parentRel.isEmpty || parentRel == ".")
-                        ? name
-                        : (parentRel as NSString).appendingPathComponent(name)
-                    url = try StudyWorkspaceStore.shared.fileURL(relativePath: combined, in: workspaceID)
-                } else if let fileURL {
-                    url = fileURL.deletingLastPathComponent().appendingPathComponent(name)
-                } else {
-                    url = root.appendingPathComponent(name)
+            if let existing = StudyDocumentStore.shared.documentMatchingPath(url.path) {
+                if let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID {
+                    StudyWorkspaceStore.shared.addDocument(existing.id, to: wsID)
                 }
+                switchActiveDocument(to: existing.id)
+                return
+            }
+            if !FileManager.default.fileExists(atPath: url.path) {
+                ConnectsToast.show("找不到文件：\(leaf)", in: view, duration: 2.0)
+                return
             }
             if FileManager.default.isUbiquitousItem(at: url) {
                 try? FileManager.default.startDownloadingUbiquitousItem(at: url)
             }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
             let doc = try StudyDocumentStore.shared.registerFileInPlace(at: url, createEmptyIfNeeded: false)
-            StudyWorkspaceStore.shared.addDocument(doc.id, to: workspaceID)
+            if let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID {
+                StudyWorkspaceStore.shared.addDocument(doc.id, to: wsID)
+            }
             switchActiveDocument(to: doc.id)
         } catch {
             ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
         }
+    }
+
+    private func openWorkspaceFileNamed(_ name: String, workspaceID: String) {
+        // Legacy entry points (delete-next / long-press) — same rule: sibling of current file.
+        _ = workspaceID
+        openSiblingFileNamed(name)
     }
 
     private func promptCreateFile(in workspaceID: String, firstFile: Bool = false) {
