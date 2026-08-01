@@ -7166,6 +7166,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func presentModelPicker(anchor: UIView) {
+        view.layoutIfNeeded()
+        inputBar.layoutIfNeeded()
+        anchor.layoutIfNeeded()
         let current = ConversationStore.shared.currentConversation?.model
         let pool = AIModelOption.visible
         ModelCapsuleDropdown.present(
