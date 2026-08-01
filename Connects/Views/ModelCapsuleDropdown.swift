@@ -22,7 +22,6 @@ enum ModelCapsuleDropdown {
             ?? host.view.window
             ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
 
-        // Remember composer focus — overlay must not steal first responder.
         let keptResponder = findFirstResponder(in: window) as? UIView
 
         let overlay = ModelCapsuleDropdownOverlay(
@@ -40,10 +39,12 @@ enum ModelCapsuleDropdown {
         )
         activeOverlay = overlay
         overlay.install(in: window)
+
         if let keptResponder, !keptResponder.isFirstResponder {
             keptResponder.becomeFirstResponder()
         }
-        // Chip may still be settling after keyboard / panel layout — re-pin once more.
+
+        // Layout + keyboard insets often settle one turn later.
         DispatchQueue.main.async {
             overlay.refreshPosition(animated: false)
             if let keptResponder, !keptResponder.isFirstResponder {
@@ -76,11 +77,9 @@ private final class ModelCapsuleDropdownOverlay: UIView {
     private let dim = UIControl()
     private let panel = UIView()
     private let stack = UIStackView()
-    private var panelWidth: NSLayoutConstraint!
-    private var panelLeading: NSLayoutConstraint!
-    private var panelTop: NSLayoutConstraint!
     private var rowButtons: [UIButton] = []
     private var didFinish = false
+    private var panelSize = CGSize(width: 200, height: 90)
 
     init(models: [AIModelOption],
          selectedID: String?,
@@ -98,18 +97,16 @@ private final class ModelCapsuleDropdownOverlay: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func install(in window: UIWindow) {
-        translatesAutoresizingMaskIntoConstraints = false
+        // Frame-based full-window cover — avoids Auto Layout zero-bounds convert bugs.
+        frame = window.bounds
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
         window.addSubview(self)
-        NSLayoutConstraint.activate([
-            topAnchor.constraint(equalTo: window.topAnchor),
-            bottomAnchor.constraint(equalTo: window.bottomAnchor),
-            leadingAnchor.constraint(equalTo: window.leadingAnchor),
-            trailingAnchor.constraint(equalTo: window.trailingAnchor)
-        ])
+
         buildChrome()
         applyTheme()
-        layoutIfNeeded()
+        measurePanel()
         positionPanel()
+
         alpha = 0
         panel.transform = CGAffineTransform(translationX: 0, y: 4).scaledBy(x: 0.98, y: 0.96)
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
@@ -117,6 +114,7 @@ private final class ModelCapsuleDropdownOverlay: UIView {
             self.panel.alpha = 1
             self.panel.transform = .identity
         }
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(applyTheme), name: .themeDidChange, object: nil
         )
@@ -137,22 +135,21 @@ private final class ModelCapsuleDropdownOverlay: UIView {
     deinit { NotificationCenter.default.removeObserver(self) }
 
     func refreshPosition(animated: Bool) {
+        if let w = window { frame = w.bounds }
+        measurePanel()
         positionPanel()
-        if animated {
-            layoutIfNeeded()
-        }
+        if animated { layoutIfNeeded() }
     }
 
     private func buildChrome() {
         backgroundColor = .clear
 
-        dim.translatesAutoresizingMaskIntoConstraints = false
-        // Keep dim light — avoid looking like a modal that "took over" from the keyboard.
+        dim.frame = bounds
+        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         dim.backgroundColor = UIColor.black.withAlphaComponent(0.01)
         dim.addTarget(self, action: #selector(dismissTapped), for: .touchUpInside)
         addSubview(dim)
 
-        panel.translatesAutoresizingMaskIntoConstraints = false
         panel.layer.cornerRadius = 14
         panel.clipsToBounds = false
         panel.alpha = 0
@@ -169,16 +166,7 @@ private final class ModelCapsuleDropdownOverlay: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         clip.addSubview(stack)
 
-        panelWidth = panel.widthAnchor.constraint(equalToConstant: 220)
-        panelLeading = panel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40)
-        panelTop = panel.topAnchor.constraint(equalTo: topAnchor, constant: 60)
-
         NSLayoutConstraint.activate([
-            dim.topAnchor.constraint(equalTo: topAnchor),
-            dim.bottomAnchor.constraint(equalTo: bottomAnchor),
-            dim.leadingAnchor.constraint(equalTo: leadingAnchor),
-            dim.trailingAnchor.constraint(equalTo: trailingAnchor),
-
             clip.topAnchor.constraint(equalTo: panel.topAnchor),
             clip.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
             clip.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
@@ -187,9 +175,7 @@ private final class ModelCapsuleDropdownOverlay: UIView {
             stack.topAnchor.constraint(equalTo: clip.topAnchor, constant: 4),
             stack.bottomAnchor.constraint(equalTo: clip.bottomAnchor, constant: -4),
             stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-
-            panelWidth, panelLeading, panelTop
+            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor)
         ])
 
         buildRows()
@@ -197,18 +183,18 @@ private final class ModelCapsuleDropdownOverlay: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        dim.frame = bounds
         positionPanel()
     }
 
     @objc private func keyboardFrameChanged(_ note: Notification) {
-        // Chip moves with keyboard insets — always re-read live anchor, never a frozen rect.
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.2
         let curveRaw = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt)
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: curveRaw << 16)
-        positionPanel()
         UIView.animate(withDuration: duration, delay: 0, options: [options, .beginFromCurrentState]) {
-            self.layoutIfNeeded()
+            if let w = self.window { self.frame = w.bounds }
+            self.positionPanel()
         }
     }
 
@@ -301,8 +287,7 @@ private final class ModelCapsuleDropdownOverlay: UIView {
     @objc private func rowTapped(_ sender: UIButton) {
         let idx = sender.tag
         guard models.indices.contains(idx) else { return }
-        let model = models[idx]
-        finish(pick: model)
+        finish(pick: models[idx])
     }
 
     @objc private func dismissTapped() {
@@ -334,54 +319,83 @@ private final class ModelCapsuleDropdownOverlay: UIView {
         }
     }
 
-    /// Live chip rect in this overlay's coordinates. Never freeze a window rect at present-time.
+    private func measurePanel() {
+        let names = models.map(\.displayName)
+        let font = UIFont.systemFont(ofSize: 15, weight: .regular)
+        let longest = names.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 120
+        var width = max(longest + 52, 168)
+        if let anchor = anchorView {
+            width = max(width, anchor.bounds.width)
+        }
+        width = min(width, 260)
+        let height = CGFloat(models.count) * 42 + 8
+        panelSize = CGSize(width: width, height: height)
+    }
+
+    /// Chip rect in **this** overlay's coordinate space, via the shared window.
     private func liveAnchorRect() -> CGRect? {
-        guard let anchor = anchorView, anchor.window != nil, bounds.width > 1 else { return nil }
-        var rect = anchor.convert(anchor.bounds, to: self)
+        guard let anchor = anchorView,
+              let hostWindow = anchor.window ?? window,
+              bounds.width > 1, bounds.height > 1 else { return nil }
+
+        // Convert through the window — never through an Auto Layout view mid-settle.
+        let inWindow = anchor.convert(anchor.bounds, to: hostWindow)
+        var rect = convert(inWindow, from: hostWindow)
+
+        // If overlay == window bounds, prefer window coords directly (Catalyst-safe).
+        if abs(bounds.width - hostWindow.bounds.width) < 1,
+           abs(bounds.height - hostWindow.bounds.height) < 1,
+           abs(frame.minX) < 1, abs(frame.minY) < 1 {
+            rect = inWindow
+        }
+
         if rect.width < 8 || rect.height < 8 {
             rect = rect.insetBy(
                 dx: -max(0, (72 - rect.width) / 2),
                 dy: -max(0, (32 - rect.height) / 2)
             )
         }
-        // Ignore garbage geometry (e.g. mid-transition zero frames).
-        guard rect.width > 4, rect.height > 4,
-              rect.maxY > 0, rect.minY < bounds.height else { return nil }
+
+        guard rect.width > 4, rect.height > 4 else { return nil }
+        // Reject absurd positions (e.g. still at 0,0 while chip is elsewhere).
+        if rect.origin == .zero,
+           let anchor = anchorView,
+           anchor.frame.origin != .zero || (anchor.superview?.frame.origin != .zero) {
+            // One more try: convert to self directly after forcing window layout.
+            hostWindow.layoutIfNeeded()
+            rect = anchor.convert(anchor.bounds, to: self)
+        }
         return rect
     }
 
     private func positionPanel() {
         let margin: CGFloat = 10
         let gap: CGFloat = 6
-        guard let rect = liveAnchorRect() else { return }
+        measurePanel()
+        let size = panelSize
 
-        let names = models.map(\.displayName)
-        let font = UIFont.systemFont(ofSize: 15, weight: .regular)
-        let longest = names.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 120
-        var width = max(longest + 52, 168)
-        width = max(width, rect.width)
-        width = min(width, min(260, bounds.width - margin * 2))
-        panelWidth.constant = width
+        guard let rect = liveAnchorRect() else {
+            // Keep previous frame if we already placed; otherwise stay hidden until we can pin.
+            if panel.frame.origin == .zero || panel.alpha < 0.01 {
+                panel.isHidden = true
+            }
+            return
+        }
+        panel.isHidden = false
 
-        let panelH = CGFloat(models.count) * 42 + 8
-
-        // Prefer immediately above the chip. Only flip below if there truly isn't room.
         let spaceAbove = rect.minY - margin
         let spaceBelow = bounds.height - rect.maxY - margin
-        let placeAbove = spaceAbove >= panelH + gap || spaceAbove >= spaceBelow
+        let placeAbove = spaceAbove >= size.height + gap || spaceAbove >= spaceBelow
 
-        var x = rect.maxX - width
-        var y = placeAbove ? rect.minY - panelH - gap : rect.maxY + gap
+        var x = rect.maxX - size.width
+        var y = placeAbove ? rect.minY - size.height - gap : rect.maxY + gap
 
-        x = min(max(margin, x), bounds.width - width - margin)
-        // Soft clamp only to the overlay — do NOT invent a "keyboard top" that
-        // pulls the menu into the middle of the chat (that was the big misalign).
-        y = min(max(margin, y), max(margin, bounds.height - panelH - margin))
+        x = min(max(margin, x), max(margin, bounds.width - size.width - margin))
+        y = min(max(margin, y), max(margin, bounds.height - size.height - margin))
 
-        panelLeading.constant = x
-        panelTop.constant = y
+        panel.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        panel.layoutIfNeeded()
     }
 
-    /// Don't become first responder — keeps the text view keyboard alive.
     override var canBecomeFirstResponder: Bool { false }
 }
