@@ -39,8 +39,6 @@ final class StudyDocumentStore {
 
     private(set) var documents: [StudyDocument] = []
     private let pdfCache = NSCache<NSString, PDFDocument>()
-    private let markdownCache = NSCache<NSString, NSString>()
-    private let textCache = NSCache<NSString, NSString>()
     private let maxPDFBytes: Int64 = 160 * 1024 * 1024
     private let maxTextBytes: Int64 = 8 * 1024 * 1024
     private let registryName = "registry.json"
@@ -54,8 +52,6 @@ final class StudyDocumentStore {
 
     private init() {
         pdfCache.countLimit = 4
-        markdownCache.countLimit = 8
-        textCache.countLimit = 8
         loadRegistry()
     }
 
@@ -69,6 +65,61 @@ final class StudyDocumentStore {
             guard let display = doc.displayPath, !display.isEmpty else { return false }
             return (display as NSString).standardizingPath == normalized
         }
+    }
+
+    /// Find a registered document for a file-menu name (leaf or workspace-relative path).
+    func documentMatchingOpenName(
+        _ name: String,
+        workspaceID: String?,
+        nearDocumentID: String?
+    ) -> StudyDocument? {
+        let normalizedName = name.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let leaf = (normalizedName as NSString).lastPathComponent
+        let nearParent: String? = {
+            guard let nearDocumentID,
+                  let path = document(id: nearDocumentID)?.displayPath,
+                  !path.isEmpty else { return nil }
+            return (URL(fileURLWithPath: path).deletingLastPathComponent().path as NSString).standardizingPath
+        }()
+
+        var leafMatches: [StudyDocument] = []
+        let pool: [StudyDocument] = {
+            if let workspaceID,
+               let ids = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.documentIDs {
+                let docs = ids.compactMap { document(id: $0) }
+                if !docs.isEmpty { return docs }
+            }
+            return recentDocuments(limit: 400)
+        }()
+
+        for doc in pool {
+            guard let path = doc.displayPath, !path.isEmpty else { continue }
+            let pathNorm = (path as NSString).standardizingPath
+            let fileURL = URL(fileURLWithPath: path)
+            if pathNorm.hasSuffix("/" + normalizedName) || pathNorm.hasSuffix("/" + (normalizedName as NSString).standardizingPath)
+                || fileURL.path == normalizedName
+                || pathNorm == (normalizedName as NSString).standardizingPath {
+                if FileManager.default.fileExists(atPath: path) { return doc }
+            }
+            if fileURL.lastPathComponent.compare(leaf, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                leafMatches.append(doc)
+            }
+        }
+
+        if let nearParent {
+            if let sameFolder = leafMatches.first(where: {
+                guard let path = $0.displayPath else { return false }
+                let parent = (URL(fileURLWithPath: path).deletingLastPathComponent().path as NSString).standardizingPath
+                return parent == nearParent && FileManager.default.fileExists(atPath: path)
+            }) {
+                return sameFolder
+            }
+        }
+        let existing = leafMatches.first { doc in
+            guard let path = doc.displayPath else { return false }
+            return FileManager.default.fileExists(atPath: path)
+        }
+        return existing
     }
 
     func recentDocuments(limit: Int = 50) -> [StudyDocument] {
@@ -187,20 +238,63 @@ final class StudyDocumentStore {
     }
 
     /// Resolve security-scoped bookmark (or sandbox copy) and keep access while document is open.
+    /// Prefer `displayPath` when it exists on disk so same-named files never share a stale bookmark URL.
     @discardableResult
     func resolvedURL(forID id: String) throws -> URL {
         guard let doc = document(id: id) else { throw StudyDocumentError.bookmarkUnavailable }
+
+        let displayURL: URL? = {
+            guard let path = doc.displayPath, !path.isEmpty else { return nil }
+            let url = URL(fileURLWithPath: path)
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return url
+        }()
+
         accessLock.lock()
         if let existing = activeAccess[id] {
+            if let displayURL {
+                let want = (displayURL.path as NSString).standardizingPath
+                let have = (existing.url.path as NSString).standardizingPath
+                if want != have {
+                    if existing.accessing {
+                        existing.url.stopAccessingSecurityScopedResource()
+                    }
+                    activeAccess.removeValue(forKey: id)
+                    accessLock.unlock()
+                } else {
+                    accessLock.unlock()
+                    return existing.url
+                }
+            } else {
+                accessLock.unlock()
+                return existing.url
+            }
+        } else {
             accessLock.unlock()
-            return existing.url
         }
-        accessLock.unlock()
+
+        if let displayURL {
+            // Warm bookmark scope if needed, but always return the display path URL.
+            if let data = doc.bookmarkData {
+                var isStale = false
+                if let scoped = try? URL(
+                    resolvingBookmarkData: data,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                ) {
+                    _ = scoped.startAccessingSecurityScopedResource()
+                }
+            }
+            let accessing = displayURL.startAccessingSecurityScopedResource()
+            accessLock.lock()
+            activeAccess[id] = (displayURL, accessing)
+            accessLock.unlock()
+            return displayURL
+        }
 
         if doc.accessMode == .originalBookmark, let data = doc.bookmarkData {
             var isStale = false
-            // iOS: security-scoped bookmarks from the document picker use empty creation/resolve options
-            // (`.withSecurityScope` is macOS-only).
             let url = try URL(
                 resolvingBookmarkData: data,
                 options: [],
@@ -273,11 +367,8 @@ final class StudyDocumentStore {
         textContent(for: documentID)
     }
 
+    /// Always read from disk — no text/markdown content cache (same-name files must not share text).
     func textContent(for documentID: String) -> String? {
-        if let cached = textCache.object(forKey: documentID as NSString)
-            ?? markdownCache.object(forKey: documentID as NSString) {
-            return cached as String
-        }
         guard let url = try? resolvedURL(forID: documentID) else { return nil }
         var result: String?
         let coordinator = NSFileCoordinator()
@@ -288,12 +379,7 @@ final class StudyDocumentStore {
                     ?? String(data: data, encoding: .isoLatin1) else { return }
             result = text
         }
-        guard let text = result else { return nil }
-        textCache.setObject(text as NSString, forKey: documentID as NSString)
-        if document(id: documentID)?.kind == .markdown {
-            markdownCache.setObject(text as NSString, forKey: documentID as NSString)
-        }
-        return text
+        return result
     }
 
     func writeTextContent(_ text: String, for documentID: String) throws {
@@ -312,10 +398,6 @@ final class StudyDocumentStore {
         }
         if let coError = coError { throw coError }
         if let writeError = writeError { throw writeError }
-        textCache.setObject(text as NSString, forKey: documentID as NSString)
-        if document(id: documentID)?.kind == .markdown {
-            markdownCache.setObject(text as NSString, forKey: documentID as NSString)
-        }
         if let idx = documents.firstIndex(where: { $0.id == documentID }) {
             documents[idx].fileSize = Int64(data.count)
             documents[idx].contentFingerprint = Self.fingerprint(data: data, fileSize: Int64(data.count))
@@ -365,8 +447,6 @@ final class StudyDocumentStore {
 
     func trimCaches() {
         pdfCache.removeAllObjects()
-        markdownCache.removeAllObjects()
-        textCache.removeAllObjects()
     }
 
     /// Open original file in place (security-scoped bookmark). Prefer over import copy.
@@ -465,8 +545,6 @@ final class StudyDocumentStore {
         documents[idx].contentFingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
         documents[idx].lastOpenedAt = Date()
         pdfCache.removeObject(forKey: documentID as NSString)
-        markdownCache.removeObject(forKey: documentID as NSString)
-        textCache.removeObject(forKey: documentID as NSString)
         saveRegistry()
         notify()
         return documents[idx]
@@ -673,8 +751,6 @@ final class StudyDocumentStore {
         documents.remove(at: index)
         releaseAccess(forID: documentID)
         pdfCache.removeObject(forKey: documentID as NSString)
-        markdownCache.removeObject(forKey: documentID as NSString)
-        textCache.removeObject(forKey: documentID as NSString)
         if doc.accessMode == .importedCopy, !doc.localRelativePath.isEmpty {
             let folder = studyRootURL.appendingPathComponent(documentID, isDirectory: true)
             try? FileManager.default.removeItem(at: folder)
@@ -714,8 +790,6 @@ final class StudyDocumentStore {
             documents[index].textLanguage = nil
         }
         pdfCache.removeObject(forKey: documentID as NSString)
-        markdownCache.removeObject(forKey: documentID as NSString)
-        textCache.removeObject(forKey: documentID as NSString)
         releaseAccess(forID: documentID)
         saveRegistry()
         notify()
@@ -724,8 +798,6 @@ final class StudyDocumentStore {
     func reloadAfterBackupImport() {
         releaseAllAccess()
         pdfCache.removeAllObjects()
-        markdownCache.removeAllObjects()
-        textCache.removeAllObjects()
         loadRegistry()
         notify()
     }
