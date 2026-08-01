@@ -584,22 +584,49 @@ final class StudyWorkspaceStore {
             return Self.uniqueLeafNames(disk)
         }
 
-        // Last resort only when directory enumeration truly failed.
+        // Last resort: previously opened docs — keep full relative/display path when leaf
+        // names collide (two spi_master.v in different folders).
         var names: [String] = []
+        var seenLeaf = Set<String>()
+        var leafCounts: [String: Int] = [:]
         if let ws = workspace(id: workspaceID) {
-            names = ws.documentIDs.compactMap { id in
-                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { return nil }
-                return URL(fileURLWithPath: path).lastPathComponent
+            for id in ws.documentIDs {
+                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { continue }
+                let leaf = URL(fileURLWithPath: path).lastPathComponent
+                leafCounts[leaf, default: 0] += 1
+            }
+            for id in ws.documentIDs {
+                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { continue }
+                let leaf = URL(fileURLWithPath: path).lastPathComponent
+                let label: String = {
+                    if leafCounts[leaf, default: 0] > 1,
+                       let root = try? folderURL(for: workspaceID),
+                       let rel = Self.relativePath(of: URL(fileURLWithPath: path), under: root) {
+                        return rel
+                    }
+                    return leaf
+                }()
+                if seenLeaf.insert(label).inserted {
+                    names.append(label)
+                }
             }
         }
         if let documentID,
            let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath {
             let leaf = URL(fileURLWithPath: path).lastPathComponent
-            if !names.contains(where: { ($0 as NSString).lastPathComponent == leaf || $0 == leaf }) {
-                names.append(leaf)
+            let label: String = {
+                if let root = try? folderURL(for: workspaceID),
+                   let rel = Self.relativePath(of: URL(fileURLWithPath: path), under: root),
+                   names.contains(where: { ($0 as NSString).lastPathComponent == leaf && $0 != rel }) {
+                    return rel
+                }
+                return leaf
+            }()
+            if !names.contains(label) {
+                names.append(label)
             }
         }
-        return Self.uniqueLeafNames(names)
+        return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     private static func uniqueLeafNames(_ names: [String]) -> [String] {

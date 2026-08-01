@@ -130,38 +130,9 @@ final class StudyDocumentStore {
             return existing
         }
 
+        // Identity is the file path — never reuse another path's document via fingerprint.
+        // (Same leaf name like spi_master.v in two folders must stay distinct.)
         let fingerprint = Self.fingerprint(for: fileURL, fileSize: size)
-        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }),
-           size > 0 {
-            let samePath = existing.displayPath.map {
-                ($0 as NSString).standardizingPath == (fileURL.path as NSString).standardizingPath
-            } ?? false
-            if samePath {
-                touch(documentID: existing.id)
-                return existing
-            }
-            // Upgrade imported-copy / pathless docs so the switcher can see the real folder.
-            if existing.accessMode == .importedCopy
-                || existing.displayPath == nil
-                || existing.displayPath?.isEmpty == true,
-               let idx = documents.firstIndex(where: { $0.id == existing.id }) {
-                let bookmark = try fileURL.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
-                documents[idx].bookmarkData = bookmark
-                documents[idx].displayPath = fileURL.path
-                documents[idx].accessMode = .originalBookmark
-                documents[idx].localRelativePath = ""
-                documents[idx].fileSize = size
-                documents[idx].lastOpenedAt = Date()
-                saveRegistry()
-                notify()
-                return documents[idx]
-            }
-            // Same content at a different path — fall through and register freshly.
-        }
 
         let bookmark = try fileURL.bookmarkData(
             options: [],
@@ -437,37 +408,8 @@ final class StudyDocumentStore {
         }
 
         let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
-        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }),
-           size > 0 {
-            // Upgrade imported-copy / pathless docs so the switcher can see the real folder.
-            if existing.accessMode == .importedCopy
-                || existing.displayPath == nil
-                || existing.displayPath?.isEmpty == true,
-               let idx = documents.firstIndex(where: { $0.id == existing.id }) {
-                let bookmark = try sourceURL.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
-                documents[idx].bookmarkData = bookmark
-                documents[idx].displayPath = sourceURL.path
-                documents[idx].accessMode = .originalBookmark
-                documents[idx].localRelativePath = ""
-                documents[idx].fileSize = size
-                documents[idx].lastOpenedAt = Date()
-                saveRegistry()
-                notify()
-                return documents[idx]
-            }
-            let samePath = existing.displayPath.map {
-                ($0 as NSString).standardizingPath == (sourceURL.path as NSString).standardizingPath
-            } ?? false
-            if samePath {
-                touch(documentID: existing.id)
-                return existing
-            }
-            // Same content at a different path — fall through and register freshly.
-        } else if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+        // Path is identity. Do not reuse another file's document because content/name matched.
+        if let existing = documentMatchingPath(sourceURL.path) {
             touch(documentID: existing.id)
             return existing
         }
@@ -561,7 +503,11 @@ final class StudyDocumentStore {
         guard size <= maxPDFBytes else { throw StudyDocumentError.fileTooLarge }
 
         let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
-        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+        // Imported PDF copies: reuse only another imported copy with same content hash,
+        // never an in-place document that merely shares the leaf name.
+        if let existing = documents.first(where: {
+            $0.contentFingerprint == fingerprint && $0.accessMode == .importedCopy
+        }) {
             touch(documentID: existing.id)
             return existing
         }
@@ -786,19 +732,21 @@ final class StudyDocumentStore {
 
     private static func fingerprint(for url: URL, fileSize: Int64) -> String {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return "\(fileSize)-\(url.lastPathComponent)"
+            return "\(fileSize)-\(url.path)"
         }
         defer { handle.closeFile() }
         let sample = handle.readData(ofLength: 512 * 1024)
-        return fingerprint(data: sample, fileSize: fileSize, name: url.lastPathComponent)
+        return fingerprint(data: sample, fileSize: fileSize, path: url.path)
     }
 
-    private static func fingerprint(data: Data, fileSize: Int64, name: String = "") -> String {
+    private static func fingerprint(data: Data, fileSize: Int64, path: String = "", name: String = "") -> String {
         var hash: UInt64 = 5381
         for byte in data.prefix(512 * 1024) {
             hash = ((hash << 5) &+ hash) &+ UInt64(byte)
         }
-        return "\(fileSize)-\(hash)\(name.isEmpty ? "" : "-\(name)")"
+        // Prefer full path so same leaf names (spi_master.v) never collide across folders.
+        let pathKey = path.isEmpty ? name : (path as NSString).standardizingPath
+        return "\(fileSize)-\(hash)\(pathKey.isEmpty ? "" : "-\(pathKey)")"
     }
 
     private var registryURL: URL {

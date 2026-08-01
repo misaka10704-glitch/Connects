@@ -1954,17 +1954,13 @@ extension StudyShellViewController: StudyReadingContextProviding {
         let ws = StudyWorkspaceStore.shared.workspace(id: wsID) ?? StudyWorkspaceStore.shared.defaultWorkspace()
         _ = try? StudyWorkspaceStore.shared.folderURL(for: ws.id)
 
-        // Prefer disk siblings. If we cannot list the parent directory, security scope is
-        // missing — send the user straight to 文件夹授权 (do not show "opened only" list).
-        guard let diskNames = StudyWorkspaceStore.shared.listSiblingFileNamesFromDisk(
-            ofDocumentID: docID,
-            in: ws.id
-        ) else {
-            ConnectsToast.show("需要文件夹授权才能列出同目录全部文件", in: view, duration: 2.0)
-            presentFolderWorkspacePicker()
-            return
+        // Disk siblings when possible; otherwise already-opened names (never auto-push folder picker —
+        // that looped when listing still failed after grant / cancel).
+        var names = StudyWorkspaceStore.shared.listSwitcherFileNames(ofDocumentID: docID, in: ws.id)
+        if let disk = StudyWorkspaceStore.shared.listSiblingFileNamesFromDisk(ofDocumentID: docID, in: ws.id),
+           disk.count > names.count {
+            names = disk
         }
-        var names = diskNames
 
         if names.isEmpty {
             if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath {
@@ -2602,12 +2598,8 @@ extension StudyShellViewController: UIDocumentPickerDelegate {
                 } else {
                     ConnectsToast.show("已授权：\(ws.title)", in: view, duration: 1.6)
                 }
-                // Immediately show same-directory files under the new grant.
-                if preferredDoc != nil {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.presentWorkspaceFileMenu(from: nil)
-                    }
-                }
+                // Do not auto-reopen the file menu here — listing may still fail and
+                // would bounce straight back into the folder picker.
             } catch {
                 ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
             }
