@@ -112,8 +112,12 @@ protocol StudyReadingContextProviding: AnyObject {
     func studyCodeDiffOpen(documentID: String)
     /// Empty workspace: prompt to create the first file.
     func ensureWorkspaceHasFileIfEmpty(workspaceID: String?)
-    /// Workspace agent: open Files / switch-workspace menu (rebind).
+    /// In-folder quick switch (workspace) or free open picker (single file).
     func presentWorkspaceFileMenu(from sourceView: UIView?)
+    /// System Files picker for a study file (binds project root as workspace).
+    func presentStudyFreeOpenPicker(from sourceView: UIView?, barButtonItem: UIBarButtonItem?)
+    /// Re-select / re-authorize the project folder grant.
+    func presentProjectFolderGrantPicker()
 }
 
 extension StudyReadingContextProviding {
@@ -131,6 +135,8 @@ extension StudyReadingContextProviding {
     func studyCodeDiffOpen(documentID: String) {}
     func ensureWorkspaceHasFileIfEmpty(workspaceID: String?) {}
     func presentWorkspaceFileMenu(from sourceView: UIView?) {}
+    func presentStudyFreeOpenPicker(from sourceView: UIView?, barButtonItem: UIBarButtonItem?) {}
+    func presentProjectFolderGrantPicker() {}
 }
 
 /// Nav `titleView` host that pins itself to the bar’s horizontal center

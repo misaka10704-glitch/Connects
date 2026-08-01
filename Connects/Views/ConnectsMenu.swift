@@ -6,6 +6,8 @@ struct ConnectsMenuItem {
     var customImage: UIImage? = nil
     var isDestructive: Bool = false
     var isSelected: Bool = false
+    /// Draw a section divider under this row (e.g. after「新建文件」).
+    var endsSection: Bool = false
     /// Optional long-press (e.g. file rename / delete). Tap still runs `handler`.
     var longPressHandler: (() -> Void)? = nil
     let handler: () -> Void
@@ -35,14 +37,12 @@ enum ConnectsMenu {
         guard !items.isEmpty || title != nil || !headerTrailingActions.isEmpty else { return }
 
         // Capture in window space *before* the modal covers the hierarchy.
-        var windowRect: CGRect?
-        if let item = barButtonItem,
-           let itemView = item.value(forKey: "view") as? UIView {
-            windowRect = itemView.convert(itemView.bounds, to: nil)
-        } else if let src = sourceView {
-            let r = sourceRect ?? src.bounds
-            windowRect = src.convert(r, to: nil)
-        }
+        let windowRect = resolveAnchorWindowRect(
+            barButtonItem: barButtonItem,
+            sourceView: sourceView,
+            sourceRect: sourceRect,
+            host: host
+        )
 
         let menu = ConnectsMenuController(
             titleText: title,
@@ -59,6 +59,70 @@ enum ConnectsMenu {
         menu.preferredMenuWidth = menuWidth
         // Child VCs in the drawer / split shell need a presenter that can actually present.
         topPresenter(from: host).present(menu, animated: false)
+    }
+
+    /// Resolve a stable window-space rect for the trigger control.
+    private static func resolveAnchorWindowRect(
+        barButtonItem: UIBarButtonItem?,
+        sourceView: UIView?,
+        sourceRect: CGRect?,
+        host: UIViewController
+    ) -> CGRect? {
+        if let item = barButtonItem, let rect = windowRect(for: item) {
+            return rect
+        }
+        if let src = sourceView, src.window != nil || src.superview != nil {
+            let local = sourceRect ?? src.bounds
+            var rect = src.convert(local, to: nil)
+            // Full-panel anchors (reader / chat host) are useless — pin to a trailing chip.
+            if rect.width > 160 || rect.height > 96 {
+                rect = CGRect(
+                    x: rect.maxX - 44,
+                    y: rect.minY + 6,
+                    width: 44,
+                    height: 36
+                )
+            }
+            // Inflate hairline / zero-size rects so placement still has a real midX.
+            if rect.width < 8 || rect.height < 8 {
+                rect = rect.insetBy(dx: -max(0, (24 - rect.width) / 2),
+                                    dy: -max(0, (28 - rect.height) / 2))
+            }
+            if rect.width > 0.5, rect.height > 0.5 { return rect }
+        }
+        // Last resort: study / chat trailing chrome (⋯ / clock live here).
+        if let nav = host.navigationController?.navigationBar ?? host.navigationItem.titleView?.superview {
+            let bar = nav.convert(nav.bounds, to: nil)
+            return CGRect(x: bar.maxX - 52, y: bar.midY - 18, width: 44, height: 36)
+        }
+        if let window = host.view.window ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow }) {
+            let safe = window.safeAreaInsets
+            return CGRect(
+                x: window.bounds.width - safe.right - 56,
+                y: safe.top + 8,
+                width: 44,
+                height: 36
+            )
+        }
+        return nil
+    }
+
+    private static func windowRect(for item: UIBarButtonItem) -> CGRect? {
+        if let custom = item.customView, custom.bounds.width > 1 {
+            return custom.convert(custom.bounds, to: nil)
+        }
+        if let view = item.value(forKey: "view") as? UIView {
+            // Private UIKit view can exist before layout — wait for a real frame.
+            if view.bounds.width > 1, view.bounds.height > 1 {
+                view.layoutIfNeeded()
+                return view.convert(view.bounds, to: nil)
+            }
+            // Walk to a visible descendant (common for UIBarButtonItem system wrappers).
+            if let hit = view.subviews.first(where: { $0.bounds.width > 8 && $0.bounds.height > 8 }) {
+                return hit.convert(hit.bounds, to: nil)
+            }
+        }
+        return nil
     }
 
     private static func topPresenter(from host: UIViewController) -> UIViewController {
@@ -85,7 +149,7 @@ private final class ConnectsMenuController: UIViewController {
     private let headerTrailingActions: [ConnectsMenuHeaderAction]
     var anchorWindowRect: CGRect?
     var preferAbove = false
-    /// List / full-width rows: always place above/below the touch, never into the sibling pane.
+    /// Kept for API compatibility; positioning is always vertical under/over the anchor.
     var preferVertical = false
     var maxMenuHeight: CGFloat?
     var preferredMenuWidth: CGFloat?
@@ -182,6 +246,7 @@ private final class ConnectsMenuController: UIViewController {
         super.viewDidAppear(animated)
         view.layoutIfNeeded()
         positionCard()
+        scrollSelectedRowIntoViewIfNeeded()
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut]) {
             self.dimView.alpha = 1
             self.card.alpha = 1
@@ -189,8 +254,18 @@ private final class ConnectsMenuController: UIViewController {
         }
     }
 
+    private func scrollSelectedRowIntoViewIfNeeded() {
+        guard let scroll = scrollView,
+              let idx = items.firstIndex(where: { $0.isSelected }),
+              rows.indices.contains(idx) else { return }
+        let rect = rows[idx].convert(rows[idx].bounds, to: scroll)
+        scroll.scrollRectToVisible(rect.insetBy(dx: 0, dy: -36), animated: false)
+    }
+
     private func installScrollIfNeeded() {
-        guard let maxH = maxMenuHeight, maxH > 80 else { return }
+        // Cap tall menus so folders with many files stay usable.
+        let screenH = view.bounds.height > 1 ? view.bounds.height : UIScreen.main.bounds.height
+        let maxH = maxMenuHeight ?? min(440, max(220, screenH * 0.58))
         view.layoutIfNeeded()
         let width = cardWidth.constant
         let contentH = stack.systemLayoutSizeFitting(
@@ -225,6 +300,8 @@ private final class ConnectsMenuController: UIViewController {
             clip.heightAnchor.constraint(equalToConstant: contentH)
         ])
         scrollView = scroll
+        // Remember resolved cap for positionCard().
+        maxMenuHeight = maxH
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
@@ -237,7 +314,6 @@ private final class ConnectsMenuController: UIViewController {
         let dark = ThemeManager.shared.mode == .dark
 
         dimView.backgroundColor = UIColor.black.withAlphaComponent(dark ? 0.22 : 0.10)
-        // Elevated panel — ChatGPT: slightly lifted over page chrome.
         card.backgroundColor = dark
             ? UIColor(red: 50/255, green: 50/255, blue: 54/255, alpha: 1)
             : UIColor(red: 255/255, green: 255/255, blue: 255/255, alpha: 1)
@@ -329,7 +405,6 @@ private final class ConnectsMenuController: UIViewController {
         }
 
         for (idx, item) in items.enumerated() {
-            // ChatGPT: hairline only before destructive cluster.
             if item.isDestructive, idx > 0, !items[idx - 1].isDestructive {
                 stack.addArrangedSubview(makeSectionLine())
             }
@@ -338,6 +413,9 @@ private final class ConnectsMenuController: UIViewController {
             row.onLongPress = { [weak self] i in self?.longPressItem(at: i) }
             stack.addArrangedSubview(row)
             rows.append(row)
+            if item.endsSection {
+                stack.addArrangedSubview(makeSectionLine())
+            }
         }
     }
 
@@ -403,14 +481,18 @@ private final class ConnectsMenuController: UIViewController {
         })
     }
 
+    /// Unified placement: below the trigger when possible, otherwise above;
+    /// trailing-align when the trigger is on the right half, else leading-align.
     private func positionCard() {
-        let margin: CGFloat = 14
+        let margin: CGFloat = 12
+        let gap: CGFloat = 6
         let width = cardWidth.constant
         cardWidth.constant = width
         view.layoutIfNeeded()
+
         let cardH: CGFloat
         if let scroll = scrollView {
-            cardH = scroll.bounds.height
+            cardH = scroll.bounds.height > 1 ? scroll.bounds.height : (maxMenuHeight ?? 280)
         } else {
             cardH = max(44, card.systemLayoutSizeFitting(
                 CGSize(width: width, height: 0),
@@ -419,41 +501,50 @@ private final class ConnectsMenuController: UIViewController {
             ).height)
         }
 
+        let safe = view.safeAreaInsets
+        let minX = margin + safe.left
+        let maxX = max(minX, view.bounds.width - width - margin - safe.right)
+        let minY = margin + safe.top
+        let maxY = max(minY, view.bounds.height - cardH - margin - safe.bottom)
+
         var x: CGFloat
         var y: CGFloat
+
         if let wr = anchorWindowRect {
             let rect = view.convert(wr, from: nil)
-            let spaceBelow = view.bounds.height - rect.maxY - margin
-            let spaceAbove = rect.minY - margin
-            let spaceRight = view.bounds.width - rect.maxX - margin
-            // Wide anchors (table rows) or explicit vertical → never side-dock into another pane.
-            let forceVertical = preferVertical || preferAbove || rect.width > 96
-            let nearBottom = preferAbove || rect.midY > view.bounds.height * 0.62 || spaceBelow < cardH + 12
+            let belowY = rect.maxY + gap
+            let aboveY = rect.minY - cardH - gap
+            let fitsBelow = belowY <= maxY
+            let fitsAbove = aboveY >= minY
 
-            if !forceVertical, spaceRight >= width + 8, !nearBottom {
-                x = rect.maxX + 8
-                y = rect.midY - 22
-            } else if nearBottom, spaceAbove >= cardH + 8 {
-                x = min(max(margin, rect.midX - width * 0.5), view.bounds.width - width - margin)
-                // Clamp toward the touch so wide rows don't jump to the far left.
-                x = min(max(margin, rect.minX), view.bounds.width - width - margin)
-                y = rect.minY - cardH - 8
-            } else if spaceBelow >= cardH + 8 {
-                x = min(max(margin, rect.minX), view.bounds.width - width - margin)
-                y = rect.maxY + 8
+            if preferAbove, fitsAbove {
+                y = aboveY
+            } else if fitsBelow {
+                y = belowY
+            } else if fitsAbove {
+                y = aboveY
             } else {
-                x = min(max(margin, rect.minX), view.bounds.width - width - margin)
-                y = max(margin, min(rect.minY - cardH - 8, view.bounds.height - cardH - margin))
+                y = min(max(minY, belowY), maxY)
+            }
+
+            // Center-ish triggers (file title) → center the card under the control.
+            // Right-half → trailing edges match; left-half → leading edges match.
+            let centerBand = max(120, view.bounds.width * 0.22)
+            if abs(rect.midX - view.bounds.midX) <= centerBand {
+                x = rect.midX - width / 2
+            } else if rect.midX >= view.bounds.midX {
+                x = rect.maxX - width
+            } else {
+                x = rect.minX
             }
         } else {
-            x = (view.bounds.width - width) * 0.5
-            y = view.bounds.height * 0.26
+            // Fallback matches study chrome: under the trailing nav cluster.
+            x = maxX
+            y = minY + 4
         }
 
-        x = min(max(margin, x), view.bounds.width - width - margin)
-        y = min(max(margin, y), view.bounds.height - cardH - margin)
-        cardLeading.constant = x
-        cardTop.constant = y
+        cardLeading.constant = min(max(minX, x), maxX)
+        cardTop.constant = min(max(minY, y), maxY)
         view.layoutIfNeeded()
     }
 }
@@ -504,7 +595,6 @@ private final class MenuRowView: UIView {
         checkView.contentMode = .center
         checkView.isHidden = !item.isSelected
         if item.isSelected {
-            // Simple checkmark drawn as text for crisp iOS 12 rendering.
             let label = UILabel()
             label.text = "✓"
             label.font = UIFont.systemFont(ofSize: 14, weight: .semibold)

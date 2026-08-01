@@ -45,7 +45,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onAskSelection: ((String) -> Void)?
-    var onFileTitleTapped: (() -> Void)?
+    var onFileTitleTapped: ((UIView) -> Void)?
     var onBuildPlan: (() -> Void)?
 
     private var isPlanDocument = false
@@ -218,6 +218,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         progressLabel.isUserInteractionEnabled = true
         progressLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(fileTitleTapped)))
         topBar.addSubview(progressLabel)
+        // Wide title strip must stay under the trailing chrome controls.
+        topBar.bringSubviewToFront(modeButton)
+        topBar.bringSubviewToFront(buildButton)
+        topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(contentsButton)
 
         let controller = WKUserContentController()
         controller.add(WeakScriptMessageHandler(delegate: self), name: "studyReady")
@@ -270,9 +275,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
             progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-            progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            progressLabel.topAnchor.constraint(equalTo: topBar.topAnchor),
+            progressLabel.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
+            progressLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: buildButton.leadingAnchor, constant: -4),
+            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
 
             modeButton.trailingAnchor.constraint(equalTo: buildButton.leadingAnchor, constant: -2),
             modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -618,6 +625,10 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         view.bringSubviewToFront(contentsPanelHost)
         view.bringSubviewToFront(topBar)
         view.bringSubviewToFront(spinner)
+        topBar.bringSubviewToFront(modeButton)
+        topBar.bringSubviewToFront(buildButton)
+        topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(contentsButton)
     }
 
     private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
@@ -823,7 +834,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     @objc private func fileTitleTapped() {
-        onFileTitleTapped?()
+        onFileTitleTapped?(progressLabel)
     }
 
     func captureCurrentPageImageJPEG() -> String? {

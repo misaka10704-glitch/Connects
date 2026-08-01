@@ -48,19 +48,43 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         applyTheme()
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyOpaqueNavigationBar(colors: DSTheme.c)
+    }
+
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    private func applyOpaqueNavigationBar(colors c: ThemeColors) {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = c.sidebarBackground
+        appearance.titleTextAttributes = [.foregroundColor: c.textPrimary]
+        appearance.largeTitleTextAttributes = [.foregroundColor: c.textPrimary]
+        appearance.shadowColor = .clear
+
+        guard let navBar = navigationController?.navigationBar else { return }
+        navBar.standardAppearance = appearance
+        navBar.scrollEdgeAppearance = appearance
+        navBar.compactAppearance = appearance
+        if #available(iOS 15.0, *) {
+            navBar.compactScrollEdgeAppearance = appearance
+        }
+        navBar.isTranslucent = false
+        navBar.barTintColor = c.sidebarBackground
+        navBar.tintColor = c.accent
+        navBar.barStyle = c.navBarStyle
+        navBar.titleTextAttributes = [.foregroundColor: c.textPrimary]
+        navigationController?.view.backgroundColor = c.sidebarBackground
     }
 
     func applyTheme() {
         let c = DSTheme.c
         view.backgroundColor = c.sidebarBackground
         scrollView.backgroundColor = c.sidebarBackground
-        navigationController?.navigationBar.barStyle = c.navBarStyle
-        navigationController?.navigationBar.tintColor = c.accent
-        navigationController?.navigationBar.barTintColor = c.sidebarBackground
-        navigationController?.navigationBar.isTranslucent = false
-        navigationController?.navigationBar.titleTextAttributes = [.foregroundColor: c.textPrimary]
+        applyOpaqueNavigationBar(colors: c)
 
         for label in sectionLabels {
             label.textColor = c.textSecondary

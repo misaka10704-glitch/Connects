@@ -83,7 +83,11 @@ final class StudyDocumentStore {
     @discardableResult
     func registerFileInPlace(at fileURL: URL, createEmptyIfNeeded: Bool) throws -> StudyDocument {
         let parent = fileURL.deletingLastPathComponent()
-        ConnectsPaths.ensureDirectory(parent)
+        // Only create parents inside our sandbox — never mkdir on external / security-scoped paths.
+        let docs = ConnectsPaths.documentsURL.path
+        if parent.path == docs || parent.path.hasPrefix(docs + "/") {
+            ConnectsPaths.ensureDirectory(parent)
+        }
 
         if createEmptyIfNeeded, !FileManager.default.fileExists(atPath: fileURL.path) {
             do {
@@ -106,10 +110,16 @@ final class StudyDocumentStore {
         let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
         guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
 
-        if kind == .pdf, size > 0, PDFDocument(url: fileURL) == nil {
-            throw StudyDocumentError.invalidPDF
-        }
-        if kind != .pdf, size > 0 {
+        if kind == .pdf, size > 0 {
+            // Folder security-scope can make `PDFDocument(url:)` fail even for valid PDFs.
+            // Prefer data-backed open; if that also fails, still register the bookmark so the
+            // workspace file menu lists the PDF (reader surfaces errors on open).
+            if PDFDocument(url: fileURL) == nil {
+                if let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) {
+                    _ = PDFDocument(data: data)
+                }
+            }
+        } else if kind != .pdf, size > 0 {
             guard (try? Data(contentsOf: fileURL)) != nil else {
                 throw kind == .markdown ? StudyDocumentError.invalidMarkdown : StudyDocumentError.invalidText
             }
@@ -123,9 +133,34 @@ final class StudyDocumentStore {
         let fingerprint = Self.fingerprint(for: fileURL, fileSize: size)
         if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }),
            size > 0 {
-            // Empty files share fingerprints; only reuse when non-empty.
-            touch(documentID: existing.id)
-            return existing
+            let samePath = existing.displayPath.map {
+                ($0 as NSString).standardizingPath == (fileURL.path as NSString).standardizingPath
+            } ?? false
+            if samePath {
+                touch(documentID: existing.id)
+                return existing
+            }
+            // Upgrade imported-copy / pathless docs so the switcher can see the real folder.
+            if existing.accessMode == .importedCopy
+                || existing.displayPath == nil
+                || existing.displayPath?.isEmpty == true,
+               let idx = documents.firstIndex(where: { $0.id == existing.id }) {
+                let bookmark = try fileURL.bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                documents[idx].bookmarkData = bookmark
+                documents[idx].displayPath = fileURL.path
+                documents[idx].accessMode = .originalBookmark
+                documents[idx].localRelativePath = ""
+                documents[idx].fileSize = size
+                documents[idx].lastOpenedAt = Date()
+                saveRegistry()
+                notify()
+                return documents[idx]
+            }
+            // Same content at a different path — fall through and register freshly.
         }
 
         let bookmark = try fileURL.bookmarkData(
@@ -388,17 +423,51 @@ final class StudyDocumentStore {
         let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
         guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
 
-        if kind == .pdf, PDFDocument(url: sourceURL) == nil {
-            throw StudyDocumentError.invalidPDF
-        }
-        if kind != .pdf {
+        if kind == .pdf, size > 0 {
+            // Match registerFileInPlace: don't fail open just because PDFKit can't parse via URL.
+            if PDFDocument(url: sourceURL) == nil {
+                if let data = try? Data(contentsOf: sourceURL, options: [.mappedIfSafe]) {
+                    _ = PDFDocument(data: data)
+                }
+            }
+        } else if kind != .pdf {
             guard (try? Data(contentsOf: sourceURL)) != nil else {
                 throw kind == .markdown ? StudyDocumentError.invalidMarkdown : StudyDocumentError.invalidText
             }
         }
 
         let fingerprint = Self.fingerprint(for: sourceURL, fileSize: size)
-        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
+        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }),
+           size > 0 {
+            // Upgrade imported-copy / pathless docs so the switcher can see the real folder.
+            if existing.accessMode == .importedCopy
+                || existing.displayPath == nil
+                || existing.displayPath?.isEmpty == true,
+               let idx = documents.firstIndex(where: { $0.id == existing.id }) {
+                let bookmark = try sourceURL.bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                documents[idx].bookmarkData = bookmark
+                documents[idx].displayPath = sourceURL.path
+                documents[idx].accessMode = .originalBookmark
+                documents[idx].localRelativePath = ""
+                documents[idx].fileSize = size
+                documents[idx].lastOpenedAt = Date()
+                saveRegistry()
+                notify()
+                return documents[idx]
+            }
+            let samePath = existing.displayPath.map {
+                ($0 as NSString).standardizingPath == (sourceURL.path as NSString).standardizingPath
+            } ?? false
+            if samePath {
+                touch(documentID: existing.id)
+                return existing
+            }
+            // Same content at a different path — fall through and register freshly.
+        } else if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }) {
             touch(documentID: existing.id)
             return existing
         }

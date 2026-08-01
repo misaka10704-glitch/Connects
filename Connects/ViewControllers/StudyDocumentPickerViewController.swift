@@ -327,7 +327,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             openInPlace(url, forceText: true)
         case .folderWorkspace:
             do {
-                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url)
+                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url, asProjectGrant: true)
                 delegate?.studyDocumentPicker(self, didSelectWorkspace: ws.id)
             } catch {
                 presentOpenError(error)

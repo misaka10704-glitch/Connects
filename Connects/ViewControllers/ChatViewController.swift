@@ -6614,6 +6614,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func toggleChatSidebar() { onToggleSidebar?() }
 
+    /// Prefer matching by action — `rightBarButtonItems` order is rightmost-first and fragile.
+    private func studyBarButtonItem(matching action: Selector) -> UIBarButtonItem? {
+        navigationItem.rightBarButtonItems?.first { $0.action == action }
+    }
+
     @objc private func moreTapped() {
         guard let conv = ConversationStore.shared.currentConversation else { return }
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
@@ -6622,22 +6627,30 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let wsName = conv.activeStudyWorkspaceID.flatMap {
                 StudyWorkspaceStore.shared.workspace(id: $0)?.title
             } ?? "工作区"
-            items.append(ConnectsMenuItem(title: "工作区：\(wsName)", icon: .folder) {})
-            items.append(ConnectsMenuItem(title: "文件 / 换绑", icon: .folder) { [weak self] in
-                self?.studyContextProvider?.presentWorkspaceFileMenu(from: nil)
-            })
+            let fileHint = conv.studyActiveFileName.map { " · \($0)" } ?? ""
+            items.append(ConnectsMenuItem(title: "\(wsName)\(fileHint)", icon: .folder) {})
         } else if conv.studyDocumentID != nil,
                   let doc = StudyDocumentStore.shared.document(id: conv.studyDocumentID!) {
             items.append(ConnectsMenuItem(title: "文档：\(doc.title)", icon: .book) {})
-            items.append(ConnectsMenuItem(title: "更换依附", icon: .folder) { [weak self] in
-                self?.presentStudyDocumentPicker()
+        }
+        let moreItem = studyBarButtonItem(matching: #selector(moreTapped))
+            ?? navigationItem.rightBarButtonItems?.first
+        items.append(ConnectsMenuItem(title: "打开…", icon: .book) { [weak self] in
+            guard let self else { return }
+            if let shell = self.studyContextProvider {
+                shell.presentStudyFreeOpenPicker(from: nil, barButtonItem: moreItem)
+            } else {
+                self.presentStudyDocumentPicker()
+            }
+        })
+        if let shell = studyContextProvider {
+            items.append(ConnectsMenuItem(title: "文件夹授权", icon: .folder) {
+                shell.presentProjectFolderGrantPicker()
             })
+        }
+        if conv.studyDocumentID != nil || conv.isWorkspaceStudySession {
             items.append(ConnectsMenuItem(title: "取消依附", icon: .trash, isDestructive: true) { [weak self] in
                 self?.detachStudyDocument()
-            })
-        } else {
-            items.append(ConnectsMenuItem(title: "选择依附", icon: .book) { [weak self] in
-                self?.presentStudyDocumentPicker()
             })
         }
         items.append(contentsOf: [
@@ -6667,12 +6680,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             from: self,
             title: conv.title,
             items: items,
-            barButtonItem: navigationItem.rightBarButtonItems?.first
+            barButtonItem: moreItem
         )
     }
 
     func presentStudyDocumentPickerPublic() {
+        // Prefer free system picker via Study shell when available.
+        if let shell = studyContextProvider {
+            shell.presentStudyFreeOpenPicker(
+                from: nil,
+                barButtonItem: studyBarButtonItem(matching: #selector(moreTapped))
+            )
+            return
+        }
         presentStudyDocumentPicker()
+    }
+
+    /// Called by StudyShell after binding a folder or file.
+    func refreshStudyBindingChrome() {
+        updateStudyInputBar()
+        applyStudyChrome()
+        refreshRightBarButtons()
     }
 
     private func presentStudyDocumentPicker() {
@@ -6718,12 +6746,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelectWorkspace workspaceID: String) {
         guard let id = currentConversationID else { return }
         _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: workspaceID)
-        let firstDoc = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.documentIDs.first
+        var firstDoc = StudyWorkspaceStore.shared.primaryDocumentID(in: workspaceID)
+        if firstDoc == nil,
+           let name = StudyWorkspaceStore.shared.listFileNames(in: workspaceID).first,
+           let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: name, in: workspaceID),
+           let doc = try? StudyDocumentStore.shared.registerFileInPlace(
+            at: url,
+            createEmptyIfNeeded: false
+           ) {
+            StudyWorkspaceStore.shared.addDocument(doc.id, to: workspaceID)
+            _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: workspaceID)
+            firstDoc = StudyWorkspaceStore.shared.primaryDocumentID(in: workspaceID) ?? doc.id
+        }
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyWorkspaceID = workspaceID
             draft.studySessionKind = .workspace
-            draft.studyDocumentID = firstDoc
-            draft.studyPageCaptureEnabled = firstDoc != nil
+            if let current = draft.studyDocumentID,
+               StudyWorkspaceStore.shared.containsDocument(current, in: workspaceID) {
+                draft.studyDocumentID = current
+            } else {
+                draft.studyDocumentID = firstDoc
+            }
+            draft.studyPageCaptureEnabled = draft.studyDocumentID != nil
             // Keep current Study posture — do not jump into Agent.
             draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
         }
@@ -6733,7 +6777,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         } else {
             picker.dismiss(animated: true)
         }
-        if firstDoc == nil {
+        if StudyWorkspaceStore.shared.isFolderEmptyOfStudyFiles(workspaceID) {
             DispatchQueue.main.async { [weak self] in
                 self?.studyContextProvider?.ensureWorkspaceHasFileIfEmpty(workspaceID: workspaceID)
             }
@@ -6850,7 +6894,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             from: self,
             title: title,
             items: Array(items),
-            barButtonItem: navigationItem.rightBarButtonItems?.dropFirst().first
+            barButtonItem: studyBarButtonItem(matching: #selector(studyHistoryTapped))
+                ?? navigationItem.rightBarButtonItems?.dropFirst().first
         )
     }
 
@@ -6870,7 +6915,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     ConversationStore.shared.deleteConversation(id: conv.id)
                 }
             ],
-            barButtonItem: navigationItem.rightBarButtonItems?.dropFirst().first,
+            barButtonItem: studyBarButtonItem(matching: #selector(studyHistoryTapped))
+                ?? navigationItem.rightBarButtonItems?.dropFirst().first,
             preferVertical: true
         )
     }

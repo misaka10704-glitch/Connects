@@ -127,6 +127,7 @@
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
 		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
+		SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SFB200010000000000000001 /* StudyFilesBrowserController.swift */; };
 		S10000010000000000000009 /* MarkdownReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000009 /* MarkdownReaderViewController.swift */; };
 		S1000001000000000000000A /* PDFContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000A /* PDFContentsViewController.swift */; };
 		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
@@ -269,6 +270,7 @@
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
+		SFB200010000000000000001 /* StudyFilesBrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFilesBrowserController.swift; sourceTree = "<group>"; };
 		S20000010000000000000009 /* MarkdownReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownReaderViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000A /* PDFContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentsViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
@@ -468,6 +470,7 @@
 				F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */,
 				S20000010000000000000006 /* StudyShellViewController.swift */,
 				S20000010000000000000007 /* StudyDocumentPickerViewController.swift */,
+				SFB200010000000000000001 /* StudyFilesBrowserController.swift */,
 			);
 			path = ViewControllers;
 			sourceTree = "<group>";
@@ -758,6 +761,7 @@
 				S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */,
 				S10000010000000000000006 /* StudyShellViewController.swift in Sources */,
 				S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */,
+				SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */,
 				S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */,
 				S10000010000000000000020 /* CodeEditorIndent.swift in Sources */,
 				S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */,
@@ -840,9 +844,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
@@ -873,9 +879,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -905,9 +913,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
@@ -938,9 +948,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",

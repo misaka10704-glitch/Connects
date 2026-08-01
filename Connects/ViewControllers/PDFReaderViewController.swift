@@ -39,7 +39,7 @@ final class PDFReaderViewController: UIViewController {
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
-    var onFileTitleTapped: (() -> Void)?
+    var onFileTitleTapped: ((UIView) -> Void)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -116,11 +116,15 @@ final class PDFReaderViewController: UIViewController {
         fileTitleButton.translatesAutoresizingMaskIntoConstraints = false
         fileTitleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         fileTitleButton.titleLabel?.lineBreakMode = .byTruncatingMiddle
+        fileTitleButton.titleLabel?.textAlignment = .center
+        fileTitleButton.contentHorizontalAlignment = .center
         fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
         fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
         fileTitleButton.accessibilityLabel = "切换文件"
         topBar.addSubview(fileTitleButton)
+        topBar.bringSubviewToFront(highlightPenButton)
+        topBar.bringSubviewToFront(contentsButton)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
@@ -138,7 +142,9 @@ final class PDFReaderViewController: UIViewController {
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-            fileTitleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
+            fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
+            fileTitleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
 
@@ -977,7 +983,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     @objc private func fileTitleTapped() {
-        onFileTitleTapped?()
+        onFileTitleTapped?(fileTitleButton)
     }
 
     func captureCurrentPageImageJPEG() -> String? {

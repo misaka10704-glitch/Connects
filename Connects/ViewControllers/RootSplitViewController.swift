@@ -492,7 +492,22 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
         let nav = UINavigationController(rootViewController: settings)
         nav.modalPresentationStyle = .formSheet
         nav.preferredContentSize = CGSize(width: 460, height: 620)
+        let c = DSTheme.c
+        nav.view.backgroundColor = c.sidebarBackground
         nav.navigationBar.isTranslucent = false
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = c.sidebarBackground
+        appearance.titleTextAttributes = [.foregroundColor: c.textPrimary]
+        appearance.shadowColor = .clear
+        nav.navigationBar.standardAppearance = appearance
+        nav.navigationBar.scrollEdgeAppearance = appearance
+        nav.navigationBar.compactAppearance = appearance
+        if #available(iOS 15.0, *) {
+            nav.navigationBar.compactScrollEdgeAppearance = appearance
+        }
+        nav.navigationBar.tintColor = c.accent
+        nav.navigationBar.barTintColor = c.sidebarBackground
         present(nav, animated: true)
     }
 

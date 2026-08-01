@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// Hosts chat + optional document reader (PDF / Markdown) for study sessions.
 /// Landscape: reader full screen; AI chat overlays on the right.
@@ -48,6 +49,8 @@ final class StudyShellViewController: UIViewController {
     private var pendingEditAfterSwitch: (CodeEditProposal, String)?
     private var pendingFolderPick = false
     private var pendingImportWorkspaceID: String?
+    /// Free open: folder or any file/PDF (⋯「打开…」 / reader title when unbound).
+    private var pendingFreeOpenPick = false
     /// Debounce Agent write → editor reload (avoids multi-file flash).
     private var agentEditorReloadWork: DispatchWorkItem?
 
@@ -212,8 +215,8 @@ final class StudyShellViewController: UIViewController {
             let ids = (note.userInfo?["documentIDs"] as? [String]) ?? []
             self?.scheduleCoalescedAgentEditorReload(documentIDs: ids)
         }
-        let fileTitle: () -> Void = { [weak self] in
-            self?.presentWorkspaceFileMenu(from: nil)
+        let fileTitle: (UIView) -> Void = { [weak self] source in
+            self?.presentWorkspaceFileMenu(from: source)
         }
         textEditorVC.onFileTitleTapped = fileTitle
         pdfReaderVC.onFileTitleTapped = fileTitle
@@ -1904,61 +1907,91 @@ extension StudyShellViewController: StudyReadingContextProviding {
     }
 
     func presentWorkspaceFileMenu(from sourceView: UIView?) {
-        let conv = ConversationStore.shared.currentConversation
-        // Single-file Study: attach folder for multi-file switch, or change document.
-        guard conv?.isWorkspaceStudySession == true,
-              let wsID = conv?.activeStudyWorkspaceID else {
-            let items: [ConnectsMenuItem] = [
-                ConnectsMenuItem(title: "依附文件夹…", icon: .folder) { [weak self] in
-                    self?.presentFolderWorkspacePicker()
-                },
-                ConnectsMenuItem(title: "更换文档…", icon: .book) { [weak self] in
-                    self?.chatVC.presentStudyDocumentPickerPublic()
-                }
-            ]
-            ConnectsMenu.present(
-                from: self,
-                title: "文档",
-                items: items,
-                sourceView: sourceView ?? textEditorVC.view,
-                sourceRect: sourceView?.bounds ?? CGRect(x: textEditorVC.view.bounds.midX, y: 40, width: 1, height: 1)
-            )
+        guard let conv = ConversationStore.shared.currentConversation,
+              let docID = conv.studyDocumentID else {
+            presentStudyOpenFlow()
             return
         }
-        _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: wsID)
+
+        // Bind project folder synchronously so listing can use workspace + disk.
+        if conv.isWorkspaceStudySession != true,
+           let path = StudyDocumentStore.shared.document(id: docID)?.displayPath,
+           !path.isEmpty {
+            openFileBindingParentWorkspace(fileURL: URL(fileURLWithPath: path), showSwitcher: false)
+        }
+
+        let bound = ConversationStore.shared.currentConversation
+        let filePath: String = {
+            if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath, !path.isEmpty {
+                return path
+            }
+            if let url = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
+                return url.path
+            }
+            return ""
+        }()
+        // Always prefer the widest covering grant (Workspace/), never the leaf DSP(NJU) bind.
+        let grant = filePath.isEmpty
+            ? StudyWorkspaceStore.shared.primaryGrantedWorkspace()
+            : StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: filePath)
+        let wsID = grant?.id
+            ?? bound?.activeStudyWorkspaceID
+            ?? (filePath.isEmpty ? nil : StudyWorkspaceStore.shared.workspaceContaining(filePath: filePath)?.id)
+            ?? StudyWorkspaceStore.shared.defaultWorkspace().id
+
+        // If conversation still points at a leaf workspace, silently reattach to the wider grant.
+        if let grant,
+           bound?.studyWorkspaceID != grant.id,
+           let convID = bound?.id {
+            ConversationStore.shared.updateConversation(id: convID) { draft in
+                draft.studyWorkspaceID = grant.id
+                draft.studySessionKind = .workspace
+                draft.studyDocumentID = docID
+            }
+            StudyWorkspaceStore.shared.addDocument(docID, to: grant.id)
+        }
+
         let ws = StudyWorkspaceStore.shared.workspace(id: wsID) ?? StudyWorkspaceStore.shared.defaultWorkspace()
-        let names = StudyWorkspaceStore.shared.listFileNames(in: ws.id)
+        _ = try? StudyWorkspaceStore.shared.folderURL(for: ws.id)
+
+        // Prefer disk siblings. If we cannot list the parent directory, security scope is
+        // missing — send the user straight to 文件夹授权 (do not show "opened only" list).
+        guard let diskNames = StudyWorkspaceStore.shared.listSiblingFileNamesFromDisk(
+            ofDocumentID: docID,
+            in: ws.id
+        ) else {
+            ConnectsToast.show("需要文件夹授权才能列出同目录全部文件", in: view, duration: 2.0)
+            presentFolderWorkspacePicker()
+            return
+        }
+        var names = diskNames
+
+        if names.isEmpty {
+            if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath {
+                names = [URL(fileURLWithPath: path).lastPathComponent]
+            } else if let resolved = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
+                names = [resolved.lastPathComponent]
+            } else {
+                names = [StudyDocumentStore.shared.document(id: docID)?.title ?? "当前文件"]
+            }
+        }
+
         let activeName: String? = {
-            guard let docID = conv?.studyDocumentID,
-                  let path = StudyDocumentStore.shared.document(id: docID)?.displayPath else { return nil }
-            return URL(fileURLWithPath: path).lastPathComponent
+            StudyWorkspaceStore.shared.relativePath(ofDocumentID: docID, in: ws.id)
+                ?? StudyDocumentStore.shared.document(id: docID).flatMap { doc in
+                    doc.displayPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+                }
         }()
         var items: [ConnectsMenuItem] = []
-        if names.count > 1, let activeName, let idx = names.firstIndex(of: activeName) {
-            let prev = names[(idx - 1 + names.count) % names.count]
-            let next = names[(idx + 1) % names.count]
-            items.append(ConnectsMenuItem(
-                title: "上一份 · \(prev)",
-                icon: .chevronLeft,
-                handler: { [weak self] in
-                    self?.openWorkspaceFileNamed(prev, workspaceID: ws.id)
-                }
-            ))
-            items.append(ConnectsMenuItem(
-                title: "下一份 · \(next)",
-                icon: .chevronRight,
-                handler: { [weak self] in
-                    self?.openWorkspaceFileNamed(next, workspaceID: ws.id)
-                }
-            ))
-        }
         for name in names {
             let fileName = name
             let isPDF = fileName.lowercased().hasSuffix(".pdf")
+            let leaf = (fileName as NSString).lastPathComponent
+            let activeLeaf = activeName.map { ($0 as NSString).lastPathComponent }
             items.append(ConnectsMenuItem(
                 title: fileName,
                 icon: isPDF ? .book : .edit,
-                isSelected: fileName == activeName,
+                isSelected: fileName == activeName || leaf == activeName || leaf == activeLeaf,
                 longPressHandler: { [weak self] in
                     self?.presentWorkspaceFileActions(named: fileName, workspaceID: ws.id)
                 },
@@ -1967,24 +2000,91 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 }
             ))
         }
+        let fallbackRect = CGRect(
+            x: max(0, textEditorVC.view.bounds.midX - 60),
+            y: textEditorVC.view.safeAreaInsets.top,
+            width: 120,
+            height: 40
+        )
+        let screenH = view.bounds.height > 1 ? view.bounds.height : UIScreen.main.bounds.height
+        let anchor = sourceView
+            ?? (pdfReaderVC.viewIfLoaded.flatMap { $0.isHidden ? nil : $0 })
+            ?? textEditorVC.view
         ConnectsMenu.present(
             from: self,
             title: ws.title,
             items: items,
-            sourceView: sourceView ?? textEditorVC.view,
-            sourceRect: sourceView?.bounds ?? CGRect(x: textEditorVC.view.bounds.midX, y: 40, width: 1, height: 1),
+            sourceView: anchor,
+            sourceRect: sourceView?.bounds ?? fallbackRect,
+            maxHeight: min(480, max(240, screenH * 0.62)),
+            menuWidth: 320,
             titleTap: { [weak self] in
                 self?.presentWorkspaceSwitcher()
             },
             headerTrailingActions: [
-                ConnectsMenuHeaderAction(icon: .plus, accessibilityLabel: "新建文件") { [weak self] in
-                    self?.promptCreateFile(in: ws.id, firstFile: names.isEmpty)
+                ConnectsMenuHeaderAction(icon: .folder, accessibilityLabel: "打开文件 / New File") { [weak self] in
+                    self?.presentStudyOpenFlow()
                 },
-                ConnectsMenuHeaderAction(icon: .importFile, accessibilityLabel: "添加文件到工作区") { [weak self] in
-                    self?.presentImportIntoWorkspace(ws.id)
+                ConnectsMenuHeaderAction(icon: .importFile, accessibilityLabel: "文件夹授权") { [weak self] in
+                    self?.presentFolderWorkspacePicker()
                 }
             ]
         )
+    }
+
+    /// When workspace bind fails, still allow title-tap to show the current file (no picker).
+    private func presentSingleFileFallbackMenu(documentID: String, from sourceView: UIView?) {
+        let doc = StudyDocumentStore.shared.document(id: documentID)
+        let name = doc.flatMap { d -> String? in
+            if let path = d.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path).lastPathComponent
+            }
+            return d.title.isEmpty ? nil : d.title
+        } ?? "当前文件"
+        let isPDF = name.lowercased().hasSuffix(".pdf") || doc?.kind == .pdf
+        let anchor: UIView = sourceView ?? textEditorVC.view
+        let rect = sourceView?.bounds ?? CGRect(x: anchor.bounds.midX, y: 40, width: 1, height: 1)
+        ConnectsMenu.present(
+            from: self,
+            title: "文件",
+            items: [
+                ConnectsMenuItem(title: name, icon: isPDF ? .book : .edit, isSelected: true, handler: {}),
+                ConnectsMenuItem(title: "打开…", icon: .folder) { [weak self] in
+                    self?.presentStudyOpenFlow()
+                }
+            ],
+            sourceView: anchor,
+            sourceRect: rect
+        )
+    }
+
+    /// Unified open entry from chat / chrome.
+    func presentStudyFreeOpenPicker(from sourceView: UIView?, barButtonItem: UIBarButtonItem? = nil) {
+        presentStudyOpenFlow()
+    }
+
+    /// Unified open: no project grant → folder picker; otherwise Files browser (New File).
+    /// Do NOT skip the picker just because the conversation is bound to some non-default
+    /// workspace (SPI_E2E / leaf DSP) — that wrongly blocked real folder authorization.
+    private func presentStudyOpenFlow() {
+        if StudyWorkspaceStore.shared.hasUsableFolderGrant() {
+            presentStudyFilesBrowser()
+            return
+        }
+        presentFolderWorkspacePicker()
+    }
+
+    private func presentStudyFilesBrowser() {
+        let browser = StudyFilesBrowserController.make()
+        browser.modalPresentationStyle = .fullScreen
+        browser.onPick = { [weak self] url in
+            self?.handleFreeOpenURL(url)
+        }
+        present(browser, animated: true)
+    }
+
+    private func presentFreeFilePicker(from sourceView: UIView?, barButtonItem: UIBarButtonItem? = nil) {
+        presentStudyOpenFlow()
     }
 
     private func presentWorkspaceFileActions(named name: String, workspaceID: String) {
@@ -2091,39 +2191,231 @@ extension StudyShellViewController: StudyReadingContextProviding {
 
     private func presentWorkspaceSwitcher() {
         var items: [ConnectsMenuItem] = []
-        for ws in StudyWorkspaceStore.shared.workspaces {
+        let store = StudyWorkspaceStore.shared
+        if let grant = store.primaryGrantedWorkspace() {
+            let pathHint: String = {
+                if let abs = grant.absoluteRootPath, !abs.isEmpty { return abs }
+                return grant.title
+            }()
+            items.append(ConnectsMenuItem(title: "当前授权：\(grant.title)", icon: .folder) { [weak self] in
+                guard let self else { return }
+                self.activateWorkspace(grant.id)
+                ConnectsToast.show("已授权：\(pathHint)", in: self.view, duration: 2.2)
+            })
+        }
+        for ws in store.workspaces {
             let mark = ws.isDefault ? "（默认）" : ""
+            if let g = store.primaryGrantedWorkspace(), ws.id == g.id { continue }
             items.append(ConnectsMenuItem(title: "\(ws.title)\(mark)", icon: .folder) { [weak self] in
                 self?.activateWorkspace(ws.id)
             })
         }
-        items.append(ConnectsMenuItem(title: "打开 Files…", icon: .folder) { [weak self] in
+        if store.hasUsableFolderGrant() {
+            items.append(ConnectsMenuItem(title: "打开文件 / New File…", icon: .importFile) { [weak self] in
+                self?.presentStudyFilesBrowser()
+            })
+        }
+        items.append(ConnectsMenuItem(title: "文件夹授权", icon: .folder) { [weak self] in
             self?.presentFolderWorkspacePicker()
         })
-        ConnectsMenu.present(from: self, title: "切换工作区", items: items)
+        let title: String = {
+            if let label = store.primaryGrantedFolderLabel() {
+                return "工程 · \(label)"
+            }
+            return "切换工作区"
+        }()
+        ConnectsMenu.present(from: self, title: title, items: items)
     }
 
-    private func activateWorkspace(_ workspaceID: String) {
+    /// Public entry: re-open the system folder picker for project authorization.
+    func presentProjectFolderGrantPicker() {
+        presentFolderWorkspacePicker()
+    }
+
+    private func activateWorkspace(_ workspaceID: String, preferredDocumentID: String? = nil) {
         guard let convID = ConversationStore.shared.currentConversationID else { return }
+        // Light ghost cleanup only — never full-tree scan/register.
         _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: workspaceID)
-        let firstDoc = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.documentIDs.first
+
+        if let preferred = preferredDocumentID {
+            StudyWorkspaceStore.shared.addDocument(preferred, to: workspaceID)
+        }
+
+        var activeDoc = preferredDocumentID
+        if activeDoc == nil {
+            activeDoc = StudyWorkspaceStore.shared.primaryDocumentID(in: workspaceID)
+        }
+
         ConversationStore.shared.updateConversation(id: convID) { draft in
             draft.studyWorkspaceID = workspaceID
             draft.studySessionKind = .workspace
-            if let firstDoc { draft.studyDocumentID = firstDoc }
+            if let preferred = preferredDocumentID {
+                draft.studyDocumentID = preferred
+            } else if let current = draft.studyDocumentID,
+                      StudyWorkspaceStore.shared.containsDocument(current, in: workspaceID) {
+                draft.studyDocumentID = current
+            } else {
+                draft.studyDocumentID = activeDoc
+            }
             draft.studyPageCaptureEnabled = draft.studyDocumentID != nil
-            // Keep current Study posture — do not jump into Agent.
             draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
         }
-        if firstDoc == nil {
-            ensureWorkspaceHasFileIfEmpty(workspaceID: workspaceID)
+        forceRebindConversation()
+        chatVC.refreshStudyBindingChrome()
+
+        // No file open yet → pick one inside the granted folder (New File page).
+        // Do not deep-scan for a "first" file.
+        if ConversationStore.shared.currentConversation?.studyDocumentID == nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.presentStudyFilesBrowser()
+            }
         }
     }
 
-    private func openWorkspaceFileNamed(_ name: String, workspaceID: String) {
-        guard let folder = try? StudyWorkspaceStore.shared.folderURL(for: workspaceID) else { return }
-        let url = folder.appendingPathComponent(name)
+    private func activateDocumentStudy(documentID: String) {
+        guard let convID = ConversationStore.shared.currentConversationID else { return }
+        ConversationStore.shared.updateConversation(id: convID) { draft in
+            draft.studyDocumentID = documentID
+            draft.studyWorkspaceID = nil
+            draft.studySessionKind = .document
+            draft.studyPageCaptureEnabled = true
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
+        }
+        forceRebindConversation()
+        chatVC.refreshStudyBindingChrome()
+    }
+
+    private func handleFreeOpenURL(_ url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+        let isDirectory: Bool = {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+            if values?.isDirectory == true, values?.isPackage != true { return true }
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) {
+                return isDir.boolValue
+            }
+            return false
+        }()
+        if isDirectory {
+            do {
+                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url, asProjectGrant: true)
+                activateWorkspace(ws.id)
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+            }
+            return
+        }
+        // File → bind parent directory as workspace so the options menu lists siblings.
+        openFileBindingParentWorkspace(fileURL: url)
+    }
+
+    /// Open one file and silently bind its parent folder so the options menu can list siblings.
+    private func openFileBindingParentWorkspace(fileURL: URL, showSwitcher: Bool = false) {
         do {
+            let doc: StudyDocument
+            if let existing = StudyDocumentStore.shared.documentMatchingPath(fileURL.path) {
+                doc = existing
+            } else {
+                let accessing = fileURL.startAccessingSecurityScopedResource()
+                defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
+                doc = try StudyDocumentStore.shared.registerFileInPlace(
+                    at: fileURL,
+                    createEmptyIfNeeded: false
+                )
+            }
+
+            if let existing = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(
+                coveringFilePath: fileURL.path
+            ) {
+                StudyWorkspaceStore.shared.addDocument(doc.id, to: existing.id)
+                _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: existing.id)
+                activateWorkspace(existing.id, preferredDocumentID: doc.id)
+            } else {
+                let ws = try StudyWorkspaceStore.shared.bindFolderAroundOpenFile(fileURL)
+                StudyWorkspaceStore.shared.addDocument(doc.id, to: ws.id)
+                activateWorkspace(ws.id, preferredDocumentID: doc.id)
+            }
+
+            if showSwitcher {
+                DispatchQueue.main.async { [weak self] in
+                    self?.presentWorkspaceFileMenu(from: nil)
+                }
+            }
+        } catch {
+            do {
+                let doc = try StudyDocumentStore.shared.openDocument(from: fileURL, forceText: false)
+                activateDocumentStudy(documentID: doc.id)
+                if showSwitcher {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.presentSingleFileFallbackMenu(documentID: doc.id, from: nil)
+                    }
+                }
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+            }
+        }
+    }
+
+    private func presentFolderWorkspacePicker() {
+        pendingFolderPick = true
+        pendingFreeOpenPick = false
+        pendingImportWorkspaceID = nil
+        if let label = StudyWorkspaceStore.shared.primaryGrantedFolderLabel() {
+            ConnectsToast.show("当前授权：\(label)\n请选择工程根目录", in: view, duration: 2.4)
+        } else {
+            ConnectsToast.show("请选择工程根目录（如 Workspace）", in: view, duration: 2.0)
+        }
+        let picker: UIDocumentPickerViewController
+        if #available(iOS 14.0, *) {
+            picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
+        } else {
+            picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
+        }
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        // Full-screen feels like the main open step (first-time project grant).
+        picker.modalPresentationStyle = .fullScreen
+        present(picker, animated: true)
+    }
+
+    private func openWorkspaceFileNamed(_ name: String, workspaceID: String) {
+        do {
+            let root = try StudyWorkspaceStore.shared.folderURL(for: workspaceID)
+            let url: URL
+            if name.contains("/") {
+                url = try StudyWorkspaceStore.shared.fileURL(relativePath: name, in: workspaceID)
+            } else {
+                let docID = ConversationStore.shared.currentConversation?.studyDocumentID
+                let fileURL: URL? = {
+                    if let docID, let resolved = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
+                        return resolved
+                    }
+                    if let docID,
+                       let path = StudyDocumentStore.shared.document(id: docID)?.displayPath,
+                       !path.isEmpty {
+                        return URL(fileURLWithPath: path)
+                    }
+                    return nil
+                }()
+                if let fileURL,
+                   let rel = StudyWorkspaceStore.relativePath(of: fileURL, under: root) {
+                    let parentRel = (rel as NSString).deletingLastPathComponent
+                    let combined = (parentRel.isEmpty || parentRel == ".")
+                        ? name
+                        : (parentRel as NSString).appendingPathComponent(name)
+                    url = try StudyWorkspaceStore.shared.fileURL(relativePath: combined, in: workspaceID)
+                } else if let fileURL {
+                    url = fileURL.deletingLastPathComponent().appendingPathComponent(name)
+                } else {
+                    url = root.appendingPathComponent(name)
+                }
+            }
+            if FileManager.default.isUbiquitousItem(at: url) {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            }
             let doc = try StudyDocumentStore.shared.registerFileInPlace(at: url, createEmptyIfNeeded: false)
             StudyWorkspaceStore.shared.addDocument(doc.id, to: workspaceID)
             switchActiveDocument(to: doc.id)
@@ -2133,13 +2425,12 @@ extension StudyShellViewController: StudyReadingContextProviding {
     }
 
     private func promptCreateFile(in workspaceID: String, firstFile: Bool = false) {
-        let title = firstFile ? "新建第一个文件" : "新建文件"
         let alert = UIAlertController(
-            title: title,
+            title: "新建文件",
             message: "任意后缀，例如 notes.md / top.v / a.html",
             preferredStyle: .alert
         )
-        alert.addTextField { $0.placeholder = firstFile ? "main.swift" : "filename.ext" }
+        alert.addTextField { $0.placeholder = firstFile ? "Untitled.md" : "filename.ext" }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "创建", style: .default) { [weak self] _ in
             let name = alert.textFields?.first?.text ?? ""
@@ -2159,18 +2450,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
         let wsID = workspaceID
             ?? ConversationStore.shared.currentConversation?.activeStudyWorkspaceID
         guard let wsID else { return }
-        let names = StudyWorkspaceStore.shared.listFileNames(in: wsID)
-        guard names.isEmpty else { return }
-        promptCreateFile(in: wsID, firstFile: true)
-    }
-
-    private func presentFolderWorkspacePicker() {
-        pendingFolderPick = true
-        pendingImportWorkspaceID = nil
-        let picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
-        picker.delegate = self
-        picker.allowsMultipleSelection = false
-        present(picker, animated: true)
+        _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: wsID)
+        guard StudyWorkspaceStore.shared.isFolderEmptyOfStudyFiles(wsID) else { return }
+        presentStudyFilesBrowser()
     }
 
     private func presentImportIntoWorkspace(_ workspaceID: String) {
@@ -2298,11 +2580,34 @@ extension StudyShellViewController: StudyReadingContextProviding {
 extension StudyShellViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { return }
+        if pendingFreeOpenPick {
+            pendingFreeOpenPick = false
+            handleFreeOpenURL(url)
+            return
+        }
         if pendingFolderPick {
             pendingFolderPick = false
+            let preferredDoc = ConversationStore.shared.currentConversation?.studyDocumentID
             do {
-                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url)
-                activateWorkspace(ws.id)
+                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url, asProjectGrant: true)
+                UserDefaults.standard.set(true, forKey: "Connects.hasProjectFolderGrant")
+                StudyWorkspaceStore.shared.markAsProjectFolderGrant(ws.id)
+                activateWorkspace(ws.id, preferredDocumentID: preferredDoc)
+                if StudyWorkspaceStore.isOverlyBroadFolder(url) {
+                    ConnectsToast.show(
+                        "已授权。建议选具体工程文件夹（不要选整个 iCloud），选项栏只列同目录文件。",
+                        in: view,
+                        duration: 3.0
+                    )
+                } else {
+                    ConnectsToast.show("已授权：\(ws.title)", in: view, duration: 1.6)
+                }
+                // Immediately show same-directory files under the new grant.
+                if preferredDoc != nil {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.presentWorkspaceFileMenu(from: nil)
+                    }
+                }
             } catch {
                 ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
             }
@@ -2322,6 +2627,7 @@ extension StudyShellViewController: UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         pendingFolderPick = false
         pendingImportWorkspaceID = nil
+        pendingFreeOpenPick = false
     }
 }
 

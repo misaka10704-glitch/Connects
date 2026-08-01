@@ -94,7 +94,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
-    var onFileTitleTapped: (() -> Void)?
+    var onFileTitleTapped: ((UIView) -> Void)?
     var onContentEdited: (() -> Void)?
     var onAskSelection: ((String) -> Void)?
 
@@ -155,11 +155,17 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fileTitleButton.translatesAutoresizingMaskIntoConstraints = false
         fileTitleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         fileTitleButton.titleLabel?.lineBreakMode = .byTruncatingMiddle
+        fileTitleButton.titleLabel?.textAlignment = .center
+        fileTitleButton.contentHorizontalAlignment = .center
         fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
         fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
         fileTitleButton.accessibilityLabel = "切换文件"
         topBar.addSubview(fileTitleButton)
+        // Keep mode / save / Tab above the title control.
+        topBar.bringSubviewToFront(tabToggleButton)
+        topBar.bringSubviewToFront(modeButton)
+        topBar.bringSubviewToFront(saveButton)
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
         gutterView.clipsToBounds = true
@@ -294,8 +300,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
+            // Visually centered on the bar; min width expands the hit target left/right equally.
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-            fileTitleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
+            fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
+            fileTitleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
 
@@ -362,10 +371,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         refreshModeChrome()
         updateProgressLabel()
         syncSurfaceVisibility()
+        liftTopChrome()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        liftTopChrome()
         let w = textView.bounds.width
         if abs(w - lastWrapLayoutWidth) > 0.5 {
             lastWrapLayoutWidth = w
@@ -376,6 +387,15 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             layoutPerHunkActionBarsInContent()
             placeDiffNavChrome()
         }
+    }
+
+    /// Keep the 40pt chrome strip above text / preview / chips so mode & title stay tappable.
+    private func liftTopChrome() {
+        view.bringSubviewToFront(topBar)
+        view.bringSubviewToFront(topBarSeparator)
+        topBar.bringSubviewToFront(tabToggleButton)
+        topBar.bringSubviewToFront(modeButton)
+        topBar.bringSubviewToFront(saveButton)
     }
 
     deinit {
@@ -585,7 +605,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     // MARK: - Private
 
     @objc private func fileTitleTapped() {
-        onFileTitleTapped?()
+        onFileTitleTapped?(fileTitleButton)
     }
 
     @objc private func sidebarTapped() {
@@ -741,7 +761,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         applyEditMode(next)
         if next {
             focusForKeyboardEditing()
+        } else {
+            // Ensure chrome reflects read mode even if focus handoff raced.
+            refreshModeChrome()
         }
+        liftTopChrome()
     }
 
     /// Leave Diff review and restore normal read mode (pending hunks discarded like Undo All).
@@ -873,8 +897,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
             modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
-            modeButton.tintColor = c.textSecondary
+            // Accent while editing so the toggle is visibly “on”.
+            modeButton.tintColor = isEditMode ? c.accent : c.textSecondary
             modeButton.isEnabled = true
+            modeButton.isUserInteractionEnabled = true
             modeButton.alpha = 1
             if language == .markdown {
                 modeButton.accessibilityLabel = isEditMode ? "切换到预览模式" : "切换到编辑模式"
@@ -893,6 +919,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private func syncSurfaceVisibility() {
         let preview = showsMarkdownPreview
         previewWebView.isHidden = !preview
+        previewWebView.isUserInteractionEnabled = preview
         textView.isHidden = preview
         gutterView.isHidden = preview
         gutterSeparator.isHidden = preview
@@ -901,9 +928,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             previewWebView.scrollView.isScrollEnabled = true
             view.bringSubviewToFront(previewWebView)
             view.bringSubviewToFront(spinner)
-            view.bringSubviewToFront(topBar)
-            view.bringSubviewToFront(topBarSeparator)
         }
+        liftTopChrome()
     }
 
     private func refreshMarkdownPreview(text: String) {
@@ -1719,6 +1745,7 @@ extension TextCodeEditorViewController {
         }
         view.bringSubviewToFront(topBar)
         view.bringSubviewToFront(topBarSeparator)
+        liftTopChrome()
         diffChromeZOrdered = true
     }
 

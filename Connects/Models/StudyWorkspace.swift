@@ -6,8 +6,11 @@ struct StudyWorkspace: Codable, Equatable {
     var isDefault: Bool
     /// Security-scoped bookmark for external folders; nil for default / relative Documents paths.
     var rootBookmarkData: Data?
-    /// Path relative to App Documents (e.g. `Connects`, `Connects/MyProject`). Nil when using bookmark only.
+    /// Path relative to App Documents (e.g. `Connects`, `Connects/MyProject`). Nil when using bookmark/absolute path.
     var relativePath: String?
+    /// Absolute folder path fallback when a directory bookmark cannot be created
+    /// (common after opening a single file — only the file is security-scoped).
+    var absoluteRootPath: String?
     var documentIDs: [String]
     var createdAt: Date
     var updatedAt: Date
@@ -21,6 +24,7 @@ struct StudyWorkspace: Codable, Equatable {
             isDefault: true,
             rootBookmarkData: nil,
             relativePath: "Connects",
+            absoluteRootPath: nil,
             documentIDs: [],
             createdAt: Date(),
             updatedAt: Date()

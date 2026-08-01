@@ -360,30 +360,45 @@ enum AgentTools {
     }
 
     private static func readWorkspaceFile(_ relative: String, workspaceID: String) -> String {
-        guard let folder = try? StudyWorkspaceStore.shared.folderURL(for: workspaceID) else {
-            return "error: workspace unavailable"
+        let candidates: [URL] = {
+            if let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: relative, in: workspaceID) {
+                return [url]
+            }
+            return []
+        }()
+        // Also try last-path-component match for older prompts that omit folders.
+        let urls: [URL] = {
+            var out = candidates
+            if let folder = try? StudyWorkspaceStore.shared.folderURL(for: workspaceID) {
+                let leaf = (relative as NSString).lastPathComponent
+                for name in StudyWorkspaceStore.shared.listFileNames(in: workspaceID) where (name as NSString).lastPathComponent == leaf {
+                    if let u = try? StudyWorkspaceStore.shared.fileURL(relativePath: name, in: workspaceID) {
+                        out.append(u)
+                    }
+                }
+                out.append(folder.appendingPathComponent(leaf))
+            }
+            return out
+        }()
+        for url in urls {
+            guard let data = try? Data(contentsOf: url),
+                  let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+                continue
+            }
+            if text.count > 24_000 {
+                return String(text.prefix(24_000)) + "\n…(truncated)"
+            }
+            return text
         }
-        let name = (relative as NSString).lastPathComponent
-        let url = folder.appendingPathComponent(name)
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
-            return "error: cannot read \(name)"
-        }
-        if text.count > 24_000 {
-            return String(text.prefix(24_000)) + "\n…(truncated)"
-        }
-        return text
+        return "error: cannot read \(relative)"
     }
 
     private static func grepWorkspace(query: String, workspaceID: String) -> String {
         guard !query.isEmpty else { return "error: query required" }
-        guard let folder = try? StudyWorkspaceStore.shared.folderURL(for: workspaceID) else {
-            return "error: workspace unavailable"
-        }
         var hits: [String] = []
         for name in StudyWorkspaceStore.shared.listFileNames(in: workspaceID) {
-            let url = folder.appendingPathComponent(name)
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            guard let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: name, in: workspaceID),
+                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             for (i, line) in text.components(separatedBy: .newlines).enumerated() {
                 if line.localizedCaseInsensitiveContains(query) {
                     hits.append("\(name):\(i + 1): \(line.prefix(200))")

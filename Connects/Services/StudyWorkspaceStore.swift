@@ -73,20 +73,30 @@ final class StudyWorkspaceStore {
         }
         if let data = ws.rootBookmarkData {
             var isStale = false
-            let url = try URL(
-                resolvingBookmarkData: data,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            let accessing = url.startAccessingSecurityScopedResource()
-            accessLock.lock()
-            activeFolderAccess[ws.id] = (url, accessing)
-            accessLock.unlock()
-            if isStale {
-                // Best-effort refresh on next openFolderWorkspace.
+            do {
+                let url = try URL(
+                    resolvingBookmarkData: data,
+                    options: [.withoutUI],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                let accessing = url.startAccessingSecurityScopedResource()
+                accessLock.lock()
+                activeFolderAccess[ws.id] = (url, accessing)
+                accessLock.unlock()
+                return url
+            } catch {
+                // Fall through to absoluteRootPath when bookmark resolve fails.
             }
-            return url
+        }
+        if let absolute = ws.absoluteRootPath, !absolute.isEmpty {
+            let url = URL(fileURLWithPath: absolute, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                accessLock.lock()
+                activeFolderAccess[ws.id] = (url, false)
+                accessLock.unlock()
+                return url
+            }
         }
         throw StudyWorkspaceError.folderUnavailable
     }
@@ -124,6 +134,7 @@ final class StudyWorkspaceStore {
             isDefault: false,
             rootBookmarkData: nil,
             relativePath: relative,
+            absoluteRootPath: nil,
             documentIDs: [],
             createdAt: Date(),
             updatedAt: Date()
@@ -135,42 +146,265 @@ final class StudyWorkspaceStore {
     }
 
     @discardableResult
-    func openFolderWorkspace(url: URL) throws -> StudyWorkspace {
+    func openFolderWorkspace(url: URL, asProjectGrant: Bool = false) throws -> StudyWorkspace {
+        // IMPORTANT: keep security-scoped access alive in `activeFolderAccess`.
         let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
-        let bookmark = try url.bookmarkData(
-            options: [],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
+        let openedPath = Self.normalizedPath(url.path)
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        if !exists && !accessing {
+            throw StudyWorkspaceError.folderUnavailable
+        }
+
+        // Unscoped parent-of-file (DSP(NJU)) must not steal the real grant (Workspace/).
+        if !accessing, !asProjectGrant, let grant = bookmarkedWorkspaceCovering(path: openedPath) {
+            _ = try? folderURL(for: grant.id)
+            return grant
+        }
+
         let title = url.lastPathComponent
-        // Dedup by bookmark path string if possible.
-        if let existing = workspaces.first(where: {
-            !$0.isDefault && $0.title == title && $0.rootBookmarkData != nil && $0.relativePath == nil
+        // Always try bookmark — on Mac Catalyst `startAccessing` often returns false
+        // even for a valid user-selected folder; still persist scope when possible.
+        let bookmark: Data? = (accessing || asProjectGrant)
+            ? (try? url.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ))
+            : nil
+
+        let ws: StudyWorkspace
+        if let existing = workspaces.first(where: { candidate in
+            guard !candidate.isDefault else { return false }
+            if let abs = candidate.absoluteRootPath, Self.normalizedPath(abs) == openedPath {
+                return true
+            }
+            guard let existingURL = try? folderURL(for: candidate.id) else { return false }
+            return Self.normalizedPath(existingURL.path) == openedPath
         }) {
             var updated = existing
-            updated.rootBookmarkData = bookmark
+            if let bookmark {
+                updated.rootBookmarkData = bookmark
+            }
+            // Keep wider absolute root if we somehow matched a bookmarked parent record.
+            if updated.rootBookmarkData == nil || accessing || asProjectGrant {
+                updated.absoluteRootPath = openedPath
+            }
+            if accessing || asProjectGrant {
+                updated.title = title
+            }
             updated.updatedAt = Date()
             replace(updated)
-            _ = try scanAndSyncDocuments(workspaceID: updated.id)
-            return updated
+            ws = updated
+        } else if !accessing, !asProjectGrant, let grant = bookmarkedWorkspaceCovering(path: openedPath) {
+            _ = try? folderURL(for: grant.id)
+            return grant
+        } else if !asProjectGrant, !accessing, bookmark == nil,
+                  let covering = workspaceWithDirectoryAccess(coveringFilePath: openedPath),
+                  covering.rootBookmarkData != nil || covering.absoluteRootPath != nil {
+            _ = try? folderURL(for: covering.id)
+            return covering
+        } else {
+            let created = StudyWorkspace(
+                id: UUID().uuidString,
+                title: title,
+                isDefault: false,
+                rootBookmarkData: bookmark,
+                relativePath: nil,
+                absoluteRootPath: openedPath,
+                documentIDs: [],
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+            workspaces.insert(created, at: 0)
+            save()
+            notify()
+            ws = created
         }
-        let ws = StudyWorkspace(
-            id: UUID().uuidString,
-            title: title,
-            isDefault: false,
-            rootBookmarkData: bookmark,
-            relativePath: nil,
-            documentIDs: [],
-            createdAt: Date(),
-            updatedAt: Date()
-        )
-        workspaces.insert(ws, at: 0)
-        save()
-        notify()
-        _ = try scanAndSyncDocuments(workspaceID: ws.id)
+
+        accessLock.lock()
+        if let prev = activeFolderAccess[ws.id], prev.accessing {
+            if Self.normalizedPath(prev.url.path) != openedPath {
+                prev.url.stopAccessingSecurityScopedResource()
+            }
+        }
+        activeFolderAccess[ws.id] = (url, accessing)
+        accessLock.unlock()
+
+        if asProjectGrant || accessing {
+            markAsProjectFolderGrant(ws.id)
+        }
         return ws
+    }
+
+    private static let projectFolderGrantFlagKey = "Connects.hasProjectFolderGrant"
+    private static let projectFolderWorkspaceIDKey = "Connects.projectFolderWorkspaceID"
+
+    /// Remember the workspace chosen via the system folder picker (not in-app `Connects/…` folders).
+    func markAsProjectFolderGrant(_ workspaceID: String) {
+        UserDefaults.standard.set(workspaceID, forKey: Self.projectFolderWorkspaceIDKey)
+        UserDefaults.standard.set(true, forKey: Self.projectFolderGrantFlagKey)
+    }
+
+    /// True for user-selected external project roots (excludes `Connects/SPI_E2E…` relative workspaces).
+    func isProjectFolderGrant(_ ws: StudyWorkspace) -> Bool {
+        guard !ws.isDefault else { return false }
+        if let rel = ws.relativePath, !rel.isEmpty { return false }
+        if let id = UserDefaults.standard.string(forKey: Self.projectFolderWorkspaceIDKey),
+           id == ws.id {
+            return true
+        }
+        if ws.rootBookmarkData != nil, let abs = ws.absoluteRootPath, !abs.isEmpty {
+            return !Self.isAppInternalPath(abs)
+        }
+        if let abs = ws.absoluteRootPath, !abs.isEmpty {
+            return !Self.isAppInternalPath(abs)
+        }
+        return false
+    }
+
+    private static func isAppInternalPath(_ path: String) -> Bool {
+        let p = normalizedPath(path)
+        let connects = normalizedPath(ConnectsPaths.connectsRootURL.path)
+        let study = normalizedPath(ConnectsPaths.studyRootURL.path)
+        return p == connects || p.hasPrefix(connects + "/")
+            || p == study || p.hasPrefix(study + "/")
+    }
+
+    /// User has already granted at least one project folder.
+    func hasUsableFolderGrant() -> Bool {
+        if let id = UserDefaults.standard.string(forKey: Self.projectFolderWorkspaceIDKey),
+           let ws = workspace(id: id), isProjectFolderGrant(ws) {
+            return true
+        }
+        if UserDefaults.standard.bool(forKey: Self.projectFolderGrantFlagKey),
+           primaryGrantedWorkspace() != nil {
+            return true
+        }
+        return primaryGrantedWorkspace() != nil
+    }
+
+    /// Best display label for the active project-folder grant (e.g. `Workspace`).
+    func primaryGrantedFolderLabel() -> String? {
+        guard let ws = primaryGrantedWorkspace() else { return nil }
+        if let abs = ws.absoluteRootPath, !abs.isEmpty {
+            return "\(ws.title) — \(abs)"
+        }
+        return ws.title
+    }
+
+    func primaryGrantedWorkspace() -> StudyWorkspace? {
+        if let id = UserDefaults.standard.string(forKey: Self.projectFolderWorkspaceIDKey),
+           let ws = workspace(id: id), isProjectFolderGrant(ws) {
+            return ws
+        }
+        let granted = workspaces.filter { isProjectFolderGrant($0) }
+        return granted.sorted { a, b in
+            let ab = a.rootBookmarkData != nil
+            let bb = b.rootBookmarkData != nil
+            if ab != bb { return ab && !bb }
+            let ap = a.absoluteRootPath?.count ?? Int.max
+            let bp = b.absoluteRootPath?.count ?? Int.max
+            return ap < bp
+        }.first
+    }
+
+    static func normalizedPath(_ path: String) -> String {
+        var p = (path as NSString).standardizingPath
+        if p.hasPrefix("/private/") {
+            p = String(p.dropFirst("/private".count))
+        }
+        return p
+    }
+
+    /// Bookmarked grant whose root contains `path` (prefer widest / shortest root).
+    func bookmarkedWorkspaceCovering(path: String) -> StudyWorkspace? {
+        let file = Self.normalizedPath(path)
+        var best: StudyWorkspace?
+        var bestLen = Int.max
+        for ws in workspaces where !ws.isDefault {
+            guard ws.rootBookmarkData != nil else { continue }
+            let rootPath: String? = {
+                if let abs = ws.absoluteRootPath, !abs.isEmpty {
+                    return Self.normalizedPath(abs)
+                }
+                if let url = try? folderURL(for: ws.id) {
+                    return Self.normalizedPath(url.path)
+                }
+                return nil
+            }()
+            guard let rp = rootPath else { continue }
+            guard file == rp || file.hasPrefix(rp + "/") else { continue }
+            guard rp.count < bestLen else { continue }
+            best = ws
+            bestLen = rp.count
+        }
+        return best
+    }
+
+    /// True when the chosen folder is so broad that a tree walk would hang (e.g. iCloud Drive root).
+    static func isOverlyBroadFolder(_ url: URL) -> Bool {
+        let path = Self.normalizedPath(url.path)
+        if path.hasSuffix("/com~apple~CloudDocs") || path.hasSuffix("/Mobile Documents") {
+            return true
+        }
+        let name = url.lastPathComponent
+        return name.caseInsensitiveCompare("iCloud Drive") == .orderedSame
+    }
+
+    /// True when we can actually enumerate more than a trivial empty/failure result.
+    func canListSiblings(in workspaceID: String) -> Bool {
+        listFileNames(in: workspaceID).count > 1
+    }
+
+    /// True when the OS lets us list the workspace folder (even if it only has one study file).
+    func hasDirectoryListingAccess(in workspaceID: String) -> Bool {
+        guard let folder = try? folderURL(for: workspaceID) else { return false }
+        return (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) != nil
+    }
+
+    /// Prefer a previously granted directory-scoped workspace that covers this file path.
+    /// Always prefer the **widest** covering root (shortest path): `Workspace/` over `DSP(NJU)/`.
+    func workspaceWithDirectoryAccess(coveringFilePath path: String) -> StudyWorkspace? {
+        if let grant = bookmarkedWorkspaceCovering(path: path) {
+            return grant
+        }
+        let file = Self.normalizedPath(path)
+        var bestAny: StudyWorkspace?
+        var bestAnyLen = Int.max
+        for ws in workspaces where !ws.isDefault {
+            guard let abs = ws.absoluteRootPath, !abs.isEmpty else { continue }
+            let rootPath = Self.normalizedPath(abs)
+            let ok = file == rootPath || file.hasPrefix(rootPath + "/")
+            // Widest grant = shortest root path.
+            guard ok, rootPath.count < bestAnyLen else { continue }
+            bestAny = ws
+            bestAnyLen = rootPath.count
+        }
+        return bestAny
+    }
+
+    /// Open a file → reuse bookmarked grant when possible; never create DSP(NJU)-style leaf workspaces over it.
+    @discardableResult
+    func bindFolderAroundOpenFile(_ fileURL: URL) throws -> StudyWorkspace {
+        let fileAccess = fileURL.startAccessingSecurityScopedResource()
+        defer { if fileAccess { fileURL.stopAccessingSecurityScopedResource() } }
+
+        if let existing = workspaceWithDirectoryAccess(coveringFilePath: fileURL.path),
+           existing.rootBookmarkData != nil {
+            _ = try? folderURL(for: existing.id)
+            return existing
+        }
+        if let grant = bookmarkedWorkspaceCovering(path: fileURL.path) {
+            _ = try? folderURL(for: grant.id)
+            return grant
+        }
+
+        var folder = fileURL.deletingLastPathComponent().standardizedFileURL
+        if let parent = try? fileURL.resourceValues(forKeys: [.parentDirectoryURLKey]).parentDirectory {
+            folder = parent.standardizedFileURL
+        }
+        return try openFolderWorkspace(url: folder)
     }
 
     func addDocument(_ documentID: String, to workspaceID: String) {
@@ -268,66 +502,456 @@ final class StudyWorkspaceStore {
         return doc
     }
 
-    /// Scan folder for text/pdf files and register missing ones.
+    /// Light refresh only: drop ghost IDs whose files vanished under this folder.
+    /// Never walks the whole tree / never bulk-registers — that froze the app on iCloud Drive.
     @discardableResult
-    func scanAndSyncDocuments(workspaceID: String) throws -> [StudyDocument] {
-        let folder = try folderURL(for: workspaceID)
+    func scanAndSyncDocuments(workspaceID: String, preferredFolderURL: URL? = nil) throws -> [StudyDocument] {
+        let folder: URL
+        if let preferredFolderURL {
+            folder = preferredFolderURL
+            _ = try? folderURL(for: workspaceID)
+        } else {
+            folder = try folderURL(for: workspaceID)
+        }
+        let root = (folder.path as NSString).standardizingPath
+        guard var ws = workspace(id: workspaceID) else { throw StudyWorkspaceError.notFound }
+
+        let liveIDs = ws.documentIDs.filter { id in
+            guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath,
+                  !path.isEmpty else { return false }
+            let file = (path as NSString).standardizingPath
+            guard file == root || file.hasPrefix(root + "/") else { return false }
+            return FileManager.default.fileExists(atPath: path)
+        }
+        if liveIDs != ws.documentIDs {
+            ws.documentIDs = liveIDs
+            ws.updatedAt = Date()
+            replace(ws)
+        }
+        return []
+    }
+
+    /// Prefer an existing workspace whose folder already contains this path.
+    func workspaceContaining(filePath: String) -> StudyWorkspace? {
+        let file = (filePath as NSString).standardizingPath
+        // Prefer the deepest (longest root) match so nested workspaces win.
+        var best: StudyWorkspace?
+        var bestLen = -1
+        for ws in workspaces {
+            guard let folder = try? folderURL(for: ws.id) else { continue }
+            let root = (folder.path as NSString).standardizingPath
+            let ok = (file == root) || file.hasPrefix(root + "/")
+            guard ok, root.count > bestLen else { continue }
+            best = ws
+            bestLen = root.count
+        }
+        return best
+    }
+
+    /// First real file in the folder after sync (sorted by relative path). Nil if empty.
+    func primaryDocumentID(in workspaceID: String) -> String? {
+        workspace(id: workspaceID)?.documentIDs.first
+    }
+
+    /// True when `documentID` is registered and its path still lives under the workspace folder.
+    func containsDocument(_ documentID: String, in workspaceID: String) -> Bool {
+        guard let ws = workspace(id: workspaceID),
+              ws.documentIDs.contains(documentID),
+              let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath,
+              let folder = try? folderURL(for: workspaceID) else { return false }
+        let file = (path as NSString).standardizingPath
+        let root = (folder.path as NSString).standardizingPath
+        return file == root || file.hasPrefix(root + "/")
+    }
+
+    /// Relative paths of study-openable files under the folder (recursive), sorted.
+    /// Example: `Code/async_fifo.v`, `Gowin/FPGA/foo.pdf`.
+    func listFileNames(in workspaceID: String) -> [String] {
+        guard let folder = try? folderURL(for: workspaceID) else { return [] }
+        return listStudyFileURLs(in: workspaceID).map { Self.displayName(of: $0, under: folder) }
+    }
+
+    /// Names for the Study title / options switcher.
+    /// Same-directory leaf names from **disk**. Never treat "already opened docs" as a successful listing.
+    func listSwitcherFileNames(ofDocumentID documentID: String?, in workspaceID: String) -> [String] {
+        if let documentID {
+            _ = try? StudyDocumentStore.shared.resolvedURL(forID: documentID)
+        }
+        _ = try? folderURL(for: workspaceID)
+
+        if let documentID,
+           let disk = listSiblingFileNamesFromDisk(ofDocumentID: documentID, in: workspaceID) {
+            return Self.uniqueLeafNames(disk)
+        }
+
+        // Last resort only when directory enumeration truly failed.
+        var names: [String] = []
+        if let ws = workspace(id: workspaceID) {
+            names = ws.documentIDs.compactMap { id in
+                guard let path = StudyDocumentStore.shared.document(id: id)?.displayPath else { return nil }
+                return URL(fileURLWithPath: path).lastPathComponent
+            }
+        }
+        if let documentID,
+           let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath {
+            let leaf = URL(fileURLWithPath: path).lastPathComponent
+            if !names.contains(where: { ($0 as NSString).lastPathComponent == leaf || $0 == leaf }) {
+                names.append(leaf)
+            }
+        }
+        return Self.uniqueLeafNames(names)
+    }
+
+    private static func uniqueLeafNames(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in names {
+            let leaf = (raw as NSString).lastPathComponent
+            guard seen.insert(leaf).inserted else { continue }
+            out.append(leaf)
+        }
+        return out.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Disk walk from a file → project/git root (or parent). Never filters away found URLs.
+    private static func listStudyRelativePaths(nearFile fileURL: URL) -> [String] {
+        let root = suggestedWorkspaceRoot(forFile: fileURL)
+        let found = enumerateStudyFiles(under: root)
+        if !found.isEmpty {
+            return found.map { displayName(of: $0, under: root) }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        let parent = fileURL.deletingLastPathComponent()
+        let sibs = enumerateStudyFilesInDirectory(parent)
+        if !sibs.isEmpty {
+            return sibs.map { displayName(of: $0, under: root) }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        // Last resort: path-string directory listing (bypasses URL resource-value quirks).
+        if let items = try? FileManager.default.contentsOfDirectory(atPath: parent.path) {
+            let filtered = items.filter { name in
+                let ext = (name as NSString).pathExtension
+                return StudyDocument.kind(forExtension: ext) != nil
+            }
+            if !filtered.isEmpty {
+                return filtered.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            }
+        }
+        return [fileURL.lastPathComponent]
+    }
+
+    private static func displayName(of url: URL, under root: URL) -> String {
+        if let rel = relativePath(of: url, under: root) { return rel }
+        let base = (root.path as NSString).standardizingPath
+        let file = (url.path as NSString).standardizingPath
+        if file.hasPrefix(base + "/") {
+            return String(file.dropFirst(base.count + 1))
+        }
+        return url.lastPathComponent
+    }
+
+    /// Same-folder sibling **leaf names**. Falls back to opened docs if disk listing fails.
+    func listSiblingFileNames(ofDocumentID documentID: String, in workspaceID: String) -> [String] {
+        if let disk = listSiblingFileNamesFromDisk(ofDocumentID: documentID, in: workspaceID) {
+            return disk
+        }
+        return fallbackOpenedLeafNames(documentID: documentID, workspaceID: workspaceID)
+    }
+
+    /// Disk listing of same-folder study files. `nil` = enumeration failed (do not treat as "only opened files").
+    func listSiblingFileNamesFromDisk(ofDocumentID documentID: String, in workspaceID: String) -> [String]? {
+        let fileURL: URL? = {
+            if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath,
+               !path.isEmpty {
+                return URL(fileURLWithPath: path)
+            }
+            if let resolved = try? StudyDocumentStore.shared.resolvedURL(forID: documentID) {
+                return resolved
+            }
+            return nil
+        }()
+        guard let fileURL else { return nil }
+
+        // Warm covering grant / workspace security scope first.
+        let coveringID = workspaceWithDirectoryAccess(coveringFilePath: fileURL.path)?.id ?? workspaceID
+        let root = try? folderURL(for: coveringID)
+
+        let fileAccess = fileURL.startAccessingSecurityScopedResource()
+        defer { if fileAccess { fileURL.stopAccessingSecurityScopedResource() } }
+
+        var parents: [URL] = []
+        if let root, let scoped = Self.parentDirectoryURL(of: fileURL, underGrantedRoot: root) {
+            parents.append(scoped)
+        }
+        let rawParent = fileURL.deletingLastPathComponent()
+        if parents.contains(where: { Self.normalizedPath($0.path) == Self.normalizedPath(rawParent.path) }) == false {
+            parents.append(rawParent)
+        }
+
+        for parent in parents {
+            // Imported copies live under ConnectsStudy/<id>/ — listing that folder is useless.
+            if Self.isAppInternalPath(parent.path) {
+                continue
+            }
+            if let names = Self.shallowStudyFileNamesViaURL(in: parent) {
+                return names.isEmpty ? [fileURL.lastPathComponent] : names
+            }
+            var coordinated: [String]?
+            var coordError: NSError?
+            NSFileCoordinator().coordinate(readingItemAt: parent, options: [], error: &coordError) { url in
+                coordinated = Self.shallowStudyFileNamesViaURL(in: url)
+                    ?? Self.shallowStudyFileNames(in: url)
+            }
+            if let names = coordinated {
+                return names.isEmpty ? [fileURL.lastPathComponent] : names
+            }
+            if let names = Self.shallowStudyFileNames(in: parent) {
+                return names.isEmpty ? [fileURL.lastPathComponent] : names
+            }
+        }
+        return nil
+    }
+
+    /// Parent of `fileURL` as a URL still under the granted root (scope-preserving).
+    private static func parentDirectoryURL(of fileURL: URL, underGrantedRoot root: URL) -> URL? {
+        if let rel = relativePath(of: fileURL, under: root) {
+            let parentRel = (rel as NSString).deletingLastPathComponent
+            if parentRel.isEmpty || parentRel == "." { return root }
+            return absoluteURL(relativePath: parentRel, under: root)
+        }
+        let rootPath = (root.resolvingSymlinksInPath().path as NSString).standardizingPath
+        let filePath = (fileURL.resolvingSymlinksInPath().path as NSString).standardizingPath
+        let rootAlt = stripPrivatePrefix(rootPath)
+        let fileAlt = stripPrivatePrefix(filePath)
+        for (rp, fp) in [(rootPath, filePath), (rootAlt, fileAlt), (rootPath, fileAlt), (rootAlt, filePath)] {
+            guard fp.hasPrefix(rp + "/") else { continue }
+            let parentPath = (fp as NSString).deletingLastPathComponent
+            let parentRel = String(parentPath.dropFirst(rp.count + 1))
+            if parentRel.isEmpty { return root }
+            return absoluteURL(relativePath: parentRel, under: root)
+        }
+        return nil
+    }
+
+    private static func stripPrivatePrefix(_ path: String) -> String {
+        if path.hasPrefix("/private/") {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
+    }
+
+    private func fallbackOpenedLeafNames(documentID: String, workspaceID: String) -> [String] {
+        var names: [String] = []
+        if let ws = workspace(id: workspaceID) {
+            names = ws.documentIDs.compactMap { id in
+                StudyDocumentStore.shared.document(id: id)?.displayPath.map {
+                    URL(fileURLWithPath: $0).lastPathComponent
+                }
+            }
+        }
+        if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath {
+            let leaf = URL(fileURLWithPath: path).lastPathComponent
+            if !names.contains(leaf) { names.append(leaf) }
+        }
+        return Self.uniqueLeafNames(names)
+    }
+
+    /// Path-string listing (may fail under sandbox even when URL listing works).
+    private static func shallowStudyFileNames(in directory: URL) -> [String]? {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(atPath: directory.path) else { return nil }
+        let filtered = items.filter { name in
+            if name.hasPrefix(".") { return false }
+            let ext = (name as NSString).pathExtension
+            return StudyDocument.kind(forExtension: ext) != nil
+        }
+        guard !filtered.isEmpty else { return [] }
+        return filtered.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// URL-based listing from a security-scoped directory URL (no isRegularFile filter).
+    private static func shallowStudyFileNamesViaURL(in directory: URL) -> [String]? {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var names: [String] = []
+        for url in items {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true { continue }
+            let ext = url.pathExtension
+            guard StudyDocument.kind(forExtension: ext) != nil else { continue }
+            names.append(url.lastPathComponent)
+        }
+        guard !names.isEmpty else { return [] }
+        return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// Absolute file URL for a workspace-relative path (`Code/a.v` or `a.v`).
+    func fileURL(relativePath: String, in workspaceID: String) throws -> URL {
+        let folder = try folderURL(for: workspaceID)
+        return Self.absoluteURL(relativePath: relativePath, under: folder)
+    }
+
+    /// Relative path of a document inside the workspace, if it lives there.
+    func relativePath(ofDocumentID documentID: String, in workspaceID: String) -> String? {
+        guard let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath,
+              let folder = try? folderURL(for: workspaceID) else { return nil }
+        return Self.relativePath(of: URL(fileURLWithPath: path), under: folder)
+    }
+
+    /// True when the folder has no study-openable files on disk (ignore registration state).
+    /// Shallow top-level only — never deep-walk (iCloud Drive roots).
+    func isFolderEmptyOfStudyFiles(_ workspaceID: String) -> Bool {
+        if let ws = workspace(id: workspaceID), !ws.documentIDs.isEmpty { return false }
+        guard let folder = try? folderURL(for: workspaceID) else { return true }
+        return Self.enumerateStudyFilesInDirectory(folder).isEmpty
+    }
+
+    private func listStudyFileURLs(in workspaceID: String) -> [URL] {
+        guard let folder = try? folderURL(for: workspaceID) else { return [] }
+        return Self.enumerateStudyFiles(under: folder)
+    }
+
+    /// When opening a file, prefer the git/project root so sibling folders (e.g. `Gowin/*.pdf`)
+    /// appear in the options menu — not just the immediate parent like `Code/`.
+    static func suggestedWorkspaceRoot(forFile fileURL: URL) -> URL {
+        var dir = fileURL.deletingLastPathComponent().standardizedFileURL
+        var current = dir
+        for _ in 0..<10 {
+            let git = current.appendingPathComponent(".git")
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: git.path, isDirectory: &isDir) {
+                return current
+            }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.path == current.path || parent.path == "/" { break }
+            current = parent
+        }
+        return dir
+    }
+
+    private static let skipDirectoryNames: Set<String> = [
+        ".git", ".workspace", ".cursor", ".vscode", ".idea",
+        "node_modules", "DerivedData", "build", ".build",
+        "Pods", "__pycache__", ".swiftpm", ".trash", "xcuserdata",
+        "Library", "Applications", "Downloads", ".Trash"
+    ]
+
+    /// Non-recursive: study-openable files directly inside `directory`.
+    private static func enumerateStudyFilesInDirectory(_ directory: URL) -> [URL] {
+        // Path-based names first (iCloud-friendly); avoid isRegularFile filters that hide placeholders.
+        if let names = shallowStudyFileNames(in: directory) {
+            return names.map { directory.appendingPathComponent($0) }
+        }
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else { return [] }
-
-        var added: [StudyDocument] = []
+        var results: [URL] = []
         for url in items {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
             if values?.isDirectory == true { continue }
-            guard values?.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
-            if StudyDocument.kind(forExtension: ext) == nil, ext.isEmpty { continue }
-            // Skip if already registered by path.
-            if let existing = StudyDocumentStore.shared.documentMatchingPath(url.path) {
-                addDocument(existing.id, to: workspaceID)
-                continue
-            }
-            if let doc = try? StudyDocumentStore.shared.registerFileInPlace(at: url, createEmptyIfNeeded: false) {
-                addDocument(doc.id, to: workspaceID)
-                added.append(doc)
-            }
+            guard StudyDocument.kind(forExtension: ext) != nil else { continue }
+            results.append(url)
         }
-        return added
+        return results.sorted {
+            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+        }
     }
 
-    func listFileNames(in workspaceID: String) -> [String] {
-        guard let folder = try? folderURL(for: workspaceID),
-              let items = try? FileManager.default.contentsOfDirectory(
-                at: folder,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-              ) else { return [] }
-        return items.compactMap { url -> String? in
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-            if values?.isDirectory == true { return nil }
-            return url.lastPathComponent
-        }.sorted()
+    /// Bounded recursive collect. Never uses `subpathsOfDirectory` (that freezes on iCloud Drive).
+    private static func enumerateStudyFiles(under root: URL, maxDepth: Int = 3, maxFiles: Int = 80) -> [URL] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        var results: [URL] = []
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            if values?.isDirectory == true {
+                if skipDirectoryNames.contains(url.lastPathComponent) || enumerator.level >= maxDepth {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            if values?.isRegularFile == false { continue }
+            let ext = url.pathExtension.lowercased()
+            guard StudyDocument.kind(forExtension: ext) != nil else { continue }
+            results.append(url)
+            if results.count >= maxFiles {
+                break
+            }
+        }
+        return results.sorted {
+            let a = relativePath(of: $0, under: root) ?? $0.lastPathComponent
+            let b = relativePath(of: $1, under: root) ?? $1.lastPathComponent
+            return a.localizedStandardCompare(b) == .orderedAscending
+        }
+    }
+
+    static func relativePath(of url: URL, under root: URL) -> String? {
+        let strip: (String) -> String = { path in
+            var p = (path as NSString).standardizingPath
+            if p.hasPrefix("/private/") {
+                p = String(p.dropFirst("/private".count))
+            }
+            return p
+        }
+        let candidates: [(String, String)] = [
+            (
+                strip(url.resolvingSymlinksInPath().path),
+                strip(root.resolvingSymlinksInPath().path)
+            ),
+            (
+                strip(url.standardizedFileURL.path),
+                strip(root.standardizedFileURL.path)
+            ),
+            (
+                strip(url.path),
+                strip(root.path)
+            )
+        ]
+        for (file, base) in candidates {
+            if file.hasPrefix(base + "/") {
+                return String(file.dropFirst(base.count + 1))
+            }
+            if file == base {
+                return url.lastPathComponent
+            }
+        }
+        return nil
+    }
+
+    private static func absoluteURL(relativePath: String, under root: URL) -> URL {
+        let parts = relativePath.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
+        return parts.reduce(root) { $0.appendingPathComponent($1) }
     }
 
     /// Rename (including changing extension) a file inside the workspace folder.
+    /// `oldName` may be a relative path (`Code/a.v`). New name stays in the same directory.
     @discardableResult
     func renameFile(from oldName: String, to rawNewName: String, in workspaceID: String) throws -> StudyDocument {
-        var newName = rawNewName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newName.isEmpty, !newName.contains("/"), newName != "." , newName != ".." else {
+        var newLeaf = rawNewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newLeaf.isEmpty, !newLeaf.contains("/"), newLeaf != "." , newLeaf != ".." else {
             throw StudyWorkspaceError.invalidName
         }
-        if !newName.contains(".") {
+        if !newLeaf.contains(".") {
             let oldExt = (oldName as NSString).pathExtension
-            if !oldExt.isEmpty { newName += ".\(oldExt)" }
-            else { newName += ".txt" }
+            if !oldExt.isEmpty { newLeaf += ".\(oldExt)" }
+            else { newLeaf += ".txt" }
         }
         let folder = try folderURL(for: workspaceID)
-        let src = folder.appendingPathComponent(oldName)
-        let dest = folder.appendingPathComponent(newName)
+        let src = Self.absoluteURL(relativePath: oldName, under: folder)
+        let dest = src.deletingLastPathComponent().appendingPathComponent(newLeaf)
         guard FileManager.default.fileExists(atPath: src.path) else {
             throw StudyWorkspaceError.notFound
         }
@@ -360,9 +984,10 @@ final class StudyWorkspaceStore {
     }
 
     /// Delete a file from the workspace folder and detach its StudyDocument.
+    /// `name` may be a relative path (`Gowin/FPGA/a.pdf`).
     func deleteFile(named name: String, in workspaceID: String) throws {
         let folder = try folderURL(for: workspaceID)
-        let url = folder.appendingPathComponent(name)
+        let url = Self.absoluteURL(relativePath: name, under: folder)
         let path = url.path
         let doc = StudyDocumentStore.shared.documentMatchingPath(path)
         if FileManager.default.fileExists(atPath: path) {
@@ -395,6 +1020,11 @@ final class StudyWorkspaceStore {
             return
         }
         workspaces = decoded
+        // Migrate: remember an external project grant if one exists.
+        if UserDefaults.standard.string(forKey: Self.projectFolderWorkspaceIDKey) == nil,
+           let grant = workspaces.first(where: { isProjectFolderGrant($0) }) {
+            markAsProjectFolderGrant(grant.id)
+        }
     }
 
     private func save() {

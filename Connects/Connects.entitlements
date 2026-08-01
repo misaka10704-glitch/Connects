@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac Catalyst: no App Sandbox → full local file R/W (Study folders, siblings). -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- Keep user-selected R/W + app-scoped bookmarks for any sandboxed / iOS document flows. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+</dict>
+</plist>
