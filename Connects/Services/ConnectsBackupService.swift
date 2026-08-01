@@ -56,6 +56,27 @@ enum ConnectsBackupService {
             to: staging.appendingPathComponent("ConnectsStudy", isDirectory: true)
         )
 
+        let connectsSource = documents.appendingPathComponent("Connects", isDirectory: true)
+        try BackupBundleHelper.copyDirectory(
+            from: connectsSource,
+            to: staging.appendingPathComponent("Connects", isDirectory: true)
+        )
+        let registrySource = documents.appendingPathComponent("ConnectsRegistry", isDirectory: true)
+        try BackupBundleHelper.copyDirectory(
+            from: registrySource,
+            to: staging.appendingPathComponent("ConnectsRegistry", isDirectory: true)
+        )
+
+        // Chat history (Application Support) — no longer stuffed into UserDefaults.
+        ConversationStore.shared.flushPendingSave()
+        let chatSupport = ConnectsPaths.applicationSupportURL
+        try BackupBundleHelper.copyDirectory(
+            from: chatSupport,
+            to: staging.appendingPathComponent("ConnectsAppSupport", isDirectory: true)
+        )
+
+        let includesStudy = FileManager.default.fileExists(atPath: studySource.path)
+            || FileManager.default.fileExists(atPath: connectsSource.path)
         let manifest: [String: Any] = [
             "format": formatID,
             "version": formatVersion,
@@ -64,7 +85,9 @@ enum ConnectsBackupService {
             "includesPreferences": true,
             "includesKeychain": true,
             "includesMemory": FileManager.default.fileExists(atPath: memorySource.path),
-            "includesStudy": FileManager.default.fileExists(atPath: studySource.path),
+            "includesStudy": includesStudy,
+            "includesConnectsWorkspace": FileManager.default.fileExists(atPath: connectsSource.path),
+            "includesConnectsRegistry": FileManager.default.fileExists(atPath: registrySource.path),
         ]
         let manifestData = try JSONSerialization.data(
             withJSONObject: manifest,
@@ -80,7 +103,7 @@ enum ConnectsBackupService {
             includesPreferences: true,
             includesKeychain: true,
             includesMemory: FileManager.default.fileExists(atPath: memorySource.path),
-            includesStudy: FileManager.default.fileExists(atPath: studySource.path)
+            includesStudy: includesStudy
         )
     }
 
@@ -111,12 +134,34 @@ enum ConnectsBackupService {
             )
         }
 
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let studySource = staging.appendingPathComponent("ConnectsStudy", isDirectory: true)
         if FileManager.default.fileExists(atPath: studySource.path) {
-            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             try BackupBundleHelper.copyDirectory(
                 from: studySource,
                 to: documents.appendingPathComponent("ConnectsStudy", isDirectory: true)
+            )
+        }
+        let connectsSource = staging.appendingPathComponent("Connects", isDirectory: true)
+        if FileManager.default.fileExists(atPath: connectsSource.path) {
+            try BackupBundleHelper.copyDirectory(
+                from: connectsSource,
+                to: documents.appendingPathComponent("Connects", isDirectory: true)
+            )
+        }
+        let registrySource = staging.appendingPathComponent("ConnectsRegistry", isDirectory: true)
+        if FileManager.default.fileExists(atPath: registrySource.path) {
+            try BackupBundleHelper.copyDirectory(
+                from: registrySource,
+                to: documents.appendingPathComponent("ConnectsRegistry", isDirectory: true)
+            )
+        }
+
+        let appSupportSource = staging.appendingPathComponent("ConnectsAppSupport", isDirectory: true)
+        if FileManager.default.fileExists(atPath: appSupportSource.path) {
+            try BackupBundleHelper.copyDirectory(
+                from: appSupportSource,
+                to: ConnectsPaths.applicationSupportURL
             )
         }
 
@@ -125,12 +170,14 @@ enum ConnectsBackupService {
         let createdAt = (manifest["createdAt"] as? String)
             .flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
 
+        let includesStudy = FileManager.default.fileExists(atPath: studySource.path)
+            || FileManager.default.fileExists(atPath: connectsSource.path)
         return ConnectsBackupSummary(
             createdAt: createdAt,
             includesPreferences: FileManager.default.fileExists(atPath: preferencesURL.path),
             includesKeychain: FileManager.default.fileExists(atPath: keychainURL.path),
             includesMemory: FileManager.default.fileExists(atPath: memorySource.path),
-            includesStudy: FileManager.default.fileExists(atPath: studySource.path)
+            includesStudy: includesStudy
         )
     }
 

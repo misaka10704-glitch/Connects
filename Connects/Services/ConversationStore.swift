@@ -46,15 +46,18 @@ final class ConversationStore {
     }
 
     init() {
-        load()
+        ConnectsPaths.ensureAppFolders()
+        let loaded = load()
         selectedProjectID = normalizedProjectID(
             UserDefaults.standard.string(forKey: selectedProjectKey)
         )
-        reconcileCurrentConversationAfterLoad()
+        reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: loaded.allowBootstrap)
     }
 
     /// Restore last opened chat and align sidebar project filter with it.
-    private func reconcileCurrentConversationAfterLoad() {
+    /// - Parameter allowBootstrapEmpty: only create a blank conversation on true first launch.
+    ///   Never bootstrap (and overwrite disk) when a persistence read failed.
+    private func reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: Bool) {
         if let id = currentConversationID,
            let conv = conversations.first(where: { $0.id == id }) {
             if !conv.isArchived {
@@ -64,6 +67,7 @@ final class ConversationStore {
         }
         currentConversationID = nil
         if conversations.isEmpty {
+            guard allowBootstrapEmpty else { return }
             let first = Conversation()
             conversations = [first]
             currentConversationID = first.id
@@ -126,13 +130,40 @@ final class ConversationStore {
     }
 
     private func notify(userInfo: [AnyHashable: Any]? = nil) {
-        NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil, userInfo: userInfo)
+        let post = {
+            NotificationCenter.default.post(
+                name: .conversationStoreDidUpdate,
+                object: nil,
+                userInfo: userInfo
+            )
+        }
+        if Thread.isMainThread {
+            post()
+        } else {
+            DispatchQueue.main.async(execute: post)
+        }
     }
 
     @discardableResult
-    func createConversation(model: AIModelOption = .deepseekV4Pro, projectID: String? = nil) -> Conversation {
+    func createConversation(
+        model: AIModelOption = .deepseekV4Pro,
+        projectID: String? = nil,
+        studyWorkspaceID: String? = nil,
+        studyDocumentID: String? = nil,
+        studySessionKind: StudySessionKind = .document,
+        studyPageCaptureEnabled: Bool = false,
+        studyAgentMode: StudyAgentMode = .ask
+    ) -> Conversation {
         let assignedProject = projectID ?? selectedProjectID
-        let conversation = Conversation(model: model, projectID: assignedProject)
+        let conversation = Conversation(
+            model: model,
+            projectID: assignedProject,
+            studyDocumentID: studyDocumentID,
+            studyWorkspaceID: studyWorkspaceID,
+            studySessionKind: studySessionKind,
+            studyPageCaptureEnabled: studyPageCaptureEnabled,
+            studyAgentMode: studyAgentMode
+        )
         conversations.insert(conversation, at: 0)
         currentConversationID = conversation.id
         showArchived = false
@@ -141,6 +172,63 @@ final class ConversationStore {
         scheduleSave()
         notify(userInfo: ["source": "select"])
         return conversation
+    }
+
+    /// New Study chat in the same document or workspace session.
+    @discardableResult
+    func createStudyConversation(
+        copyingFrom source: Conversation,
+        keepActiveDocument: Bool = true
+    ) -> Conversation {
+        if source.isWorkspaceStudySession {
+            return createConversation(
+                model: source.model,
+                projectID: source.projectID,
+                studyWorkspaceID: source.studyWorkspaceID,
+                studyDocumentID: keepActiveDocument ? source.studyDocumentID : nil,
+                studySessionKind: .workspace,
+                studyPageCaptureEnabled: source.studyPageCaptureEnabled,
+                studyAgentMode: source.studyAgentMode
+            )
+        }
+        return createConversation(
+            model: source.model,
+            projectID: source.projectID,
+            studyWorkspaceID: nil,
+            studyDocumentID: keepActiveDocument ? source.studyDocumentID : nil,
+            studySessionKind: .document,
+            studyPageCaptureEnabled: source.studyPageCaptureEnabled,
+            studyAgentMode: .agent
+        )
+    }
+
+    /// Legacy alias.
+    @discardableResult
+    func createStudyConversation(
+        copyingWorkspaceFrom source: Conversation,
+        keepActiveDocument: Bool = true
+    ) -> Conversation {
+        createStudyConversation(copyingFrom: source, keepActiveDocument: keepActiveDocument)
+    }
+
+    func conversations(inWorkspace workspaceID: String, includeArchived: Bool = false) -> [Conversation] {
+        conversations
+            .filter { conv in
+                if !includeArchived && conv.isArchived { return false }
+                return conv.studySessionKind == .workspace
+                    && conv.studyWorkspaceID == workspaceID
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func conversations(boundToDocument documentID: String, includeArchived: Bool = false) -> [Conversation] {
+        conversations
+            .filter { conv in
+                if !includeArchived && conv.isArchived { return false }
+                return conv.studySessionKind == .document
+                    && conv.studyDocumentID == documentID
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     func deleteConversation(id: String) {
@@ -213,7 +301,10 @@ final class ConversationStore {
             agentID: source.agentID,
             projectID: source.projectID,
             studyDocumentID: source.studyDocumentID,
-            studyPageCaptureEnabled: source.studyPageCaptureEnabled
+            studyWorkspaceID: source.studyWorkspaceID,
+            studySessionKind: source.studySessionKind,
+            studyPageCaptureEnabled: source.studyPageCaptureEnabled,
+            studyAgentMode: source.studyAgentMode
         )
         // If forked mid-thread, drop summary unless the covered message is still present.
         if let tid = copy.contextSummaryThroughMessageID,
@@ -392,10 +483,11 @@ final class ConversationStore {
     func appendStreamTokens(conversationID: String, reasoning: String, content: String) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         var conv = conversations[index]
-        guard var last = conv.messages.last, last.isStreaming else { return }
+        guard let msgIdx = conv.messages.lastIndex(where: { $0.isStreaming }) else { return }
+        var last = conv.messages[msgIdx]
         if !reasoning.isEmpty { last.reasoningContent += reasoning }
         if !content.isEmpty { last.content += content }
-        conv.messages[conv.messages.count - 1] = last
+        conv.messages[msgIdx] = last
         conv.updatedAt = Date()
         conversations[index] = conv
         scheduleSave()
@@ -404,7 +496,8 @@ final class ConversationStore {
     func finishStreamingMessage(conversationID: String, errorText: String?) {
         guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         var conv = conversations[index]
-        guard var last = conv.messages.last, last.isStreaming else { return }
+        guard let msgIdx = conv.messages.lastIndex(where: { $0.isStreaming }) else { return }
+        var last = conv.messages[msgIdx]
         last.isStreaming = false
         if let errorText = errorText,
            last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -420,7 +513,7 @@ final class ConversationStore {
             last.searchProcessPhase = .done
         }
         last.commitActiveVersion()
-        conv.messages[conv.messages.count - 1] = last
+        conv.messages[msgIdx] = last
         conv.updatedAt = Date()
         conversations[index] = conv
         save()
@@ -444,66 +537,168 @@ final class ConversationStore {
             self?.save()
         }
         saveWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
-    private func load() {
-        let data = UserDefaults.standard.data(forKey: storageKey)
-            ?? UserDefaults.standard.data(forKey: legacyKey)
-        guard let data = data,
-              let decoded = try? JSONDecoder().decode([Conversation].self, from: data) else {
-            return
+    /// Flush pending encode immediately (background kill / Xcode rebuild).
+    func flushPendingSave() {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        save(synchronously: true)
+    }
+
+    private struct LoadResult {
+        var allowBootstrap: Bool
+    }
+
+    @discardableResult
+    private func load() -> LoadResult {
+        let decoder = JSONDecoder()
+        func decode(_ data: Data) -> [Conversation]? {
+            try? decoder.decode([Conversation].self, from: data)
         }
+
+        var data: Data?
+        var source = "none"
+        let fileURL = ConnectsPaths.conversationsFileURL
+        let bakURL = ConnectsPaths.conversationsBackupFileURL
+        if let fileData = try? Data(contentsOf: fileURL), !fileData.isEmpty {
+            data = fileData
+            source = "file"
+        } else if let bakData = try? Data(contentsOf: bakURL), !bakData.isEmpty {
+            data = bakData
+            source = "bak"
+        } else if let ud = UserDefaults.standard.data(forKey: storageKey), !ud.isEmpty {
+            data = ud
+            source = "userDefaults_v2"
+        } else if let legacy = UserDefaults.standard.data(forKey: legacyKey), !legacy.isEmpty {
+            data = legacy
+            source = "userDefaults_legacy"
+        }
+
+        guard let data else {
+            // True first launch — no blob on disk.
+            return LoadResult(allowBootstrap: true)
+        }
+
+        guard let decoded = decode(data) else {
+            NSLog("[ConversationStore] decode failed from \(source) (\(data.count) bytes) — refusing to wipe")
+            // Keep empty in memory; do NOT bootstrap+save (that would destroy the blob).
+            return LoadResult(allowBootstrap: false)
+        }
+
         conversations = decoded
         var repairedInterruptedStream = false
         // No network engine survives an app process restart. Persisted live
         // flags otherwise leave a permanent spinner/stop button on cold launch.
         for i in conversations.indices {
-            guard var last = conversations[i].messages.last, last.isStreaming else { continue }
-            last.isStreaming = false
-            if last.searchProcessPhase != .idle {
-                last.searchProcessPhase = .done
+            for j in conversations[i].messages.indices {
+                var last = conversations[i].messages[j]
+                var changed = false
+                if last.isStreaming {
+                    last.isStreaming = false
+                    changed = true
+                }
+                if last.agentProcessPhase == .running {
+                    last.agentProcessPhase = .done
+                    changed = true
+                }
+                if last.searchProcessPhase != .idle && last.searchProcessPhase != .done {
+                    last.searchProcessPhase = .done
+                    changed = true
+                }
+                if changed {
+                    if last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       !last.hasReasoning,
+                       !last.hasSearchProcess,
+                       !last.hasAgentProcess {
+                        last.content = "上次生成因应用退出而中断，可点「重跑」重新生成。"
+                    }
+                    last.commitActiveVersion()
+                    conversations[i].messages[j] = last
+                    repairedInterruptedStream = true
+                }
             }
-            if last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               !last.hasReasoning,
-               !last.hasSearchProcess {
-                last.content = "上次生成因应用退出而中断，可点「重跑」重新生成。"
-            }
-            last.commitActiveVersion()
-            conversations[i].messages[conversations[i].messages.count - 1] = last
-            repairedInterruptedStream = true
         }
         currentConversationID = UserDefaults.standard.string(forKey: storageKey + "_current")
             ?? UserDefaults.standard.string(forKey: legacyKey + "_current")
-        if repairedInterruptedStream {
+
+        // Migrate UserDefaults blob → Application Support file (and drop huge UD key).
+        if source.hasPrefix("userDefaults") || source == "bak" {
+            writeConversationsFile((try? JSONEncoder().encode(conversations)) ?? data)
+            UserDefaults.standard.removeObject(forKey: storageKey)
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+        } else if repairedInterruptedStream {
             save()
+        }
+        return LoadResult(allowBootstrap: true)
+    }
+
+    private func writeConversationsFile(_ data: Data) {
+        ConnectsPaths.ensureAppFolders()
+        let fileURL = ConnectsPaths.conversationsFileURL
+        let bakURL = ConnectsPaths.conversationsBackupFileURL
+        let fm = FileManager.default
+        if fm.fileExists(atPath: fileURL.path) {
+            try? fm.removeItem(at: bakURL)
+            try? fm.copyItem(at: fileURL, to: bakURL)
+        }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            NSLog("[ConversationStore] file save failed: \(error.localizedDescription)")
+        }
+        // Stop stuffing megabytes into UserDefaults (rebuild / cfprefsd wipe risk).
+        if UserDefaults.standard.data(forKey: storageKey) != nil {
+            UserDefaults.standard.removeObject(forKey: storageKey)
+        }
+        if UserDefaults.standard.data(forKey: legacyKey) != nil {
+            UserDefaults.standard.removeObject(forKey: legacyKey)
         }
     }
 
-    private func save() {
-        // Snapshot then encode off the main thread — large histories (esp. with images)
-        // used to freeze "新对话" / conversation switches on encode.
+    private func save(synchronously: Bool = false) {
+        // Never persist an empty wipe over a known-good on-disk history.
+        if conversations.isEmpty,
+           FileManager.default.fileExists(atPath: ConnectsPaths.conversationsFileURL.path)
+            || UserDefaults.standard.data(forKey: storageKey) != nil {
+            NSLog("[ConversationStore] skip empty save — refusing to overwrite existing history")
+            return
+        }
+
         saveGeneration &+= 1
         let generation = saveGeneration
         let snapshot = conversations
-        let key = storageKey
         persistCurrentConversationID()
-        DispatchQueue.global(qos: .utility).async {
+
+        let encodeAndWrite = {
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            DispatchQueue.main.async {
-                // Drop stale encodes so an older background save cannot clobber a newer one.
+            if Thread.isMainThread {
                 guard generation == self.saveGeneration else { return }
-                UserDefaults.standard.set(data, forKey: key)
+                self.writeConversationsFile(data)
+            } else {
+                DispatchQueue.main.async {
+                    guard generation == self.saveGeneration else { return }
+                    self.writeConversationsFile(data)
+                }
             }
+        }
+
+        if synchronously {
+            // Encode on caller thread so Xcode kill / resign doesn't drop the last turn.
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            writeConversationsFile(data)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: encodeAndWrite)
         }
     }
 
     func reloadAfterBackupImport() {
-        load()
+        let loaded = load()
         selectedProjectID = normalizedProjectID(
             UserDefaults.standard.string(forKey: selectedProjectKey)
         )
-        reconcileCurrentConversationAfterLoad()
+        reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: loaded.allowBootstrap)
         NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil)
     }
 }

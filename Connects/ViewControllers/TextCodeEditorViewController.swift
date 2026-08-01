@@ -8,7 +8,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let sidebarButton = UIButton(type: .system)
     private let modeButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
-    private let progressLabel = UILabel()
+    private let fileTitleButton = UIButton(type: .system)
     private let gutterView = UIView()
     private let gutterSeparator = UIView()
     /// Non-interactive twin of the editor; contentOffset stays locked to `textView`.
@@ -94,6 +94,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
+    var onFileTitleTapped: (() -> Void)?
     var onContentEdited: (() -> Void)?
     var onAskSelection: ((String) -> Void)?
 
@@ -151,12 +152,14 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBar.addSubview(tabToggleButton)
         refreshTabToggleChrome()
 
-        progressLabel.translatesAutoresizingMaskIntoConstraints = false
-        progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        progressLabel.textColor = DSTheme.c.textSecondary
-        progressLabel.textAlignment = .center
-        progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        topBar.addSubview(progressLabel)
+        fileTitleButton.translatesAutoresizingMaskIntoConstraints = false
+        fileTitleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        fileTitleButton.titleLabel?.lineBreakMode = .byTruncatingMiddle
+        fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
+        fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
+        fileTitleButton.accessibilityLabel = "切换文件"
+        topBar.addSubview(fileTitleButton)
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
         gutterView.clipsToBounds = true
@@ -291,10 +294,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
-            progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-            progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
+            fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+            fileTitleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
+            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
 
             // Far-right chrome: [Tab][mode][save]
             saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
@@ -451,7 +454,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         language = .plain
         textView.text = ""
         lineNumberView.text = ""
-        progressLabel.text = nil
+        fileTitleButton.setTitle(nil, for: .normal)
         isDirty = false
         pendingPreviewMarkdown = nil
         previewWebView.evaluateJavaScript("window.__connectsRender && window.__connectsRender('');", completionHandler: nil)
@@ -559,21 +562,20 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     func currentPageLabel() -> String {
-        guard currentDocumentID != nil else { return "无文档" }
-        let lines = max((textView.text as NSString?)?.length ?? 0 > 0
-            ? (textView.text as NSString).components(separatedBy: "\n").count : 0, 1)
-        let mode: String
-        if readSurface == .diff {
-            mode = "Diff"
-        } else if readSurface == .diffPreview {
-            mode = "阅读 · 提案预览"
-        } else if language == .markdown {
-            mode = isEditMode ? "编辑" : "预览"
-        } else {
-            mode = isEditMode ? "编辑" : "阅读"
+        currentFileDisplayName()
+    }
+
+    func currentFileDisplayName() -> String {
+        guard let id = currentDocumentID,
+              let doc = StudyDocumentStore.shared.document(id: id) else { return "无文档" }
+        if let path = doc.displayPath, !path.isEmpty {
+            return URL(fileURLWithPath: path).lastPathComponent
         }
-        let dirty = (isEditMode && isDirty) ? " · 未保存" : ""
-        return "\(language.displayName) · \(mode) · \(lines) 行\(dirty)"
+        let ext = doc.textLanguage?.preferredFileExtension
+        if let ext, !doc.title.lowercased().hasSuffix(".\(ext)") {
+            return "\(doc.title).\(ext)"
+        }
+        return doc.title
     }
 
     func currentPageText() -> String? {
@@ -581,6 +583,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     // MARK: - Private
+
+    @objc private func fileTitleTapped() {
+        onFileTitleTapped?()
+    }
 
     @objc private func sidebarTapped() {
         onToggleSidebar?()
@@ -617,7 +623,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBarSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
         lineNumberView.textColor = c.textTertiary
         lineNumberView.backgroundColor = .clear
-        progressLabel.textColor = c.textSecondary
+        fileTitleButton.setTitleColor(c.textPrimary, for: .normal)
         modeButton.tintColor = c.textSecondary
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
@@ -1161,7 +1167,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func updateProgressLabel() {
-        progressLabel.text = currentPageLabel()
+        let name = currentFileDisplayName()
+        let dirty = (isEditMode && isDirty) ? " ·" : ""
+        fileTitleButton.setTitle(name == "无文档" ? name : "\(name) ▾\(dirty)", for: .normal)
     }
 
     // MARK: - UITextViewDelegate
@@ -1448,13 +1456,27 @@ extension TextCodeEditorViewController {
     // MARK: - AI edit / Diff / Tab
 
     func aiEditSnapshot() -> (text: String, selectedRange: NSRange) {
-        let text = textView.text ?? ""
+        // While Diff is open the textView shows interleaved -/+/context — never use that
+        // as a compose baseline (agent re-edits would look like a wall of +++++).
+        let text: String
+        if readSurface == .diff || readSurface == .diffPreview,
+           let before = diffBeforeSnapshot {
+            text = before
+        } else {
+            text = textView.text ?? ""
+        }
         var range = textView.selectedRange
         if let pinned = askPinnedRange, pinned.length > 0 {
             range = pinned
         }
         return (text, range)
     }
+
+    /// Baseline locked when the current Diff session opened (nil when not reviewing).
+    var diffSessionBaseline: String? { diffBeforeSnapshot }
+
+    /// Latest proposed text for the open Diff session.
+    var diffSessionProposed: String? { diffAfterSnapshot }
 
     func applyAIEdit(range: NSRange, replacement: String) {
         let before = textView.text ?? ""

@@ -10,6 +10,8 @@ struct CodeEditProposal {
     let replacement: String
     /// Assistant reply with the machine block removed (for chat display).
     let displayContent: String
+    /// Target path from `path:` header; `nil` / `current` means active file.
+    let targetPath: String?
 }
 
 enum CodeEditApplyTools {
@@ -34,6 +36,8 @@ enum CodeEditApplyTools {
     CONNECTS_EDIT>>>
 
     Rules:
+    - `path: current` (or omit path) edits ONLY the currently open Study file.
+    - Never set `path` to another workspace file — Study will reject cross-file edits. User switches files in the reader title first.
     - Prefer `range: full` when writing/replacing the file (or most of it). Use `range: selection` only if replacing the user's current selection.
     - To clear the file: use `range: full` with an empty fence body (still emit the full CONNECTS_EDIT block).
     - Inside the fence: only the code/text to paste — no commentary.
@@ -81,6 +85,7 @@ enum CodeEditApplyTools {
         let lines = headerAndBody.components(separatedBy: .newlines)
         // Default to full-file for write/edit intents when model omits range.
         var rangeKind = CodeEditRangeKind.full
+        var targetPath: String?
         var collectingCode = false
         var codeLines: [String] = []
         var fenceOpened = false
@@ -100,7 +105,13 @@ enum CodeEditApplyTools {
                 }
                 continue
             }
-            if lower.hasPrefix("path:") { continue }
+            if lower.hasPrefix("path:") {
+                let value = trimmed.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    targetPath = value
+                }
+                continue
+            }
             if trimmed.hasPrefix("```") {
                 if !fenceOpened {
                     fenceOpened = true
@@ -130,7 +141,12 @@ enum CodeEditApplyTools {
         replacement = stripCodeFence(replacement)
         // Empty body is valid only for full-file clear; selection must replace something.
         if replacement.isEmpty, rangeKind != .full { return nil }
-        return CodeEditProposal(rangeKind: rangeKind, replacement: replacement, displayContent: display)
+        return CodeEditProposal(
+            rangeKind: rangeKind,
+            replacement: replacement,
+            displayContent: display,
+            targetPath: targetPath
+        )
     }
 
     /// `true` when a CONNECTS_EDIT begin marker exists without a matching end (truncated stream).
@@ -151,6 +167,15 @@ enum CodeEditApplyTools {
     - 不要再开新的 <<<CONNECTS_EDIT
     - 完成 fence 内剩余代码/文本后，输出 CONNECTS_EDIT>>>
     """
+
+    /// Truncate trailing incomplete `<<<` / `<<<CONNECTS…` so stream paint never leaks markers.
+    private static func truncatingIncompleteConnectsMarker(in raw: String) -> String? {
+        guard let arrows = raw.range(of: "<<<", options: .backwards) else { return nil }
+        guard AgentTools.looksLikeIncompleteConnectsMarkerSuffix(raw[arrows.upperBound...]) else {
+            return nil
+        }
+        return String(raw[..<arrows.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// `<<<CONNECTS_EDIT` with optional spaces after `<<<` (models often insert them).
     private static func findConnectsEditBegin(in content: String) -> Range<String.Index>? {
@@ -241,6 +266,11 @@ enum CodeEditApplyTools {
         }
 
         guard let begin = findConnectsEditBegin(in: raw) else {
+            // Incomplete `<<<CONNECTS_EDIT` prefix mid-stream — hide from the bubble.
+            if let truncated = truncatingIncompleteConnectsMarker(in: raw) {
+                resetStreamVisibleCache()
+                return truncated
+            }
             resetStreamVisibleCache()
             return raw
         }

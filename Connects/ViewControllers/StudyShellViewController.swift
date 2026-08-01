@@ -45,6 +45,11 @@ final class StudyShellViewController: UIViewController {
     private var loadGeneration: UInt = 0
     private var boundDocumentID: String?
     private var boundConversationID: String?
+    private var pendingEditAfterSwitch: (CodeEditProposal, String)?
+    private var pendingFolderPick = false
+    private var pendingImportWorkspaceID: String?
+    /// Debounce Agent write → editor reload (avoids multi-file flash).
+    private var agentEditorReloadWork: DispatchWorkItem?
 
     /// Must match `handleAskSelection` — empty string breaks pending Ask lookup on send.
     private func resolvedStudyConversationID() -> String {
@@ -185,7 +190,42 @@ final class StudyShellViewController: UIViewController {
         codeEditCoordinator.bindEditor(textEditorVC)
         textEditorVC.completionProvider = codeEditCoordinator
         codeEditCoordinator.onDiffSessionChange = { [weak self] active, count in
-            self?.chatVC.setCodeDiffReviewBanner(visible: active, changeCount: count)
+            guard let self = self else { return }
+            if !WorkspaceEditSession.shared.isEmpty {
+                self.chatVC.refreshWorkspaceDiffBanner()
+            } else {
+                self.chatVC.setCodeDiffReviewBanner(visible: active, changeCount: count)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .workspaceEditSessionDidUpdate,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.chatVC.refreshWorkspaceDiffBanner()
+        }
+        NotificationCenter.default.addObserver(
+            forName: .workspaceAgentDidMutateDocuments,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let ids = (note.userInfo?["documentIDs"] as? [String]) ?? []
+            self?.scheduleCoalescedAgentEditorReload(documentIDs: ids)
+        }
+        let fileTitle: () -> Void = { [weak self] in
+            self?.presentWorkspaceFileMenu(from: nil)
+        }
+        textEditorVC.onFileTitleTapped = fileTitle
+        pdfReaderVC.onFileTitleTapped = fileTitle
+        markdownReaderVC.onFileTitleTapped = fileTitle
+        markdownReaderVC.onBuildPlan = { [weak self] in
+            guard let self, let docID = self.boundDocumentID else { return }
+            if self.chatPanelStage == .collapsed {
+                self.applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
+            } else {
+                self.chatVC.prepareForStudyPanelControlTap()
+            }
+            self.chatVC.startPlanBuild(documentID: docID)
         }
         StudyAskMenu.installIfNeeded()
 
@@ -1048,6 +1088,7 @@ final class StudyShellViewController: UIViewController {
             case .markdown: self.markdownReaderVC.realignVisibleViewport(using: progress)
             case .text: self.textEditorVC.realignVisibleViewport(using: progress)
             }
+            self.flushPendingEditAfterSwitchIfNeeded()
         }
     }
 
@@ -1750,12 +1791,14 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 ?? textEditorVC.currentSelectionText()
             let scope = StudyFileContextStore.shared.scope(for: convID)
             let forceFull = scope == .fullFile || scope == .resync
+            let workspaceID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID
             let prefix = StudyFileContextStore.shared.buildCodeContextPrefix(
                 conversationID: convID,
                 document: doc,
                 fullText: full,
                 selection: sel,
-                forceFull: forceFull
+                forceFull: forceFull,
+                workspaceID: workspaceID
             )
             return StudyPageCapture(
                 label: label,
@@ -1773,6 +1816,21 @@ extension StudyShellViewController: StudyReadingContextProviding {
 
     @discardableResult
     func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool {
+        // Study edits never auto-switch files — only the currently open document is writable.
+        if let raw = proposal.targetPath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let lower = raw.lowercased()
+            if !(lower == "current" || lower == "." || lower == "active") {
+                if let targetID = resolveDocumentID(forEditPath: raw) {
+                    if targetID != boundDocumentID {
+                        ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
+                        return false
+                    }
+                } else {
+                    ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
+                    return false
+                }
+            }
+        }
         guard studyCodeAIEditSupported else { return false }
         // Ensure reader is visible for Diff review.
         if chatPanelStage == .full {
@@ -1781,16 +1839,489 @@ extension StudyShellViewController: StudyReadingContextProviding {
         return codeEditCoordinator.presentProposal(proposal, assistantMessageID: assistantMessageID)
     }
 
+    func switchActiveDocument(to documentID: String) {
+        guard let convID = ConversationStore.shared.currentConversationID else { return }
+        let conv = ConversationStore.shared.currentConversation
+        if conv?.isWorkspaceStudySession == true, let wsID = conv?.activeStudyWorkspaceID {
+            StudyWorkspaceStore.shared.addDocument(documentID, to: wsID)
+            ConversationStore.shared.updateConversation(id: convID) { draft in
+                draft.studyDocumentID = documentID
+                draft.studyWorkspaceID = wsID
+                draft.studySessionKind = .workspace
+                draft.studyPageCaptureEnabled = true
+            }
+        } else {
+            ConversationStore.shared.updateConversation(id: convID) { draft in
+                draft.studyDocumentID = documentID
+                draft.studyWorkspaceID = nil
+                draft.studySessionKind = .document
+                draft.studyPageCaptureEnabled = true
+            }
+        }
+    }
+
+    private func resolveDocumentID(forEditPath raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let lower = raw.lowercased()
+        if lower == "current" || lower == "." || lower == "active" { return nil }
+        let needle = (raw as NSString).lastPathComponent
+        if let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID {
+            _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: wsID)
+            if let ws = StudyWorkspaceStore.shared.workspace(id: wsID) {
+                for id in ws.documentIDs {
+                    guard let doc = StudyDocumentStore.shared.document(id: id) else { continue }
+                    if let path = doc.displayPath {
+                        if (path as NSString).lastPathComponent.caseInsensitiveCompare(needle) == .orderedSame {
+                            return id
+                        }
+                    }
+                    if doc.title.caseInsensitiveCompare(needle) == .orderedSame
+                        || doc.title.caseInsensitiveCompare((needle as NSString).deletingPathExtension) == .orderedSame {
+                        return id
+                    }
+                }
+            }
+        }
+        for doc in StudyDocumentStore.shared.recentDocuments(limit: 200) {
+            if let path = doc.displayPath,
+               (path as NSString).lastPathComponent.caseInsensitiveCompare(needle) == .orderedSame {
+                return doc.id
+            }
+        }
+        return nil
+    }
+
+    private func flushPendingEditAfterSwitchIfNeeded() {
+        guard let pending = pendingEditAfterSwitch else { return }
+        guard studyCodeAIEditSupported else { return }
+        pendingEditAfterSwitch = nil
+        if chatPanelStage == .full {
+            applyChatPanelStage(.half, animated: true)
+        }
+        _ = codeEditCoordinator.presentProposal(pending.0, assistantMessageID: pending.1)
+    }
+
+    func presentWorkspaceFileMenu(from sourceView: UIView?) {
+        let conv = ConversationStore.shared.currentConversation
+        // Single-file Study: attach folder for multi-file switch, or change document.
+        guard conv?.isWorkspaceStudySession == true,
+              let wsID = conv?.activeStudyWorkspaceID else {
+            let items: [ConnectsMenuItem] = [
+                ConnectsMenuItem(title: "依附文件夹…", icon: .folder) { [weak self] in
+                    self?.presentFolderWorkspacePicker()
+                },
+                ConnectsMenuItem(title: "更换文档…", icon: .book) { [weak self] in
+                    self?.chatVC.presentStudyDocumentPickerPublic()
+                }
+            ]
+            ConnectsMenu.present(
+                from: self,
+                title: "文档",
+                items: items,
+                sourceView: sourceView ?? textEditorVC.view,
+                sourceRect: sourceView?.bounds ?? CGRect(x: textEditorVC.view.bounds.midX, y: 40, width: 1, height: 1)
+            )
+            return
+        }
+        _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: wsID)
+        let ws = StudyWorkspaceStore.shared.workspace(id: wsID) ?? StudyWorkspaceStore.shared.defaultWorkspace()
+        let names = StudyWorkspaceStore.shared.listFileNames(in: ws.id)
+        let activeName: String? = {
+            guard let docID = conv?.studyDocumentID,
+                  let path = StudyDocumentStore.shared.document(id: docID)?.displayPath else { return nil }
+            return URL(fileURLWithPath: path).lastPathComponent
+        }()
+        var items: [ConnectsMenuItem] = []
+        if names.count > 1, let activeName, let idx = names.firstIndex(of: activeName) {
+            let prev = names[(idx - 1 + names.count) % names.count]
+            let next = names[(idx + 1) % names.count]
+            items.append(ConnectsMenuItem(
+                title: "上一份 · \(prev)",
+                icon: .chevronLeft,
+                handler: { [weak self] in
+                    self?.openWorkspaceFileNamed(prev, workspaceID: ws.id)
+                }
+            ))
+            items.append(ConnectsMenuItem(
+                title: "下一份 · \(next)",
+                icon: .chevronRight,
+                handler: { [weak self] in
+                    self?.openWorkspaceFileNamed(next, workspaceID: ws.id)
+                }
+            ))
+        }
+        for name in names {
+            let fileName = name
+            let isPDF = fileName.lowercased().hasSuffix(".pdf")
+            items.append(ConnectsMenuItem(
+                title: fileName,
+                icon: isPDF ? .book : .edit,
+                isSelected: fileName == activeName,
+                longPressHandler: { [weak self] in
+                    self?.presentWorkspaceFileActions(named: fileName, workspaceID: ws.id)
+                },
+                handler: { [weak self] in
+                    self?.openWorkspaceFileNamed(fileName, workspaceID: ws.id)
+                }
+            ))
+        }
+        ConnectsMenu.present(
+            from: self,
+            title: ws.title,
+            items: items,
+            sourceView: sourceView ?? textEditorVC.view,
+            sourceRect: sourceView?.bounds ?? CGRect(x: textEditorVC.view.bounds.midX, y: 40, width: 1, height: 1),
+            titleTap: { [weak self] in
+                self?.presentWorkspaceSwitcher()
+            },
+            headerTrailingActions: [
+                ConnectsMenuHeaderAction(icon: .plus, accessibilityLabel: "新建文件") { [weak self] in
+                    self?.promptCreateFile(in: ws.id, firstFile: names.isEmpty)
+                },
+                ConnectsMenuHeaderAction(icon: .importFile, accessibilityLabel: "添加文件到工作区") { [weak self] in
+                    self?.presentImportIntoWorkspace(ws.id)
+                }
+            ]
+        )
+    }
+
+    private func presentWorkspaceFileActions(named name: String, workspaceID: String) {
+        ConnectsMenu.present(
+            from: self,
+            title: name,
+            items: [
+                ConnectsMenuItem(title: "重命名…", icon: .rename) { [weak self] in
+                    self?.promptRenameFile(named: name, workspaceID: workspaceID)
+                },
+                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.confirmDeleteFile(named: name, workspaceID: workspaceID)
+                }
+            ],
+            sourceView: textEditorVC.view,
+            sourceRect: CGRect(x: textEditorVC.view.bounds.midX, y: 40, width: 1, height: 1)
+        )
+    }
+
+    private func promptRenameFile(named oldName: String, workspaceID: String) {
+        let alert = UIAlertController(
+            title: "重命名",
+            message: "可改文件名或后缀，例如 notes.md → notes.txt",
+            preferredStyle: .alert
+        )
+        alert.addTextField { field in
+            field.text = oldName
+            field.clearButtonMode = .whileEditing
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let raw = alert.textFields?.first?.text ?? ""
+            do {
+                let doc = try StudyWorkspaceStore.shared.renameFile(
+                    from: oldName,
+                    to: raw,
+                    in: workspaceID
+                )
+                self.reloadAfterWorkspaceFileMutation(activeDocumentID: doc.id)
+                ConnectsToast.show("已重命名为 \(doc.displayPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? doc.title)", in: self.view, duration: 1.4)
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: self.view, duration: 2.0)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func confirmDeleteFile(named name: String, workspaceID: String) {
+        let alert = UIAlertController(
+            title: "删除文件？",
+            message: "将从工作区文件夹中删除「\(name)」。此操作不可撤销。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            let wasActive: Bool = {
+                guard let docID = ConversationStore.shared.currentConversation?.studyDocumentID,
+                      let path = StudyDocumentStore.shared.document(id: docID)?.displayPath else { return false }
+                return URL(fileURLWithPath: path).lastPathComponent == name
+            }()
+            do {
+                try StudyWorkspaceStore.shared.deleteFile(named: name, in: workspaceID)
+                if wasActive {
+                    let next = StudyWorkspaceStore.shared.listFileNames(in: workspaceID).first
+                    if let next {
+                        self.openWorkspaceFileNamed(next, workspaceID: workspaceID)
+                    } else if let convID = ConversationStore.shared.currentConversationID {
+                        ConversationStore.shared.updateConversation(id: convID) { draft in
+                            draft.studyDocumentID = nil
+                            draft.studyPageCaptureEnabled = false
+                        }
+                        self.forceRebindConversation()
+                        self.ensureWorkspaceHasFileIfEmpty(workspaceID: workspaceID)
+                    }
+                } else {
+                    self.forceRebindConversation()
+                }
+                ConnectsToast.show("已删除 \(name)", in: self.view, duration: 1.4)
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: self.view, duration: 2.0)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func reloadAfterWorkspaceFileMutation(activeDocumentID: String) {
+        if let convID = ConversationStore.shared.currentConversationID {
+            ConversationStore.shared.updateConversation(id: convID) { draft in
+                draft.studyDocumentID = activeDocumentID
+                draft.studyPageCaptureEnabled = true
+            }
+        }
+        forceRebindConversation()
+    }
+
+    private func forceRebindConversation() {
+        boundDocumentID = nil
+        bindCurrentConversation()
+    }
+
+    private func presentWorkspaceSwitcher() {
+        var items: [ConnectsMenuItem] = []
+        for ws in StudyWorkspaceStore.shared.workspaces {
+            let mark = ws.isDefault ? "（默认）" : ""
+            items.append(ConnectsMenuItem(title: "\(ws.title)\(mark)", icon: .folder) { [weak self] in
+                self?.activateWorkspace(ws.id)
+            })
+        }
+        items.append(ConnectsMenuItem(title: "打开 Files…", icon: .folder) { [weak self] in
+            self?.presentFolderWorkspacePicker()
+        })
+        ConnectsMenu.present(from: self, title: "切换工作区", items: items)
+    }
+
+    private func activateWorkspace(_ workspaceID: String) {
+        guard let convID = ConversationStore.shared.currentConversationID else { return }
+        _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: workspaceID)
+        let firstDoc = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.documentIDs.first
+        ConversationStore.shared.updateConversation(id: convID) { draft in
+            draft.studyWorkspaceID = workspaceID
+            draft.studySessionKind = .workspace
+            if let firstDoc { draft.studyDocumentID = firstDoc }
+            draft.studyPageCaptureEnabled = draft.studyDocumentID != nil
+            // Keep current Study posture — do not jump into Agent.
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
+        }
+        if firstDoc == nil {
+            ensureWorkspaceHasFileIfEmpty(workspaceID: workspaceID)
+        }
+    }
+
+    private func openWorkspaceFileNamed(_ name: String, workspaceID: String) {
+        guard let folder = try? StudyWorkspaceStore.shared.folderURL(for: workspaceID) else { return }
+        let url = folder.appendingPathComponent(name)
+        do {
+            let doc = try StudyDocumentStore.shared.registerFileInPlace(at: url, createEmptyIfNeeded: false)
+            StudyWorkspaceStore.shared.addDocument(doc.id, to: workspaceID)
+            switchActiveDocument(to: doc.id)
+        } catch {
+            ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+        }
+    }
+
+    private func promptCreateFile(in workspaceID: String, firstFile: Bool = false) {
+        let title = firstFile ? "新建第一个文件" : "新建文件"
+        let alert = UIAlertController(
+            title: title,
+            message: "任意后缀，例如 notes.md / top.v / a.html",
+            preferredStyle: .alert
+        )
+        alert.addTextField { $0.placeholder = firstFile ? "main.swift" : "filename.ext" }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "创建", style: .default) { [weak self] _ in
+            let name = alert.textFields?.first?.text ?? ""
+            do {
+                let doc = try StudyWorkspaceStore.shared.createEmptyFile(named: name, in: workspaceID)
+                self?.switchActiveDocument(to: doc.id)
+            } catch {
+                if let view = self?.view {
+                    ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    func ensureWorkspaceHasFileIfEmpty(workspaceID: String? = nil) {
+        let wsID = workspaceID
+            ?? ConversationStore.shared.currentConversation?.activeStudyWorkspaceID
+        guard let wsID else { return }
+        let names = StudyWorkspaceStore.shared.listFileNames(in: wsID)
+        guard names.isEmpty else { return }
+        promptCreateFile(in: wsID, firstFile: true)
+    }
+
+    private func presentFolderWorkspacePicker() {
+        pendingFolderPick = true
+        pendingImportWorkspaceID = nil
+        let picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private func presentImportIntoWorkspace(_ workspaceID: String) {
+        pendingFolderPick = false
+        pendingImportWorkspaceID = workspaceID
+        let picker = UIDocumentPickerViewController(
+            documentTypes: [
+                "public.item", "public.data", "public.text", "public.source-code",
+                "com.adobe.pdf", "public.plain-text"
+            ],
+            in: .open
+        )
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
     func revertStudyCodeEditIfNeeded(forAssistantMessageID id: String) {
         _ = codeEditCoordinator.revertForRetry(assistantMessageID: id)
     }
 
-    func studyCodeDiffUndoAll() {
-        codeEditCoordinator.undoAll()
+    func studyCodeDiffKeepAll() {
+        let pending = WorkspaceEditSession.shared.files
+        guard !pending.isEmpty else {
+            codeEditCoordinator.keepAll()
+            chatVC.refreshWorkspaceDiffBanner()
+            return
+        }
+        // Always persist `after` and clear session — even when Diff UI was never opened
+        // (Agent create_file / propose_edit path).
+        for file in pending {
+            try? StudyDocumentStore.shared.writeTextContent(file.after, for: file.documentID)
+        }
+        if codeEditCoordinator.isPresentingDiff {
+            codeEditCoordinator.keepAll()
+        }
+        if let current = pending.first(where: {
+            $0.documentID == ConversationStore.shared.currentConversation?.studyDocumentID
+        }) {
+            textEditorVC.applyResolvedDiffText(current.after)
+        } else if let first = pending.first {
+            textEditorVC.applyResolvedDiffText(first.after)
+        }
+        WorkspaceEditSession.shared.clear()
+        chatVC.refreshWorkspaceDiffBanner()
+        let n = pending.count
+        ConnectsToast.show(n == 1 ? "Kept 1 file" : "Kept \(n) files", in: view, duration: 1.4)
     }
 
-    func studyCodeDiffKeepAll() {
-        codeEditCoordinator.keepAll()
+    func studyCodeDiffUndoAll() {
+        let pending = WorkspaceEditSession.shared.files
+        if codeEditCoordinator.isPresentingDiff {
+            codeEditCoordinator.undoAll()
+        }
+        for file in pending {
+            try? StudyDocumentStore.shared.writeTextContent(file.before, for: file.documentID)
+            if file.documentID == boundDocumentID {
+                textEditorVC.applyResolvedDiffText(file.before)
+            }
+        }
+        WorkspaceEditSession.shared.clear()
+        chatVC.refreshWorkspaceDiffBanner()
+        if !pending.isEmpty {
+            ConnectsToast.show("Undone", in: view, duration: 1.2)
+        }
+    }
+
+    func studyCodeDiffReviewNext() {
+        let current = ConversationStore.shared.currentConversation?.studyDocumentID
+        if let next = WorkspaceEditSession.shared.nextReviewDocumentID(after: current) {
+            studyCodeDiffOpen(documentID: next)
+        } else if let first = WorkspaceEditSession.shared.files.first {
+            studyCodeDiffOpen(documentID: first.documentID)
+        }
+    }
+
+    /// Agent batch write finished — reload bound editor once (skip if Diff already owns the surface).
+    private func scheduleCoalescedAgentEditorReload(documentIDs: [String]) {
+        guard !documentIDs.isEmpty else { return }
+        agentEditorReloadWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard let bound = self.boundDocumentID, documentIDs.contains(bound) else { return }
+            if self.codeEditCoordinator.isPresentingDiff { return }
+            guard let pending = WorkspaceEditSession.shared.pending(documentID: bound) else { return }
+            // Only refresh the text editor surface for workspace Agent writes.
+            if !self.textEditorVC.view.isHidden {
+                self.textEditorVC.applyResolvedDiffText(pending.after)
+            }
+        }
+        agentEditorReloadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    func studyCodeDiffOpen(documentID: String) {
+        guard let pending = WorkspaceEditSession.shared.pending(documentID: documentID) else {
+            switchActiveDocument(to: documentID)
+            return
+        }
+        if boundDocumentID != documentID {
+            switchActiveDocument(to: documentID)
+        }
+        if chatPanelStage == .full {
+            applyChatPanelStage(.half, animated: true)
+        }
+        // Cumulative Diff: frozen session baseline → latest after (multi-round agent safe).
+        if codeEditCoordinator.presentCumulativeSessionDiff(documentID: documentID) {
+            chatVC.refreshWorkspaceDiffBanner()
+            return
+        }
+        let proposal = CodeEditProposal(
+            rangeKind: .full,
+            replacement: pending.after,
+            displayContent: "（Review \(pending.fileName)）",
+            targetPath: pending.fileName
+        )
+        if textEditorVC.aiEditSnapshot().text != pending.before {
+            textEditorVC.applyResolvedDiffText(pending.before)
+        }
+        _ = codeEditCoordinator.presentProposal(proposal, assistantMessageID: "")
+        chatVC.refreshWorkspaceDiffBanner()
+    }
+}
+
+extension StudyShellViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        if pendingFolderPick {
+            pendingFolderPick = false
+            do {
+                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url)
+                activateWorkspace(ws.id)
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+            }
+            return
+        }
+        if let wsID = pendingImportWorkspaceID {
+            pendingImportWorkspaceID = nil
+            do {
+                let doc = try StudyWorkspaceStore.shared.importFile(from: url, into: wsID)
+                switchActiveDocument(to: doc.id)
+            } catch {
+                ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
+            }
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        pendingFolderPick = false
+        pendingImportWorkspaceID = nil
     }
 }
 

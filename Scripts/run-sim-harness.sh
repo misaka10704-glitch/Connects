@@ -20,6 +20,21 @@ if [[ -z "${CONNECTS_KIMI_API_KEY:-}" ]]; then
   fi
 fi
 
+if [[ -z "${CONNECTS_DEEPSEEK_API_KEY:-}" ]]; then
+  SECRETS_PY="$ROOT/../Engineer_Tex/.workspace/scripts/anki_api_secrets.py"
+  if [[ -f "$SECRETS_PY" ]]; then
+    CONNECTS_DEEPSEEK_API_KEY="$(python3 -c "import sys; sys.path.insert(0, '$(dirname "$SECRETS_PY")'); from anki_api_secrets import get_deepseek; print(get_deepseek(), end='')")"
+    export CONNECTS_DEEPSEEK_API_KEY
+  fi
+fi
+
+if [[ -n "${CONNECTS_KIMI_API_KEY:-}" ]]; then
+  export SIMCTL_CHILD_CONNECTS_KIMI_API_KEY="$CONNECTS_KIMI_API_KEY"
+fi
+if [[ -n "${CONNECTS_DEEPSEEK_API_KEY:-}" ]]; then
+  export SIMCTL_CHILD_CONNECTS_DEEPSEEK_API_KEY="$CONNECTS_DEEPSEEK_API_KEY"
+fi
+
 cd "$ROOT"
 echo "==> Building $SCHEME for simulator $UDID"
 xcodebuild \
@@ -59,7 +74,7 @@ while kill -0 "$APP_PID" 2>/dev/null; do
     break
   fi
   # Early exit if harness printed PASS/FAIL summary and exited.
-  if grep -qE '\[StudyVisualQA\] (PASS|FAIL) visual suite|\[ConnectsUsageSim\] (PASS|FAIL|done)|\[ConnectsScrollStress\].*(PASS|FAIL)|\[StudyFeatureQA\].*(PASS|FAIL)|\[ConnectsDiffQA\].*(PASS|FAIL)|\[ConnectsTabQA\].*(PASS|FAIL)' "$LOG" 2>/dev/null; then
+  if grep -qE '\[StudyVisualQA\] (PASS|FAIL) visual suite|\[StudyAgentUXQA\] (PASS|FAIL)|\[StudyAgentProcessQA\] (PASS|FAIL)|\[ConnectsUsageSim\] (PASS|FAIL|done)|\[ConnectsScrollStress\].*(PASS|FAIL)|\[StudyFeatureQA\].*(PASS|FAIL)|\[ConnectsDiffQA\].*(PASS|FAIL)|\[ConnectsTabQA\].*(PASS|FAIL)' "$LOG" 2>/dev/null; then
     sleep 2
     if ! pgrep -f 'Connects.app/Connects' >/dev/null 2>&1; then
       break
@@ -72,10 +87,10 @@ wait "$APP_PID" 2>/dev/null || true
 sleep 1
 
 echo "==> Tail log"
-grep -E '\[ConnectsUsageSim\]|\[ConnectsScrollStress\]|\[StudyFeatureQA\]|\[StudyVisualQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|\[ConnectsRenderAudit\]|FAIL|PASS|NativeFormulaRenderer' "$LOG" | tail -80 || true
+grep -E '\[ConnectsUsageSim\]|\[ConnectsScrollStress\]|\[StudyFeatureQA\]|\[StudyVisualQA\]|\[StudyAgentUXQA\]|\[StudyAgentProcessQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|\[ConnectsRenderAudit\]|FAIL|PASS|NativeFormulaRenderer' "$LOG" | tail -80 || true
 echo "==> Console"
-grep -E '\[StudyVisualQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|PASS|FAIL' /tmp/connects-sim-console.log 2>/dev/null | tail -40 || true
-if [[ " $* " == *" -StudyVisualQA "* ]]; then
+grep -E '\[StudyVisualQA\]|\[StudyAgentUXQA\]|\[StudyAgentProcessQA\]|\[ConnectsDiffQA\]|\[ConnectsTabQA\]|PASS|FAIL' /tmp/connects-sim-console.log 2>/dev/null | tail -40 || true
+if [[ " $* " == *" -StudyVisualQA "* ]] || [[ " $* " == *" -StudyAgentUXQA "* ]] || [[ " $* " == *" -StudyAgentProcessQA "* ]]; then
   "$(cd "$(dirname "$0")" && pwd)/pull-visual-qa.sh" || true
 fi
 echo "==> Full log: $LOG"

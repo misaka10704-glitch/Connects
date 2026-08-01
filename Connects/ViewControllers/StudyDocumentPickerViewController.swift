@@ -2,20 +2,33 @@ import UIKit
 
 protocol StudyDocumentPickerDelegate: AnyObject {
     func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelect documentID: String)
+    func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelectWorkspace workspaceID: String)
 }
 
+extension StudyDocumentPickerDelegate {
+    func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelectWorkspace workspaceID: String) {}
+}
+
+/// Chat「更换依附 / 选择依附」：打开阅读、打开文本、打开 Files 工作区、最近单文件。
 final class StudyDocumentPickerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate, UIGestureRecognizerDelegate {
     weak var delegate: StudyDocumentPickerDelegate?
 
     private enum OpenKind {
         case reading
         case text
+        case folderWorkspace
         case rebind(documentID: String)
     }
 
-    private let openRowCount = 2
+    private enum Row {
+        case openReading
+        case openText
+        case openFilesWorkspace
+        case document(StudyDocument)
+    }
+
     private let tableView = UITableView(frame: .zero, style: .grouped)
-    private var documents: [StudyDocument] = []
+    private var rows: [Row] = []
     private var pendingOpenKind: OpenKind = .reading
     private var rowLongPress: UILongPressGestureRecognizer?
     private let byteFormatter: ByteCountFormatter = {
@@ -32,7 +45,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "选择文档"
+        title = "选择依附"
         view.backgroundColor = DSTheme.c.background
         navigationItem.leftBarButtonItem = ActionIconFactory.barItem(
             kind: .chevronLeft,
@@ -104,12 +117,20 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     }
 
     @objc private func reload() {
-        documents = StudyDocumentStore.shared.recentDocuments()
+        var next: [Row] = [
+            .openReading,
+            .openText,
+            .openFilesWorkspace
+        ]
+        for doc in StudyDocumentStore.shared.recentDocuments() {
+            next.append(.document(doc))
+        }
+        rows = next
         tableView.reloadData()
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        documents.count + openRowCount
+        rows.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -121,17 +142,27 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         cell.detailTextLabel?.font = DSTheme.bodyFont(size: 12)
         cell.detailTextLabel?.textColor = DSTheme.c.textSecondary
         cell.accessoryType = .none
-        if indexPath.row == 0 {
+        switch rows[indexPath.row] {
+        case .openReading:
             cell.textLabel?.text = "打开阅读…"
-            cell.detailTextLabel?.text = "打开 PDF（划线与注释写回原文件）"
+            cell.detailTextLabel?.text = "打开 PDF（一文件一对话；划线写回原文件）"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
-        } else if indexPath.row == 1 {
+        case .openText:
             cell.textLabel?.text = "打开代码 / 文本…"
-            cell.detailTextLabel?.text = "优先 .v；亦支持 .c / .py / .txt / .md（Markdown 预览+编辑）"
+            cell.detailTextLabel?.text = "任意文本后缀；一文件一对话"
             cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
-        } else {
-            let doc = documents[indexPath.row - openRowCount]
-            cell.textLabel?.text = doc.title
+        case .openFilesWorkspace:
+            cell.textLabel?.text = "打开 Files…"
+            cell.detailTextLabel?.text = "选择文件夹作为工作区（可在 Files 内新建文件夹）"
+            cell.imageView?.image = ActionIconFactory.image(.folder, pointSize: 16)
+        case .document(let doc):
+            let fileName: String
+            if let path = doc.displayPath, !path.isEmpty {
+                fileName = URL(fileURLWithPath: path).lastPathComponent
+            } else {
+                fileName = doc.title
+            }
+            cell.textLabel?.text = fileName
             let size = byteFormatter.string(fromByteCount: doc.fileSize)
             let opened = dateFormatter.string(from: doc.lastOpenedAt)
             let mode = doc.accessMode == .originalBookmark ? "原文件" : "副本"
@@ -143,33 +174,34 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        if indexPath.row == 0 {
+        switch rows[indexPath.row] {
+        case .openReading:
             presentOpenPicker(kind: .reading)
-            return
-        }
-        if indexPath.row == 1 {
+        case .openText:
             presentOpenPicker(kind: .text)
-            return
-        }
-        let doc = documents[indexPath.row - openRowCount]
-        if doc.accessMode == .originalBookmark {
-            do {
-                _ = try StudyDocumentStore.shared.resolvedURL(forID: doc.id)
+        case .openFilesWorkspace:
+            presentOpenPicker(kind: .folderWorkspace)
+        case .document(let doc):
+            if doc.accessMode == .originalBookmark {
+                do {
+                    _ = try StudyDocumentStore.shared.resolvedURL(forID: doc.id)
+                    delegate?.studyDocumentPicker(self, didSelect: doc.id)
+                } catch {
+                    promptRebind(document: doc)
+                }
+            } else {
                 delegate?.studyDocumentPicker(self, didSelect: doc.id)
-            } catch {
-                promptRebind(document: doc)
             }
-        } else {
-            delegate?.studyDocumentPicker(self, didSelect: doc.id)
         }
     }
 
     func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        "打开原文件后可在 Study 中编辑；向左滑动或长按可从列表移除（不删除外部原文件）。"
+        "「打开阅读 / 文本」为一文件一对话。工作区请用「打开 Files…」选文件夹；新建文件夹用 Files App。"
     }
 
     func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        indexPath.row >= openRowCount
+        if case .document = rows[indexPath.row] { return true }
+        return false
     }
 
     func tableView(
@@ -177,16 +209,15 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         commit editingStyle: UITableViewCell.EditingStyle,
         forRowAt indexPath: IndexPath
     ) {
-        guard editingStyle == .delete, indexPath.row >= openRowCount else { return }
-        confirmDelete(document: documents[indexPath.row - openRowCount])
+        guard editingStyle == .delete, case .document(let doc) = rows[indexPath.row] else { return }
+        confirmDelete(document: doc)
     }
 
     func tableView(
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard indexPath.row >= openRowCount else { return nil }
-        let doc = documents[indexPath.row - openRowCount]
+        guard case .document(let doc) = rows[indexPath.row] else { return nil }
         let delete = UIContextualAction(style: .destructive, title: "移除") { [weak self] _, _, completion in
             self?.confirmDelete(document: doc, completion: completion)
         }
@@ -198,8 +229,8 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         let point = gesture.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: point), indexPath.row >= openRowCount else { return }
-        let doc = documents[indexPath.row - openRowCount]
+        guard let indexPath = tableView.indexPathForRow(at: point),
+              case .document(let doc) = rows[indexPath.row] else { return }
         tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
         var items = [
             ConnectsMenuItem(title: "从列表移除", icon: .trash, isDestructive: true) { [weak self] in
@@ -220,6 +251,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         )
     }
 
+
     private func confirmDelete(document: StudyDocument, completion: ((Bool) -> Void)? = nil) {
         let msg: String
         if document.accessMode == .originalBookmark {
@@ -236,6 +268,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             completion?(false)
         })
         alert.addAction(UIAlertAction(title: "移除", style: .destructive) { _ in
+            StudyWorkspaceStore.shared.removeDocumentFromAllWorkspaces(document.id)
             StudyDocumentStore.shared.delete(documentID: document.id)
             completion?(true)
         })
@@ -258,23 +291,14 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
     private func presentOpenPicker(kind: OpenKind) {
         pendingOpenKind = kind
         let types: [String]
-        let sourceRow: Int
         switch kind {
         case .reading:
             types = ["com.adobe.pdf", "public.item", "public.data"]
-            sourceRow = 0
-        case .rebind:
+        case .folderWorkspace:
+            types = ["public.folder"]
+        case .rebind, .text:
             types = [
                 "com.adobe.pdf",
-                "public.plain-text",
-                "public.source-code",
-                "public.text",
-                "public.item",
-                "public.data"
-            ]
-            sourceRow = 0
-        case .text:
-            types = [
                 "net.daringfireball.markdown",
                 "public.markdown",
                 "public.plain-text",
@@ -283,14 +307,13 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
                 "public.item",
                 "public.data"
             ]
-            sourceRow = 1
         }
         let picker = UIDocumentPickerViewController(documentTypes: types, in: .open)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         if let pop = picker.popoverPresentationController {
             pop.sourceView = tableView
-            pop.sourceRect = tableView.rectForRow(at: IndexPath(row: sourceRow, section: 0))
+            pop.sourceRect = tableView.bounds
         }
         present(picker, animated: true)
     }
@@ -302,6 +325,13 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             handlePickedReading(url)
         case .text:
             openInPlace(url, forceText: true)
+        case .folderWorkspace:
+            do {
+                let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url)
+                delegate?.studyDocumentPicker(self, didSelectWorkspace: ws.id)
+            } catch {
+                presentOpenError(error)
+            }
         case .rebind(let documentID):
             do {
                 let doc = try StudyDocumentStore.shared.rebindBookmark(documentID: documentID, from: url)

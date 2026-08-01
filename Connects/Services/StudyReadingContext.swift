@@ -106,6 +106,14 @@ protocol StudyReadingContextProviding: AnyObject {
     func revertStudyCodeEditIfNeeded(forAssistantMessageID: String)
     func studyCodeDiffUndoAll()
     func studyCodeDiffKeepAll()
+    /// Open next pending multi-file Diff (workspace Review).
+    func studyCodeDiffReviewNext()
+    /// Jump to a pending Diff for `documentID`.
+    func studyCodeDiffOpen(documentID: String)
+    /// Empty workspace: prompt to create the first file.
+    func ensureWorkspaceHasFileIfEmpty(workspaceID: String?)
+    /// Workspace agent: open Files / switch-workspace menu (rebind).
+    func presentWorkspaceFileMenu(from sourceView: UIView?)
 }
 
 extension StudyReadingContextProviding {
@@ -119,6 +127,10 @@ extension StudyReadingContextProviding {
     func revertStudyCodeEditIfNeeded(forAssistantMessageID: String) {}
     func studyCodeDiffUndoAll() {}
     func studyCodeDiffKeepAll() {}
+    func studyCodeDiffReviewNext() {}
+    func studyCodeDiffOpen(documentID: String) {}
+    func ensureWorkspaceHasFileIfEmpty(workspaceID: String?) {}
+    func presentWorkspaceFileMenu(from sourceView: UIView?) {}
 }
 
 /// Nav `titleView` host that pins itself to the bar’s horizontal center

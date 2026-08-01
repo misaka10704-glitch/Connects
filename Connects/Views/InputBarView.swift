@@ -12,6 +12,9 @@ protocol InputBarViewDelegate: AnyObject {
     func inputBarDidTapAIOptions()
     func inputBarDidTapDiffUndoAll()
     func inputBarDidTapDiffKeepAll()
+    func inputBarDidTapDiffReview()
+    func inputBarDidSelectDiffFile(documentID: String)
+    func inputBarDidChangeStudyAgentMode(_ mode: StudyAgentMode)
 }
 
 extension InputBarViewDelegate {
@@ -21,6 +24,9 @@ extension InputBarViewDelegate {
     func inputBarDidToggleCodeAIEdit(_ enabled: Bool) {}
     func inputBarDidTapDiffUndoAll() {}
     func inputBarDidTapDiffKeepAll() {}
+    func inputBarDidTapDiffReview() {}
+    func inputBarDidSelectDiffFile(documentID: String) {}
+    func inputBarDidChangeStudyAgentMode(_ mode: StudyAgentMode) {}
 }
 
 /// ChatGPT-style composer: rounded pill, + / 联网 / 思考, inline image chip, send/stop.
@@ -29,13 +35,39 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     /// Slim Undo All / Keep All strip inside the composer capsule (not a separate wide bar).
     private let diffReviewBanner = UIView()
+    private let diffExpandButton = UIButton(type: .system)
     private let diffChangesLabel = UILabel()
     private let diffUndoAllButton = UIButton(type: .system)
     private let diffKeepAllButton = UIButton(type: .system)
+    private let diffReviewButton = UIButton(type: .system)
+    private let diffFileListStack = UIStackView()
     private var diffBannerHeightConstraint: NSLayoutConstraint?
     private var toolsTopToBanner: NSLayoutConstraint?
     private var toolsTopToContainer: NSLayoutConstraint?
     private var diffBannerVisible = false
+    private var diffBannerExpanded = false
+    private var diffBannerFiles: [(documentID: String, fileName: String, additions: Int, deletions: Int)] = []
+    private var diffBannerMultifile = false
+
+    /// Plan Build todo progress strip (above composer tools).
+    private let buildTodoStrip = UIView()
+    private let buildTodoLabel = UILabel()
+    private var buildTodoHeightConstraint: NSLayoutConstraint?
+    private var buildTodoVisible = false
+    private var toolsTopToBuildTodo: NSLayoutConstraint?
+
+    /// Workspace Agent / Plan / Ask mode chip.
+    private let agentModeButton = UIButton(type: .custom)
+    private var agentModeWidthConstraint: NSLayoutConstraint?
+    private(set) var studyAgentMode: StudyAgentMode = .ask
+    var studyAgentModeVisible = false {
+        didSet {
+            agentModeButton.isHidden = !studyAgentModeVisible
+            agentModeWidthConstraint?.constant = studyAgentModeVisible ? 64 : 0
+            updateAgentModeAppearance()
+            setNeedsLayout()
+        }
+    }
 
     private let containerView = UIView()
     private let attachButton = UIButton(type: .system)
@@ -203,26 +235,126 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateWebSearchAppearance()
         updateThinkingAppearance()
         updateCodeAIEditAppearance()
+        updateAgentModeAppearance()
         updateStudyCaptureAppearance()
         updateAIOptionsAppearance()
         contextRing.applyTheme()
     }
 
-    /// Show/hide the slim Keep strip inside the composer capsule.
+    /// Show/hide the Keep / Review strip inside the composer capsule.
     func setDiffReviewBanner(visible: Bool, changeCount: Int = 0) {
-        let show = visible && changeCount > 0
+        setDiffReviewBanner(
+            visible: visible,
+            files: changeCount > 0
+                ? [(documentID: "", fileName: "\(changeCount) change\(changeCount == 1 ? "" : "s")", additions: changeCount, deletions: 0)]
+                : [],
+            multifile: false
+        )
+    }
+
+    func setDiffReviewBanner(
+        visible: Bool,
+        files: [(documentID: String, fileName: String, additions: Int, deletions: Int)],
+        multifile: Bool
+    ) {
+        let show = visible && !files.isEmpty
         diffBannerVisible = show
+        diffBannerFiles = files
+        diffBannerMultifile = multifile && files.count >= 1
+        if !show { diffBannerExpanded = false }
         diffReviewBanner.isHidden = !show
-        diffBannerHeightConstraint?.constant = show ? 30 : 0
-        toolsTopToBanner?.isActive = show
-        toolsTopToContainer?.isActive = !show
-        if show {
-            let n = changeCount
-            diffChangesLabel.text = n == 1 ? "1 change" : "\(n) changes"
-        }
+        rebuildDiffBannerChrome()
         invalidateIntrinsicContentSize()
         setNeedsLayout()
         UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
+    }
+
+    /// Show workspace plan Build todo progress above the composer tools row.
+    func setBuildTodoProgress(
+        done: Int = 0,
+        total: Int = 0,
+        currentTitle: String? = nil,
+        visible: Bool
+    ) {
+        let show = visible && total > 0
+        buildTodoVisible = show
+        buildTodoStrip.isHidden = !show
+        if show {
+            if let currentTitle, !currentTitle.isEmpty, done < total {
+                let clip = String(currentTitle.prefix(36))
+                buildTodoLabel.text = "Todos \(done)/\(total) · \(clip)"
+            } else {
+                buildTodoLabel.text = "Todos \(done)/\(total)"
+            }
+        }
+        buildTodoHeightConstraint?.constant = show ? 24 : 0
+        retargetToolsTopAnchor()
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+        UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
+    }
+
+    private func retargetToolsTopAnchor() {
+        if buildTodoVisible {
+            toolsTopToBuildTodo?.isActive = true
+            toolsTopToBanner?.isActive = false
+            toolsTopToContainer?.isActive = false
+        } else if diffBannerVisible {
+            toolsTopToBuildTodo?.isActive = false
+            toolsTopToBanner?.isActive = true
+            toolsTopToContainer?.isActive = false
+        } else {
+            toolsTopToBuildTodo?.isActive = false
+            toolsTopToBanner?.isActive = false
+            toolsTopToContainer?.isActive = true
+        }
+    }
+
+    private func rebuildDiffBannerChrome() {
+        let show = diffBannerVisible
+        let listRows = diffBannerExpanded && diffBannerMultifile ? diffBannerFiles.count : 0
+        let rowH: CGFloat = 28
+        let headerH: CGFloat = 30
+        let height = show ? (headerH + CGFloat(listRows) * rowH) : 0
+        diffBannerHeightConstraint?.constant = height
+        retargetToolsTopAnchor()
+
+        let n = diffBannerFiles.count
+        if diffBannerMultifile {
+            let chevron = diffBannerExpanded ? "▼" : "▶"
+            diffExpandButton.setTitle("\(chevron) \(n) File\(n == 1 ? "" : "s")", for: .normal)
+            diffExpandButton.isHidden = false
+            diffChangesLabel.isHidden = true
+            diffReviewButton.isHidden = false
+        } else {
+            diffExpandButton.isHidden = true
+            diffChangesLabel.isHidden = false
+            diffReviewButton.isHidden = true
+            let add = diffBannerFiles.first?.additions ?? 0
+            let del = diffBannerFiles.first?.deletions ?? 0
+            if add > 0 || del > 0 {
+                diffChangesLabel.text = "+\(add) −\(del)"
+            } else {
+                let changes = max(add, n)
+                diffChangesLabel.text = changes == 1 ? "1 change" : "\(changes) changes"
+            }
+        }
+
+        diffFileListStack.arrangedSubviews.forEach {
+            diffFileListStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        guard show, diffBannerExpanded, diffBannerMultifile else { return }
+        for file in diffBannerFiles {
+            let row = UIButton(type: .system)
+            row.contentHorizontalAlignment = .left
+            row.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+            row.setTitle("  \(file.fileName)  +\(file.additions) −\(file.deletions)", for: .normal)
+            row.accessibilityIdentifier = file.documentID
+            row.addTarget(self, action: #selector(diffFileRowTapped(_:)), for: .touchUpInside)
+            diffFileListStack.addArrangedSubview(row)
+            row.heightAnchor.constraint(equalToConstant: rowH).isActive = true
+        }
     }
 
     func updateContextUsage(_ usage: ContextBuilder.Usage, visible: Bool, animated: Bool = false) {
@@ -341,20 +473,45 @@ final class InputBarView: UIView, ThemeRefreshable {
         diffReviewBanner.clipsToBounds = true
         containerView.addSubview(diffReviewBanner)
 
+        diffExpandButton.translatesAutoresizingMaskIntoConstraints = false
+        diffExpandButton.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        diffExpandButton.contentHorizontalAlignment = .left
+        diffExpandButton.isHidden = true
+        diffExpandButton.addTarget(self, action: #selector(diffExpandTapped), for: .touchUpInside)
+        diffReviewBanner.addSubview(diffExpandButton)
+
         diffChangesLabel.translatesAutoresizingMaskIntoConstraints = false
         diffChangesLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
         diffChangesLabel.text = "0 changes"
         diffReviewBanner.addSubview(diffChangesLabel)
 
-        for btn in [diffUndoAllButton, diffKeepAllButton] {
+        for btn in [diffUndoAllButton, diffKeepAllButton, diffReviewButton] {
             btn.translatesAutoresizingMaskIntoConstraints = false
             btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
             diffReviewBanner.addSubview(btn)
         }
         diffUndoAllButton.setTitle("Undo All", for: .normal)
         diffKeepAllButton.setTitle("Keep All", for: .normal)
+        diffReviewButton.setTitle("Review", for: .normal)
+        diffReviewButton.isHidden = true
         diffUndoAllButton.addTarget(self, action: #selector(diffUndoAllTapped), for: .touchUpInside)
         diffKeepAllButton.addTarget(self, action: #selector(diffKeepAllTapped), for: .touchUpInside)
+        diffReviewButton.addTarget(self, action: #selector(diffReviewTapped), for: .touchUpInside)
+
+        diffFileListStack.translatesAutoresizingMaskIntoConstraints = false
+        diffFileListStack.axis = .vertical
+        diffFileListStack.spacing = 0
+        diffReviewBanner.addSubview(diffFileListStack)
+
+        buildTodoStrip.translatesAutoresizingMaskIntoConstraints = false
+        buildTodoStrip.isHidden = true
+        buildTodoStrip.clipsToBounds = true
+        containerView.addSubview(buildTodoStrip)
+
+        buildTodoLabel.translatesAutoresizingMaskIntoConstraints = false
+        buildTodoLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        buildTodoLabel.textColor = DSTheme.c.textSecondary
+        buildTodoStrip.addSubview(buildTodoLabel)
 
         chip.translatesAutoresizingMaskIntoConstraints = false
         chip.layer.cornerRadius = 12
@@ -414,6 +571,16 @@ final class InputBarView: UIView, ThemeRefreshable {
         codeAIEditButton.isHidden = true
         containerView.addSubview(codeAIEditButton)
 
+        agentModeButton.translatesAutoresizingMaskIntoConstraints = false
+        agentModeButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
+        agentModeButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        agentModeButton.titleLabel?.minimumScaleFactor = 0.8
+        agentModeButton.setTitle("Agent", for: .normal)
+        agentModeButton.accessibilityLabel = "Agent 模式"
+        agentModeButton.addTarget(self, action: #selector(agentModeTapped), for: .touchUpInside)
+        agentModeButton.isHidden = true
+        containerView.addSubview(agentModeButton)
+
         studyCaptureButton.translatesAutoresizingMaskIntoConstraints = false
         studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
         studyCaptureButton.accessibilityLabel = "附带文档上下文"
@@ -426,10 +593,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(studyCaptureButton)
 
         askSelectionButton.translatesAutoresizingMaskIntoConstraints = false
-        askSelectionButton.setTitle("Ask", for: .normal)
-        askSelectionButton.titleLabel?.font = UIFont.systemFont(ofSize: 10, weight: .bold)
-        askSelectionButton.titleLabel?.adjustsFontSizeToFitWidth = true
-        askSelectionButton.titleLabel?.minimumScaleFactor = 0.7
+        askSelectionButton.setImage(ActionIconFactory.image(.ask, pointSize: 16), for: .normal)
         askSelectionButton.accessibilityLabel = "Ask 选区"
         askSelectionButton.accessibilityHint = "选中文本并 Ask 后点亮；点按可取消附带选区"
         askSelectionButton.addTarget(self, action: #selector(askSelectionTapped), for: .touchUpInside)
@@ -509,13 +673,16 @@ final class InputBarView: UIView, ThemeRefreshable {
         textTopToContainer = textView.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 5)
         studyCaptureWidthConstraint = studyCaptureButton.widthAnchor.constraint(equalToConstant: 0)
         codeAIEditWidthConstraint = codeAIEditButton.widthAnchor.constraint(equalToConstant: 0)
+        agentModeWidthConstraint = agentModeButton.widthAnchor.constraint(equalToConstant: 0)
         askSelectionWidthConstraint = askSelectionButton.widthAnchor.constraint(equalToConstant: 0)
         aiOptionsWidthConstraint = aiOptionsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68)
         let aiOptionsMaxW = aiOptionsButton.widthAnchor.constraint(lessThanOrEqualToConstant: 132)
         contextUsageWidthConstraint = contextUsageButton.widthAnchor.constraint(equalToConstant: 0)
         textTopToContainer?.isActive = true
         diffBannerHeightConstraint = diffReviewBanner.heightAnchor.constraint(equalToConstant: 0)
+        buildTodoHeightConstraint = buildTodoStrip.heightAnchor.constraint(equalToConstant: 0)
         toolsTopToBanner = attachButton.topAnchor.constraint(equalTo: diffReviewBanner.bottomAnchor, constant: 4)
+        toolsTopToBuildTodo = attachButton.topAnchor.constraint(equalTo: buildTodoStrip.bottomAnchor, constant: 4)
         toolsTopToContainer = attachButton.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4)
         toolsTopToContainer?.isActive = true
 
@@ -531,14 +698,33 @@ final class InputBarView: UIView, ThemeRefreshable {
             diffReviewBanner.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
             diffBannerHeightConstraint!,
 
-            diffChangesLabel.leadingAnchor.constraint(equalTo: diffReviewBanner.leadingAnchor, constant: 12),
-            diffChangesLabel.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
+            buildTodoStrip.topAnchor.constraint(equalTo: diffReviewBanner.bottomAnchor),
+            buildTodoStrip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            buildTodoStrip.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            buildTodoHeightConstraint!,
 
-            diffKeepAllButton.trailingAnchor.constraint(equalTo: diffReviewBanner.trailingAnchor, constant: -12),
-            diffKeepAllButton.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
-            diffUndoAllButton.trailingAnchor.constraint(equalTo: diffKeepAllButton.leadingAnchor, constant: -12),
-            diffUndoAllButton.centerYAnchor.constraint(equalTo: diffReviewBanner.centerYAnchor),
+            buildTodoLabel.leadingAnchor.constraint(equalTo: buildTodoStrip.leadingAnchor, constant: 12),
+            buildTodoLabel.trailingAnchor.constraint(lessThanOrEqualTo: buildTodoStrip.trailingAnchor, constant: -12),
+            buildTodoLabel.centerYAnchor.constraint(equalTo: buildTodoStrip.centerYAnchor),
+
+            diffExpandButton.leadingAnchor.constraint(equalTo: diffReviewBanner.leadingAnchor, constant: 10),
+            diffExpandButton.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 4),
+            diffExpandButton.heightAnchor.constraint(equalToConstant: 22),
+
+            diffChangesLabel.leadingAnchor.constraint(equalTo: diffReviewBanner.leadingAnchor, constant: 12),
+            diffChangesLabel.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 6),
+
+            diffReviewButton.trailingAnchor.constraint(equalTo: diffReviewBanner.trailingAnchor, constant: -12),
+            diffReviewButton.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 4),
+            diffKeepAllButton.trailingAnchor.constraint(equalTo: diffReviewButton.leadingAnchor, constant: -10),
+            diffKeepAllButton.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 4),
+            diffUndoAllButton.trailingAnchor.constraint(equalTo: diffKeepAllButton.leadingAnchor, constant: -10),
+            diffUndoAllButton.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 4),
             diffUndoAllButton.leadingAnchor.constraint(greaterThanOrEqualTo: diffChangesLabel.trailingAnchor, constant: 8),
+
+            diffFileListStack.topAnchor.constraint(equalTo: diffReviewBanner.topAnchor, constant: 30),
+            diffFileListStack.leadingAnchor.constraint(equalTo: diffReviewBanner.leadingAnchor, constant: 8),
+            diffFileListStack.trailingAnchor.constraint(equalTo: diffReviewBanner.trailingAnchor, constant: -8),
 
             chip.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 6),
             chip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
@@ -587,12 +773,17 @@ final class InputBarView: UIView, ThemeRefreshable {
             codeAIEditWidthConstraint!,
             codeAIEditButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            // Ask sits at the end of the left tool cluster as a round slot.
+            // Selection Ask (icon) then Agent/Plan/Ask mode chip.
             askSelectionButton.leadingAnchor.constraint(equalTo: codeAIEditButton.trailingAnchor, constant: 2),
             askSelectionButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             askSelectionWidthConstraint!,
             askSelectionButton.heightAnchor.constraint(equalToConstant: btnSize),
-            askSelectionButton.trailingAnchor.constraint(lessThanOrEqualTo: aiOptionsButton.leadingAnchor, constant: -4),
+
+            agentModeButton.leadingAnchor.constraint(equalTo: askSelectionButton.trailingAnchor, constant: 2),
+            agentModeButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            agentModeWidthConstraint!,
+            agentModeButton.heightAnchor.constraint(equalToConstant: btnSize),
+            agentModeButton.trailingAnchor.constraint(lessThanOrEqualTo: aiOptionsButton.leadingAnchor, constant: -4),
 
             // Model picker (Kimi / Qwen …) immediately left of the context ring.
             aiOptionsButton.trailingAnchor.constraint(equalTo: contextUsageButton.leadingAnchor, constant: -4),
@@ -650,6 +841,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         thinkingButton.alpha = isStreaming ? 0.35 : 1
         codeAIEditButton.isEnabled = !isStreaming && codeAIEditVisible
         codeAIEditButton.alpha = (!codeAIEditVisible || isStreaming) ? 0.35 : 1
+        agentModeButton.isEnabled = !isStreaming && studyAgentModeVisible
+        agentModeButton.alpha = (!studyAgentModeVisible || isStreaming) ? 0.35 : 1
         studyCaptureButton.isEnabled = !isStreaming && studyCaptureVisible
         studyCaptureButton.alpha = studyCaptureButton.isEnabled ? 1 : 0.35
         // Gray placeholder stays visible; only armed Ask clears on tap.
@@ -761,7 +954,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     private func updateAskSelectionAppearance() {
         let c = DSTheme.c
         let on = askHasSelection
-        askSelectionButton.setTitleColor(on ? c.accent : c.textSecondary, for: .normal)
+        askSelectionButton.tintColor = on ? c.accent : c.textSecondary
         askSelectionButton.backgroundColor = on ? c.accent.withAlphaComponent(0.16) : .clear
         askSelectionButton.layer.cornerRadius = btnSize / 2
         askSelectionButton.clipsToBounds = true
@@ -845,12 +1038,88 @@ final class InputBarView: UIView, ThemeRefreshable {
         delegate?.inputBarDidTapDiffKeepAll()
     }
 
+    @objc private func diffReviewTapped() {
+        delegate?.inputBarDidTapDiffReview()
+    }
+
+    @objc private func diffExpandTapped() {
+        guard diffBannerMultifile else { return }
+        diffBannerExpanded.toggle()
+        rebuildDiffBannerChrome()
+        invalidateIntrinsicContentSize()
+        UIView.animate(withDuration: 0.18) { self.layoutIfNeeded() }
+    }
+
+    @objc private func diffFileRowTapped(_ sender: UIButton) {
+        guard let id = sender.accessibilityIdentifier, !id.isEmpty else { return }
+        delegate?.inputBarDidSelectDiffFile(documentID: id)
+    }
+
+    func setStudyAgentMode(_ mode: StudyAgentMode, notify: Bool = false) {
+        studyAgentMode = StudyAgentMode.coerceForProduct(mode)
+        updateAgentModeAppearance()
+        if notify {
+            delegate?.inputBarDidChangeStudyAgentMode(studyAgentMode)
+        }
+    }
+
+    @objc private func agentModeTapped() {
+        guard studyAgentModeVisible else { return }
+        let modes = StudyAgentMode.selectableModes
+        guard !modes.isEmpty else { return }
+        let idx = modes.firstIndex(of: studyAgentMode) ?? 0
+        let next = modes[(idx + 1) % modes.count]
+        setStudyAgentMode(next, notify: true)
+    }
+
+    private func updateAgentModeAppearance() {
+        let title: String
+        switch studyAgentMode {
+        case .agent: title = "Agent"
+        case .plan: title = "Plan"
+        case .ask: title = "Ask"
+        }
+        let c = DSTheme.c
+        let on = studyAgentModeVisible && !StudyAgentMode.selectableModes.isEmpty
+        let fg = on ? c.accent : c.textSecondary
+        // Attributed title: UIButton.system often drops plain setTitleColor on title swaps
+        // (sim QA: Plan/Ask chip looked empty while title(for:) was correct).
+        agentModeButton.configuration = nil
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: fg
+        ]
+        let attributed = NSAttributedString(string: title, attributes: attrs)
+        agentModeButton.setAttributedTitle(attributed, for: .normal)
+        agentModeButton.setAttributedTitle(attributed, for: .highlighted)
+        agentModeButton.setAttributedTitle(attributed, for: .disabled)
+        agentModeButton.tintColor = fg
+        agentModeButton.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
+        agentModeButton.layer.cornerRadius = btnSize / 2
+        agentModeButton.clipsToBounds = true
+        agentModeButton.alpha = on ? 1 : 0.35
+        agentModeButton.isAccessibilityElement = true
+        switch studyAgentMode {
+        case .agent:
+            agentModeButton.accessibilityLabel = "Agent 模式 · Agent"
+        case .plan:
+            agentModeButton.accessibilityLabel = "Agent 模式 · Plan"
+        case .ask:
+            agentModeButton.accessibilityLabel = "Agent 模式 · Ask"
+        }
+    }
+
     private func applyDiffBannerTheme() {
         let c = DSTheme.c
         diffReviewBanner.backgroundColor = c.surfaceHover.withAlphaComponent(0.55)
         diffChangesLabel.textColor = c.textSecondary
+        diffExpandButton.setTitleColor(c.textPrimary, for: .normal)
         diffUndoAllButton.setTitleColor(c.textPrimary, for: .normal)
         diffKeepAllButton.setTitleColor(c.accent, for: .normal)
+        diffReviewButton.setTitleColor(c.accent, for: .normal)
+        for view in diffFileListStack.arrangedSubviews {
+            (view as? UIButton)?.setTitleColor(c.textSecondary, for: .normal)
+        }
     }
 
     @objc private func thinkingLongPressed(_ gesture: UILongPressGestureRecognizer) {

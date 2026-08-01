@@ -64,6 +64,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var contextBarWork: DispatchWorkItem?
     private var contextUsageWork: DispatchWorkItem?
     private var contextUsageCache: [String: ContextBuilder.Usage] = [:]
+    /// Workspace agent tool-loop rounds per conversation (cap at AgentOrchestrator.maxRounds).
+    private var agentToolRoundCounts: [String: Int] = [:]
+    /// First assistant in a workspace tool loop — process steps accumulate here across续跑.
+    private var agentProcessRootIDs: [String: String] = [:]
+    /// Plan markdown being built / executed (workspace Build flow).
+    private(set) var activePlanDocumentID: String?
     private var contextBreakdownCache: [String: ContextBuilder.Breakdown] = [:]
     private var userTurnRowsCache: (
         conversationID: String?,
@@ -87,6 +93,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var lastStreamProgressAt = Date()
     private var lastStreamLayoutAt = Date.distantPast
     private var streamSpinnerFrame = 0
+    /// Throttle agent idle「Planning next moves…」pulses — unthrottled 25fps sync froze taps.
+    private var lastAgentPlanningPulseAt = Date.distantPast
+    /// Agent root stream: throttle beginUpdates (≥300ms). Unthrottled + chrome collapse froze taps.
+    private var lastAgentStreamLayoutAt = Date.distantPast
     private var heightWork: DispatchWorkItem?
     private var pendingHeights: [String: CGFloat] = [:]
     private var chromeWork: DispatchWorkItem?
@@ -805,7 +815,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
            cache.lastMessageID == lastMessageID {
             return cache.rows
         }
-        let rows = messages.indices.filter { messages[$0].role == .user }
+        let rows = messages.indices.filter {
+            messages[$0].role == .user && !messages[$0].shouldHideInTranscript
+        }
         userTurnRowsCache = (
             conversationID: conversationID,
             messageCount: messages.count,
@@ -3496,6 +3508,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         )
     }
 
+    /// Agent process card: offset-only pin — skip `pinOpenViewportToBottom`’s beginUpdates storm.
+    private func lightChaseAgentLiveTail() {
+        guard tableView.window != nil, tableView.bounds.height > 1 else { return }
+        let inset = tableView.adjustedContentInset
+        let minY = -inset.top
+        let contentH = tableView.contentSize.height
+        guard contentH > 1 else { return }
+        let maxY = max(minY, contentH + inset.bottom - tableView.bounds.height)
+        if abs(tableView.contentOffset.y - maxY) > 0.5 {
+            tableView.setContentOffset(CGPoint(x: 0, y: maxY), animated: false)
+        }
+    }
+
     /// Study / live-tail: UITableView must relayout before contentSize reflects new rows.
     private func remeasureAndPinLiveTail(messages: [ChatMessage],
                                          layoutWidth: CGFloat? = nil,
@@ -4208,7 +4233,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         let resolvedUserIndex: Int?
         if preferBottom || (stickToBottom && !isViewportPinned()) {
-            resolvedUserIndex = messages.lastIndex(where: { $0.role == .user })
+            resolvedUserIndex = userTurnStartRows(in: messages).last
         } else {
             let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top + 2
             let visible = (tableView.indexPathsForVisibleRows ?? []).sorted { $0.row < $1.row }
@@ -4220,7 +4245,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     break
                 }
             }
-            resolvedUserIndex = userIndex(forMessageAt: anchorIndex, in: messages)
+            resolvedUserIndex = visibleUserIndex(forMessageAt: anchorIndex, in: messages)
         }
 
         guard let resolvedUserIndex = resolvedUserIndex else {
@@ -4233,6 +4258,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
            let locked = contextUserIndex,
            locked >= 0, locked < messages.count,
            messages[locked].role == .user,
+           !messages[locked].shouldHideInTranscript,
            locked == resolvedUserIndex {
             turnContextBar.update(
                 question: userQuestionPreview(messages[locked]),
@@ -4248,13 +4274,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         )
     }
 
-    private func userIndex(forMessageAt index: Int, in messages: [ChatMessage]) -> Int? {
-        guard index >= 0, index < messages.count else { return nil }
-        if messages[index].role == .user { return index }
-        for i in stride(from: index, through: 0, by: -1) where messages[i].role == .user {
-            return i
-        }
-        return nil
+    /// Nearest visible (non-hidden) user turn at or before `index`.
+    private func visibleUserIndex(forMessageAt index: Int, in messages: [ChatMessage]) -> Int? {
+        let turns = userTurnStartRows(in: messages)
+        guard !turns.isEmpty else { return nil }
+        guard index >= 0 else { return turns.first }
+        if let exact = turns.last(where: { $0 <= index }) { return exact }
+        return turns.first
     }
 
     private func userQuestionPreview(_ message: ChatMessage) -> String {
@@ -4404,13 +4430,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         var turns: [UserTurn] = []
-        var turnNumber = 0
-        for (index, message) in messages.enumerated() where message.role == .user {
-            turnNumber += 1
+        for (number, index) in userTurnStartRows(in: messages).enumerated() {
+            guard messages.indices.contains(index) else { continue }
             turns.append(UserTurn(
                 index: index,
-                number: turnNumber,
-                preview: userQuestionPreview(message)
+                number: number + 1,
+                preview: userQuestionPreview(messages[index])
             ))
         }
         guard !turns.isEmpty else { return }
@@ -4617,6 +4642,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if message.hasImageTranscription {
                 title = message.imageTranscriptionPhase.headerTitle
                 body = message.imageTranscriptionDisplayText(pairedUser: pairedUser)
+            } else if message.hasAgentProcess {
+                title = "工作流"
+                body = message.agentProcessDisplayText
             } else {
                 title = "搜索过程"
                 body = message.searchProcessContent
@@ -4853,7 +4881,754 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             unlockScrollAfterFinishPin()
         }
         maybeAutoCompactContext()
-        handleCodeEditProposalIfNeeded(conversationID: id, finishedMessage: last)
+        handleWorkspaceAgentIfNeeded(conversationID: id, finishedMessage: last)
+    }
+
+    private func handleWorkspaceAgentIfNeeded(conversationID: String, finishedMessage: ChatMessage) {
+        guard finishedMessage.role == .assistant, !finishedMessage.isStreaming,
+              StudyAgentMode.isAgentProductEnabled,
+              let conv = ConversationStore.shared.conversation(id: conversationID),
+              conv.isWorkspaceStudySession,
+              let wsID = conv.activeStudyWorkspaceID else {
+            agentToolRoundCounts[conversationID] = 0
+            agentProcessRootIDs[conversationID] = nil
+            handleCodeEditProposalIfNeeded(conversationID: conversationID, finishedMessage: finishedMessage)
+            return
+        }
+
+        let raw = finishedMessage.content
+        let visible = AgentTools.strippingToolBlocksForDisplay(
+            from: CodeEditApplyTools.chatVisibleContent(raw)
+        )
+        let rootIDHint = agentProcessRootIDs[conversationID] ?? finishedMessage.id
+        if visible != raw {
+            let isRoot = finishedMessage.id == rootIDHint
+            let cleaned: String
+            if visible.isEmpty || visible == "（工具步骤已执行）" {
+                // Root keeps process chrome only; mid-loop shells stay empty for later hide.
+                cleaned = ""
+            } else {
+                cleaned = visible
+            }
+            persistStrippedEditMessage(
+                conversationID: conversationID,
+                messageID: finishedMessage.id,
+                content: cleaned
+            )
+            _ = isRoot
+        }
+
+        // Seed process chrome on the root only (not mid-loop assistants).
+        let calls = AgentTools.parseToolCalls(from: raw)
+        if !calls.isEmpty {
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+                let rootSeed = self.agentProcessRootIDs[conversationID] ?? finishedMessage.id
+                guard let idx = draft.messages.lastIndex(where: { $0.id == rootSeed }) else { return }
+                if draft.messages[idx].agentProcessPhase == .idle {
+                    draft.messages[idx].agentProcessPhase = .running
+                }
+                if draft.messages[idx].agentProcessStartedAt == nil {
+                    draft.messages[idx].agentProcessStartedAt = Date()
+                }
+            }
+        }
+
+        let round = agentToolRoundCounts[conversationID, default: 0]
+        if AgentOrchestrator.shared.currentRoundCapReached(count: round) {
+            let cappedRoot = agentProcessRootIDs[conversationID] ?? finishedMessage.id
+            ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+                if let idx = draft.messages.lastIndex(where: { $0.id == cappedRoot }) {
+                    draft.messages[idx].agentProcessPhase = .done
+                }
+            }
+            agentToolRoundCounts[conversationID] = 0
+            agentProcessRootIDs[conversationID] = nil
+            stopStreamUITimer()
+            handleCodeEditProposalIfNeeded(conversationID: conversationID, finishedMessage: finishedMessage)
+            if renderedConversationID == conversationID {
+                refreshAssistantRowAfterEditStrip(messageID: cappedRoot)
+                if finishedMessage.id != cappedRoot {
+                    refreshAssistantRowAfterEditStrip(messageID: finishedMessage.id)
+                }
+                ConnectsToast.show("已达本回合工具上限，已停止", in: view, duration: 2.0)
+            }
+            return
+        }
+
+        let rootID = agentProcessRootIDs[conversationID] ?? finishedMessage.id
+        agentProcessRootIDs[conversationID] = rootID
+
+        // If Build plan is already fully checked off, stop — don't keep looping.
+        if let planID = activePlanDocumentID,
+           let text = StudyDocumentStore.shared.textContent(for: planID) {
+            let plan = StudyPlanDocument.parse(text)
+            if !plan.todos.isEmpty, plan.todos.allSatisfy(\.done) {
+                finishWorkspaceAgentTurn(
+                    conversationID: conversationID,
+                    rootID: rootID,
+                    finishedMessage: finishedMessage,
+                    waiting: false
+                )
+                ConnectsToast.show("计划已全部完成", in: view, duration: 1.8)
+                return
+            }
+        }
+
+        // Tool I/O off the main thread — sync execute was freezing the whole app.
+        let mode = conv.studyAgentMode
+        let roundCapture = round
+        let isAgentMode = mode == .agent
+        if isAgentMode {
+            WorkspaceAgentRuntime.shared.beginEditBatch(
+                conversationID: conversationID,
+                rootMessageID: rootID,
+                workspaceID: wsID
+            )
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let continued = AgentOrchestrator.shared.handleAssistantFinished(
+                conversationID: conversationID,
+                assistantMessageID: finishedMessage.id,
+                content: raw,
+                workspaceID: wsID,
+                mode: mode,
+                model: streamModel(for: conv.model, hasImages: false),
+                appendStep: { [weak self] step in
+                    DispatchQueue.main.async {
+                        self?.mutateAgentSteps(conversationID: conversationID, messageID: rootID) { msg in
+                            msg.agentProcessPhase = .running
+                            msg.agentProcessSteps.append(step)
+                            msg.upsertMetaPart(from: step)
+                        }
+                    }
+                },
+                updateStep: { [weak self] step in
+                    DispatchQueue.main.async {
+                        self?.mutateAgentSteps(conversationID: conversationID, messageID: rootID) { msg in
+                            if let i = msg.agentProcessSteps.firstIndex(where: { $0.id == step.id }) {
+                                msg.agentProcessSteps[i] = step
+                            } else {
+                                msg.agentProcessSteps.append(step)
+                            }
+                            msg.upsertMetaPart(from: step)
+                        }
+                    }
+                },
+                onProposeEdit: { path, body in
+                    if isAgentMode {
+                        WorkspaceAgentRuntime.shared.enqueueProposedEdit(path: path, body: body)
+                    } else {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.presentAgentProposedEdit(
+                                path: path,
+                                body: body,
+                                assistantMessageID: finishedMessage.id
+                            )
+                        }
+                    }
+                },
+                onPlanUpdate: { [weak self] planMarkdown in
+                    DispatchQueue.main.async {
+                        if mode == .plan || self?.activePlanDocumentID != nil {
+                            self?.syncActivePlanFile(planMarkdown: planMarkdown)
+                        }
+                    }
+                },
+                requestContinuation: { [weak self] toolResults in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if isAgentMode {
+                            self.flushAgentEditBatchAndPresentDiff(rootID: rootID)
+                        }
+                        self.agentToolRoundCounts[conversationID] = roundCapture + 1
+                        self.continueWorkspaceAgent(
+                            conversationID: conversationID,
+                            priorAssistantID: finishedMessage.id,
+                            rootAssistantID: rootID,
+                            priorAssistantRaw: raw,
+                            priorAssistantReasoning: finishedMessage.reasoningContent,
+                            toolResults: toolResults
+                        )
+                    }
+                }
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if isAgentMode, !continued {
+                    self.flushAgentEditBatchAndPresentDiff(rootID: rootID)
+                }
+                if continued {
+                    // Keep a light planning pulse until the next stream starts.
+                    self.ensureStreamUITimer()
+                    return
+                }
+                let waiting = AgentOrchestrator.shared.waitingAskPrompt != nil
+                self.finishWorkspaceAgentTurn(
+                    conversationID: conversationID,
+                    rootID: rootID,
+                    finishedMessage: finishedMessage,
+                    waiting: waiting
+                )
+                if let prompt = AgentOrchestrator.shared.waitingAskPrompt {
+                    ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+                        guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
+                        draft.messages[idx].appendAskPart(String(prompt))
+                        draft.messages[idx].agentProcessPhase = .waitingUser
+                    }
+                    self.refreshAgentProcessChrome(messageID: rootID)
+                    ConnectsToast.show("Agent 提问：\(prompt.prefix(80))", in: self.view, duration: 2.4)
+                }
+            }
+        }
+    }
+
+    /// One Diff open + banner refresh per tool batch (Agent mode).
+    private func flushAgentEditBatchAndPresentDiff(rootID: String) {
+        let result = WorkspaceAgentRuntime.shared.flushEditBatch { [weak self] path, body in
+            self?.applyPlanFileEditIfNeeded(path: path, body: body)
+        }
+        refreshWorkspaceDiffBanner()
+        if let docID = result.firstDiffDocumentID {
+            studyContextProvider?.studyCodeDiffOpen(documentID: docID)
+        }
+        if renderedConversationID != nil {
+            refreshAgentProcessChrome(messageID: rootID)
+        }
+    }
+
+        private func finishWorkspaceAgentTurn(conversationID: String,
+                                          rootID: String,
+                                          finishedMessage: ChatMessage,
+                                          waiting: Bool) {
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            if let idx = draft.messages.lastIndex(where: { $0.id == rootID }) {
+                draft.messages[idx].agentProcessPhase = waiting ? .waitingUser : .done
+                if waiting, let prompt = AgentOrchestrator.shared.waitingAskPrompt {
+                    draft.messages[idx].appendAskPart(prompt)
+                }
+                draft.messages[idx].sealThoughtFromReasoningIfNeeded()
+                // Commit final-round prose into timeline parts (OpenCode: answer once at done).
+                let visible = AgentTools.strippingToolBlocksForDisplay(
+                    from: CodeEditApplyTools.chatVisibleContent(draft.messages[idx].content)
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !visible.isEmpty, visible != "（工具步骤已执行）" {
+                    let lastPart = draft.messages[idx].agentTimelineParts.last(where: { $0.kind == .prose })?.text
+                    if lastPart != visible {
+                        draft.messages[idx].appendProsePart(visible)
+                    }
+                }
+            }
+            // Legacy mid-loop shells: fold prose into root and hide.
+            if finishedMessage.id != rootID,
+               let idx = draft.messages.lastIndex(where: { $0.id == finishedMessage.id }) {
+                let rawBody = draft.messages[idx].content
+                let visible = AgentTools.strippingToolBlocksForDisplay(
+                    from: CodeEditApplyTools.chatVisibleContent(rawBody)
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let rootIdx = draft.messages.lastIndex(where: { $0.id == rootID }),
+                   !visible.isEmpty,
+                   visible != "（工具步骤已执行）" {
+                    let last = draft.messages[rootIdx].agentProseSegments.last
+                    if last != visible {
+                        draft.messages[rootIdx].agentProseSegments.append(visible)
+                        draft.messages[rootIdx].appendProsePart(visible)
+                    }
+                    if draft.messages[rootIdx].content
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        draft.messages[rootIdx].content = visible
+                    }
+                }
+                draft.messages[idx].isHiddenInTranscript = true
+                draft.messages[idx].content = ""
+                draft.messages[idx].reasoningContent = ""
+                draft.messages[idx].agentProcessSteps = []
+                draft.messages[idx].agentProcessPhase = .idle
+                draft.messages[idx].agentProcessStartedAt = nil
+            }
+        }
+        agentToolRoundCounts[conversationID] = 0
+        if !waiting {
+            agentProcessRootIDs[conversationID] = nil
+            AgentOrchestrator.shared.endTurnDedup(for: conversationID)
+            stopStreamUITimer()
+        }
+        handleCodeEditProposalIfNeeded(conversationID: conversationID, finishedMessage: finishedMessage)
+        if renderedConversationID == conversationID {
+            refreshAssistantRowAfterEditStrip(messageID: rootID)
+            if finishedMessage.id != rootID {
+                refreshAssistantRowAfterEditStrip(messageID: finishedMessage.id)
+            }
+            refreshBuildTodoChrome()
+        }
+    }
+
+    private func mutateAgentSteps(
+        conversationID: String,
+        messageID: String,
+        _ body: (inout ChatMessage) -> Void
+    ) {
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            guard let idx = draft.messages.lastIndex(where: { $0.id == messageID }) else { return }
+            body(&draft.messages[idx])
+        }
+        if renderedConversationID == conversationID {
+            refreshAgentProcessChrome(messageID: messageID)
+        }
+    }
+
+    /// Paint agent timeline chrome without rematerializing the whole assistant row.
+    private func refreshAgentProcessChrome(messageID: String) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let row = messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let message = messages[row]
+        guard message.hasAgentProcess || message.showsProcessChrome else { return }
+        let path = IndexPath(row: row, section: 0)
+        let layoutWidth = currentRenderWidth()
+        let agentLive = message.isStreaming
+            || message.agentProcessPhase == .running
+            || message.agentProcessPhase == .waitingUser
+        let liveOverlay: String? = {
+            guard agentLive, message.agentProcessPhase != .waitingUser else { return nil }
+            let reason = message.reasoningContent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if message.isStreaming {
+                return reason.isEmpty
+                    ? AgentProcessPhase.planningNextMovesText
+                    : AgentProcessPhase.thinkingText
+            }
+            // Inter-round gap (tools finished, next stream not yet streaming).
+            return AgentProcessPhase.planningNextMovesText
+        }()
+        UIView.performWithoutAnimation {
+            if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell,
+               cell.messageID == message.id {
+                _ = cell.syncAgentProcessPresentation(
+                    with: message,
+                    layoutWidth: layoutWidth,
+                    liveOverlayText: liveOverlay
+                )
+                // Mid-tool-loop root is NOT streaming — still forbid beginUpdates here.
+                // That path was freezing the whole app on every Explored/Edited step.
+                if agentLive {
+                    let prior = rowHeights.committedColumnHeight(for: message.id) ?? 0
+                    let fitted = cell.fittedStreamingRowHeight()
+                        - ChatRowHeightResolver.cellVerticalMargin
+                    if fitted > 40 {
+                        rowHeights.commitMeasured(
+                            columnHeight: fitted,
+                            messageID: message.id,
+                            allowShrink: false
+                        )
+                    }
+                    // Only chase when the row actually grew — avoids full-page flash.
+                    if fitted > prior + 2 {
+                        lightChaseAgentLiveTail()
+                    }
+                    return
+                }
+                // Off-screen / settled: commit height without chasing — avoid beginUpdates flash.
+                let next = cell.fittedColumnContentHeight()
+                if next > 40 {
+                    rowHeights.commitMeasured(
+                        columnHeight: next,
+                        messageID: message.id,
+                        allowShrink: false
+                    )
+                }
+            }
+            // Off-screen: do nothing — avoid reloadRows rematerialize storms.
+        }
+    }
+
+    private func presentAgentProposedEdit(path: String, body: String, assistantMessageID: String) {
+        // Workspace Agent: write + banner + Diff review. Keep All lives on the input bar.
+        guard let conv = ConversationStore.shared.currentConversation,
+              conv.isWorkspaceStudySession,
+              let wsID = conv.activeStudyWorkspaceID else {
+            refreshWorkspaceDiffBanner()
+            return
+        }
+        // Study lock: Agent writes only the open file (Plan may stage new plan markdown).
+        if conv.studyAgentMode != .plan, !conv.allowsStudyMutating(path: path) {
+            ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
+            refreshWorkspaceDiffBanner()
+            return
+        }
+        // New-file create only in Plan mode; Agent must edit an already-open document.
+        var docID = resolveWorkspaceDocumentID(path: path, workspaceID: wsID)
+        var createdFresh = false
+        if docID == nil {
+            guard conv.studyAgentMode == .plan else {
+                refreshWorkspaceDiffBanner()
+                return
+            }
+            let name = (path as NSString).lastPathComponent
+            if let created = try? StudyWorkspaceStore.shared.createFile(
+                named: name,
+                content: "",
+                in: wsID
+            ) {
+                docID = created.id
+                createdFresh = true
+            }
+        }
+        guard let docID else {
+            refreshWorkspaceDiffBanner()
+            return
+        }
+        let diskNow = StudyDocumentStore.shared.textContent(for: docID) ?? ""
+        // Baseline for Keep/Undo:
+        // - New file (or create_file already wrote body): empty → body
+        // - Existing session entry: freeze original before
+        // - Else: disk before this write
+        let sessionBefore = WorkspaceEditSession.shared.pending(documentID: docID)?.before
+        let before: String
+        if let sessionBefore {
+            before = sessionBefore
+        } else if createdFresh || diskNow == body {
+            // create_file already wrote identical content — still reviewable as new file.
+            before = ""
+        } else {
+            before = diskNow
+        }
+        if before == body, WorkspaceEditSession.shared.pending(documentID: docID) != nil {
+            refreshWorkspaceDiffBanner()
+            return
+        }
+        let name = StudyDocumentStore.shared.document(id: docID)?.title
+            ?? (path as NSString).lastPathComponent
+        let rootID = agentProcessRootIDs[conv.id] ?? assistantMessageID
+        let snippets = Self.lightDiffSnippets(before: before, after: body)
+        let stats = WorkspaceEditSession.shared.previewLineStats(before: before, after: body)
+        // Disk write off main — large files were freezing taps after first edit.
+        DispatchQueue.global(qos: .userInitiated).async {
+            if diskNow != body {
+                try? StudyDocumentStore.shared.writeTextContent(body, for: docID)
+            }
+            DispatchQueue.main.async { [weak self] in
+                WorkspaceEditSession.shared.upsert(
+                    documentID: docID,
+                    fileName: name,
+                    before: before,
+                    after: body
+                )
+                let card = AgentEditCard(
+                    fileName: name,
+                    documentID: docID,
+                    additions: stats.add,
+                    deletions: stats.del,
+                    snippetMinus: snippets.minus,
+                    snippetPlus: snippets.plus
+                )
+                ConversationStore.shared.updateConversationQuietly(id: conv.id) { draft in
+                    guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
+                    if let existing = draft.messages[idx].agentEditCards.firstIndex(where: {
+                        $0.documentID == docID || $0.fileName == name
+                    }) {
+                        draft.messages[idx].agentEditCards[existing] = card
+                    } else {
+                        draft.messages[idx].agentEditCards.append(card)
+                    }
+                }
+                self?.applyPlanFileEditIfNeeded(path: path, body: body)
+                self?.refreshWorkspaceDiffBanner()
+                // Open Diff so Keep/Undo hunks are visible (not write-only).
+                self?.studyContextProvider?.studyCodeDiffOpen(documentID: docID)
+                if self?.renderedConversationID == conv.id {
+                    self?.refreshAgentProcessChrome(messageID: rootID)
+                }
+            }
+        }
+    }
+
+    /// Prefer patch-oriented snippets when before/after share a long common prefix.
+    private static func lightDiffSnippets(before: String, after: String) -> (minus: String, plus: String) {
+        let a = before.components(separatedBy: .newlines)
+        let b = after.components(separatedBy: .newlines)
+        var i = 0
+        while i < a.count, i < b.count, a[i] == b[i] { i += 1 }
+        var j = 0
+        while j < (a.count - i), j < (b.count - i),
+              a[a.count - 1 - j] == b[b.count - 1 - j] { j += 1 }
+        let minusSlice = a.dropFirst(i).dropLast(j)
+        let plusSlice = b.dropFirst(i).dropLast(j)
+        let minus = minusSlice.prefix(4).joined(separator: "\n")
+        let plus = plusSlice.prefix(4).joined(separator: "\n")
+        return (String(minus.prefix(280)), String(plus.prefix(280)))
+    }
+
+    private func continueWorkspaceAgent(
+        conversationID: String,
+        priorAssistantID: String,
+        rootAssistantID: String,
+        priorAssistantRaw: String,
+        priorAssistantReasoning: String,
+        toolResults: String
+    ) {
+        guard let conv = ConversationStore.shared.conversation(id: conversationID),
+              let model = streamModel(for: conv.model, hasImages: false) else { return }
+
+        agentProcessRootIDs[conversationID] = rootAssistantID
+
+        let oldRows = currentConversationID == conversationID
+            ? tableView.numberOfRows(inSection: 0)
+            : 0
+
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            // Drop legacy mid-loop hidden shells after the root — single visible turn.
+            if let rootIdx = draft.messages.lastIndex(where: { $0.id == rootAssistantID }) {
+                if rootIdx + 1 < draft.messages.count {
+                    draft.messages.removeSubrange((rootIdx + 1)..<draft.messages.count)
+                }
+            }
+            guard let idx = draft.messages.lastIndex(where: { $0.id == rootAssistantID }) else { return }
+
+            draft.messages[idx].agentProcessPhase = .running
+            if draft.messages[idx].agentProcessStartedAt == nil {
+                draft.messages[idx].agentProcessStartedAt = Date()
+            }
+
+            // Seal reasoning before committing mid-round prose / clearing the stream buffers.
+            _ = draft.messages[idx].sealThoughtFromReasoningIfNeeded()
+
+            // Mid-loop: keep only short status prose in the timeline; long answers wait for done.
+            let proseSource: String = {
+                if priorAssistantID == rootAssistantID {
+                    return draft.messages[idx].content
+                }
+                if let priorIdx = draft.messages.lastIndex(where: { $0.id == priorAssistantID }) {
+                    return draft.messages[priorIdx].content
+                }
+                return priorAssistantRaw
+            }()
+            let stripped = AgentTools.strippingToolBlocksForDisplay(
+                from: CodeEditApplyTools.chatVisibleContent(proseSource)
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stripped.isEmpty, stripped != "（工具步骤已执行）" {
+                let shortStatus = stripped.count <= 160 && !stripped.contains("\n\n")
+                if shortStatus {
+                    let lastSeg = draft.messages[idx].agentProseSegments.last
+                    if lastSeg != stripped {
+                        draft.messages[idx].appendProsePart(stripped)
+                    }
+                }
+            }
+
+            // API-only tool round — never insert table rows.
+            let rawForAPI = priorAssistantRaw.isEmpty ? proseSource : priorAssistantRaw
+            draft.messages[idx].agentToolTurns.append(
+                AgentToolTurn(
+                    assistantContent: rawForAPI,
+                    assistantReasoning: priorAssistantReasoning,
+                    toolResults: toolResults
+                )
+            )
+
+            // Stream the next round onto the same root bubble.
+            draft.messages[idx].content = ""
+            draft.messages[idx].reasoningContent = ""
+            draft.messages[idx].isStreaming = true
+            draft.messages[idx].isHiddenInTranscript = false
+
+            // Hide any leftover prior shell if it still exists (legacy threads).
+            if priorAssistantID != rootAssistantID,
+               let priorIdx = draft.messages.lastIndex(where: { $0.id == priorAssistantID }) {
+                draft.messages[priorIdx].isHiddenInTranscript = true
+                draft.messages[priorIdx].content = ""
+                draft.messages[priorIdx].reasoningContent = ""
+                draft.messages[priorIdx].isStreaming = false
+                draft.messages[priorIdx].agentProcessSteps = []
+                draft.messages[priorIdx].agentProcessPhase = .idle
+            }
+        }
+
+        if currentConversationID == conversationID {
+            let newCount = ConversationStore.shared.currentConversation?.messages.count ?? oldRows
+            syncTableRowCount(from: oldRows, to: newCount)
+            refreshAgentProcessChrome(messageID: rootAssistantID)
+            syncStreamingChrome()
+        }
+
+        buildAPIContextAsync(for: model, conversationID: conversationID) { [weak self] messages in
+            self?.startStream(
+                conversationID: conversationID,
+                messages: messages,
+                model: model,
+                needsAITitle: false
+            )
+        }
+    }
+
+    /// Keep UITableView row count in lockstep with the data source. Never call
+    /// `reloadRows` in the same beat as a count change (that crashes with
+    /// NSInternalInconsistencyException).
+    private func syncTableRowCount(from oldCount: Int, to newCount: Int) {
+        guard oldCount != newCount else { return }
+        renderedMessageCount = newCount
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            if newCount > oldCount {
+                let paths = (oldCount..<newCount).map { IndexPath(row: $0, section: 0) }
+                tableView.insertRows(at: paths, with: .none)
+            } else {
+                let paths = (newCount..<oldCount).map { IndexPath(row: $0, section: 0) }
+                tableView.deleteRows(at: paths, with: .none)
+            }
+            tableView.endUpdates()
+        }
+    }
+
+    private func resolveWorkspaceDocumentID(path: String, workspaceID: String) -> String? {
+        let needle = (path as NSString).lastPathComponent
+        guard !needle.isEmpty else { return nil }
+        // Never scanAndSyncDocuments on the agent edit hot path — folder walks freeze UI.
+        guard let ws = StudyWorkspaceStore.shared.workspace(id: workspaceID) else { return nil }
+        for id in ws.documentIDs {
+            guard let doc = StudyDocumentStore.shared.document(id: id) else { continue }
+            if let display = doc.displayPath,
+               (display as NSString).lastPathComponent.caseInsensitiveCompare(needle) == .orderedSame {
+                return id
+            }
+            if doc.title.caseInsensitiveCompare(needle) == .orderedSame
+                || doc.title.caseInsensitiveCompare((needle as NSString).deletingPathExtension) == .orderedSame {
+                return id
+            }
+            if !doc.localRelativePath.isEmpty,
+               (doc.localRelativePath as NSString).lastPathComponent.caseInsensitiveCompare(needle) == .orderedSame {
+                return id
+            }
+        }
+        return nil
+    }
+
+    /// Begin executing a workspace plan document (Build button in reader).
+    func startPlanBuild(documentID: String) {
+        guard StudyAgentMode.isAgentProductEnabled else {
+            ConnectsToast.show("Agent 模式暂未开放 — 先用 Study 编辑当前文件", in: view, duration: 2.0)
+            return
+        }
+        activePlanDocumentID = documentID
+        guard let id = currentConversationID else {
+            refreshBuildTodoChrome()
+            return
+        }
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyAgentMode = .agent
+            draft.studyDocumentID = documentID
+        }
+        inputBar.setStudyAgentMode(.agent, notify: false)
+        refreshBuildTodoChrome()
+        updateStudyInputBar()
+
+        let name = StudyDocumentStore.shared.document(id: documentID)?.title ?? "plan.md"
+        let prompt = """
+        按工作区计划文件「\(name)」执行：完成全部未勾选 todos；每完成一项用 propose_edit 把该文件中对应 `- [ ]` 改为 `- [x]`（或用 update_plan 同步全文）。先 read_file 该计划，再逐项落地改文件。
+        """
+        performSend(prompt, imageBase64: nil, conversationID: id)
+    }
+
+    func refreshBuildTodoChrome() {
+        guard isViewLoaded else { return }
+        guard let docID = activePlanDocumentID,
+              let text = StudyDocumentStore.shared.textContent(for: docID) else {
+            inputBar.setBuildTodoProgress(visible: false)
+            return
+        }
+        let plan = StudyPlanDocument.parse(text)
+        let done = plan.todos.filter(\.done).count
+        let total = plan.todos.count
+        let current = plan.todos.first(where: { !$0.done })?.title
+        inputBar.setBuildTodoProgress(
+            done: done,
+            total: total,
+            currentTitle: current,
+            visible: total > 0
+        )
+        if total > 0, done >= total {
+            // Plan finished — stop agent loop if it is still spinning.
+            if let cid = currentConversationID,
+               let rootID = agentProcessRootIDs[cid] {
+                ConversationStore.shared.updateConversationQuietly(id: cid) { draft in
+                    if let idx = draft.messages.lastIndex(where: { $0.id == rootID }) {
+                        draft.messages[idx].agentProcessPhase = .done
+                    }
+                }
+                agentProcessRootIDs[cid] = nil
+                agentToolRoundCounts[cid] = 0
+                stopStreamUITimer()
+                refreshAssistantRowAfterEditStrip(messageID: rootID)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self, self.activePlanDocumentID == docID else { return }
+                let again = StudyPlanDocument.parse(
+                    StudyDocumentStore.shared.textContent(for: docID) ?? ""
+                )
+                if !again.todos.isEmpty, again.todos.allSatisfy(\.done) {
+                    self.inputBar.setBuildTodoProgress(visible: false)
+                    self.activePlanDocumentID = nil
+                }
+            }
+        }
+    }
+
+    private func syncActivePlanFile(planMarkdown: String) {
+        let wrapped = StudyPlanDocument.wrapAsPlan(planMarkdown)
+        if let docID = activePlanDocumentID {
+            try? StudyDocumentStore.shared.writeTextContent(wrapped, for: docID)
+            refreshBuildTodoChrome()
+            return
+        }
+        guard let conv = ConversationStore.shared.currentConversation,
+              let wsID = conv.activeStudyWorkspaceID else {
+            refreshBuildTodoChrome()
+            return
+        }
+        let stamp = Int(Date().timeIntervalSince1970) % 100_000
+        let name = "plan-\(stamp).md"
+        if let doc = try? StudyWorkspaceStore.shared.createFile(named: name, content: wrapped, in: wsID) {
+            activePlanDocumentID = doc.id
+            ConversationStore.shared.updateConversationQuietly(id: conv.id) { draft in
+                draft.studyDocumentID = doc.id
+            }
+        }
+        refreshBuildTodoChrome()
+    }
+
+    /// When Build is active, auto-apply propose_edit that targets the plan markdown (checkbox updates).
+    private func applyPlanFileEditIfNeeded(path: String, body: String) {
+        guard let docID = activePlanDocumentID,
+              let doc = StudyDocumentStore.shared.document(id: docID) else { return }
+        let target = (path as NSString).lastPathComponent.lowercased()
+        var names = [doc.title.lowercased()]
+        if let display = doc.displayPath {
+            names.append((display as NSString).lastPathComponent.lowercased())
+        }
+        if !doc.localRelativePath.isEmpty {
+            names.append((doc.localRelativePath as NSString).lastPathComponent.lowercased())
+        }
+        guard names.contains(where: { !$0.isEmpty && ($0 == target || target.hasSuffix($0) || $0.hasSuffix(target)) }) else {
+            return
+        }
+        let wrapped = StudyPlanDocument.parse(body).isPlan ? body : StudyPlanDocument.wrapAsPlan(body)
+        try? StudyDocumentStore.shared.writeTextContent(wrapped, for: docID)
+        refreshBuildTodoChrome()
+    }
+
+    private func startStream(
+        conversationID: String,
+        messages: [ChatMessage],
+        model: AIModelOption,
+        needsAITitle: Bool
+    ) {
+        StreamManager.shared.start(
+            conversationID: conversationID,
+            messages: messages,
+            model: model,
+            needsAITitle: needsAITitle
+        )
+        syncStreamingChrome()
     }
 
     /// Strip CONNECTS_EDIT from the chat bubble; present Diff only when「AI 编辑」is on.
@@ -4975,7 +5750,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func ensureStreamUITimer() {
-        guard streamUITimer == nil, isCurrentStreaming else { return }
+        let agentRunning = isAgentTurnActivelyRunning
+        guard streamUITimer == nil, isCurrentStreaming || agentRunning else { return }
         lastStreamMessageID = ""
         lastStreamContentBytes = -1
         lastStreamVisibleBytes = -1
@@ -4986,6 +5762,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         lastStreamImageTranscriptionPhase = .idle
         lastStreamProgressAt = Date()
         lastStreamLayoutAt = .distantPast
+        lastAgentStreamLayoutAt = .distantPast
         streamSpinnerFrame = 0
         let timer = Timer(timeInterval: 0.04,
                           target: self,
@@ -4997,15 +5774,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         streamUITick()
     }
 
+    /// Root agent card still running across tool-round gaps (no live stream tokens).
+    private var isAgentTurnActivelyRunning: Bool {
+        guard let cid = currentConversationID,
+              let rootID = agentProcessRootIDs[cid],
+              let msgs = ConversationStore.shared.currentConversation?.messages,
+              let root = msgs.first(where: { $0.id == rootID }) else { return false }
+        return root.agentProcessPhase == .running
+    }
+
     private func stopStreamUITimer() {
         streamUITimer?.invalidate()
         streamUITimer = nil
     }
 
     @objc private func streamUITick() {
-        guard isCurrentStreaming,
-              let last = ConversationStore.shared.currentConversation?.messages.last,
-              last.isStreaming else {
+        let msgs = ConversationStore.shared.currentConversation?.messages
+        let streamingLast = msgs?.last(where: { $0.isStreaming }) ?? msgs?.last
+        if !isCurrentStreaming || streamingLast?.isStreaming != true {
+            if isAgentTurnActivelyRunning {
+                pulseAgentPlanningChrome()
+                return
+            }
+            stopStreamUITimer()
+            return
+        }
+        guard let last = streamingLast else {
             stopStreamUITimer()
             return
         }
@@ -5060,27 +5854,78 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             )
             return
         }
-        // The provider is still connected but has not produced a delta. Animate
-        // a small thinking glyph at the visible stream tail instead of looking frozen.
+        // The provider is still connected but has not produced a delta.
+        // Keep shimmer alive — never append ◐◓ spinner glyphs (they kill the
+        // left→right sweep and make meta/prose jump every tick).
         guard Date().timeIntervalSince(lastStreamProgressAt) >= 0.45 else { return }
         streamSpinnerFrame = (streamSpinnerFrame + 1) % 12
-        guard streamSpinnerFrame % 3 == 0 else { return }
-        let glyphs = ["◐", "◓", "◑", "◒"]
+        guard streamSpinnerFrame % 6 == 0 else { return }
         refreshStreamingRow(
-            waitingGlyph: glyphs[(streamSpinnerFrame / 3) % glyphs.count],
+            waitingGlyph: nil,
             relayout: false,
             chaseViewport: false
         )
+    }
+
+    /// Inter-round / TTFT gap: keep「Planning next moves…」/ Thinking shimmer alive on the root card.
+    private func pulseAgentPlanningChrome() {
+        // ≤1 Hz — never layout-storm the main runloop (was freezing the whole app).
+        guard Date().timeIntervalSince(lastAgentPlanningPulseAt) >= 1.0 else { return }
+        lastAgentPlanningPulseAt = Date()
+        guard let cid = currentConversationID,
+              let rootID = agentProcessRootIDs[cid],
+              isAgentTurnActivelyRunning else {
+            stopStreamUITimer()
+            return
+        }
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let rootRow = messages.firstIndex(where: { $0.id == rootID }) else { return }
+        let root = messages[rootRow]
+        let path = IndexPath(row: rootRow, section: 0)
+        UIView.performWithoutAnimation {
+            guard let cell = tableView.cellForRow(at: path) as? AssistantMessageCell,
+                  cell.messageID == root.id else { return }
+            // Stable overlay text + shimmer only — no full timeline rebuild (anti-flash).
+            let hasReasoning = !root.reasoningContent
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let overlay = hasReasoning
+                ? AgentProcessPhase.thinkingText
+                : AgentProcessPhase.planningNextMovesText
+            cell.keepAgentLiveShimmerAlive()
+            _ = cell.syncAgentProcessPresentation(
+                with: root,
+                layoutWidth: currentRenderWidth(),
+                liveOverlayText: overlay
+            )
+        }
     }
 
     private func refreshStreamingRow(waitingGlyph: String?,
                                      relayout: Bool,
                                      chaseViewport: Bool = true) {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
-              let last = messages.last, last.isStreaming else {
+              let last = messages.last(where: { $0.isStreaming }) ?? messages.last,
+              last.isStreaming else {
             return
         }
-        let path = IndexPath(row: messages.count - 1, section: 0)
+        // Single-root agent turn: always paint the root card (stream tokens land there).
+        if let cid = currentConversationID,
+           let rootID = agentProcessRootIDs[cid],
+           last.id == rootID || messages.contains(where: { $0.id == rootID }) {
+            if last.id != rootID {
+                refreshAgentRootStreamingTurn(
+                    rootID: rootID,
+                    streaming: last,
+                    waitingGlyph: waitingGlyph,
+                    relayout: relayout,
+                    chaseViewport: chaseViewport
+                )
+                return
+            }
+        }
+        guard let row = messages.firstIndex(where: { $0.id == last.id }) else { return }
+        let path = IndexPath(row: row, section: 0)
+        let agentLive = last.hasAgentProcess || last.agentProcessPhase == .running
         UIView.performWithoutAnimation {
             var cell = tableView.cellForRow(at: path) as? AssistantMessageCell
             if cell == nil, !readingHistory {
@@ -5088,7 +5933,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 cell = tableView.cellForRow(at: path) as? AssistantMessageCell
             }
             if let cell = cell {
-                if !cell.updateStreamingContent(last, waitingGlyph: waitingGlyph) {
+                if agentLive {
+                    // Stable overlay only — never append spinner glyphs.
+                    let hasReasoning = !last.reasoningContent
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let overlay = hasReasoning
+                        ? AgentProcessPhase.thinkingText
+                        : AgentProcessPhase.planningNextMovesText
+                    _ = cell.syncAgentProcessPresentation(
+                        with: last,
+                        layoutWidth: currentRenderWidth(),
+                        liveOverlayText: overlay
+                    )
+                    cell.keepAgentLiveShimmerAlive()
+                } else if !cell.updateStreamingContent(last, waitingGlyph: nil) {
                     let pairedUser = pairedUserMessage(forAssistantAt: path.row, in: messages)
                     cell.configure(
                         with: last,
@@ -5097,15 +5955,86 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                         pairedUser: pairedUser
                     )
                 }
-            } else if !readingHistory,
-                      path.row < tableView.numberOfRows(inSection: 0) {
-                tableView.reloadData()
-                tableView.layoutIfNeeded()
+                if agentLive, relayout {
+                    commitAgentStreamingRowHeight(cell: cell, messageID: last.id)
+                }
+            }
+            // Agent: never reloadData / layoutIfNeeded on the stream tick — that froze taps.
+            if chaseViewport, (finishViewportLocked || isCurrentStreaming) {
+                if agentLive || isAgentTurnActivelyRunning {
+                    lightChaseAgentLiveTail()
+                } else {
+                    chaseLiveTailToBottom(messages: messages, layoutWidth: currentRenderWidth())
+                }
+            } else if relayout, stickToBottom, !isViewportPinned(), !agentLive {
+                scrollToBottom(animated: false, force: true)
+            }
+        }
+    }
+
+    /// Feed heightForRow from fitted height. Agent turns: never shrink, rarely beginUpdates.
+    private func commitAgentStreamingRowHeight(cell: AssistantMessageCell, messageID: String) {
+        let fitted = cell.fittedStreamingRowHeight() - ChatRowHeightResolver.cellVerticalMargin
+        let meta = SettingsManager.shared.chatThinkingFontSize
+        let minChrome = ceil(UIFont.systemFont(ofSize: meta).lineHeight) + 8
+        let column = max(fitted, minChrome)
+        rowHeights.commitMeasured(
+            columnHeight: column,
+            messageID: messageID,
+            allowShrink: false
+        )
+        let now = Date()
+        guard now.timeIntervalSince(lastAgentStreamLayoutAt) >= 0.35
+                || lastAgentStreamLayoutAt == .distantPast else {
+            lightChaseAgentLiveTail()
+            return
+        }
+        lastAgentStreamLayoutAt = now
+        tableView.beginUpdates()
+        tableView.endUpdates()
+        lightChaseAgentLiveTail()
+    }
+
+    /// Paint mid-loop tokens into the root interleaved timeline (no process box).
+    private func refreshAgentRootStreamingTurn(rootID: String,
+                                               streaming: ChatMessage,
+                                               waitingGlyph: String?,
+                                               relayout: Bool,
+                                               chaseViewport: Bool) {
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              let rootRow = messages.firstIndex(where: { $0.id == rootID }) else {
+            return
+        }
+        var root = messages[rootRow]
+        // Merge live mid-loop tokens into root for interleaved paint.
+        let body = streaming.chatDisplayBodyCurrentRound
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !body.isEmpty {
+            root.content = streaming.content
+        }
+        let path = IndexPath(row: rootRow, section: 0)
+        let layoutWidth = currentRenderWidth()
+        UIView.performWithoutAnimation {
+            if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell,
+               cell.messageID == root.id {
+                let reason = streaming.reasoningContent
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let overlay: String = {
+                    if !reason.isEmpty { return AgentProcessPhase.thinkingText }
+                    return AgentProcessPhase.planningNextMovesText
+                }()
+                _ = cell.syncAgentProcessPresentation(
+                    with: root,
+                    layoutWidth: layoutWidth,
+                    liveOverlayText: overlay
+                )
+                cell.keepAgentLiveShimmerAlive()
+                if relayout {
+                    commitAgentStreamingRowHeight(cell: cell, messageID: root.id)
+                }
             }
             if chaseViewport, (finishViewportLocked || isCurrentStreaming) {
-                chaseLiveTailToBottom(messages: messages, layoutWidth: currentRenderWidth())
-            } else if relayout, stickToBottom, !isViewportPinned() {
-                scrollToBottom(animated: false, force: true)
+                lightChaseAgentLiveTail()
             }
         }
     }
@@ -5116,6 +6045,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         stickToBottom = true
         readingHistory = false
         viewportPinnedByUser = false
+        if isAgentTurnActivelyRunning {
+            lightChaseAgentLiveTail()
+            return
+        }
         if let messages = ConversationStore.shared.currentConversation?.messages,
            !messages.isEmpty {
             chaseLiveTailToBottom(messages: messages, layoutWidth: currentRenderWidth())
@@ -5146,7 +6079,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ensureStreamUITimer()
         } else if running {
             // Search / transcription chrome: keep Stop enabled, but allow scroll.
-            stopStreamUITimer()
+            finishViewportLocked = false
+            tableView.isScrollEnabled = true
+            ensureStreamUITimer()
+        } else if isAgentTurnActivelyRunning {
+            // Tool-round gap: keep a throttled Planning pulse, do not lock scroll.
             finishViewportLocked = false
             tableView.isScrollEnabled = true
             ensureStreamUITimer()
@@ -5316,7 +6253,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private func isStudySessionActive() -> Bool {
         if studyChromeMode != .none { return true }
-        return ConversationStore.shared.currentConversation?.studyDocumentID != nil
+        let conv = ConversationStore.shared.currentConversation
+        return conv?.studyDocumentID != nil || conv?.isWorkspaceStudySession == true
     }
 
     private func applyStudyChrome() {
@@ -5324,11 +6262,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         // After「新对话」the document is already nil while studyChromeMode can lag one frame —
         // that previously hid the toggle until the next chrome sync.
         let hasStudyDoc = ConversationStore.shared.currentConversation?.studyDocumentID != nil
-        if !hasStudyDoc, studyChromeMode != .none {
+        let isWorkspace = ConversationStore.shared.currentConversation?.isWorkspaceStudySession == true
+        if !hasStudyDoc, !isWorkspace, studyChromeMode != .none {
             studyChromeMode = .none
             studyShowsSidebarToggle = false
         }
-        let hideSidebar = hasStudyDoc && !studyShowsSidebarToggle
+        // Document Study can hide the chat sidebar toggle while reading; workspace
+        // sessions keep it (archive / switch chats) like a normal conversation.
+        let hideSidebar = hasStudyDoc && !isWorkspace && !studyShowsSidebarToggle
         navigationItem.leftBarButtonItem = hideSidebar ? nil : sidebarToggleItem
         if isViewLoaded, turnContextBarTopToSafe != nil, turnContextBarTopToView != nil {
             let portraitPanel = studyChromeMode == .portraitPanel
@@ -5341,6 +6282,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         updateModelButton()
         updateEmptyState()
+        refreshRightBarButtons()
     }
 
     func syncStudyPanelStageControl() {
@@ -5441,11 +6383,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             inputBar.studyPageCaptureEnabled = false
             inputBar.setAskSelectionSlotVisible(false)
             inputBar.codeAIEditVisible = false
+            inputBar.studyAgentModeVisible = false
             return
         }
-        let hasDoc = conv.studyDocumentID != nil
-        inputBar.studyCaptureVisible = hasDoc
-        inputBar.studyPageCaptureEnabled = conv.studyPageCaptureEnabled
+        let isWorkspace = conv.isWorkspaceStudySession
+        let agentProduct = StudyAgentMode.isAgentProductEnabled
+        // Folder Study (Agent gated): same capture / AI-edit toggles as single-document Study.
+        // When Agent product unlocks, workspace hides legacy toggles and uses tool chrome instead.
+        if isWorkspace, agentProduct {
+            inputBar.studyCaptureVisible = false
+            inputBar.studyPageCaptureEnabled = false
+            inputBar.codeAIEditVisible = false
+            inputBar.setCodeAIEditEnabled(false, notify: false)
+        } else {
+            let hasDoc = conv.studyDocumentID != nil
+            inputBar.studyCaptureVisible = hasDoc
+            inputBar.studyPageCaptureEnabled = conv.studyPageCaptureEnabled
+            let codeEditSupported: Bool = {
+                guard let docID = conv.studyDocumentID,
+                      let kind = StudyDocumentStore.shared.document(id: docID)?.kind else { return false }
+                return kind == .text
+            }()
+            inputBar.codeAIEditVisible = codeEditSupported
+        }
         // Ask is for markdown / code (text); PDF is highlighter-only.
         let askSupported: Bool = {
             guard let docID = conv.studyDocumentID,
@@ -5453,13 +6413,40 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return kind == .markdown || kind == .text
         }()
         inputBar.setAskSelectionSlotVisible(askSupported)
-        // AI 编辑 authorization: Study code/text only (not PDF / reading-md path).
-        let codeEditSupported: Bool = {
-            guard let docID = conv.studyDocumentID,
-                  let kind = StudyDocumentStore.shared.document(id: docID)?.kind else { return false }
-            return kind == .text
-        }()
-        inputBar.codeAIEditVisible = codeEditSupported
+        inputBar.studyAgentModeVisible = isWorkspace && agentProduct
+        if isWorkspace {
+            let mode = StudyAgentMode.coerceForProduct(conv.studyAgentMode)
+            if mode != conv.studyAgentMode, let id = currentConversationID {
+                ConversationStore.shared.updateConversationQuietly(id: id) { draft in
+                    draft.studyAgentMode = mode
+                }
+            }
+            inputBar.setStudyAgentMode(mode, notify: false)
+            // Strip empty Agent chrome shells left over while product is gated.
+            if !agentProduct, let id = currentConversationID {
+                agentProcessRootIDs[id] = nil
+                var demoted = false
+                ConversationStore.shared.updateConversationQuietly(id: id) { draft in
+                    for i in draft.messages.indices where draft.messages[i].role == .assistant {
+                        let m = draft.messages[i]
+                        let emptyShell = m.agentProcessSteps.isEmpty
+                            && m.agentTimelineParts.isEmpty
+                            && m.agentProseSegments.isEmpty
+                            && m.agentEditCards.isEmpty
+                            && m.agentToolTurns.isEmpty
+                        if emptyShell,
+                           m.agentProcessPhase == .running || m.agentProcessPhase == .waitingUser {
+                            draft.messages[i].agentProcessPhase = .idle
+                            draft.messages[i].agentProcessStartedAt = nil
+                            demoted = true
+                        }
+                    }
+                }
+                if demoted, isViewLoaded {
+                    tableView.reloadData()
+                }
+            }
+        }
         let armed = askSupported
             && StudyAskSelectionStore.shared.pendingText(for: conv.id) != nil
         inputBar.setAskSelectionArmed(armed)
@@ -5469,6 +6456,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self?.studyContextProvider?.clearAskSelectionHighlightInReader()
         }
         applyStudyChrome()
+        refreshWorkspaceDiffBanner()
+        refreshBuildTodoChrome()
     }
 
     /// Whether the InputBar「AI 编辑」toggle is on (permission only).
@@ -5629,17 +6618,25 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let conv = ConversationStore.shared.currentConversation else { return }
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
         var items: [ConnectsMenuItem] = []
-        if conv.studyDocumentID != nil,
-           let doc = StudyDocumentStore.shared.document(id: conv.studyDocumentID!) {
+        if conv.isWorkspaceStudySession {
+            let wsName = conv.activeStudyWorkspaceID.flatMap {
+                StudyWorkspaceStore.shared.workspace(id: $0)?.title
+            } ?? "工作区"
+            items.append(ConnectsMenuItem(title: "工作区：\(wsName)", icon: .folder) {})
+            items.append(ConnectsMenuItem(title: "文件 / 换绑", icon: .folder) { [weak self] in
+                self?.studyContextProvider?.presentWorkspaceFileMenu(from: nil)
+            })
+        } else if conv.studyDocumentID != nil,
+                  let doc = StudyDocumentStore.shared.document(id: conv.studyDocumentID!) {
             items.append(ConnectsMenuItem(title: "文档：\(doc.title)", icon: .book) {})
-            items.append(ConnectsMenuItem(title: "更换文档", icon: .folder) { [weak self] in
+            items.append(ConnectsMenuItem(title: "更换依附", icon: .folder) { [weak self] in
                 self?.presentStudyDocumentPicker()
             })
             items.append(ConnectsMenuItem(title: "取消依附", icon: .trash, isDestructive: true) { [weak self] in
                 self?.detachStudyDocument()
             })
         } else {
-            items.append(ConnectsMenuItem(title: "依附于文档", icon: .book) { [weak self] in
+            items.append(ConnectsMenuItem(title: "选择依附", icon: .book) { [weak self] in
                 self?.presentStudyDocumentPicker()
             })
         }
@@ -5670,8 +6667,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             from: self,
             title: conv.title,
             items: items,
-            barButtonItem: navigationItem.rightBarButtonItem
+            barButtonItem: navigationItem.rightBarButtonItems?.first
         )
+    }
+
+    func presentStudyDocumentPickerPublic() {
+        presentStudyDocumentPicker()
     }
 
     private func presentStudyDocumentPicker() {
@@ -5689,7 +6690,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = currentConversationID else { return }
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyDocumentID = nil
+            draft.studyWorkspaceID = nil
+            draft.studySessionKind = .document
             draft.studyPageCaptureEnabled = false
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
         }
         updateStudyInputBar()
     }
@@ -5698,12 +6702,41 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let id = currentConversationID else { return }
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyDocumentID = documentID
+            draft.studyWorkspaceID = nil
+            draft.studySessionKind = .document
+            draft.studyPageCaptureEnabled = true
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
         }
         updateStudyInputBar()
         if navigationController?.topViewController === picker {
             navigationController?.popViewController(animated: true)
         } else {
             picker.dismiss(animated: true)
+        }
+    }
+
+    func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelectWorkspace workspaceID: String) {
+        guard let id = currentConversationID else { return }
+        _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: workspaceID)
+        let firstDoc = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.documentIDs.first
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyWorkspaceID = workspaceID
+            draft.studySessionKind = .workspace
+            draft.studyDocumentID = firstDoc
+            draft.studyPageCaptureEnabled = firstDoc != nil
+            // Keep current Study posture — do not jump into Agent.
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
+        }
+        updateStudyInputBar()
+        if navigationController?.topViewController === picker {
+            navigationController?.popViewController(animated: true)
+        } else {
+            picker.dismiss(animated: true)
+        }
+        if firstDoc == nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.studyContextProvider?.ensureWorkspaceHasFileIfEmpty(workspaceID: workspaceID)
+            }
         }
     }
 
@@ -5737,13 +6770,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             action: #selector(toggleChatSidebar),
             accessibility: "关闭侧栏"
         )
-        let moreItem = ActionIconFactory.barItem(
-            kind: .more,
-            target: self,
-            action: #selector(moreTapped),
-            accessibility: "更多"
-        )
-        navigationItem.rightBarButtonItem = moreItem
+        refreshRightBarButtons()
         applyStudyChrome()
         if let collapsed = pendingSidebarCollapsed {
             updateSidebarToggleTitle(collapsed: collapsed)
@@ -5753,6 +6780,99 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         navigationController?.navigationBar.shadowImage = UIImage()
         navigationController?.navigationBar.isUserInteractionEnabled = true
         updateModelButton()
+    }
+
+    private func refreshRightBarButtons() {
+        let moreItem = ActionIconFactory.barItem(
+            kind: .more,
+            target: self,
+            action: #selector(moreTapped),
+            accessibility: "更多"
+        )
+        if isStudySessionActive() {
+            let conv = ConversationStore.shared.currentConversation
+            let isWorkspace = conv?.isWorkspaceStudySession == true
+            let historyItem = ActionIconFactory.barItem(
+                kind: .clock,
+                target: self,
+                action: #selector(studyHistoryTapped),
+                accessibility: isWorkspace ? "同工作区对话" : "同文件对话"
+            )
+            let newChatItem = ActionIconFactory.barItem(
+                kind: .plus,
+                target: self,
+                action: #selector(studyNewChatTapped),
+                accessibility: isWorkspace ? "同工作区新对话" : "同文件新对话"
+            )
+            // UIKit: first item is rightmost.
+            navigationItem.rightBarButtonItems = [moreItem, historyItem, newChatItem]
+        } else {
+            navigationItem.rightBarButtonItems = [moreItem]
+        }
+    }
+
+    @objc private func studyNewChatTapped() {
+        guard let source = ConversationStore.shared.currentConversation else { return }
+        _ = ConversationStore.shared.createStudyConversation(copyingFrom: source, keepActiveDocument: true)
+    }
+
+    @objc private func studyHistoryTapped() {
+        guard let source = ConversationStore.shared.currentConversation else { return }
+        let list: [Conversation]
+        let title: String
+        if source.isWorkspaceStudySession, let wsID = source.activeStudyWorkspaceID {
+            list = ConversationStore.shared.conversations(inWorkspace: wsID)
+            title = "工作区对话"
+        } else if let docID = source.studyDocumentID {
+            list = ConversationStore.shared.conversations(boundToDocument: docID)
+            title = "同文件对话"
+        } else {
+            ConnectsToast.show("暂无相关对话", in: view, duration: 1.4)
+            return
+        }
+        guard !list.isEmpty else {
+            ConnectsToast.show("暂无相关对话", in: view, duration: 1.4)
+            return
+        }
+        let items = list.prefix(20).map { conv -> ConnectsMenuItem in
+            let mark = conv.id == source.id ? " ✓" : ""
+            return ConnectsMenuItem(
+                title: "\(conv.title)\(mark)",
+                icon: conv.isWorkspaceStudySession ? .folder : .book,
+                longPressHandler: { [weak self] in
+                    self?.presentStudyConversationManageMenu(for: conv)
+                }
+            ) {
+                ConversationStore.shared.selectConversation(id: conv.id)
+            }
+        }
+        ConnectsMenu.present(
+            from: self,
+            title: title,
+            items: Array(items),
+            barButtonItem: navigationItem.rightBarButtonItems?.dropFirst().first
+        )
+    }
+
+    private func presentStudyConversationManageMenu(for conv: Conversation) {
+        let archiveTitle = conv.isArchived ? "取消归档" : "归档"
+        ConnectsMenu.present(
+            from: self,
+            title: conv.title,
+            items: [
+                ConnectsMenuItem(title: "打开", icon: .book) {
+                    ConversationStore.shared.selectConversation(id: conv.id)
+                },
+                ConnectsMenuItem(title: archiveTitle, icon: .archive) {
+                    ConversationStore.shared.setArchived(id: conv.id, archived: !conv.isArchived)
+                },
+                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) {
+                    ConversationStore.shared.deleteConversation(id: conv.id)
+                }
+            ],
+            barButtonItem: navigationItem.rightBarButtonItems?.dropFirst().first,
+            preferVertical: true
+        )
     }
 
     private func setupTurnContextBar() {
@@ -6314,6 +7434,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     conversationID: conversationID,
                     persist: true
                 )
+                self.applyWorkspaceAgentAuthorization(
+                    in: &messages,
+                    conversationID: conversationID,
+                    persist: true
+                )
                 completion(messages)
             }
         }
@@ -6333,6 +7458,40 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let auth = CodeEditApplyTools.authorizationPrefix
         let rest = CodeEditApplyTools.strippingAuthorization(from: msg.apiContextPrefix ?? "")
         let next = rest.isEmpty ? auth : auth + "\n\n" + rest
+        guard msg.apiContextPrefix != next else { return }
+        msg.apiContextPrefix = next
+        messages[idx] = msg
+        guard persist else { return }
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
+            guard let storeIdx = draft.messages.lastIndex(where: { $0.id == msg.id })
+                    ?? draft.messages.lastIndex(where: { $0.role == .user }) else { return }
+            draft.messages[storeIdx].apiContextPrefix = next
+        }
+    }
+
+    /// Re-inject workspace agent tool protocol on the last user turn.
+    private func applyWorkspaceAgentAuthorization(
+        in messages: inout [ChatMessage],
+        conversationID: String,
+        persist: Bool
+    ) {
+        guard StudyAgentMode.isAgentProductEnabled,
+              let conv = ConversationStore.shared.conversation(id: conversationID),
+              conv.isWorkspaceStudySession,
+              let wsID = conv.activeStudyWorkspaceID,
+              let idx = messages.lastIndex(where: { $0.role == .user }) else { return }
+        var msg = messages[idx]
+        let listing = StudyWorkspaceStore.shared.listFileNames(in: wsID).joined(separator: "\n")
+        let agent = AgentOrchestrator.shared.apiPrefix(for: conv, workspaceListing: listing)
+        let prefix = msg.apiContextPrefix ?? ""
+        let withoutAgent: String = {
+            if let r = prefix.range(of: "## CONNECTS_WORKSPACE_AGENT") {
+                // Drop previous agent block through next blank-blank if possible.
+                return String(prefix[prefix.startIndex..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return prefix
+        }()
+        let next = withoutAgent.isEmpty ? agent : agent + "\n\n" + withoutAgent
         guard msg.apiContextPrefix != next else { return }
         msg.apiContextPrefix = next
         messages[idx] = msg
@@ -6516,13 +7675,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             )
         } else {
             buildAPIContextAsync(for: model, conversationID: convID) { [weak self] messages in
-                StreamManager.shared.start(
+                self?.startStream(
                     conversationID: convID,
                     messages: messages,
                     model: model,
                     needsAITitle: needsAITitle
                 )
-                self?.syncStreamingChrome()
             }
         }
     }
@@ -6560,14 +7718,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         renderedMessageCount = newCount
 
         UIView.performWithoutAnimation {
-            if newCount < oldRowCount {
-                let paths = (newCount..<oldRowCount).map { IndexPath(row: $0, section: 0) }
-                tableView.deleteRows(at: paths, with: .none)
-            } else if newCount > oldRowCount {
-                tableView.insertRows(at: [IndexPath(row: newCount - 1, section: 0)], with: .none)
-            }
+            syncTableRowCount(from: oldRowCount, to: newCount)
             if assistantIndex < tableView.numberOfRows(inSection: 0) {
-                tableView.reloadRows(at: [IndexPath(row: assistantIndex, section: 0)], with: .none)
+                // Content-only refresh after count is already synced.
+                if let cell = tableView.cellForRow(at: IndexPath(row: assistantIndex, section: 0))
+                    as? AssistantMessageCell,
+                   assistantIndex < messages.count {
+                    let assistant = messages[assistantIndex]
+                    cell.configure(
+                        with: assistant,
+                        preferredHeight: rowHeights.committedColumnHeight(for: assistant.id),
+                        layoutWidth: layoutWidth,
+                        pairedUser: pairedUserMessage(forAssistantAt: assistantIndex, in: messages)
+                    )
+                }
             }
             tableView.layoutIfNeeded()
         }
@@ -6686,13 +7850,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                             append: "\n\n检索未成功：\(err.localizedDescription)\n将改为不依赖网页证据直接作答。"
                         )
                     }
-                    StreamManager.shared.start(
+                    self.startStream(
                         conversationID: convID,
                         messages: apiMsgs,
                         model: model,
                         needsAITitle: needsAITitle
                     )
-                    self.syncStreamingChrome()
                 }
             }
         }
@@ -7098,6 +8261,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let rest = CodeEditApplyTools.strippingAuthorization(from: studyPrefix ?? "")
             studyPrefix = rest.isEmpty ? auth : auth + "\n\n" + rest
         }
+        if StudyAgentMode.isAgentProductEnabled,
+           conv.isWorkspaceStudySession,
+           let wsID = conv.activeStudyWorkspaceID {
+            AgentOrchestrator.shared.clearPendingAsk(for: conv.id)
+            let listing = StudyWorkspaceStore.shared.listFileNames(in: wsID).joined(separator: "\n")
+            let agent = AgentOrchestrator.shared.apiPrefix(for: conv, workspaceListing: listing)
+            if let existing = studyPrefix, !existing.isEmpty {
+                studyPrefix = agent + "\n\n" + existing
+            } else {
+                studyPrefix = agent
+            }
+            agentToolRoundCounts[conv.id] = 0
+            // Root assistant id is assigned below once the message exists.
+            agentProcessRootIDs[conv.id] = nil
+        } else if conv.isWorkspaceStudySession, let wsID = conv.activeStudyWorkspaceID {
+            // Folder Study (Agent gated): light listing only — no tool protocol.
+            let listing = StudyWorkspaceStore.shared.listFileNames(in: wsID).joined(separator: "\n")
+            let active = conv.studyActiveFileName ?? "(none)"
+            let folderCtx = """
+            ## WORKSPACE FILES
+            \(listing.isEmpty ? "(empty folder)" : listing)
+
+            ## ACTIVE FILE
+            \(active)
+            Edits (CONNECTS_EDIT) apply only to the active file. Switch files in the reader title to change the target.
+            """
+            if let existing = studyPrefix, !existing.isEmpty {
+                studyPrefix = folderCtx + "\n\n" + existing
+            } else {
+                studyPrefix = folderCtx
+            }
+        }
         let trimmedUserText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
@@ -7137,6 +8332,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 ? "正在提取页面文字（OCR），随后转写图片内容…"
                 : "正在将图片转写为文字，主回复不会等待此步骤。")
             : ""
+        let useAgentChrome = conv.usesWorkspaceAgentChrome
         let assistantMsg = ChatMessage(
             role: .assistant,
             content: "",
@@ -7145,8 +8341,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             searchProcessPhase: searchOn ? .planning : .idle,
             isStreaming: true,
             imageTranscriptionContent: imageTranscriptionStatus,
-            imageTranscriptionPhase: needsImageTranscription ? .transcribing : .idle
+            imageTranscriptionPhase: needsImageTranscription ? .transcribing : .idle,
+            agentProcessSteps: [],
+            agentProcessPhase: useAgentChrome ? .running : .idle,
+            agentProcessStartedAt: useAgentChrome ? Date() : nil
         )
+        if useAgentChrome {
+            agentProcessRootIDs[conv.id] = assistantMsg.id
+            AgentOrchestrator.shared.resetTurnDedup(for: conv.id)
+        } else {
+            agentProcessRootIDs[conv.id] = nil
+        }
         let convID = conv.id
         let firstNewRow = conv.messages.count
         // Drop width-bucket stale heights so study half-panel rows don't open squashed or hollow.
@@ -7162,14 +8367,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ), userH > 40 {
                 rowHeights.commitMeasured(columnHeight: userH, messageID: userMsg.id, allowShrink: true)
             }
-            let streamingFloor = max(
-                ChatRowHeightResolver.cheapColumnEstimate(for: assistantMsg, layoutWidth: layoutWidth),
-                96
-            )
+            let streamingFloor: CGFloat
+            if assistantMsg.hasAgentProcess {
+                // Cursor: one muted status line (Thinking / Planning) — never a boxed chrome shell.
+                let meta = SettingsManager.shared.chatThinkingFontSize
+                let line = ceil(UIFont.systemFont(ofSize: meta).lineHeight) + 8
+                streamingFloor = max(line, 28)
+            } else {
+                streamingFloor = max(
+                    ChatRowHeightResolver.cheapColumnEstimate(for: assistantMsg, layoutWidth: layoutWidth),
+                    96
+                )
+            }
             rowHeights.commitMeasured(
                 columnHeight: streamingFloor,
                 messageID: assistantMsg.id,
-                allowShrink: true
+                allowShrink: !assistantMsg.hasAgentProcess
             )
         }
 
@@ -7289,13 +8502,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     conversationID: convID,
                     studyCapture: captureForAPI
                 ) { messages in
-                    StreamManager.shared.start(
+                    self.startStream(
                         conversationID: convID,
                         messages: messages,
                         model: model,
                         needsAITitle: needsAITitle
                     )
-                    self.syncStreamingChrome()
                 }
             }
         }
@@ -7385,6 +8597,15 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 withIdentifier: MessageCellReuseID.user,
                 for: indexPath
             ) as! UserMessageCell
+            if msg.shouldHideInTranscript {
+                cell.contentView.isHidden = true
+                cell.isUserInteractionEnabled = false
+                cell.accessibilityElementsHidden = true
+                return cell
+            }
+            cell.contentView.isHidden = false
+            cell.isUserInteractionEnabled = true
+            cell.accessibilityElementsHidden = false
             cell.cellDelegate = self
             bindImageCache(to: cell, message: msg)
             cell.configure(with: msg, preferredHeight: preferred, layoutWidth: layoutWidth)
@@ -7394,6 +8615,15 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             withIdentifier: MessageCellReuseID.assistant,
             for: indexPath
         ) as! AssistantMessageCell
+        if msg.shouldHideInTranscript {
+            cell.contentView.isHidden = true
+            cell.isUserInteractionEnabled = false
+            cell.accessibilityElementsHidden = true
+            return cell
+        }
+        cell.contentView.isHidden = false
+        cell.isUserInteractionEnabled = true
+        cell.accessibilityElementsHidden = false
         cell.cellDelegate = self
         bindImageCache(to: cell, message: msg)
         let pairedUser = pairedUserMessage(forAssistantAt: indexPath.row, in: messages)
@@ -7504,6 +8734,9 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
             return tableView.estimatedRowHeight
         }
         let msg = messages[indexPath.row]
+        if msg.shouldHideInTranscript {
+            return 0.01
+        }
         if msg.isStreaming {
             // iOS 12 `automaticDimension` fills the prior/estimated frame via the
             // cell's bottom pins, then measures that fill as the row height —
@@ -7543,6 +8776,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         guard let messages = ConversationStore.shared.currentConversation?.messages,
               indexPath.row < messages.count else { return 72 }
         let msg = messages[indexPath.row]
+        if msg.shouldHideInTranscript { return 0.01 }
         if msg.isStreaming {
             return streamingPlaceholderRowHeight(for: msg)
         }
@@ -7552,7 +8786,7 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
     /// Compact live-row estimate: collapsed chrome tags + body, never multi-screen.
     private func streamingPlaceholderRowHeight(for msg: ChatMessage) -> CGFloat {
         var h = ChatRowHeightResolver.cellVerticalMargin
-        if msg.hasSearchProcess || msg.hasImageTranscription {
+        if msg.hasSearchProcess || msg.hasImageTranscription || msg.hasAgentProcess {
             h += 40
         }
         let reasoning = msg.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7572,7 +8806,10 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                 ).height
             )
             h += 10 + min(textH, 2_400)
-        } else if reasoning.isEmpty, !msg.hasSearchProcess, !msg.hasImageTranscription {
+        } else if reasoning.isEmpty,
+                  !msg.hasSearchProcess,
+                  !msg.hasImageTranscription,
+                  !msg.hasAgentProcess {
             h += max(fontLineHeightPlaceholder(), 22)
         }
         return max(ceil(h), 52)
@@ -8720,20 +9957,74 @@ extension ChatViewController: InputBarViewDelegate {
     }
 
     func inputBarDidTapDiffUndoAll() {
+        if !WorkspaceEditSession.shared.isEmpty {
+            studyContextProvider?.studyCodeDiffUndoAll()
+            WorkspaceEditSession.shared.clear()
+            refreshWorkspaceDiffBanner()
+            return
+        }
         studyContextProvider?.studyCodeDiffUndoAll()
     }
 
     func inputBarDidTapDiffKeepAll() {
         studyContextProvider?.studyCodeDiffKeepAll()
+        // Session may still hold other files; refresh after keep.
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshWorkspaceDiffBanner()
+        }
+    }
+
+    func inputBarDidTapDiffReview() {
+        studyContextProvider?.studyCodeDiffReviewNext()
+    }
+
+    func inputBarDidSelectDiffFile(documentID: String) {
+        studyContextProvider?.studyCodeDiffOpen(documentID: documentID)
+    }
+
+    func inputBarDidChangeStudyAgentMode(_ mode: StudyAgentMode) {
+        guard let id = currentConversationID else { return }
+        let coerced = StudyAgentMode.coerceForProduct(mode)
+        ConversationStore.shared.updateConversation(id: id) { draft in
+            draft.studyAgentMode = coerced
+        }
+        guard StudyAgentMode.isAgentProductEnabled else { return }
+        let tip: String
+        switch coerced {
+        case .agent: tip = "Agent：可探索并提案编辑"
+        case .plan: tip = "Plan：只读 + 计划清单"
+        case .ask: tip = "Ask：只读 + 可提问澄清"
+        }
+        ConnectsToast.show(tip, in: view, duration: 1.4)
     }
 
     /// Slim Keep strip inside the composer while a Study Diff session is active.
     func setCodeDiffReviewBanner(visible: Bool, changeCount: Int) {
         guard isViewLoaded else { return }
+        if visible, !WorkspaceEditSession.shared.isEmpty {
+            refreshWorkspaceDiffBanner()
+            return
+        }
         inputBar.setDiffReviewBanner(visible: visible, changeCount: changeCount)
         if visible {
             view.bringSubviewToFront(inputBar)
         }
+    }
+
+    func refreshWorkspaceDiffBanner() {
+        guard isViewLoaded else { return }
+        let session = WorkspaceEditSession.shared
+        if !session.isEmpty {
+            let files = session.files.map {
+                (documentID: $0.documentID, fileName: $0.fileName, additions: $0.additions, deletions: $0.deletions)
+            }
+            inputBar.setDiffReviewBanner(visible: true, files: files, multifile: true)
+            view.bringSubviewToFront(inputBar)
+            // Ensure banner isn't zero-height under Build todo strip.
+            view.setNeedsLayout()
+            return
+        }
+        inputBar.setDiffReviewBanner(visible: false, files: [], multifile: false)
     }
 
     func inputBarDidTapAIOptions() {
@@ -9673,6 +10964,10 @@ extension ChatViewController {
         guard let id = currentConversationID else { return }
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyDocumentID = documentID
+            draft.studyWorkspaceID = nil
+            draft.studySessionKind = .document
+            draft.studyPageCaptureEnabled = true
+            draft.studyAgentMode = StudyAgentMode.coerceForProduct(draft.studyAgentMode)
         }
         reloadChat()
     }
@@ -9717,6 +11012,134 @@ extension ChatViewController {
             completion(true)
         }
         sendMessage(text, imageBase64: imageBase64)
+    }
+
+    /// No-network stress: agent chrome + body growth without beginUpdates storms.
+    /// Launch via `-AgentFreezeQA`.
+    func debugAgentFreezeBurst(iterations: Int = 80, completion: @escaping ([String]) -> Void) {
+        guard let convID = currentConversationID else {
+            completion(["no conversation"])
+            return
+        }
+        let rootID: String = {
+            if let existing = ConversationStore.shared.conversation(id: convID)?
+                .messages.last(where: { $0.role == .assistant })?.id {
+                return existing
+            }
+            let root = ChatMessage(
+                role: .assistant,
+                content: "",
+                isStreaming: false,
+                agentProcessPhase: .running,
+                agentProcessStartedAt: Date()
+            )
+            ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
+                draft.messages.append(root)
+            }
+            return root.id
+        }()
+        agentProcessRootIDs[convID] = rootID
+        ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
+            guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
+            draft.messages[idx].agentProcessPhase = .running
+            draft.messages[idx].agentProcessStartedAt = Date()
+            draft.messages[idx].isStreaming = false
+            draft.messages[idx].content = ""
+        }
+        reloadChat()
+
+        var issues: [String] = []
+        var lastPing = Date()
+        let watch = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let gap = Date().timeIntervalSince(lastPing)
+            lastPing = Date()
+            if gap > 1.0 {
+                issues.append(String(format: "main stall %.2fs", gap))
+            }
+            func walk(_ v: UIView) {
+                if let b = v as? UIButton {
+                    let t = b.title(for: .normal) ?? ""
+                    if t.contains("工作中"), b.bounds.height > 0, b.bounds.height < 20 {
+                        issues.append("工作中 crushed h=\(Int(b.bounds.height))")
+                    }
+                }
+                for c in v.subviews { walk(c) }
+            }
+            walk(self.view)
+        }
+        RunLoop.main.add(watch, forMode: .common)
+
+        var i = 0
+        let baselineRows = tableView.numberOfRows(inSection: 0)
+        func tick() {
+            guard i < iterations else {
+                watch.invalidate()
+                ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
+                    guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
+                    draft.messages[idx].agentProcessPhase = .done
+                    draft.messages[idx].content = "合成压力测试完成。"
+                }
+                refreshAgentProcessChrome(messageID: rootID)
+                let finalRows = tableView.numberOfRows(inSection: 0)
+                if finalRows != baselineRows {
+                    issues.append("row count drifted \(baselineRows)→\(finalRows)")
+                }
+                completion(Array(Set(issues)))
+                return
+            }
+            i += 1
+            let stepKinds: [AgentStepKind] = [.exploring, .grepped, .read, .edited]
+            let kind = stepKinds[i % stepKinds.count]
+            var step = AgentProcessStep(
+                kind: kind,
+                title: kind == .edited ? "Editing Foo.swift" : "\(kind.displayTitle)…",
+                detail: kind == .edited ? "Edited Foo.swift +\(i)" : "Explored \(i) files",
+                status: .done
+            )
+            step.markDone()
+            mutateAgentSteps(conversationID: convID, messageID: rootID) { msg in
+                msg.agentProcessSteps.append(step)
+                msg.upsertMetaPart(from: step)
+                if i % 7 == 0 {
+                    // Simulate first body sentence appearing mid-run.
+                    msg.content = "这是正文第 \(i) 句。继续保持过程条可见。"
+                }
+                // Simulate tool-continue without inserting table rows.
+                if i % 11 == 0 {
+                    msg.agentToolTurns.append(
+                        AgentToolTurn(
+                            assistantContent: "tool_round_\(i)",
+                            toolResults: "## TOOL_RESULTS\nok"
+                        )
+                    )
+                    msg.agentProseSegments.append("段落 \(i)")
+                    msg.appendProsePart("段落 \(i)")
+                    msg.content = ""
+                    msg.agentEditCards = [
+                        AgentEditCard(
+                            fileName: "Foo.swift",
+                            additions: i,
+                            deletions: 1,
+                            snippetMinus: "old",
+                            snippetPlus: "new"
+                        )
+                    ]
+                }
+            }
+            if tableView.numberOfRows(inSection: 0) != baselineRows {
+                issues.append("row grew at i=\(i)")
+            }
+            // Also paint body via root streaming path.
+            if i % 5 == 0, let messages = ConversationStore.shared.currentConversation?.messages,
+               let rootRow = messages.firstIndex(where: { $0.id == rootID }),
+               let cell = tableView.cellForRow(at: IndexPath(row: rootRow, section: 0)) as? AssistantMessageCell {
+                cell.applyAgentTurnStreamingBody(messages[rootRow].chatDisplayBody)
+                commitAgentStreamingRowHeight(cell: cell, messageID: rootID)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: tick)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: tick)
     }
 }
 #endif

@@ -401,13 +401,16 @@ enum AssistantMessageLayout {
         if message.hasImageTranscription {
             return message.imageTranscriptionDisplayText(pairedUser: pairedUser)
         }
+        if message.hasAgentProcess {
+            return message.agentProcessDisplayText
+        }
         return message.searchProcessContent
     }
 
     private static func searchChromeHeight(for message: ChatMessage,
                                            layoutWidth: CGFloat,
                                            pairedUser: ChatMessage?) -> CGFloat {
-        guard message.hasSearchProcess || message.hasImageTranscription else { return 0 }
+        guard message.showsProcessChrome else { return 0 }
         return 40
     }
 
@@ -744,7 +747,7 @@ enum AssistantMessageLayout {
         guard message.role == .assistant, !message.isStreaming else { return nil }
         var total: CGFloat = 0
 
-        if message.hasSearchProcess || message.hasImageTranscription {
+        if message.showsProcessChrome {
             total += searchChromeHeight(
                 for: message,
                 layoutWidth: layoutWidth,
@@ -781,10 +784,7 @@ enum AssistantMessageLayout {
             total += CGFloat(36 + lines * 18)
         }
 
-        let showActions = !message.chatDisplayBody.isEmpty
-            || !reasoning.isEmpty
-            || message.hasSearchProcess
-            || message.hasImageTranscription
+        let showActions = Self.shouldReserveActionRow(for: message, reasoning: reasoning)
         if showActions {
             total += 4 + actionRowHeight
         }
@@ -792,6 +792,15 @@ enum AssistantMessageLayout {
         guard total > 40 else { return nil }
         _ = isLastRow
         return total
+    }
+
+    /// Matches `AssistantMessageCell.shouldShowActionButtons` (finished, non-streaming).
+    private static func shouldReserveActionRow(for message: ChatMessage, reasoning: String) -> Bool {
+        if message.agentProcessPhase == .running || message.agentProcessPhase == .waitingUser {
+            return false
+        }
+        let body = message.chatDisplayBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !body.isEmpty || !reasoning.isEmpty || message.hasImageTranscription
     }
 
     /// Height while an assistant row shows plain `assistantLabel` fallback (no native layout cache).
@@ -803,7 +812,7 @@ enum AssistantMessageLayout {
         guard message.role == .assistant, !message.isStreaming else { return nil }
         var total: CGFloat = 0
 
-        if message.hasSearchProcess || message.hasImageTranscription {
+        if message.showsProcessChrome {
             total += searchChromeHeight(
                 for: message,
                 layoutWidth: layoutWidth,
@@ -841,10 +850,7 @@ enum AssistantMessageLayout {
             total += bodyTop + textHeight
         }
 
-        let showActions = !message.chatDisplayBody.isEmpty
-            || !reasoning.isEmpty
-            || message.hasSearchProcess
-            || message.hasImageTranscription
+        let showActions = Self.shouldReserveActionRow(for: message, reasoning: reasoning)
         if showActions {
             total += 4 + actionRowHeight
         }

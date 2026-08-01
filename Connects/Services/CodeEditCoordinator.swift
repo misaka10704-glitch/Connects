@@ -39,25 +39,38 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             lastPresentFailure = .noEditor
             return false
         }
-        let snap = editor.aiEditSnapshot()
+
+        // Prefer frozen session / Diff baseline over the live textView (which may be a
+        // rendered hunk view or an intermediate agent write).
+        let docID = editor.activeDocumentID
+        let baseline: String = {
+            if let docID, let pending = WorkspaceEditSession.shared.pending(documentID: docID) {
+                return pending.before
+            }
+            if let locked = editor.diffSessionBaseline {
+                return locked
+            }
+            return editor.aiEditSnapshot().text
+        }()
+        let snapRange = editor.aiEditSnapshot().selectedRange
         let range = CodeEditApplyTools.resolveTargetRange(
-            text: snap.text,
-            selectedRange: snap.selectedRange,
+            text: baseline,
+            selectedRange: snapRange,
             kind: proposal.rangeKind
         )
         if proposal.replacement.count > CodeEditApplyTools.maxChars
-            || snap.text.count > CodeEditApplyTools.maxChars {
+            || baseline.count > CodeEditApplyTools.maxChars {
             lastPresentFailure = .tooLarge
             ConnectsToast.show("内容过大，请缩小选区后再试", in: editor.view, duration: 1.6)
             return false
         }
         let after = CodeEditApplyTools.composeAfter(
-            before: snap.text,
+            before: baseline,
             range: range,
             replacement: proposal.replacement
         )
         guard CodeEditApplyTools.validateAlignment(
-            before: snap.text,
+            before: baseline,
             after: after,
             range: range,
             replacement: proposal.replacement
@@ -65,14 +78,14 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             lastPresentFailure = .alignment
             return false
         }
-        if after == snap.text {
+        if after == baseline {
             lastPresentFailure = .identical
             ConnectsToast.show("提案与当前文件相同，未打开 Diff", in: editor.view, duration: 1.8)
             return false
         }
 
         generation &+= 1
-        pendingBefore = snap.text
+        pendingBefore = baseline
         pendingAssistantMessageID = assistantMessageID.isEmpty ? nil : assistantMessageID
         isPresentingDiff = true
         editor.onDiffSessionChange = { [weak self] active, count in
@@ -83,7 +96,7 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
         }
         // Legacy callback unused for hunk flow.
         editor.onDiffDecision = nil
-        let opened = editor.presentInlineDiff(before: snap.text, after: after)
+        let opened = editor.presentInlineDiff(before: baseline, after: after)
         if !opened {
             // Empty hunk list (should be rare after identical check) — don't leave Diff flagged on.
             isPresentingDiff = false
@@ -92,6 +105,49 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             pendingAssistantMessageID = nil
             lastPresentFailure = .noHunks
             ConnectsToast.show("未检测到可审阅的改动块", in: editor.view, duration: 1.8)
+            return false
+        }
+        if let docID = docID {
+            let name = StudyDocumentStore.shared.document(id: docID)?.title
+                ?? proposal.targetPath
+                ?? "file"
+            WorkspaceEditSession.shared.upsert(
+                documentID: docID,
+                fileName: name,
+                before: baseline,
+                after: after
+            )
+        }
+        return true
+    }
+
+    /// Refresh an open Diff (or open Review) using the cumulative WorkspaceEditSession pair.
+    @discardableResult
+    func presentCumulativeSessionDiff(documentID: String) -> Bool {
+        guard let pending = WorkspaceEditSession.shared.pending(documentID: documentID),
+              let editor = editor else { return false }
+        if pending.before == pending.after {
+            lastPresentFailure = .identical
+            return false
+        }
+        lastPresentFailure = nil
+        generation &+= 1
+        pendingBefore = pending.before
+        pendingAssistantMessageID = nil
+        isPresentingDiff = true
+        editor.onDiffSessionChange = { [weak self] active, count in
+            self?.onDiffSessionChange?(active, count)
+        }
+        editor.onDiffFinished = { [weak self] finalText in
+            self?.finish(finalText: finalText)
+        }
+        editor.onDiffDecision = nil
+        let opened = editor.presentInlineDiff(before: pending.before, after: pending.after)
+        if !opened {
+            isPresentingDiff = false
+            editor.onDiffFinished = nil
+            pendingBefore = ""
+            lastPresentFailure = .noHunks
             return false
         }
         return true
@@ -111,9 +167,15 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             }
             editor.applyResolvedDiffText(final)
             editor.enterReadingModeAfterKeep()
+            if let docID = editor.activeDocumentID {
+                WorkspaceEditSession.shared.remove(documentID: docID)
+            }
             ConnectsToast.show("Kept", in: editor.view, duration: 1.0)
         } else {
             // Editor already restored `before` in finishDiffSession when undoing.
+            if let docID = editor.activeDocumentID {
+                WorkspaceEditSession.shared.remove(documentID: docID)
+            }
             ConnectsToast.show("Undone", in: editor.view, duration: 1.0)
         }
         onDiffSessionChange?(false, 0)

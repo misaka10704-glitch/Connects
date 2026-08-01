@@ -262,7 +262,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
             return false
         }()
 
-        let last = ConversationStore.shared.conversation(id: conversationID)?.messages.last
+        let last = ConversationStore.shared.conversation(id: conversationID)?.messages
+            .last(where: { $0.isStreaming })
+            ?? ConversationStore.shared.conversation(id: conversationID)?.messages.last
         let body = last?.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let think = last?.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let bodyEmpty = body.isEmpty

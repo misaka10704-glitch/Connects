@@ -24,6 +24,11 @@ enum ActionIconFactory {
         case chevronLeft, chevronRight, chevronUp, chevronDown
         case book
         case toc, bookmark
+        case clock
+        /// Selection Ask in the composer (speech-bubble + ?).
+        case ask
+        /// Import / copy file into workspace.
+        case importFile
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
@@ -554,6 +559,20 @@ enum ActionIconFactory {
             body.lineWidth = 1.55
             body.stroke()
 
+        case .clock:
+            let c = CGPoint(x: r.midX, y: r.midY)
+            let rad = pointSize * 0.38
+            let circle = UIBezierPath(arcCenter: c, radius: rad, startAngle: 0, endAngle: .pi * 2, clockwise: true)
+            circle.lineWidth = 1.55
+            circle.stroke()
+            let hands = UIBezierPath()
+            hands.move(to: c)
+            hands.addLine(to: CGPoint(x: c.x, y: c.y - rad * 0.55))
+            hands.move(to: c)
+            hands.addLine(to: CGPoint(x: c.x + rad * 0.42, y: c.y + rad * 0.12))
+            hands.lineWidth = 1.55
+            hands.stroke()
+
         case .chevronLeft:
             let path = UIBezierPath()
             path.move(to: CGPoint(x: r.midX + 2.2, y: r.minY + 3.5))
@@ -659,6 +678,56 @@ enum ActionIconFactory {
             notch.addLine(to: CGPoint(x: r.midX + 2.2, y: r.minY + 2.5))
             notch.lineWidth = 1.45
             notch.stroke()
+
+        case .ask:
+            // Speech bubble with question mark — selection Ask.
+            let bubble = UIBezierPath(
+                roundedRect: CGRect(
+                    x: r.minX + pointSize * 0.12,
+                    y: r.minY + pointSize * 0.10,
+                    width: pointSize * 0.76,
+                    height: pointSize * 0.58
+                ),
+                cornerRadius: pointSize * 0.18
+            )
+            bubble.lineWidth = 1.5
+            bubble.stroke()
+            let tail = UIBezierPath()
+            tail.move(to: CGPoint(x: r.minX + pointSize * 0.28, y: r.minY + pointSize * 0.64))
+            tail.addLine(to: CGPoint(x: r.minX + pointSize * 0.22, y: r.maxY - pointSize * 0.12))
+            tail.addLine(to: CGPoint(x: r.minX + pointSize * 0.46, y: r.minY + pointSize * 0.64))
+            tail.lineWidth = 1.4
+            tail.stroke()
+            let mark = NSAttributedString(
+                string: "?",
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: pointSize * 0.42, weight: .bold),
+                    .foregroundColor: color
+                ]
+            )
+            let markSize = mark.size()
+            mark.draw(at: CGPoint(
+                x: r.midX - markSize.width / 2,
+                y: r.minY + pointSize * 0.18
+            ))
+
+        case .importFile:
+            // Tray + downward arrow — import / copy into folder.
+            let tray = UIBezierPath()
+            tray.move(to: CGPoint(x: r.minX + pointSize * 0.18, y: r.midY + pointSize * 0.08))
+            tray.addLine(to: CGPoint(x: r.minX + pointSize * 0.18, y: r.maxY - pointSize * 0.16))
+            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.18, y: r.maxY - pointSize * 0.16))
+            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.18, y: r.midY + pointSize * 0.08))
+            tray.lineWidth = 1.55
+            tray.stroke()
+            let arrow = UIBezierPath()
+            arrow.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.12))
+            arrow.addLine(to: CGPoint(x: r.midX, y: r.midY + pointSize * 0.18))
+            arrow.move(to: CGPoint(x: r.midX - pointSize * 0.18, y: r.midY + pointSize * 0.02))
+            arrow.addLine(to: CGPoint(x: r.midX, y: r.midY + pointSize * 0.18))
+            arrow.addLine(to: CGPoint(x: r.midX + pointSize * 0.18, y: r.midY + pointSize * 0.02))
+            arrow.lineWidth = 1.55
+            arrow.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)

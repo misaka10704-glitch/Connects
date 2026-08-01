@@ -10,10 +10,14 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
     private let percentLabel = UILabel()
     private let tokenLabel = UILabel()
     private let barTrack = UIView()
+    private let barFill = UIView()
+    private let compositionLabel = UILabel()
+    private let compositionTrack = UIView()
     private let legendStack = UIStackView()
     private let compactButton = UIButton(type: .system)
     private let footnoteLabel = UILabel()
     private var barWidthConstraint: NSLayoutConstraint?
+    private var barFillWidthConstraint: NSLayoutConstraint?
     private var isCompacting = false
 
     init(breakdown: ContextBuilder.Breakdown) {
@@ -53,6 +57,9 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
         percentLabel.textColor = c.textPrimary
         tokenLabel.textColor = c.textSecondary
         barTrack.backgroundColor = c.border.withAlphaComponent(0.35)
+        compositionTrack.backgroundColor = c.border.withAlphaComponent(0.25)
+        compositionLabel.textColor = c.textSecondary
+        barFill.backgroundColor = c.accent
         footnoteLabel.textColor = c.textSecondary
         compactButton.setTitleColor(c.accent, for: .normal)
         compactButton.backgroundColor = c.accent.withAlphaComponent(0.12)
@@ -103,8 +110,29 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
         barTrack.layer.cornerRadius = 4
         barTrack.clipsToBounds = true
         stack.addArrangedSubview(barTrack)
-        barWidthConstraint = barTrack.heightAnchor.constraint(equalToConstant: 8)
+        barWidthConstraint = barTrack.heightAnchor.constraint(equalToConstant: 10)
         barWidthConstraint?.isActive = true
+
+        barFill.translatesAutoresizingMaskIntoConstraints = false
+        barFill.layer.cornerRadius = 4
+        barTrack.addSubview(barFill)
+        barFillWidthConstraint = barFill.widthAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            barFill.leadingAnchor.constraint(equalTo: barTrack.leadingAnchor),
+            barFill.topAnchor.constraint(equalTo: barTrack.topAnchor),
+            barFill.bottomAnchor.constraint(equalTo: barTrack.bottomAnchor),
+            barFillWidthConstraint!
+        ])
+
+        compositionLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        compositionLabel.text = "组成（相对已用量）"
+        stack.addArrangedSubview(compositionLabel)
+
+        compositionTrack.translatesAutoresizingMaskIntoConstraints = false
+        compositionTrack.layer.cornerRadius = 3
+        compositionTrack.clipsToBounds = true
+        stack.addArrangedSubview(compositionTrack)
+        compositionTrack.heightAnchor.constraint(equalToConstant: 6).isActive = true
 
         legendStack.axis = .vertical
         legendStack.spacing = 10
@@ -137,14 +165,18 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
     }
 
     private func reloadContent() {
-        percentLabel.text = "\(breakdown.usage.percent)% 已满"
+        let pct = breakdown.usage.percent
+        percentLabel.text = pct >= 100 ? "已满 \(pct)%" : "已用 \(pct)%"
         let used = ContextBuilder.formatTokenEstimate(breakdown.usage.usedChars)
         let budget = ContextBuilder.formatTokenEstimate(breakdown.usage.budgetChars)
         tokenLabel.text = "\(used) / \(budget) Tokens"
         compactButton.setTitle(compactTitle, for: .normal)
         compactButton.isHidden = breakdown.usage.percent < 35 && !breakdown.usage.shouldAutoCompact
 
-        var notes: [String] = ["字符数按约 2 字符 / Token 估算，仅供参考。"]
+        var notes: [String] = [
+            "主条 = 已用字符 / 字符预算（≈ 2 字符 / Token）。",
+            "下方细条为组成占比（相对已用量），不代表预算填充。"
+        ]
         notes.append("模型：\(breakdown.modelName)")
         if breakdown.summaryActive {
             notes.append("较早对话已压缩为摘要。")
@@ -198,30 +230,40 @@ final class ContextUsageDetailViewController: UIViewController, ThemeRefreshable
     }
 
     private func rebuildBar() {
-        barTrack.subviews.forEach { $0.removeFromSuperview() }
+        // Main bar: fill = used / budget.
+        let trackW = max(barTrack.bounds.width, 1)
+        let fillW = trackW * CGFloat(breakdown.usage.ratio)
+        barFillWidthConstraint?.constant = fillW
+
+        // Composition strip: relative to bucket totals (not budget).
+        compositionTrack.subviews.forEach { $0.removeFromSuperview() }
         let total = max(1, breakdown.items.reduce(0) { $0 + $1.chars })
         var x: CGFloat = 0
-        let height: CGFloat = 8
+        let height: CGFloat = 6
+        let width = max(compositionTrack.bounds.width, 320)
         for item in breakdown.items where item.chars > 0 {
-            let width = max(2, CGFloat(item.chars) / CGFloat(total) * 320)
-            let segment = UIView(frame: CGRect(x: x, y: 0, width: width, height: height))
+            let segmentWidth = max(2, CGFloat(item.chars) / CGFloat(total) * width)
+            let segment = UIView(frame: CGRect(x: x, y: 0, width: segmentWidth, height: height))
             segment.backgroundColor = item.color
             segment.autoresizingMask = [.flexibleRightMargin, .flexibleHeight]
-            barTrack.addSubview(segment)
-            x += width
+            compositionTrack.addSubview(segment)
+            x += segmentWidth
         }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        let trackW = barTrack.bounds.width
+        barFillWidthConstraint?.constant = trackW * CGFloat(breakdown.usage.ratio)
+
         let total = max(1, breakdown.items.reduce(0) { $0 + $1.chars })
         var x: CGFloat = 0
-        let height = barTrack.bounds.height
-        let width = barTrack.bounds.width
+        let height = compositionTrack.bounds.height
+        let width = compositionTrack.bounds.width
         var index = 0
         for item in breakdown.items where item.chars > 0 {
-            guard index < barTrack.subviews.count else { break }
-            let segment = barTrack.subviews[index]
+            guard index < compositionTrack.subviews.count else { break }
+            let segment = compositionTrack.subviews[index]
             let segmentWidth = max(2, CGFloat(item.chars) / CGFloat(total) * width)
             segment.frame = CGRect(x: x, y: 0, width: segmentWidth, height: height)
             x += segmentWidth

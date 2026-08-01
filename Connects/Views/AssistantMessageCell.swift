@@ -19,6 +19,20 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private let searchHeader = UIButton(type: .system)
     private let searchBody = UILabel()
     private let searchBox = UIView()
+    /// Cursor-style inline edit cards under the process chrome.
+    private let agentEditCardsStack = UIStackView()
+    /// Vertical steps stack (meta / prose / edit) — Cursor `flex column` + step gap.
+    private let agentTimelineStack = UIStackView()
+    /// Stable id → view for incremental timeline paint (keeps shimmer alive).
+    private var agentTimelineViewsByID: [String: UIView] = [:]
+    private var agentTimelineOrder: [String] = []
+    private weak var agentLiveShimmerLabel: ConnectsShimmerLabel?
+    /// Explicit Explored expand overrides keyed by header id (`explore-header`, `explore-header-2`, …).
+    /// Missing key → auto: expanded while running, collapsed when done.
+    private var agentExploreExpandOverride: [String: Bool] = [:]
+    private var agentThoughtExpandedIDs = Set<String>()
+    private var agentPaintLayoutWidth: CGFloat = 0
+    private static let agentExploreChildIndent: CGFloat = 12
 
     private let assistantLabel = UILabel()
     private let nativeRenderView = NativeMessageRenderView()
@@ -53,9 +67,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var searchToHeader: NSLayoutConstraint!
     private var searchToBody: NSLayoutConstraint!
     private var searchTop: NSLayoutConstraint!
+    private var agentEditCardsTop: NSLayoutConstraint!
+    private var agentEditCardsHeight: NSLayoutConstraint!
     private var assistantTopToRole: NSLayoutConstraint!
     private var assistantTopToImage: NSLayoutConstraint!
     private var assistantTopToThink: NSLayoutConstraint!
+    private var assistantTopToEditCards: NSLayoutConstraint!
+    private var timelineTopToRole: NSLayoutConstraint!
+    private var timelineTopToImage: NSLayoutConstraint!
+    private var columnBottomToTimeline: NSLayoutConstraint!
     private var thinkingTop: NSLayoutConstraint!
     private var labelBottom: NSLayoutConstraint!
     private var labelBottomFloor: NSLayoutConstraint!
@@ -63,6 +83,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var nativeTopToRole: NSLayoutConstraint!
     private var nativeTopToImage: NSLayoutConstraint!
     private var nativeTopToThink: NSLayoutConstraint!
+    private var nativeTopToEditCards: NSLayoutConstraint!
     private var nativeBottom: NSLayoutConstraint!
     private var columnBottomPin: NSLayoutConstraint!
     /// Action chrome overlays contentView bottom — not in column stack (avoids body jump on icon restore).
@@ -251,7 +272,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        hasSearch = message.showsProcessChrome
         deferredNativeBind = DeferredNativeBind(
             message: message,
             hasThinking: hasThinking,
@@ -311,7 +332,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        hasSearch = message.showsProcessChrome
         deferredNativeBind = DeferredNativeBind(
             message: message,
             hasThinking: hasThinking,
@@ -399,14 +420,34 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedThemeColors = c
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         cachedReasoningText = message.reasoningContent
+        // Agent timeline owns chrome (Cursor-style). Never re-paint 「已深度思考」on top.
+        if Self.shouldSuppressThinkingChrome(for: message) {
+            hasThinking = false
+            setThinking(visible: false, expanded: false)
+            return
+        }
         hasThinking = !think.isEmpty
-        guard hasThinking else { return }
+        guard hasThinking else {
+            setThinking(visible: false, expanded: false)
+            return
+        }
         thinkingExpanded = false
         populateThinkingBody(expanded: false, colors: c, thinkFont: thinkFont)
         setThinking(visible: true, expanded: false)
         let title = (message.isStreaming || streamingPresentation) ? "思考中…" : "已深度思考"
         applyChromeHeaderTitle(thinkingHeader, title: title, color: c.textSecondary)
         updateThinkingHeaderInteraction(messageIsStreaming: message.isStreaming)
+    }
+
+    /// Workspace agent turn: one process chrome, no stacked thinking strip.
+    private static func shouldSuppressThinkingChrome(for message: ChatMessage) -> Bool {
+        if message.hasAgentProcess { return true }
+        guard StudyAgentMode.isAgentProductEnabled else { return false }
+        guard let conv = ConversationStore.shared.currentConversation else { return false }
+        return conv.messages.contains {
+            $0.id != message.id
+                && ($0.agentProcessPhase == .running || $0.agentProcessPhase == .waitingUser)
+        }
     }
 
     private func updateThinkingHeaderInteraction(messageIsStreaming: Bool) {
@@ -430,25 +471,667 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         cachedThinkingFontSize = thinkFont
         cachedThemeColors = c
         let imageActivity = message.hasImageTranscription
-        let search = (imageActivity
-            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
-            : message.searchProcessContent
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentActivity = message.hasAgentProcess && !imageActivity
+        let search: String
+        if imageActivity {
+            search = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if agentActivity {
+            search = message.agentProcessDisplayText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            search = message.searchProcessContent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         cachedSearchText = search
         cachedImageActivity = imageActivity
         cachedImageTranscriptionPhase = message.imageTranscriptionPhase
-        hasSearch = message.hasSearchProcess || imageActivity
-        guard hasSearch else { return }
+        if agentActivity {
+            hasSearch = false
+            setSearch(visible: false, expanded: false)
+            paintAgentInterleavedFlow(message)
+            setContentTops(hasThinking: false, hasSearch: false, hasImage: !imageViewMsg.isHidden)
+            return
+        }
+        hasSearch = message.showsProcessChrome
+        guard hasSearch else {
+            setSearch(visible: false, expanded: false)
+            return
+        }
         searchExpanded = false
         if imageActivity {
             cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
         } else {
-            cachedSearchTitleCore = SearchProcessPhase.done.headerTitle
+            cachedSearchTitleCore = message.searchProcessSummaryTitle
         }
+        // Keep finished / idle search chrome header-only — body opens via chrome viewer.
         populateSearchBody(expanded: false, colors: c, thinkFont: thinkFont)
         setSearch(visible: true, expanded: false)
         applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: c.textSecondary)
         updateSearchHeaderInteraction(messageIsStreaming: message.isStreaming)
+    }
+
+    /// Lightweight agent timeline paint — Cursor-style interleaved meta+prose (no chrome box).
+    /// Returns true when the content height likely changed (host may beginUpdates).
+    @discardableResult
+    func syncAgentProcessPresentation(with message: ChatMessage,
+                                      layoutWidth: CGFloat? = nil,
+                                      liveOverlayText: String? = nil) -> Bool {
+        guard messageID == message.id else { return false }
+        if let layoutWidth = layoutWidth {
+            preferredLayoutWidth = layoutWidth
+        }
+        let imageActivity = message.hasImageTranscription
+        guard !imageActivity, message.hasAgentProcess else {
+            if hasSearch, !message.showsProcessChrome {
+                setSearch(visible: false, expanded: false)
+                hasSearch = false
+                syncAgentEditCards([])
+                clearAgentTimeline()
+                return true
+            }
+            return false
+        }
+        // Agent: never use the web-search rounded box — status lines sit in the body column.
+        if !searchBox.isHidden || hasSearch {
+            setSearch(visible: false, expanded: false)
+            hasSearch = false
+        }
+        let beforeH = agentTimelineStack.bounds.height
+        paintAgentInterleavedFlow(message, liveOverlayText: liveOverlayText)
+        setContentTops(
+            hasThinking: false,
+            hasSearch: false,
+            hasImage: !imageViewMsg.isHidden
+        )
+        contentView.layoutIfNeeded()
+        return abs(agentTimelineStack.bounds.height - beforeH) > 1
+            || !agentTimelineStack.isHidden
+    }
+
+    /// Keep the live meta shimmer sweeping without changing text (avoids jump / kills ◐ spinner).
+    #if DEBUG
+    /// Visual QA: force Explored / Thought expand without ConversationStore.
+    func qaPaintAgentTimeline(
+        message: ChatMessage,
+        layoutWidth: CGFloat,
+        exploreExpanded: Bool? = nil,
+        thoughtExpandedIDs: Set<String> = []
+    ) {
+        messageID = message.id
+        preferredLayoutWidth = layoutWidth
+        if let exploreExpanded {
+            // Force every known explore header the same way for gallery frames.
+            agentExploreExpandOverride = [
+                AgentTimelinePart.exploreHeaderID: exploreExpanded,
+                "\(AgentTimelinePart.exploreHeaderID)-2": exploreExpanded,
+                "\(AgentTimelinePart.exploreHeaderID)-3": exploreExpanded,
+                "\(AgentTimelinePart.exploreHeaderID)-4": exploreExpanded
+            ]
+        }
+        agentThoughtExpandedIDs = thoughtExpandedIDs
+        paintAgentInterleavedFlow(message)
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+    }
+
+    var qaIsAssistantLabelSuppressed: Bool {
+        if assistantLabel.isHidden || assistantLabel.alpha < 0.05 { return true }
+        let plainEmpty = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+        let attrEmpty = (assistantLabel.attributedText?.length ?? 0) == 0
+        return plainEmpty && attrEmpty
+    }
+
+    var qaAgentTimelineChildCount: Int {
+        agentTimelineOrder.filter {
+            $0 != AgentTimelinePart.exploreHeaderID && !$0.hasPrefix("card-")
+                && $0 != AgentTimelinePart.liveID && !$0.hasPrefix("prose")
+                && !$0.hasPrefix("ask-") && $0 != "current" && $0 != "waiting"
+        }.count
+    }
+
+    func qaSizeToFittedHeight(minHeight: CGFloat = 80) {
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        let fitted = max(measuredContentHeight(), minHeight)
+        var f = frame
+        f.size.height = ceil(fitted)
+        frame = f
+        contentView.frame = bounds
+        contentView.layoutIfNeeded()
+    }
+    #endif
+
+    func keepAgentLiveShimmerAlive() {
+        if let shimmer = agentLiveShimmerLabel {
+            shimmer.setShimmerEnabled(true)
+            return
+        }
+        // Prefer live Thinking row; else last meta shimmer in the stack.
+        if let live = agentTimelineViewsByID[AgentTimelinePart.liveID] as? ConnectsShimmerLabel {
+            live.setShimmerEnabled(true)
+            agentLiveShimmerLabel = live
+            return
+        }
+        if let overlay = agentTimelineViewsByID["overlay"] as? ConnectsShimmerLabel {
+            overlay.setShimmerEnabled(true)
+            agentLiveShimmerLabel = overlay
+            return
+        }
+        for id in agentTimelineOrder.reversed() {
+            if let s = agentTimelineViewsByID[id] as? ConnectsShimmerLabel {
+                s.setShimmerEnabled(true)
+                agentLiveShimmerLabel = s
+                return
+            }
+        }
+    }
+
+    /// Cursor composer: Explored group + indented Thought/Read/Grep + prose.
+    private func paintAgentInterleavedFlow(_ message: ChatMessage, liveOverlayText: String? = nil) {
+        hideNativeRender()
+        // Resolve layout width before any preferredMaxLayoutWidth assignment (cold reopen).
+        var layoutW = preferredLayoutWidth
+        if layoutW < 1 {
+            layoutW = max(column.bounds.width, bounds.width - 32, contentView.bounds.width - 32, 120)
+            preferredLayoutWidth = layoutW
+        }
+        applyAssistantLayoutWidth()
+        syncAgentEditCards([])
+        // Timeline owns the body — never dual-paint with assistantLabel (reopen overlap).
+        assistantLabel.isHidden = true
+        assistantLabel.attributedText = nil
+        assistantLabel.text = nil
+        assistantLabel.alpha = 0
+        assistantLabel.preferredMaxLayoutWidth = layoutW
+        agentTimelineStack.isHidden = false
+        agentTimelineStack.alpha = 1
+        agentTimelineStack.clipsToBounds = true
+
+        let colors = cachedThemeColors ?? DSTheme.c
+        cachedThemeColors = colors
+        let bodySize = SettingsManager.shared.chatBodyFontSize
+        let metaSize = cachedThinkingFontSize > 0
+            ? cachedThinkingFontSize
+            : SettingsManager.shared.chatThinkingFontSize
+        let bodyFont = UIFont.systemFont(ofSize: bodySize)
+        let metaFont = UIFont.systemFont(ofSize: metaSize)
+        agentPaintLayoutWidth = layoutW
+
+        let running = message.isStreaming || message.agentProcessPhase == .running
+        let items = message.agentTimelinePaintItems(
+            liveOverlay: liveOverlayText,
+            defaultExploreExpanded: running,
+            exploreExpandOverrides: agentExploreExpandOverride
+        )
+
+        let desiredIDs = Set(items.map(\.id))
+        for id in agentTimelineOrder where !desiredIDs.contains(id) {
+            if let v = agentTimelineViewsByID.removeValue(forKey: id) {
+                if let s = v as? ConnectsShimmerLabel { s.setShimmerEnabled(false) }
+                agentTimelineStack.removeArrangedSubview(v)
+                v.removeFromSuperview()
+            }
+        }
+        agentTimelineOrder = agentTimelineOrder.filter { desiredIDs.contains($0) }
+
+        // Do NOT blanket-disable live shimmer every paint (that flashed the whole page).
+        var nextLive: ConnectsShimmerLabel?
+
+        for (idx, item) in items.enumerated() {
+            let wantThoughtExpanded = agentThoughtExpandedIDs.contains(item.id)
+            if let existing = agentTimelineViewsByID[item.id] {
+                let needsReplace = agentTimelineViewNeedsReplace(existing, for: item)
+                if needsReplace {
+                    if let s = existing as? ConnectsShimmerLabel { s.setShimmerEnabled(false) }
+                    agentTimelineStack.removeArrangedSubview(existing)
+                    existing.removeFromSuperview()
+                    agentTimelineViewsByID.removeValue(forKey: item.id)
+                } else {
+                    updateAgentTimelineView(
+                        existing,
+                        item: item,
+                        bodyFont: bodyFont,
+                        metaFont: metaFont,
+                        colors: colors,
+                        layoutW: layoutW,
+                        thoughtExpanded: wantThoughtExpanded
+                    )
+                    if item.shimmer, let s = agentShimmer(in: existing) {
+                        nextLive = s
+                    }
+                    if let arrangedIdx = agentTimelineStack.arrangedSubviews.firstIndex(of: existing),
+                       arrangedIdx != idx {
+                        agentTimelineStack.removeArrangedSubview(existing)
+                        agentTimelineStack.insertArrangedSubview(
+                            existing,
+                            at: min(idx, agentTimelineStack.arrangedSubviews.count)
+                        )
+                    }
+                    continue
+                }
+            }
+            let view = makeAgentTimelinePaintView(
+                item: item,
+                bodyFont: bodyFont,
+                metaFont: metaFont,
+                colors: colors,
+                layoutW: layoutW,
+                thoughtExpanded: wantThoughtExpanded
+            )
+            if item.shimmer, let s = agentShimmer(in: view) {
+                nextLive = s
+            }
+            agentTimelineViewsByID[item.id] = view
+            view.setContentHuggingPriority(.required, for: .vertical)
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+            agentTimelineStack.insertArrangedSubview(
+                view,
+                at: min(idx, agentTimelineStack.arrangedSubviews.count)
+            )
+        }
+        agentTimelineOrder = items.map(\.id)
+
+        if agentLiveShimmerLabel !== nextLive {
+            if nextLive == nil {
+                agentLiveShimmerLabel?.setShimmerEnabled(false)
+            }
+            agentLiveShimmerLabel = nextLive
+            nextLive?.setShimmerEnabled(true)
+        } else {
+            nextLive?.setShimmerEnabled(true)
+        }
+
+        for view in agentTimelineStack.arrangedSubviews where view.tag != 7211 {
+            view.setContentHuggingPriority(.required, for: .vertical)
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+        ensureAgentTimelineStretchSpacer()
+
+        pinTimelineToColumnContent()
+        cachedSearchTitleCore = message.agentProcessSummaryTitle
+        cachedSearchText = message.agentProcessDisplayText
+    }
+
+    /// Trailing low-hug spacer so oversized cell estimates expand below content,
+    /// not between Thought / Read / Deleted rows.
+    private func ensureAgentTimelineStretchSpacer() {
+        let stretchID = "timeline-stretch"
+        let spacer: UIView
+        if let existing = agentTimelineViewsByID[stretchID] {
+            spacer = existing
+        } else {
+            let v = UIView()
+            v.translatesAutoresizingMaskIntoConstraints = false
+            v.tag = 7211
+            v.accessibilityIdentifier = stretchID
+            v.isUserInteractionEnabled = false
+            v.setContentHuggingPriority(UILayoutPriority(1), for: .vertical)
+            v.setContentCompressionResistancePriority(UILayoutPriority(1), for: .vertical)
+            agentTimelineViewsByID[stretchID] = v
+            spacer = v
+        }
+        if agentTimelineStack.arrangedSubviews.last === spacer { return }
+        if spacer.superview != nil {
+            agentTimelineStack.removeArrangedSubview(spacer)
+            spacer.removeFromSuperview()
+        }
+        agentTimelineStack.addArrangedSubview(spacer)
+    }
+
+    private func agentTimelineViewNeedsReplace(_ existing: UIView, for item: AgentTimelinePaintItem) -> Bool {
+        switch item.role {
+        case .exploreHeader:
+            return existing.viewWithTag(7201) == nil
+        case .exploreChild where item.stepKind == .thought && !item.detail.isEmpty:
+            return existing.viewWithTag(7202) == nil
+        case .live:
+            return !(existing is ConnectsShimmerLabel)
+        case .prose, .ask:
+            return !(existing is UILabel) || existing.viewWithTag(7201) != nil || existing.tag == 7210
+        case .card:
+            return existing.viewWithTag(7101) == nil
+        case .planned, .exploreChild:
+            if existing.tag == 7210 { return false }
+            return !(existing is ConnectsShimmerLabel)
+        }
+    }
+
+    private func agentShimmer(in view: UIView) -> ConnectsShimmerLabel? {
+        if let s = view as? ConnectsShimmerLabel { return s }
+        for sub in view.subviews {
+            if let found = agentShimmer(in: sub) { return found }
+        }
+        return nil
+    }
+
+    private func updateAgentTimelineView(
+        _ existing: UIView,
+        item: AgentTimelinePaintItem,
+        bodyFont: UIFont,
+        metaFont: UIFont,
+        colors: ThemeColors,
+        layoutW: CGFloat,
+        thoughtExpanded: Bool
+    ) {
+        switch item.role {
+        case .exploreHeader:
+            if let btn = existing.viewWithTag(7201) as? UIButton {
+                btn.setTitle(item.text, for: .normal)
+                btn.setTitleColor(colors.textSecondary, for: .normal)
+                btn.accessibilityIdentifier = item.id
+            }
+        case .exploreChild where item.stepKind == .thought && !item.detail.isEmpty:
+            if let btn = existing.viewWithTag(7202) as? UIButton {
+                let base = item.text
+                    .replacingOccurrences(of: " ⌵", with: "")
+                    .replacingOccurrences(of: " ›", with: "")
+                btn.setTitle(base + (thoughtExpanded ? " ⌵" : " ›"), for: .normal)
+            }
+            if let body = existing.viewWithTag(7203) as? UILabel {
+                body.text = item.detail
+                body.isHidden = !thoughtExpanded
+                body.preferredMaxLayoutWidth = max(layoutW - Self.agentExploreChildIndent, 1)
+            }
+        case .card:
+            if let label = existing.viewWithTag(7101) as? UILabel {
+                label.text = "▾  \(item.text)"
+            }
+        case .prose, .ask:
+            if let label = existing as? UILabel {
+                label.font = item.role == .ask
+                    ? UIFont.systemFont(ofSize: bodyFont.pointSize, weight: .medium)
+                    : bodyFont
+                label.textColor = colors.textPrimary
+                label.preferredMaxLayoutWidth = layoutW
+                label.numberOfLines = 0
+                if label.text != item.text { label.text = item.text }
+            }
+        case .live, .planned, .exploreChild:
+            if let shimmer = agentShimmer(in: existing) {
+                shimmer.font = metaFont
+                shimmer.textColor = colors.textSecondary
+                shimmer.preferredMaxLayoutWidth = item.indented
+                    ? max(layoutW - Self.agentExploreChildIndent, 1)
+                    : layoutW
+                shimmer.numberOfLines = 0
+                if shimmer.text != item.text { shimmer.text = item.text }
+                shimmer.setShimmerEnabled(item.shimmer)
+            }
+        }
+    }
+
+    private func makeAgentTimelinePaintView(
+        item: AgentTimelinePaintItem,
+        bodyFont: UIFont,
+        metaFont: UIFont,
+        colors: ThemeColors,
+        layoutW: CGFloat,
+        thoughtExpanded: Bool
+    ) -> UIView {
+        switch item.role {
+        case .exploreHeader:
+            return makeExploreHeaderRow(item: item, metaFont: metaFont, colors: colors, layoutW: layoutW)
+        case .exploreChild where item.stepKind == .thought && !item.detail.isEmpty:
+            return makeThoughtChildRow(
+                item: item,
+                metaFont: metaFont,
+                colors: colors,
+                layoutW: layoutW,
+                expanded: thoughtExpanded
+            )
+        case .card:
+            // Resolve full card when possible; header text is already in item.text.
+            let stub = AgentEditCard(fileName: item.text, additions: 0, deletions: 0)
+            let box = makeAgentEditCardView(stub, colors: colors)
+            if let label = box.viewWithTag(7101) as? UILabel {
+                label.text = "▾  \(item.text)"
+            }
+            return box
+        case .prose, .ask:
+            let label = UILabel()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.accessibilityIdentifier = item.id
+            label.font = item.role == .ask
+                ? UIFont.systemFont(ofSize: bodyFont.pointSize, weight: .medium)
+                : bodyFont
+            label.textColor = colors.textPrimary
+            label.numberOfLines = 0
+            label.lineBreakMode = .byWordWrapping
+            label.preferredMaxLayoutWidth = layoutW
+            label.text = item.text
+            label.clipsToBounds = true
+            label.setContentHuggingPriority(.required, for: .vertical)
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            return label
+        case .live, .planned, .exploreChild:
+            let label = ConnectsShimmerLabel()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.accessibilityIdentifier = item.id
+            label.font = metaFont
+            label.textColor = colors.textSecondary
+            label.highlightColor = UIColor.white.withAlphaComponent(0.92)
+            label.numberOfLines = 0
+            label.preferredMaxLayoutWidth = item.indented
+                ? max(layoutW - Self.agentExploreChildIndent, 1)
+                : layoutW
+            label.text = item.text
+            label.setShimmerEnabled(item.shimmer)
+            label.clipsToBounds = true
+            if item.indented {
+                return wrapIndented(label, indent: Self.agentExploreChildIndent)
+            }
+            label.setContentHuggingPriority(.required, for: .vertical)
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            return label
+        }
+    }
+
+    private func wrapIndented(_ inner: UIView, indent: CGFloat) -> UIView {
+        let wrap = UIView()
+        wrap.translatesAutoresizingMaskIntoConstraints = false
+        wrap.tag = 7210
+        inner.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(inner)
+        NSLayoutConstraint.activate([
+            inner.topAnchor.constraint(equalTo: wrap.topAnchor),
+            inner.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
+            inner.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: indent),
+            inner.trailingAnchor.constraint(equalTo: wrap.trailingAnchor)
+        ])
+        wrap.setContentHuggingPriority(.required, for: .vertical)
+        wrap.setContentCompressionResistancePriority(.required, for: .vertical)
+        return wrap
+    }
+
+    private func makeExploreHeaderRow(
+        item: AgentTimelinePaintItem,
+        metaFont: UIFont,
+        colors: ThemeColors,
+        layoutW: CGFloat
+    ) -> UIView {
+        let btn = UIButton(type: .custom)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.tag = 7201
+        btn.accessibilityIdentifier = item.id
+        btn.isUserInteractionEnabled = true
+        btn.contentHorizontalAlignment = .left
+        btn.contentEdgeInsets = .zero
+        btn.titleEdgeInsets = .zero
+        btn.titleLabel?.font = metaFont
+        btn.titleLabel?.numberOfLines = 1
+        btn.setTitle(item.text, for: .normal)
+        btn.setTitleColor(colors.textSecondary, for: .normal)
+        btn.addTarget(self, action: #selector(toggleAgentExploreGroup(_:)), for: .touchUpInside)
+        btn.setContentHuggingPriority(.required, for: .vertical)
+        btn.setContentCompressionResistancePriority(.required, for: .vertical)
+        btn.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        _ = layoutW
+        return btn
+    }
+
+    private func makeThoughtChildRow(
+        item: AgentTimelinePaintItem,
+        metaFont: UIFont,
+        colors: ThemeColors,
+        layoutW: CGFloat,
+        expanded: Bool
+    ) -> UIView {
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 4
+        stack.alignment = .fill
+
+        // .custom avoids system button leading inset drift vs Read shimmer rows.
+        let btn = UIButton(type: .custom)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.tag = 7202
+        btn.accessibilityIdentifier = item.id
+        btn.isUserInteractionEnabled = true
+        btn.contentHorizontalAlignment = .left
+        btn.contentEdgeInsets = .zero
+        btn.titleEdgeInsets = .zero
+        btn.titleLabel?.font = metaFont
+        btn.titleLabel?.textAlignment = .left
+        let chevron = expanded ? " ⌵" : " ›"
+        btn.setTitle(item.text + chevron, for: .normal)
+        btn.setTitleColor(colors.textSecondary, for: .normal)
+        btn.addTarget(self, action: #selector(toggleAgentThought(_:)), for: .touchUpInside)
+        btn.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+
+        let body = UILabel()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        body.tag = 7203
+        body.font = metaFont
+        body.textColor = colors.textSecondary
+        body.numberOfLines = 0
+        body.lineBreakMode = .byWordWrapping
+        body.preferredMaxLayoutWidth = max(layoutW - Self.agentExploreChildIndent, 1)
+        body.text = item.detail
+        body.isHidden = !expanded
+
+        stack.addArrangedSubview(btn)
+        stack.addArrangedSubview(body)
+        return wrapIndented(stack, indent: Self.agentExploreChildIndent)
+    }
+
+    @objc private func toggleAgentExploreGroup(_ sender: UIButton) {
+        let headerID = sender.accessibilityIdentifier ?? AgentTimelinePart.exploreHeaderID
+        guard !headerID.isEmpty else { return }
+        guard !messageID.isEmpty,
+              let msg = ConversationStore.shared.currentConversation?.messages
+                .first(where: { $0.id == messageID }) else { return }
+        let running = msg.isStreaming || msg.agentProcessPhase == .running
+        let current = agentExploreExpandOverride[headerID] ?? running
+        agentExploreExpandOverride[headerID] = !current
+        repaintAgentTimelineFromStore()
+    }
+
+    @objc private func toggleAgentThought(_ sender: UIButton) {
+        let id = sender.accessibilityIdentifier ?? ""
+        guard !id.isEmpty else { return }
+        if agentThoughtExpandedIDs.contains(id) {
+            agentThoughtExpandedIDs.remove(id)
+        } else {
+            agentThoughtExpandedIDs.insert(id)
+        }
+        repaintAgentTimelineFromStore()
+    }
+
+    private func repaintAgentTimelineFromStore() {
+        guard !messageID.isEmpty,
+              let msg = ConversationStore.shared.currentConversation?.messages
+                .first(where: { $0.id == messageID }) else { return }
+        paintAgentInterleavedFlow(msg)
+        contentView.setNeedsLayout()
+        contentView.layoutIfNeeded()
+        scheduleMeasuredHeightNotify(for: messageID)
+        cellDelegate?.messageCellDidPaintContent(self)
+    }
+
+    private func clearAgentTimeline() {
+        agentLiveShimmerLabel?.setShimmerEnabled(false)
+        agentLiveShimmerLabel = nil
+        for v in agentTimelineStack.arrangedSubviews {
+            if let s = v as? ConnectsShimmerLabel {
+                s.setShimmerEnabled(false)
+            }
+            agentTimelineStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        agentTimelineViewsByID.removeAll()
+        agentTimelineOrder = []
+        agentTimelineStack.isHidden = true
+        columnBottomToTimeline.isActive = false
+        // Visibility of assistantLabel is owned by configure / paint — forcing
+        // alpha=1 here flashed plain body under the agent timeline for a frame.
+    }
+
+    // Legacy stub removed — paint uses makeAgentTimelinePaintView.
+
+    private func syncAgentEditCards(_ cards: [AgentEditCard]) {
+        let existing = agentEditCardsStack.arrangedSubviews
+        for v in existing { v.removeFromSuperview() }
+        guard !cards.isEmpty else {
+            agentEditCardsStack.isHidden = true
+            agentEditCardsHeight.constant = 0
+            return
+        }
+        agentEditCardsStack.isHidden = false
+        let colors = cachedThemeColors ?? DSTheme.c
+        var totalH: CGFloat = 0
+        for card in cards.suffix(4) {
+            let view = makeAgentEditCardView(card, colors: colors)
+            agentEditCardsStack.addArrangedSubview(view)
+            totalH += 72
+        }
+        agentEditCardsHeight.constant = totalH + CGFloat(max(0, min(cards.count, 4) - 1) * 8)
+    }
+
+    private func makeAgentEditCardView(_ card: AgentEditCard, colors: ThemeColors) -> UIView {
+        let box = UIView()
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.backgroundColor = colors.surface.withAlphaComponent(0.85)
+        box.layer.cornerRadius = 10
+        box.clipsToBounds = true
+
+        let header = UILabel()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        header.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        header.textColor = colors.textPrimary
+        header.numberOfLines = 1
+        header.text = "▾  \(card.headerLine)"
+        header.tag = 7101
+
+        let body = UILabel()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        body.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        body.numberOfLines = 3
+        body.textColor = colors.textSecondary
+        body.tag = 7102
+        var lines: [String] = []
+        if !card.snippetMinus.isEmpty {
+            lines.append(card.snippetMinus.split(separator: "\n").prefix(2).map { "− \($0)" }.joined(separator: "\n"))
+        }
+        if !card.snippetPlus.isEmpty {
+            lines.append(card.snippetPlus.split(separator: "\n").prefix(2).map { "+ \($0)" }.joined(separator: "\n"))
+        }
+        body.text = lines.joined(separator: "\n")
+
+        box.addSubview(header)
+        box.addSubview(body)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
+            header.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
+            header.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
+            body.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
+            body.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
+            body.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
+            body.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
+            box.heightAnchor.constraint(greaterThanOrEqualToConstant: 56)
+        ])
+        return box
     }
 
     private func updateSearchHeaderInteraction(messageIsStreaming: Bool) {
@@ -529,6 +1212,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         showActions(false)
         setThinking(visible: false, expanded: false)
         setSearch(visible: false, expanded: false)
+        syncAgentEditCards([])
+        clearAgentTimeline()
+        agentExploreExpandOverride.removeAll()
+        agentThoughtExpandedIDs.removeAll()
+        agentPaintLayoutWidth = 0
         assistantLabel.isHidden = true
         hideNativeRender()
         cachedImage = nil
@@ -750,7 +1438,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        hasSearch = message.showsProcessChrome
         deferredNativeBind = DeferredNativeBind(
             message: message,
             hasThinking: hasThinking,
@@ -770,10 +1458,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             refreshActions: message.isStreaming || message.content.isEmpty
         )
 
-        if message.isStreaming || message.content.isEmpty {
+        let agentActivity = message.hasAgentProcess && !message.hasImageTranscription
+        if agentActivity {
+            // Timeline already painted in applyAssistantChrome — don't clobber with raw body.
+            setContentTops(hasThinking: false, hasSearch: false, hasImage: hasImage)
+        } else if message.isStreaming || message.content.isEmpty {
+            clearAgentTimeline()
             hideNativeRender()
             applyAssistantLayoutWidth()
             assistantLabel.isHidden = false
+            assistantLabel.alpha = 1
             // Hug content — never stretch the empty body into the UITableView's
             // allocated/estimated frame. That fill-loop scrolled tags off-screen
             // on first turn ("完全空白") and left a giant gap after finish.
@@ -801,6 +1495,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 assistantLabel.text = nil
             }
         } else {
+            clearAgentTimeline()
             configureNative(
                 message: message,
                 hasThinking: hasThinking,
@@ -842,7 +1537,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        hasSearch = message.hasSearchProcess || message.hasImageTranscription
+        hasSearch = message.showsProcessChrome
 
         if hasVisibleNativePaint,
            nativeMessageForRemeasure?.id == message.id,
@@ -899,7 +1594,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func assistantChromeMatches(_ message: ChatMessage) -> Bool {
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let wantsThinking = !think.isEmpty
-        let wantsSearch = message.hasSearchProcess || message.hasImageTranscription
+        let wantsSearch = message.showsProcessChrome
         guard hasThinking == wantsThinking, hasSearch == wantsSearch else { return false }
         if wantsThinking {
             guard cachedReasoningText == think,
@@ -922,50 +1617,71 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                       lightweightBodies: Bool = false,
                                       refreshActions: Bool = true) {
         let imageActivity = message.hasImageTranscription
-        let search = (imageActivity
-            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
-            : message.searchProcessContent
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentActivity = message.hasAgentProcess && !imageActivity
+        let search: String
+        if imageActivity {
+            search = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if agentActivity {
+            search = message.agentProcessDisplayText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            search = message.searchProcessContent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         cachedSearchText = search
         cachedImageActivity = imageActivity
         cachedImageTranscriptionPhase = message.imageTranscriptionPhase
-        hasSearch = message.hasSearchProcess || imageActivity
-        if hasSearch {
-            let liveSearchActivity = !imageActivity && streaming && message.searchProcessPhase != .done
-            // Streaming search: header + 3-line live preview (mirrors thinking chrome).
-            searchExpanded = false
-            if imageActivity {
-                cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
-                populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
-                setSearch(visible: true, expanded: false)
-            } else {
-                cachedSearchTitleCore = liveSearchActivity
-                    ? message.searchProcessPhase.headerTitle
-                    : SearchProcessPhase.done.headerTitle
-                if liveSearchActivity {
-                    applySearchLivePreview(
-                        text: search,
-                        colors: colors,
-                        thinkFont: thinkFont
-                    )
-                } else {
+        // Agent timeline is interleaved in the body column (Cursor steps[]), not the search box.
+        if agentActivity {
+            hasSearch = false
+            setSearch(visible: false, expanded: false)
+            paintAgentInterleavedFlow(message)
+        } else {
+            clearAgentTimeline()
+            hasSearch = message.showsProcessChrome
+            if hasSearch {
+                let liveSearchActivity = !imageActivity && streaming && message.searchProcessPhase != .done
+                searchExpanded = false
+                if imageActivity {
+                    cachedSearchTitleCore = message.imageTranscriptionPhase.headerTitle
                     populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
                     setSearch(visible: true, expanded: false)
+                } else {
+                    syncAgentEditCards([])
+                    cachedSearchTitleCore = liveSearchActivity
+                        ? message.searchProcessPhase.headerTitle
+                        : message.searchProcessSummaryTitle
+                    if liveSearchActivity {
+                        applySearchLivePreview(
+                            text: search,
+                            colors: colors,
+                            thinkFont: thinkFont,
+                            preferLatestLines: true
+                        )
+                    } else {
+                        populateSearchBody(expanded: false, colors: colors, thinkFont: thinkFont)
+                        setSearch(visible: true, expanded: false)
+                    }
                 }
+                applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: colors.textSecondary)
+                updateSearchHeaderInteraction(messageIsStreaming: streaming)
+                searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
+                searchBox.layer.borderWidth = 0
+            } else {
+                setSearch(visible: false, expanded: false)
+                syncAgentEditCards([])
             }
-            applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: colors.textSecondary)
-            updateSearchHeaderInteraction(messageIsStreaming: streaming)
-            searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
-            searchBox.layer.borderWidth = 0
-        } else {
-            setSearch(visible: false, expanded: false)
         }
 
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         cachedReasoningText = message.reasoningContent
         cachedThinkingFontSize = thinkFont
         cachedThemeColors = colors
-        hasThinking = !think.isEmpty
+        // Workspace agent timeline owns the chrome — hide deep-thinking strip to avoid
+        // 「已工作」/「已深度思考」 double headers stacking out of alignment.
+        let suppressThinking = Self.shouldSuppressThinkingChrome(for: message)
+        hasThinking = !think.isEmpty && !suppressThinking
         if hasThinking {
             // Streaming: keep full expand locked, but show a short live preview
             // under the tag so the turn does not look frozen.
@@ -1046,12 +1762,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private static func shouldShowActionButtons(for message: ChatMessage, streaming: Bool) -> Bool {
-        !streaming && (
-            !message.chatDisplayBody.isEmpty
-            || !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || message.hasSearchProcess
-            || message.hasImageTranscription
-        )
+        guard !streaming else { return false }
+        // Mid-agent loop / process-only chrome: no Copy / Retry / Fork.
+        if message.agentProcessPhase == .running || message.agentProcessPhase == .waitingUser {
+            return false
+        }
+        let body = message.chatDisplayBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasoning = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !body.isEmpty || !reasoning.isEmpty || message.hasImageTranscription
     }
 
     /// Reserve 28pt action slot before body paint — actionHeight 0→28 was shifting native text via nativeBottom.
@@ -1092,7 +1810,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let stackWidth = max(column.bounds.width, preferredLayoutWidth, 120)
         if !imageViewMsg.isHidden, imageHeight.constant > 0.5 {
             total += imageHeight.constant
-            if !nativeRenderView.isHidden || !assistantLabel.isHidden {
+            if !nativeRenderView.isHidden || !assistantLabel.isHidden || !agentTimelineStack.isHidden {
                 total += 10
             }
         }
@@ -1182,13 +1900,26 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             }
             if thinkH > 0.5 {
                 total += thinkH
-                if !nativeRenderView.isHidden || !assistantLabel.isHidden {
+                if !nativeRenderView.isHidden || !assistantLabel.isHidden || !agentTimelineStack.isHidden {
                     total += 10
                 }
             }
         }
+        if !agentEditCardsStack.isHidden, agentEditCardsHeight.constant > 0.5 {
+            total += agentEditCardsHeight.constant
+            if !agentTimelineStack.isHidden || !assistantLabel.isHidden || !nativeRenderView.isHidden {
+                total += 10
+            }
+        }
         if !nativeRenderView.isHidden, nativeHeight.constant > 0.5 {
             total += nativeHeight.constant
+        } else if !agentTimelineStack.isHidden {
+            let timelineH = agentTimelineStack.systemLayoutSizeFitting(
+                CGSize(width: stackWidth, height: UIView.layoutFittingCompressedSize.height),
+                withHorizontalFittingPriority: .required,
+                verticalFittingPriority: .fittingSizeLevel
+            ).height
+            if timelineH > 0.5 { total += timelineH }
         } else if !assistantLabel.isHidden {
             let plain = assistantLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             // Empty UILabel still reports a line-height — skip it so collapsed
@@ -1329,6 +2060,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         return "…" + String(trimmed.suffix(limit))
     }
 
+    /// Cursor-style process strip: show the *latest* N step lines (not the first).
+    private static func agentProcessLivePreview(_ text: String, maxLines: Int = thinkingLivePreviewLineCount) -> String {
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return "" }
+        if lines.count <= maxLines { return lines.joined(separator: "\n") }
+        return lines.suffix(maxLines).joined(separator: "\n")
+    }
+
     private func thinkingLivePreviewBodyHeight(fontSize: CGFloat) -> CGFloat {
         let font = UIFont.systemFont(ofSize: fontSize)
         return ceil(font.lineHeight * CGFloat(Self.thinkingLivePreviewLineCount))
@@ -1349,12 +2091,14 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         }
     }
 
-    private func setSearchLivePreviewMode(_ on: Bool, thinkFont: CGFloat) {
+    private func setSearchLivePreviewMode(_ on: Bool, thinkFont: CGFloat, lineCount: Int? = nil) {
         if on {
             searchLivePreviewMode = true
-            searchBody.numberOfLines = Self.thinkingLivePreviewLineCount
+            let lines = max(1, lineCount ?? Self.thinkingLivePreviewLineCount)
+            searchBody.numberOfLines = lines
             searchBody.lineBreakMode = .byTruncatingTail
-            searchBodyH.constant = thinkingLivePreviewBodyHeight(fontSize: thinkFont)
+            let font = UIFont.systemFont(ofSize: thinkFont)
+            searchBodyH.constant = ceil(font.lineHeight * CGFloat(lines))
             searchBodyH.isActive = true
         } else {
             searchLivePreviewMode = false
@@ -1367,10 +2111,23 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func applySearchLivePreview(text: String,
                                         colors: ThemeColors,
                                         thinkFont: CGFloat,
-                                        waitingGlyph: String? = nil) {
-        let preview = Self.thinkingLivePreview(text)
+                                        waitingGlyph: String? = nil,
+                                        compactLines: Int? = nil,
+                                        preferLatestLines: Bool = false) {
+        let isPlanning = text == AgentProcessPhase.planningNextMovesText
+            || text.hasPrefix(AgentProcessPhase.planningNextMovesText)
+        let preview: String
+        if preferLatestLines, !isPlanning {
+            preview = Self.agentProcessLivePreview(text)
+        } else {
+            preview = Self.thinkingLivePreview(text)
+        }
         applySearchLayoutWidth()
-        setSearchLivePreviewMode(true, thinkFont: thinkFont)
+        setSearchLivePreviewMode(
+            true,
+            thinkFont: thinkFont,
+            lineCount: compactLines ?? (isPlanning ? 1 : nil)
+        )
         searchBody.textColor = colors.textSecondary
         searchBody.font = UIFont.systemFont(ofSize: thinkFont)
         if preview.isEmpty {
@@ -1574,13 +2331,17 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantTopToRole.isActive = false
         assistantTopToImage.isActive = false
         assistantTopToThink.isActive = false
+        assistantTopToEditCards.isActive = false
         nativeTopToRole.isActive = false
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
+        nativeTopToEditCards.isActive = false
         nativeBottom.isActive = false
         columnBottomToLabel.isActive = false
         columnBottomToNative.isActive = true
-        if hasThinking || hasSearch { nativeTopToThink.isActive = true }
+        let hasEditCards = !agentEditCardsStack.isHidden && agentEditCardsHeight.constant > 1
+        if hasEditCards { nativeTopToEditCards.isActive = true }
+        else if hasThinking || hasSearch { nativeTopToThink.isActive = true }
         else if hasImage { nativeTopToImage.isActive = true }
         else { nativeTopToRole.isActive = true }
     }
@@ -1611,6 +2372,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                                         allowTruncate: Bool = true) {
         hideNativeRender()
         assistantLabel.isHidden = false
+        assistantLabel.alpha = 1
         labelBottom.isActive = true
         labelBottomFloor.isActive = true
         columnBottomToNative.isActive = false
@@ -1691,7 +2453,16 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         labelBottom.isActive = false
         labelBottomFloor.isActive = true
         columnBottomToNative.isActive = false
+        columnBottomToTimeline.isActive = false
         columnBottomToLabel.isActive = true
+    }
+
+    private func pinTimelineToColumnContent() {
+        labelBottom.isActive = false
+        labelBottomFloor.isActive = false
+        columnBottomToNative.isActive = false
+        columnBottomToLabel.isActive = false
+        columnBottomToTimeline.isActive = true
     }
 
     private func scheduleMeasuredHeightNotify(for messageID: String,
@@ -1762,8 +2533,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     @discardableResult
     func updateStreamingContent(_ message: ChatMessage, waitingGlyph: String? = nil) -> Bool {
         let thinkEmpty = message.reasoningContent.isEmpty
-        let imageActivity = message.hasImageTranscription
-        let wantsSearchChrome = message.hasSearchProcess || imageActivity
+        let wantsSearchChrome = message.showsProcessChrome
         guard messageID == message.id,
               message.isStreaming else {
             return false
@@ -1787,30 +2557,63 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             : content
         if !searchBox.isHidden {
             let imageActivity = message.hasImageTranscription
-            let search = (imageActivity
-                ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
-                : message.searchProcessContent
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let agentActivity = message.hasAgentProcess && !imageActivity
+            let search: String
+            if imageActivity {
+                search = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if agentActivity {
+                search = message.agentProcessDisplayText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                search = message.searchProcessContent
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             cachedSearchText = search
             searchExpanded = false
-            let titleCore = imageActivity
-                ? message.imageTranscriptionPhase.headerTitle
-                : (message.searchProcessPhase != .done
+            let titleCore: String
+            if imageActivity {
+                titleCore = message.imageTranscriptionPhase.headerTitle
+            } else if agentActivity {
+                titleCore = message.agentProcessSummaryTitle
+            } else {
+                titleCore = message.searchProcessPhase != .done
                     ? message.searchProcessPhase.headerTitle
-                    : SearchProcessPhase.done.headerTitle)
+                    : message.searchProcessSummaryTitle
+            }
             cachedSearchTitleCore = titleCore
             let colors = cachedThemeColors ?? DSTheme.c
             let thinkFont = cachedThinkingFontSize > 0
                 ? cachedThinkingFontSize
                 : SettingsManager.shared.chatThinkingFontSize
-            let liveSearch = !imageActivity
+            let liveSearch = !imageActivity && !agentActivity
                 && message.searchProcessPhase != .done
                 && message.searchProcessPhase != .idle
-            if liveSearch {
+            if agentActivity, message.agentProcessPhase == .running {
+                let hasReasoning = !message.reasoningContent
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                // Body may stream in — never collapse the process strip; never dump reasoning.
+                let previewSource: String
+                if !search.isEmpty {
+                    previewSource = search
+                } else if hasReasoning {
+                    previewSource = AgentProcessPhase.thinkingText
+                } else {
+                    previewSource = AgentProcessPhase.planningNextMovesText
+                }
+                applySearchLivePreview(
+                    text: previewSource,
+                    colors: colors,
+                    thinkFont: thinkFont,
+                    compactLines: Self.thinkingLivePreviewLineCount,
+                    preferLatestLines: true
+                )
+            } else if liveSearch {
                 applySearchLivePreview(
                     text: search,
                     colors: colors,
-                    thinkFont: thinkFont
+                    thinkFont: thinkFont,
+                    preferLatestLines: true
                 )
             } else {
                 searchBody.attributedText = nil
@@ -1821,6 +2624,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             updateSearchHeaderInteraction(messageIsStreaming: true)
         }
         if !thinkingBox.isHidden {
+            // Prefer agent process chrome alone when both are present mid-stream.
+            if Self.shouldSuppressThinkingChrome(for: message) {
+                setThinking(visible: false, expanded: false)
+                hasThinking = false
+            } else {
             cachedReasoningText = message.reasoningContent
             thinkingExpanded = false
             let colors = cachedThemeColors ?? DSTheme.c
@@ -1846,39 +2654,40 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 applyChromeHeaderTitle(thinkingHeader, title: "已深度思考", color: colors.textSecondary)
             }
             updateThinkingHeaderInteraction(messageIsStreaming: true)
-        }
-        pinPlainBodyToColumnContent()
-        if let glyph = waitingGlyph {
-            if !content.isEmpty {
-                assistantLabel.text = content + "  " + glyph
-            } else if !thinkingBox.isHidden, content.isEmpty {
-                applyThinkingLivePreview(
-                    reasoning: message.reasoningContent,
-                    colors: cachedThemeColors ?? DSTheme.c,
-                    thinkFont: cachedThinkingFontSize > 0
-                        ? cachedThinkingFontSize
-                        : SettingsManager.shared.chatThinkingFontSize,
-                    waitingGlyph: glyph
-                )
-            } else if !searchBox.isHidden,
-                      content.isEmpty,
-                      !message.hasImageTranscription,
-                      message.searchProcessPhase != .done,
-                      message.searchProcessPhase != .idle {
-                applySearchLivePreview(
-                    text: message.searchProcessContent,
-                    colors: cachedThemeColors ?? DSTheme.c,
-                    thinkFont: cachedThinkingFontSize > 0
-                        ? cachedThinkingFontSize
-                        : SettingsManager.shared.chatThinkingFontSize,
-                    waitingGlyph: glyph
-                )
-            } else if thinkingBox.isHidden, searchBox.isHidden {
-                assistantLabel.text = glyph
             }
         }
+        pinPlainBodyToColumnContent()
+        // Deliberately ignore waitingGlyph (◐◓◑◒). Those glyphs fought the
+        // Thinking left→right shimmer and made body/meta jump every tick.
+        _ = waitingGlyph
         schedulePlainHeightNotify()
         return true
+    }
+
+    /// Cursor-style: interleaved meta + body in one column (no process box).
+    /// Fallback when host cannot rebuild from a full `ChatMessage` — prefer `syncAgentProcessPresentation`.
+    /// Fallback only — never tears down the timeline (that killed shimmer / caused flicker).
+    /// Prefer `syncAgentProcessPresentation` from the host.
+    func applyAgentTurnStreamingBody(_ text: String?, waitingGlyph: String? = nil) {
+        hideNativeRender()
+        applyAssistantLayoutWidth()
+        assistantLabel.isHidden = true
+        assistantLabel.text = nil
+        assistantLabel.attributedText = nil
+        agentTimelineStack.isHidden = false
+        let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Ignore waitingGlyph — moon spinners caused jump + killed shimmer.
+        if let prose = agentTimelineViewsByID["current"] as? UILabel, prose.text != trimmed {
+            prose.text = trimmed
+        }
+        let overlay = AgentProcessPhase.planningNextMovesText
+        if let shimmer = agentLiveShimmerLabel ?? agentTimelineViewsByID["overlay"] as? ConnectsShimmerLabel {
+            if shimmer.text != overlay { shimmer.text = overlay }
+            shimmer.setShimmerEnabled(true)
+            agentLiveShimmerLabel = shimmer
+        }
+        pinTimelineToColumnContent()
+        setContentTops(hasThinking: false, hasSearch: false, hasImage: !imageViewMsg.isHidden)
     }
 
     /// Ends the live state without changing the renderer currently visible in
@@ -1889,15 +2698,37 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         streamingPresentation = false
         let c = DSTheme.c
         let imageActivity = message.hasImageTranscription
-        let search = (imageActivity
-            ? message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
-            : message.searchProcessContent
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !searchBox.isHidden {
-            let title = imageActivity
-                ? message.imageTranscriptionPhase.headerTitle
-                : SearchProcessPhase.done.headerTitle
+        let agentActivity = message.hasAgentProcess && !imageActivity
+        let search: String
+        if imageActivity {
+            search = message.imageTranscriptionDisplayText(pairedUser: pairedUserMessage)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if agentActivity {
+            search = message.agentProcessDisplayText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            search = message.searchProcessContent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if agentActivity {
+            setSearch(visible: false, expanded: false)
+            hasSearch = false
+            paintAgentInterleavedFlow(message)
+            setContentTops(hasThinking: false, hasSearch: false, hasImage: !imageViewMsg.isHidden)
+        } else if !searchBox.isHidden {
+            let title: String
+            if imageActivity {
+                title = message.imageTranscriptionPhase.headerTitle
+            } else {
+                title = message.searchProcessSummaryTitle
+            }
             applyChromeHeaderTitle(searchHeader, title: title, color: c.textSecondary)
+            let thinkFont = cachedThinkingFontSize > 0
+                ? cachedThinkingFontSize
+                : SettingsManager.shared.chatThinkingFontSize
+            cachedSearchText = search
+            populateSearchBody(expanded: false, colors: c, thinkFont: thinkFont)
+            setSearch(visible: true, expanded: false)
         }
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !think.isEmpty {
@@ -2248,12 +3079,29 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantTopToRole.isActive = false
         assistantTopToImage.isActive = false
         assistantTopToThink.isActive = false
+        assistantTopToEditCards.isActive = false
+        timelineTopToRole.isActive = false
+        timelineTopToImage.isActive = false
         nativeTopToRole.isActive = false
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
+        nativeTopToEditCards.isActive = false
 
-        let pinToStack = hasThinking || hasSearch
-        if pinToStack {
+        let usesTimeline = !agentTimelineStack.isHidden
+        let hasEditCards = !usesTimeline
+            && !agentEditCardsStack.isHidden
+            && agentEditCardsHeight.constant > 1
+        if usesTimeline {
+            if hasImage {
+                timelineTopToImage.isActive = true
+            } else {
+                timelineTopToRole.isActive = true
+            }
+            // Native unused while timeline is showing.
+        } else if hasEditCards {
+            assistantTopToEditCards.isActive = true
+            nativeTopToEditCards.isActive = true
+        } else if hasThinking || hasSearch {
             assistantTopToThink.isActive = true
             nativeTopToThink.isActive = true
         } else if hasImage {
@@ -2352,6 +3200,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchHeader.translatesAutoresizingMaskIntoConstraints = false
         searchHeader.contentHorizontalAlignment = .left
         searchHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        searchHeader.titleLabel?.lineBreakMode = .byTruncatingTail
+        searchHeader.setContentCompressionResistancePriority(.required, for: .vertical)
         searchHeader.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
         searchHeader.addTarget(self, action: #selector(openSearchChrome), for: .touchUpInside)
         searchBox.addSubview(searchHeader)
@@ -2360,6 +3210,24 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchBody.numberOfLines = 0
         searchBody.isHidden = true
         searchBox.addSubview(searchBody)
+
+        agentEditCardsStack.translatesAutoresizingMaskIntoConstraints = false
+        agentEditCardsStack.axis = .vertical
+        agentEditCardsStack.spacing = 8
+        agentEditCardsStack.isHidden = true
+        column.addSubview(agentEditCardsStack)
+
+        agentTimelineStack.translatesAutoresizingMaskIntoConstraints = false
+        agentTimelineStack.axis = .vertical
+        agentTimelineStack.alignment = .fill
+        // Never stretch children into spare cell height (half-screen jump / huge gaps).
+        agentTimelineStack.distribution = .fill
+        agentTimelineStack.spacing = 6
+        agentTimelineStack.isHidden = true
+        agentTimelineStack.clipsToBounds = true
+        agentTimelineStack.setContentHuggingPriority(.required, for: .vertical)
+        agentTimelineStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        column.addSubview(agentTimelineStack)
 
         thinkingBox.translatesAutoresizingMaskIntoConstraints = false
         thinkingBox.layer.cornerRadius = 10
@@ -2502,19 +3370,39 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         assistantTopToRole = assistantLabel.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         assistantTopToImage = assistantLabel.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         assistantTopToThink = assistantLabel.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
+        assistantTopToEditCards = assistantLabel.topAnchor.constraint(
+            equalTo: agentEditCardsStack.bottomAnchor,
+            constant: 10
+        )
+        timelineTopToRole = agentTimelineStack.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
+        timelineTopToImage = agentTimelineStack.topAnchor.constraint(
+            equalTo: imageViewMsg.bottomAnchor,
+            constant: 10
+        )
+        agentEditCardsTop = agentEditCardsStack.topAnchor.constraint(
+            equalTo: thinkingBox.bottomAnchor,
+            constant: 0
+        )
+        agentEditCardsHeight = agentEditCardsStack.heightAnchor.constraint(equalToConstant: 0)
         nativeHeight = nativeRenderView.heightAnchor.constraint(equalToConstant: 0)
         nativeTopToRole = nativeRenderView.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0)
         nativeTopToImage = nativeRenderView.topAnchor.constraint(equalTo: imageViewMsg.bottomAnchor, constant: 10)
         nativeTopToThink = nativeRenderView.topAnchor.constraint(equalTo: thinkingBox.bottomAnchor, constant: 10)
+        nativeTopToEditCards = nativeRenderView.topAnchor.constraint(
+            equalTo: agentEditCardsStack.bottomAnchor,
+            constant: 10
+        )
         nativeBottom = nativeRenderView.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -4)
         columnBottomToNative = column.bottomAnchor.constraint(equalTo: nativeRenderView.bottomAnchor)
         columnBottomToLabel = column.bottomAnchor.constraint(equalTo: assistantLabel.bottomAnchor)
+        columnBottomToTimeline = column.bottomAnchor.constraint(equalTo: agentTimelineStack.bottomAnchor)
         labelBottom = assistantLabel.bottomAnchor.constraint(equalTo: column.bottomAnchor)
         labelBottom.priority = UILayoutPriority(750)
         labelBottomFloor = column.bottomAnchor.constraint(greaterThanOrEqualTo: assistantLabel.bottomAnchor)
 
         assistantLabel.setContentHuggingPriority(.required, for: .vertical)
         searchBox.setContentHuggingPriority(.required, for: .vertical)
+        searchBox.setContentCompressionResistancePriority(.required, for: .vertical)
         thinkingBox.setContentHuggingPriority(.required, for: .vertical)
         column.setContentHuggingPriority(.required, for: .vertical)
         column.setContentCompressionResistancePriority(.required, for: .vertical)
@@ -2565,6 +3453,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             searchBody.leadingAnchor.constraint(equalTo: searchBox.leadingAnchor, constant: 12),
             searchBody.trailingAnchor.constraint(equalTo: searchBox.trailingAnchor, constant: -12),
 
+            agentEditCardsTop,
+            agentEditCardsStack.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            agentEditCardsStack.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            agentEditCardsHeight,
+
             thinkingTop,
             thinkingBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             thinkingBox.trailingAnchor.constraint(equalTo: column.trailingAnchor),
@@ -2585,6 +3478,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             labelBottom,
             labelBottomFloor,
 
+            agentTimelineStack.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            agentTimelineStack.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+
             nativeRenderView.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             nativeRenderView.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             nativeHeight,
@@ -2601,10 +3497,15 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         nativeTopToRole.isActive = false
         nativeTopToImage.isActive = false
         nativeTopToThink.isActive = false
+        nativeTopToEditCards.isActive = false
         nativeBottom.isActive = false
         columnBottomToNative.isActive = false
         columnBottomToLabel.isActive = false
+        columnBottomToTimeline.isActive = false
         assistantTopToRole.isActive = false
+        assistantTopToEditCards.isActive = false
+        timelineTopToRole.isActive = false
+        timelineTopToImage.isActive = false
         // Pre-draw glyphs once so first configure never waits on icon factory.
         styleActionIcons(DSTheme.c)
     }

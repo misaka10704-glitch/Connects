@@ -171,6 +171,62 @@ final class APIClient: NSObject {
         }.resume()
     }
 
+    /// Non-streaming complete that invokes `completion` on the URLSession callback queue
+    /// (not main). Safe to wait on with a semaphore from a background tool thread.
+    func completeBlocking(messages: [ChatMessage],
+                          model: AIModelOption,
+                          maxTokens: Int = 32,
+                          timeout: TimeInterval? = nil,
+                          completion: @escaping (Result<String, Error>) -> Void) {
+        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        guard !apiKey.isEmpty else {
+            completion(.failure(APIClientError.missingAPIKey(model.provider.displayName)))
+            return
+        }
+        guard let url = URL(string: model.chatCompletionsURL) else {
+            completion(.failure(APIClientError.invalidURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        if let timeout = timeout { request.timeoutInterval = timeout }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        var payload = Self.chatPayload(messages: messages, model: model, stream: false, maxTokens: maxTokens)
+        if model.thinkingStyle == .thinkingType {
+            payload["thinking"] = ["type": "disabled"]
+        }
+        payload["messages"] = messages.map {
+            APIClient.serializeMessagePublic($0, model: model, includeReasoning: false)
+        }
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        completionSession.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let detail = Self.parseAPIErrorBody(data)
+                completion(.failure(APIClientError.httpError(http.statusCode, detail)))
+                return
+            }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                completion(.failure(APIClientError.decodeError))
+                return
+            }
+            completion(.success(content.trimmingCharacters(in: .whitespacesAndNewlines)))
+        }.resume()
+    }
+
     static func parseAPIErrorBody(_ data: Data?) -> String {
         guard let data = data, !data.isEmpty else { return "" }
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {

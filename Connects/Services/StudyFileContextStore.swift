@@ -57,13 +57,15 @@ final class StudyFileContextStore {
         document: StudyDocument,
         fullText: String,
         selection: String?,
-        forceFull: Bool
+        forceFull: Bool,
+        workspaceID: String? = nil
     ) -> String {
         let sha = StudyDocumentStore.shared.contentSHA8(for: document.id)
         let lines = fullText.components(separatedBy: .newlines)
         let lineCount = lines.count
         let lang = document.textLanguage?.rawValue ?? "text"
-        let path = document.displayPath ?? document.title
+        let path = document.displayPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? document.title
         let turn = (turnCounters[conversationID] ?? 0) + 1
         turnCounters[conversationID] = turn
 
@@ -81,6 +83,10 @@ final class StudyFileContextStore {
         }
 
         var parts: [String] = []
+        if let workspaceID,
+           let workspaceBlock = Self.workspaceListingBlock(workspaceID: workspaceID, activeFile: path) {
+            parts.append(workspaceBlock)
+        }
         parts.append("[阅读上下文 · 代码 · \(document.kindLabel)]")
         parts.append("path: \(path)")
         parts.append("lang: \(lang)  lines: \(lineCount)  sha: \(sha)")
@@ -143,6 +149,22 @@ final class StudyFileContextStore {
             parts.append(windowAround(lines: lines, center: 0, radius: 30))
         }
         return parts.joined(separator: "\n")
+    }
+
+    private static func workspaceListingBlock(workspaceID: String, activeFile: String) -> String? {
+        let names = StudyWorkspaceStore.shared.listFileNames(in: workspaceID)
+        guard !names.isEmpty else { return nil }
+        let wsTitle = StudyWorkspaceStore.shared.workspace(id: workspaceID)?.title ?? "Workspace"
+        var lines = ["## WORKSPACE · \(wsTitle)"]
+        for name in names.prefix(40) {
+            let mark = name == activeFile ? " ★" : ""
+            lines.append("- \(name)\(mark)")
+        }
+        if names.count > 40 {
+            lines.append("- … +\(names.count - 40) more")
+        }
+        lines.append("Prefer CONNECTS_TOOL (list_dir/read_file/grep/propose_edit). CONNECTS_EDIT path: <filename> also works.")
+        return lines.joined(separator: "\n")
     }
 
     private func pinnedBody(fullText: String, lines: [String], language: StudyTextLanguage) -> String {

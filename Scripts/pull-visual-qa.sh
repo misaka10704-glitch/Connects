@@ -16,7 +16,7 @@ fi
 
 SRC="$DATA/Documents/ConnectsVisualQA"
 if [[ ! -d "$SRC" ]]; then
-  echo "FAIL: missing $SRC — run -StudyVisualQA first"
+  echo "FAIL: missing $SRC — run -StudyVisualQA or -StudyAgentUXQA first"
   exit 1
 fi
 

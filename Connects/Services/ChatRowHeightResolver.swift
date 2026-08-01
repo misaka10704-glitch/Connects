@@ -590,11 +590,11 @@ final class ChatRowHeightResolver {
         if msg.hasReasoning {
             rough += 40
         }
-        if msg.hasSearchProcess || msg.hasImageTranscription { rough += 40 }
+        if msg.hasSearchProcess || msg.hasImageTranscription || msg.hasAgentProcess { rough += 40 }
         if msg.role == .assistant && !msg.isStreaming {
             rough += 4 + AssistantMessageLayout.actionRowHeight
         }
-        if msg.hasReasoning || msg.hasSearchProcess || msg.hasImageTranscription {
+        if msg.hasReasoning || msg.hasSearchProcess || msg.hasImageTranscription || msg.hasAgentProcess {
             return min(max(rough, 64), 720)
         }
         return min(max(rough, 64), 4_000)

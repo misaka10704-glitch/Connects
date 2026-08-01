@@ -14,5 +14,18 @@ enum DebugAPIBootstrap {
             print("\(logTag) using Kimi key from CONNECTS_KIMI_API_KEY")
         }
     }
+
+    static func loadDeepseekKeyIfNeeded(logTag: String) {
+        if !SettingsManager.shared.deepseekAPIKey.isEmpty {
+            print("\(logTag) using DeepSeek key from Keychain")
+            return
+        }
+        if let key = ProcessInfo.processInfo.environment["CONNECTS_DEEPSEEK_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !key.isEmpty {
+            SettingsManager.auditDeepseekAPIKeyOverride = key
+            print("\(logTag) using DeepSeek key from CONNECTS_DEEPSEEK_API_KEY")
+        }
+    }
 }
 #endif

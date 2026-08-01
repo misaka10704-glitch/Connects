@@ -7,6 +7,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private let sidebarButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
     private let modeButton = UIButton(type: .system)
+    private let buildButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
     private let progressLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -23,6 +24,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private var markdownSource: String = ""
     private var loadGeneration: UInt = 0
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
+    private var buildButtonWidthConstraint: NSLayoutConstraint!
     private var contentsPanelWidth: NSLayoutConstraint!
     private var contentsPanelTrailing: NSLayoutConstraint!
     private var isContentsPanelVisible = false
@@ -43,6 +45,10 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onAskSelection: ((String) -> Void)?
+    var onFileTitleTapped: (() -> Void)?
+    var onBuildPlan: (() -> Void)?
+
+    private var isPlanDocument = false
 
     /// Persist Ask highlight on the current selection; does not open AI.
     func pinAskSelectionHighlight() {
@@ -184,6 +190,17 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         modeButton.accessibilityLabel = "切换到编辑模式"
         topBar.addSubview(modeButton)
 
+        buildButton.translatesAutoresizingMaskIntoConstraints = false
+        buildButton.setTitle("Build", for: .normal)
+        buildButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.c.accent.withAlphaComponent(0.55), for: .highlighted)
+        buildButton.addTarget(self, action: #selector(buildTapped), for: .touchUpInside)
+        buildButton.accessibilityLabel = "按计划 Build"
+        buildButton.isHidden = true
+        topBar.addSubview(buildButton)
+        buildButtonWidthConstraint = buildButton.widthAnchor.constraint(equalToConstant: 0)
+
         saveButton.translatesAutoresizingMaskIntoConstraints = false
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
         saveButton.imageView?.contentMode = .scaleAspectFit
@@ -194,10 +211,12 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         topBar.addSubview(saveButton)
 
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
-        progressLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        progressLabel.textColor = DSTheme.c.textSecondary
+        progressLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        progressLabel.textColor = DSTheme.c.textPrimary
         progressLabel.textAlignment = .center
         progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        progressLabel.isUserInteractionEnabled = true
+        progressLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(fileTitleTapped)))
         topBar.addSubview(progressLabel)
 
         let controller = WKUserContentController()
@@ -253,12 +272,17 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             progressLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
+            progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: buildButton.leadingAnchor, constant: -4),
 
-            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            modeButton.trailingAnchor.constraint(equalTo: buildButton.leadingAnchor, constant: -2),
             modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             modeButton.widthAnchor.constraint(equalToConstant: 40),
             modeButton.heightAnchor.constraint(equalToConstant: 40),
+
+            buildButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            buildButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            buildButton.heightAnchor.constraint(equalToConstant: 40),
+            buildButtonWidthConstraint,
 
             saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -380,6 +404,22 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         flushMarkdownSaveIfNeeded(force: true)
     }
 
+    @objc private func buildTapped() {
+        onBuildPlan?()
+    }
+
+    private func updateBuildButtonVisibility() {
+        let show = isPlanDocument && onBuildPlan != nil
+        buildButton.isHidden = !show
+        buildButtonWidthConstraint.constant = show ? 56 : 0
+        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.isUserInteractionEnabled = show
+        if show {
+            // Keep Build above sibling chrome so taps aren't swallowed.
+            topBar.bringSubviewToFront(buildButton)
+        }
+    }
+
     private func setEditMode(_ editing: Bool) {
         isEditMode = editing
         refreshModeChrome()
@@ -412,6 +452,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         saveButton.alpha = isEditMode ? 1 : 0.35
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
         saveButton.accessibilityLabel = "保存"
+        updateBuildButtonVisibility()
     }
 
     /// Keyboard shortcut: enter Markdown edit mode and focus the editor.
@@ -464,6 +505,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         }
         isDirty = true
         markdownSource = textView.text ?? ""
+        let wasPlan = isPlanDocument
+        isPlanDocument = StudyPlanDocument.parse(markdownSource).isPlan
+        if wasPlan != isPlanDocument {
+            updateBuildButtonVisibility()
+        }
         updateProgressLabel()
         scheduleMarkdownAutosave()
     }
@@ -631,6 +677,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
                 self.markdownSource = text
                 self.editorView.text = text
                 self.isDirty = false
+                self.isPlanDocument = StudyPlanDocument.parse(text).isPlan
+                self.updateBuildButtonVisibility()
                 self.pendingMarkdown = text
                 if self.isEditMode {
                     self.setEditMode(true)
@@ -766,14 +814,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     func currentPageLabel() -> String {
-        guard currentDocumentID != nil else { return "无文档" }
-        if isEditMode {
-            let dirty = isDirty ? " · 未保存" : ""
-            return "Markdown 编辑\(dirty)"
+        guard let id = currentDocumentID,
+              let doc = StudyDocumentStore.shared.document(id: id) else { return "无文档" }
+        if let path = doc.displayPath, !path.isEmpty {
+            return URL(fileURLWithPath: path).lastPathComponent
         }
-        guard contentReady else { return "无文档" }
-        let pct = Int((scrollFraction() * 100).rounded())
-        return "Markdown · \(pct)%"
+        return doc.title
+    }
+
+    @objc private func fileTitleTapped() {
+        onFileTitleTapped?()
     }
 
     func captureCurrentPageImageJPEG() -> String? {
@@ -993,7 +1043,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     private func updateProgressLabel() {
-        progressLabel.text = currentPageLabel()
+        let name = currentPageLabel()
+        progressLabel.text = name == "无文档" ? name : "\(name) ▾"
     }
 
     private func scheduleProgressSave() {

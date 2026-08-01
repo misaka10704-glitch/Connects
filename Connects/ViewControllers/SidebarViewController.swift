@@ -212,8 +212,11 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         if !filterText.isEmpty {
             chats = chats.filter { $0.title.localizedCaseInsensitiveContains(filterText) }
         }
-        let chatSections = dateGroupedConversationSections(from: chats, kind: .chats)
-        sections = [projectSection] + chatSections
+        // Workspace / Study sessions sit in the normal date groups — no special
+        // "工作区" section or folder badge (mode is only obvious after opening).
+        var next: [SidebarSection] = [projectSection]
+        next += dateGroupedConversationSections(from: chats, kind: .chats)
+        sections = next
     }
 
     private func dateGroupedConversationSections(from list: [Conversation],
@@ -570,7 +573,10 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             cell.backgroundColor = isActive ? c.surfaceHover.withAlphaComponent(0.55) : .clear
         case .conversation(let conv):
             let running = StreamManager.shared.isRunning(conv.id) || WebSearchCoordinator.shared.isSearching(conv.id)
-            cell.textLabel?.text = running ? "●  \(conv.title)" : conv.title
+            let title = running ? "●  \(conv.title)" : conv.title
+            // Same chrome as Study / plain chats — no folder icon or workspace name prefix.
+            cell.imageView?.image = nil
+            cell.textLabel?.text = title
             cell.textLabel?.textColor = running ? c.accent : c.textPrimary
             cell.textLabel?.font = DSTheme.bodyFont(size: 14)
         }

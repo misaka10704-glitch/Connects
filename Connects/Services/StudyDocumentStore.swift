@@ -19,7 +19,7 @@ enum StudyDocumentError: LocalizedError {
         case .invalidPDF: return "不是有效的 PDF 文件。"
         case .invalidMarkdown: return "无法读取 Markdown 文件。"
         case .invalidText: return "无法读取文本文件。"
-        case .unsupportedType: return "支持 PDF、Markdown、Verilog（.v）及常见代码文本。"
+        case .unsupportedType: return "无法识别的文件类型。"
         case .markdownImportAsyncOnly: return "请使用「打开代码 / 文本」选择 Markdown。"
         case .bookmarkUnavailable: return "无法访问原文件，请重新打开该文档。"
         case .writeFailed: return "无法写入文件。"
@@ -63,8 +63,98 @@ final class StudyDocumentStore {
         documents.first { $0.id == id }
     }
 
+    func documentMatchingPath(_ path: String) -> StudyDocument? {
+        let normalized = (path as NSString).standardizingPath
+        return documents.first { doc in
+            guard let display = doc.displayPath, !display.isEmpty else { return false }
+            return (display as NSString).standardizingPath == normalized
+        }
+    }
+
     func recentDocuments(limit: Int = 50) -> [StudyDocument] {
         Array(documents.sorted { $0.lastOpenedAt > $1.lastOpenedAt }.prefix(limit))
+    }
+
+    func documents(ids: [String]) -> [StudyDocument] {
+        ids.compactMap { document(id: $0) }
+    }
+
+    /// Register a file already inside a workspace folder (or create empty), using an in-place bookmark.
+    @discardableResult
+    func registerFileInPlace(at fileURL: URL, createEmptyIfNeeded: Bool) throws -> StudyDocument {
+        let parent = fileURL.deletingLastPathComponent()
+        ConnectsPaths.ensureDirectory(parent)
+
+        if createEmptyIfNeeded, !FileManager.default.fileExists(atPath: fileURL.path) {
+            do {
+                try Data().write(to: fileURL, options: .atomic)
+            } catch {
+                throw StudyDocumentError.writeFailed
+            }
+        }
+
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
+
+        let ext = fileURL.pathExtension.lowercased()
+        guard let kind = StudyDocument.kind(forExtension: ext) else {
+            throw StudyDocumentError.unsupportedType
+        }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let size = attrs[.size] as? Int64 ?? 0
+        let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
+        guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
+
+        if kind == .pdf, size > 0, PDFDocument(url: fileURL) == nil {
+            throw StudyDocumentError.invalidPDF
+        }
+        if kind != .pdf, size > 0 {
+            guard (try? Data(contentsOf: fileURL)) != nil else {
+                throw kind == .markdown ? StudyDocumentError.invalidMarkdown : StudyDocumentError.invalidText
+            }
+        }
+
+        if let existing = documentMatchingPath(fileURL.path) {
+            touch(documentID: existing.id)
+            return existing
+        }
+
+        let fingerprint = Self.fingerprint(for: fileURL, fileSize: size)
+        if let existing = documents.first(where: { $0.contentFingerprint == fingerprint }),
+           size > 0 {
+            // Empty files share fingerprints; only reuse when non-empty.
+            touch(documentID: existing.id)
+            return existing
+        }
+
+        let bookmark = try fileURL.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let displayTitle = fileURL.deletingPathExtension().lastPathComponent
+        let lang: StudyTextLanguage? = kind == .text || kind == .markdown
+            ? StudyTextLanguage.infer(fromExtension: ext)
+            : nil
+
+        let doc = StudyDocument(
+            id: UUID().uuidString,
+            title: String(displayTitle.prefix(120)),
+            localRelativePath: "",
+            contentFingerprint: fingerprint,
+            fileSize: size,
+            lastOpenedAt: Date(),
+            kind: kind == .markdown ? .text : kind,
+            accessMode: .originalBookmark,
+            bookmarkData: bookmark,
+            displayPath: fileURL.path,
+            textLanguage: lang
+        )
+        documents.insert(doc, at: 0)
+        saveRegistry()
+        notify()
+        return doc
     }
 
     /// Sandbox URL for imported copies. Prefer `resolvedURL(forID:)` for reading/writing.
@@ -581,6 +671,41 @@ final class StudyDocumentStore {
         notify()
     }
 
+    /// Update registry after a workspace file was moved/renamed on disk (same document id).
+    func applyMovedFile(documentID: String, to newURL: URL) throws {
+        guard let index = documents.firstIndex(where: { $0.id == documentID }) else {
+            throw StudyWorkspaceError.notFound
+        }
+        let ext = newURL.pathExtension
+        let kind = StudyDocument.kind(forExtension: ext) ?? .text
+        let bookmark = try newURL.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let size = (try? newURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? documents[index].fileSize
+        let displayTitle = newURL.lastPathComponent
+        documents[index].title = String(displayTitle.prefix(120))
+        documents[index].displayPath = newURL.path
+        documents[index].bookmarkData = bookmark
+        documents[index].accessMode = .originalBookmark
+        documents[index].localRelativePath = ""
+        documents[index].kind = kind == .markdown ? .text : kind
+        documents[index].fileSize = size
+        documents[index].contentFingerprint = Self.fingerprint(for: newURL, fileSize: size)
+        if documents[index].kind == .text || kind == .markdown {
+            documents[index].textLanguage = StudyTextLanguage.infer(fromExtension: ext)
+        } else {
+            documents[index].textLanguage = nil
+        }
+        pdfCache.removeObject(forKey: documentID as NSString)
+        markdownCache.removeObject(forKey: documentID as NSString)
+        textCache.removeObject(forKey: documentID as NSString)
+        releaseAccess(forID: documentID)
+        saveRegistry()
+        notify()
+    }
+
     func reloadAfterBackupImport() {
         releaseAllAccess()
         pdfCache.removeAllObjects()
@@ -634,7 +759,12 @@ final class StudyDocumentStore {
     }
 
     private func notify() {
-        NotificationCenter.default.post(name: .studyDocumentsDidUpdate, object: nil)
+        let post = { NotificationCenter.default.post(name: .studyDocumentsDidUpdate, object: nil) }
+        if Thread.isMainThread {
+            post()
+        } else {
+            DispatchQueue.main.async(execute: post)
+        }
     }
 
 #if DEBUG

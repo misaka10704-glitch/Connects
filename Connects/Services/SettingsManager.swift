@@ -31,6 +31,7 @@ final class SettingsManager {
     #if DEBUG
     /// Render-audit CLI may fail to persist Keychain; keep an in-memory override.
     static var auditKimiAPIKeyOverride: String?
+    static var auditDeepseekAPIKeyOverride: String?
     #endif
 
     private let enabledModelsKey = "connects_enabled_models"
@@ -289,6 +290,11 @@ final class SettingsManager {
         #if DEBUG
         if provider == .kimi,
            let override = SettingsManager.auditKimiAPIKeyOverride,
+           !override.isEmpty {
+            return Self.sanitizeKey(override)
+        }
+        if provider == .deepseek,
+           let override = SettingsManager.auditDeepseekAPIKeyOverride,
            !override.isEmpty {
             return Self.sanitizeKey(override)
         }

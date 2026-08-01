@@ -92,20 +92,9 @@ enum ContextBuilder {
               existingThroughID: conversation.contextSummaryThroughMessageID).usage
     }
 
-    /// Fast estimate for immediate switch UI; `usage(for:)` refines asynchronously.
+    /// Fast estimate for immediate switch UI; same Usage math as `usage(for:)`.
     static func quickUsageEstimate(for conversation: Conversation) -> Usage {
-        let budget = charBudget(for: conversation.model)
-        var chars = baseSystemPrompt.count + 400
-        if let summary = conversation.contextSummary {
-            chars += summary.count
-        }
-        for msg in conversation.messages where !msg.isStreaming {
-            chars += msg.content.count + msg.reasoningContent.count + msg.searchProcessContent.count
-            if let description = msg.imageDescription {
-                chars += description.count
-            }
-        }
-        return Usage(usedChars: chars, budgetChars: budget)
+        usage(for: conversation)
     }
 
     /// Whether the meter should be visible for this conversation.
@@ -120,7 +109,9 @@ enum ContextBuilder {
                       keepRecentTurns: Int = ContextBuilder.keepRecentTurns) -> BuildResult {
         let budget = charBudget(for: model)
         let thinkingOn = model.thinkingActive
-        let finished = messages.filter { !$0.isStreaming }
+        // Expand root-side tool turns into API pairs before dropping the live streaming shell.
+        let expanded = ChatMessage.messagesWithExpandedAgentToolTurns(messages)
+        let finished = expanded.filter { !$0.isStreaming }
 
         var working = APIClient.slimMessagesForAPI(finished)
         working = pruneReasoning(
@@ -287,27 +278,27 @@ enum ContextBuilder {
     // MARK: - Budgets
 
     /// Practical char budgets (≈ 2 chars/token). Leave headroom for `max_tokens` and avoid context rot.
-    /// Display caps (tokens): Pro/K3 128K, Flash 96K, K2.6 64K — still far below provider windows.
+    /// Display caps (tokens): Pro/K3 ~192K, Flash ~128K, K2.6 ~96K — still below provider windows.
     static func charBudget(for model: AIModelOption) -> Int {
         switch model.modelId {
         case AIModelOption.deepseekV4Flash.modelId:
-            return 192_000
+            return 256_000
         case AIModelOption.deepseekV4Pro.modelId:
-            return 256_000
+            return 384_000
         case AIModelOption.kimiK3.modelId:
-            return 256_000
+            return 384_000
         case AIModelOption.kimi26.modelId:
-            return 128_000
+            return 192_000
         case AIModelOption.kimiK27.modelId, AIModelOption.kimiK27Highspeed.modelId:
-            return 256_000
+            return 384_000
         case AIModelOption.qwen37Flash.modelId:
-            return 192_000
-        case AIModelOption.glm47Flash.modelId:
-            return 128_000
-        case AIModelOption.doubaoSeed2Mini.modelId:
             return 256_000
-        default:
+        case AIModelOption.glm47Flash.modelId:
             return 192_000
+        case AIModelOption.doubaoSeed2Mini.modelId:
+            return 384_000
+        default:
+            return 256_000
         }
     }
 
@@ -480,6 +471,7 @@ enum ContextBuilder {
             "conversation": 0,
             "images": 0,
             "study": 0,
+            "tools": 0,
             "webSearch": 0,
             "otherSystem": 0
         ]
@@ -496,13 +488,21 @@ enum ContextBuilder {
                 continue
             }
             if let prefix = msg.apiContextPrefix, !prefix.isEmpty {
-                buckets["study", default: 0] += prefix.count + 2
+                if prefix.contains("## TOOL_RESULTS") || prefix.contains("CONNECTS_WORKSPACE_AGENT") {
+                    buckets["tools", default: 0] += min(prefix.count, 48_000) + 2
+                } else {
+                    buckets["study", default: 0] += prefix.count + 2
+                }
+            }
+            if msg.content.contains("## TOOL_RESULTS") {
+                buckets["tools", default: 0] += min(msg.content.count, 48_000)
+            } else {
+                buckets["conversation", default: 0] += msg.content.count
             }
             if let img = msg.imageJPEGBase64, !img.isEmpty {
                 buckets["images", default: 0] += min(img.count, 40_000)
             }
-            buckets["conversation", default: 0] += msg.content.count
-                + msg.reasoningContent.count
+            buckets["conversation", default: 0] += msg.reasoningContent.count
                 + msg.searchProcessContent.count
             if let description = msg.imageDescription {
                 buckets["conversation", default: 0] += description.count
@@ -516,6 +516,7 @@ enum ContextBuilder {
             ("summary", "对话摘要", UIColor(red: 0.92, green: 0.42, blue: 0.38, alpha: 1)),
             ("webSearch", "联网搜索", UIColor(red: 0.35, green: 0.78, blue: 0.92, alpha: 1)),
             ("study", "文档上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
+            ("tools", "工具结果", UIColor(red: 0.85, green: 0.65, blue: 0.25, alpha: 1)),
             ("images", "图片", UIColor(red: 0.45, green: 0.72, blue: 0.95, alpha: 1)),
             ("conversation", "近期对话", UIColor(red: 0.95, green: 0.58, blue: 0.35, alpha: 1)),
             ("otherSystem", "其他系统消息", UIColor(white: 0.48, alpha: 1))

@@ -14,7 +14,7 @@ final class PDFReaderViewController: UIViewController {
     /// After invert, lift pure black paper to app dark-gray (softer than #000).
     private let paperLiftOverlay = PassthroughOverlayView()
     private let spinner = UIActivityIndicatorView(style: .medium)
-    private let pageLabel = UILabel()
+    private let fileTitleButton = UIButton(type: .system)
     private let contentsPanelHost = UIView()
     private let contentsDim = UIControl()
     private let contentsVC = PDFContentsViewController()
@@ -39,6 +39,7 @@ final class PDFReaderViewController: UIViewController {
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
+    var onFileTitleTapped: (() -> Void)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -112,12 +113,14 @@ final class PDFReaderViewController: UIViewController {
         paperLiftOverlay.backgroundColor = DSTheme.dark.background
         view.addSubview(paperLiftOverlay)
 
-        pageLabel.translatesAutoresizingMaskIntoConstraints = false
-        pageLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        pageLabel.textColor = DSTheme.c.textSecondary
-        pageLabel.textAlignment = .center
-        pageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        topBar.addSubview(pageLabel)
+        fileTitleButton.translatesAutoresizingMaskIntoConstraints = false
+        fileTitleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        fileTitleButton.titleLabel?.lineBreakMode = .byTruncatingMiddle
+        fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
+        fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
+        fileTitleButton.accessibilityLabel = "切换文件"
+        topBar.addSubview(fileTitleButton)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
@@ -134,10 +137,10 @@ final class PDFReaderViewController: UIViewController {
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: 40),
 
-            pageLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
-            pageLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            pageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            pageLabel.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
+            fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+            fileTitleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
+            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -298,7 +301,7 @@ final class PDFReaderViewController: UIViewController {
         topBar.backgroundColor = DSTheme.c.background
         topBar.isOpaque = true
         topBarSeparator.backgroundColor = DSTheme.c.border.withAlphaComponent(0.55)
-        pageLabel.textColor = DSTheme.c.textSecondary
+        fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
         sidebarButton.tintColor = DSTheme.c.textSecondary
         contentsButton.tintColor = DSTheme.c.textSecondary
         updateHighlightPenAppearance()
@@ -761,7 +764,7 @@ final class PDFReaderViewController: UIViewController {
         loadGeneration &+= 1
         let gen = loadGeneration
         spinner.startAnimating()
-        pageLabel.text = "加载中…"
+        fileTitleButton.setTitle("加载中…", for: .normal)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let document = StudyDocumentStore.shared.cachedPDFDocument(for: documentID)
@@ -772,7 +775,7 @@ final class PDFReaderViewController: UIViewController {
                 }
                 self.spinner.stopAnimating()
                 guard let document = document else {
-                    self.pageLabel.text = "无法打开 PDF"
+                    self.fileTitleButton.setTitle("无法打开 PDF", for: .normal)
                     self.pdfView.document = nil
                     self.currentDocumentID = nil
                     completion?(false)
@@ -942,7 +945,7 @@ final class PDFReaderViewController: UIViewController {
         currentDocumentID = nil
         annotationsDirty = false
         pdfView.document = nil
-        pageLabel.text = nil
+        fileTitleButton.setTitle(nil, for: .normal)
         pendingViewportProgress = nil
         setContentsPanelVisible(false, animated: false)
         contentsVC.document = nil
@@ -962,6 +965,19 @@ final class PDFReaderViewController: UIViewController {
         let page = max(0, index) + 1
         let total = max(doc.pageCount, 1)
         return "第 \(page) / \(total) 页"
+    }
+
+    private func currentFileDisplayName() -> String {
+        guard let id = currentDocumentID,
+              let doc = StudyDocumentStore.shared.document(id: id) else { return "无文档" }
+        if let path = doc.displayPath, !path.isEmpty {
+            return URL(fileURLWithPath: path).lastPathComponent
+        }
+        return doc.title.hasSuffix(".pdf") ? doc.title : "\(doc.title).pdf"
+    }
+
+    @objc private func fileTitleTapped() {
+        onFileTitleTapped?()
     }
 
     func captureCurrentPageImageJPEG() -> String? {
@@ -1043,7 +1059,13 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private func updatePageLabel() {
-        pageLabel.text = currentPageLabel()
+        let file = currentFileDisplayName()
+        let page = currentPageLabel()
+        if file == "无文档" || page == "无文档" {
+            fileTitleButton.setTitle(file, for: .normal)
+        } else {
+            fileTitleButton.setTitle("\(file) ▾ · \(page)", for: .normal)
+        }
     }
 
     private var isZoomedIn: Bool {

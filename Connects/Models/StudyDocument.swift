@@ -175,13 +175,20 @@ struct StudyDocument: Codable, Equatable {
     }
 
     static func kind(forExtension ext: String) -> StudyDocumentKind? {
-        switch ext.lowercased() {
+        let e = ext.lowercased()
+        if e.isEmpty { return .text }
+        switch e {
         case "pdf": return .pdf
-        // Markdown opens in the code editor (preview + edit), not the PDF reading path.
         case "md", "markdown",
-             "v", "vh", "sv", "svh", "c", "h", "cpp", "cc", "hpp", "py", "txt":
+             "v", "vh", "sv", "svh", "c", "h", "cpp", "cc", "hpp", "py", "txt",
+             "html", "htm", "css", "js", "ts", "json", "xml", "yaml", "yml",
+             "swift", "rs", "go", "java", "kt", "rb", "sh", "toml", "ini", "cfg",
+             "cmake", "makefile", "mk", "s", "asm", "r", "sql", "csv", "tsv",
+             "tex", "bib", "log", "mdc", "vue", "jsx", "tsx":
             return .text
-        default: return nil
+        default:
+            // Any other extension opens as plain text in the code editor.
+            return .text
         }
     }
 }

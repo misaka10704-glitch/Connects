@@ -6,6 +6,14 @@ struct ConnectsMenuItem {
     var customImage: UIImage? = nil
     var isDestructive: Bool = false
     var isSelected: Bool = false
+    /// Optional long-press (e.g. file rename / delete). Tap still runs `handler`.
+    var longPressHandler: (() -> Void)? = nil
+    let handler: () -> Void
+}
+
+struct ConnectsMenuHeaderAction {
+    let icon: ActionIconFactory.Kind
+    let accessibilityLabel: String
     let handler: () -> Void
 }
 
@@ -20,8 +28,11 @@ enum ConnectsMenu {
                         preferAbove: Bool = false,
                         preferVertical: Bool = false,
                         maxHeight: CGFloat? = nil,
-                        menuWidth: CGFloat? = nil) {
-        guard !items.isEmpty else { return }
+                        menuWidth: CGFloat? = nil,
+                        titleTap: (() -> Void)? = nil,
+                        headerTrailingActions: [ConnectsMenuHeaderAction] = []) {
+        // Allow empty file list when header actions are present (empty workspace).
+        guard !items.isEmpty || title != nil || !headerTrailingActions.isEmpty else { return }
 
         // Capture in window space *before* the modal covers the hierarchy.
         var windowRect: CGRect?
@@ -33,7 +44,12 @@ enum ConnectsMenu {
             windowRect = src.convert(r, to: nil)
         }
 
-        let menu = ConnectsMenuController(titleText: title, items: items)
+        let menu = ConnectsMenuController(
+            titleText: title,
+            items: items,
+            titleTap: titleTap,
+            headerTrailingActions: headerTrailingActions
+        )
         menu.modalPresentationStyle = .overFullScreen
         menu.modalTransitionStyle = .crossDissolve
         menu.anchorWindowRect = windowRect
@@ -65,6 +81,8 @@ enum ConnectsMenu {
 private final class ConnectsMenuController: UIViewController {
     private let titleText: String?
     private let items: [ConnectsMenuItem]
+    private let titleTap: (() -> Void)?
+    private let headerTrailingActions: [ConnectsMenuHeaderAction]
     var anchorWindowRect: CGRect?
     var preferAbove = false
     /// List / full-width rows: always place above/below the touch, never into the sibling pane.
@@ -84,10 +102,16 @@ private final class ConnectsMenuController: UIViewController {
     private var rows: [MenuRowView] = []
     private var titleLabel: UILabel?
     private var sectionLines: [UIView] = []
+    private var headerActionButtons: [UIButton] = []
 
-    init(titleText: String?, items: [ConnectsMenuItem]) {
+    init(titleText: String?,
+         items: [ConnectsMenuItem],
+         titleTap: (() -> Void)? = nil,
+         headerTrailingActions: [ConnectsMenuHeaderAction] = []) {
         self.titleText = titleText
         self.items = items
+        self.titleTap = titleTap
+        self.headerTrailingActions = headerTrailingActions
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -229,6 +253,9 @@ private final class ConnectsMenuController: UIViewController {
         card.clipsToBounds = false
 
         titleLabel?.textColor = c.textTertiary
+        for btn in headerActionButtons {
+            btn.tintColor = c.textPrimary
+        }
         for line in sectionLines {
             line.backgroundColor = dark
                 ? UIColor.white.withAlphaComponent(0.09)
@@ -241,27 +268,64 @@ private final class ConnectsMenuController: UIViewController {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         rows.removeAll()
         sectionLines.removeAll()
+        headerActionButtons.removeAll()
         titleLabel = nil
 
         if let raw = titleText?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
             let label = UILabel()
             label.text = raw
-            label.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+            label.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
             label.numberOfLines = 1
             label.lineBreakMode = .byTruncatingTail
             label.translatesAutoresizingMaskIntoConstraints = false
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
             let wrap = UIView()
+            wrap.translatesAutoresizingMaskIntoConstraints = false
             wrap.addSubview(label)
+
+            let trailingStack = UIStackView()
+            trailingStack.axis = .horizontal
+            trailingStack.spacing = 2
+            trailingStack.alignment = .center
+            trailingStack.translatesAutoresizingMaskIntoConstraints = false
+            wrap.addSubview(trailingStack)
+
+            for (idx, action) in headerTrailingActions.enumerated() {
+                let btn = UIButton(type: .system)
+                btn.translatesAutoresizingMaskIntoConstraints = false
+                btn.setImage(ActionIconFactory.image(action.icon, pointSize: 15), for: .normal)
+                btn.accessibilityLabel = action.accessibilityLabel
+                btn.tag = idx
+                btn.addTarget(self, action: #selector(headerActionTapped(_:)), for: .touchUpInside)
+                trailingStack.addArrangedSubview(btn)
+                NSLayoutConstraint.activate([
+                    btn.widthAnchor.constraint(equalToConstant: 32),
+                    btn.heightAnchor.constraint(equalToConstant: 32)
+                ])
+                headerActionButtons.append(btn)
+            }
+
+            if titleTap != nil {
+                let tap = UITapGestureRecognizer(target: self, action: #selector(titleHeaderTapped))
+                label.isUserInteractionEnabled = true
+                label.addGestureRecognizer(tap)
+            }
+
             NSLayoutConstraint.activate([
-                label.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 8),
+                label.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
                 label.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6),
                 label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
-                label.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -14),
-                wrap.heightAnchor.constraint(greaterThanOrEqualToConstant: 30)
+                trailingStack.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+                trailingStack.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -8),
+                label.trailingAnchor.constraint(lessThanOrEqualTo: trailingStack.leadingAnchor, constant: -8),
+                wrap.heightAnchor.constraint(greaterThanOrEqualToConstant: 36)
             ])
             stack.addArrangedSubview(wrap)
             titleLabel = label
-            stack.addArrangedSubview(makeSectionLine())
+            if !items.isEmpty || !headerTrailingActions.isEmpty {
+                stack.addArrangedSubview(makeSectionLine())
+            }
         }
 
         for (idx, item) in items.enumerated() {
@@ -271,9 +335,31 @@ private final class ConnectsMenuController: UIViewController {
             }
             let row = MenuRowView(item: item, index: idx)
             row.onTap = { [weak self] i in self?.selectItem(at: i) }
+            row.onLongPress = { [weak self] i in self?.longPressItem(at: i) }
             stack.addArrangedSubview(row)
             rows.append(row)
         }
+    }
+
+    @objc private func titleHeaderTapped() {
+        guard let titleTap else { return }
+        dismissThen(titleTap)
+    }
+
+    @objc private func headerActionTapped(_ sender: UIButton) {
+        guard headerTrailingActions.indices.contains(sender.tag) else { return }
+        let handler = headerTrailingActions[sender.tag].handler
+        dismissThen(handler)
+    }
+
+    private func dismissThen(_ handler: @escaping () -> Void) {
+        UIView.animate(withDuration: 0.12, animations: {
+            self.dimView.alpha = 0
+            self.card.alpha = 0
+            self.card.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
+        }, completion: { _ in
+            self.dismiss(animated: false) { handler() }
+        })
     }
 
     private func makeSectionLine() -> UIView {
@@ -298,13 +384,13 @@ private final class ConnectsMenuController: UIViewController {
     private func selectItem(at index: Int) {
         guard items.indices.contains(index) else { return }
         let handler = items[index].handler
-        UIView.animate(withDuration: 0.12, animations: {
-            self.dimView.alpha = 0
-            self.card.alpha = 0
-            self.card.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
-        }, completion: { _ in
-            self.dismiss(animated: false) { handler() }
-        })
+        dismissThen(handler)
+    }
+
+    private func longPressItem(at index: Int) {
+        guard items.indices.contains(index),
+              let handler = items[index].longPressHandler else { return }
+        dismissThen(handler)
     }
 
     @objc private func dismissMenu() {
@@ -376,6 +462,7 @@ private final class ConnectsMenuController: UIViewController {
 
 private final class MenuRowView: UIView {
     var onTap: ((Int) -> Void)?
+    var onLongPress: ((Int) -> Void)?
     private let item: ConnectsMenuItem
     private let index: Int
     private let hit = UIButton(type: .custom)
@@ -436,6 +523,12 @@ private final class MenuRowView: UIView {
         hit.addTarget(self, action: #selector(down), for: .touchDown)
         hit.addTarget(self, action: #selector(up), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         addSubview(hit)
+        if item.longPressHandler != nil {
+            let long = UILongPressGestureRecognizer(target: self, action: #selector(longPressed(_:)))
+            long.minimumPressDuration = 0.45
+            hit.addGestureRecognizer(long)
+            accessibilityHint = "长按可重命名或删除"
+        }
 
         let hasIcon = item.icon != nil || item.customImage != nil
         let iconW: CGFloat = hasIcon ? 22 : 0
@@ -488,4 +581,9 @@ private final class MenuRowView: UIView {
     @objc private func down() { highlight.alpha = 1 }
     @objc private func up() { highlight.alpha = 0 }
     @objc private func tapped() { onTap?(index) }
+    @objc private func longPressed(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        highlight.alpha = 0
+        onLongPress?(index)
+    }
 }

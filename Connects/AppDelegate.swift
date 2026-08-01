@@ -7,6 +7,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UserDefaults.standard.register(defaults: ["connects_sidebar_collapsed": true])
+        ConnectsPaths.ensureAppFolders()
+        _ = StudyWorkspaceStore.shared.ensureDefault()
         // Warm Study Markdown WKWebView (marked/KaTeX) off the critical path — chat stays Native.
         WebKitRenderWarmup.prepare()
         let window = UIWindow(frame: UIScreen.main.bounds)
@@ -24,6 +26,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         #if DEBUG
         StudyVisualQAHarness.runIfRequested()
         StudyFeatureQAHarness.runIfRequested()
+        StudyAgentUXQAHarness.runIfRequested()
+        StudyAgentProcessQAHarness.runIfRequested()
+        StudyAgentLiveQAHarness.runIfRequested()
+        StudyAgentSPIE2EHarness.runIfRequested()
         #endif
         SettingsManager.applyIdleTimerSetting()
         return true
@@ -36,6 +42,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationWillResignActive(_ application: UIApplication) {
         // Avoid keeping the screen awake while backgrounded / locked.
         application.isIdleTimerDisabled = false
+        // Xcode rebuild / task switch often kills before the debounced save lands.
+        ConversationStore.shared.flushPendingSave()
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        ConversationStore.shared.flushPendingSave()
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        ConversationStore.shared.flushPendingSave()
     }
 
     func application(_ application: UIApplication,
