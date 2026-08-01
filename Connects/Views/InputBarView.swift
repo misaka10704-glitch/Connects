@@ -1128,7 +1128,12 @@ final class InputBarView: UIView, ThemeRefreshable {
     }
 
     @objc private func aiOptionsTapped() {
+        let keepKeyboard = textView.isFirstResponder
         delegate?.inputBarDidTapAIOptions()
+        // Tapping a chip outside UITextView normally resigns the keyboard — put it back.
+        if keepKeyboard, !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        }
     }
 
     @objc private func studyCaptureTapped() {

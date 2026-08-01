@@ -10078,7 +10078,14 @@ extension ChatViewController: InputBarViewDelegate {
 
     func inputBarDidTapAIOptions() {
         prepareForStudyPanelControlTap()
+        let keepKeyboard = inputBar.isComposerFirstResponder
         presentModelPicker(anchor: inputBar.aiOptionsAnchorView)
+        if keepKeyboard {
+            // Modal-less overlay + re-focus so layout/keyboard don't jump under the menu.
+            DispatchQueue.main.async { [weak self] in
+                self?.inputBar.focusComposer()
+            }
+        }
     }
 
     func inputBarDidRequestStudyContextScope(from sourceView: UIView) {

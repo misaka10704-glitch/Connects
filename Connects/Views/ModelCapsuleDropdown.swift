@@ -1,9 +1,10 @@
 import UIKit
 
 /// Dropdown for the input-bar / nav model chip.
-/// Always anchors to the chip in **window** space and prefers sitting **above** it
-/// (composer chips live near the keyboard — hanging below lands in the wrong place).
+/// Hosted as a **window overlay** (not a modal VC) so the composer keyboard stays up.
 enum ModelCapsuleDropdown {
+    private static var activeOverlay: ModelCapsuleDropdownOverlay?
+
     static func present(from host: UIViewController,
                         anchor: UIView,
                         models: [AIModelOption],
@@ -11,9 +12,18 @@ enum ModelCapsuleDropdown {
                         onPick: @escaping (AIModelOption) -> Void,
                         onDismiss: (() -> Void)? = nil) {
         guard !models.isEmpty else { return }
+        dismissActive(animated: false)
+
         host.view.layoutIfNeeded()
         anchor.superview?.layoutIfNeeded()
         anchor.layoutIfNeeded()
+
+        guard let window = anchor.window
+            ?? host.view.window
+            ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
+
+        // Remember composer focus — overlay must not steal first responder.
+        let keptResponder = findFirstResponder(in: window) as? UIView
 
         var windowRect = anchor.convert(anchor.bounds, to: nil)
         if windowRect.width < 8 || windowRect.height < 8 {
@@ -23,40 +33,48 @@ enum ModelCapsuleDropdown {
             )
         }
 
-        let vc = ModelCapsuleDropdownController(
+        let overlay = ModelCapsuleDropdownOverlay(
             models: models,
             selectedID: selected?.stableID,
+            anchorWindowRect: windowRect,
             onPick: onPick,
-            onDismiss: onDismiss
+            onDismiss: {
+                activeOverlay = nil
+                // Restore focus if something briefly stole it.
+                if let keptResponder, !keptResponder.isFirstResponder {
+                    keptResponder.becomeFirstResponder()
+                }
+                onDismiss?()
+            }
         )
-        vc.modalPresentationStyle = .overFullScreen
-        vc.modalTransitionStyle = .crossDissolve
-        vc.anchorWindowRect = windowRect
-        topPresenter(from: host).present(vc, animated: false)
+        activeOverlay = overlay
+        overlay.install(in: window)
+        // Keep keyboard: re-assert first responder after install.
+        if let keptResponder, !keptResponder.isFirstResponder {
+            keptResponder.becomeFirstResponder()
+        }
     }
 
-    private static func topPresenter(from host: UIViewController) -> UIViewController {
-        var candidate = host
-        while let parent = candidate.parent {
-            candidate = parent
+    static func dismissActive(animated: Bool = true) {
+        activeOverlay?.dismiss(animated: animated)
+        activeOverlay = nil
+    }
+
+    private static func findFirstResponder(in view: UIView) -> UIResponder? {
+        if view.isFirstResponder { return view }
+        for sub in view.subviews {
+            if let found = findFirstResponder(in: sub) { return found }
         }
-        if let root = host.view.window?.rootViewController {
-            candidate = root
-        }
-        while let presented = candidate.presentedViewController {
-            if presented is ModelCapsuleDropdownController { break }
-            candidate = presented
-        }
-        return candidate
+        return nil
     }
 }
 
-private final class ModelCapsuleDropdownController: UIViewController {
+private final class ModelCapsuleDropdownOverlay: UIView {
     private let models: [AIModelOption]
     private let selectedID: String?
+    private var anchorWindowRect: CGRect
     private let onPick: (AIModelOption) -> Void
-    private let onDismiss: (() -> Void)?
-    var anchorWindowRect: CGRect?
+    private let onDismiss: () -> Void
 
     private let dim = UIControl()
     private let panel = UIView()
@@ -69,33 +87,66 @@ private final class ModelCapsuleDropdownController: UIViewController {
 
     init(models: [AIModelOption],
          selectedID: String?,
+         anchorWindowRect: CGRect,
          onPick: @escaping (AIModelOption) -> Void,
-         onDismiss: (() -> Void)?) {
+         onDismiss: @escaping () -> Void) {
         self.models = models
         self.selectedID = selectedID
+        self.anchorWindowRect = anchorWindowRect
         self.onPick = onPick
         self.onDismiss = onDismiss
-        super.init(nibName: nil, bundle: nil)
+        super.init(frame: .zero)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .clear
+    func install(in window: UIWindow) {
+        translatesAutoresizingMaskIntoConstraints = false
+        window.addSubview(self)
+        NSLayoutConstraint.activate([
+            topAnchor.constraint(equalTo: window.topAnchor),
+            bottomAnchor.constraint(equalTo: window.bottomAnchor),
+            leadingAnchor.constraint(equalTo: window.leadingAnchor),
+            trailingAnchor.constraint(equalTo: window.trailingAnchor)
+        ])
+        buildChrome()
+        applyTheme()
+        layoutIfNeeded()
+        positionPanel()
+        alpha = 0
+        panel.transform = CGAffineTransform(translationX: 0, y: 4).scaledBy(x: 0.98, y: 0.96)
+        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.alpha = 1
+            self.panel.alpha = 1
+            self.panel.transform = .identity
+        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applyTheme), name: .themeDidChange, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    private func buildChrome() {
+        backgroundColor = .clear
 
         dim.translatesAutoresizingMaskIntoConstraints = false
-        dim.backgroundColor = UIColor.black.withAlphaComponent(0.12)
-        dim.alpha = 0
-        dim.addTarget(self, action: #selector(dismissDropdown), for: .touchUpInside)
-        view.addSubview(dim)
+        // Keep dim light — avoid looking like a modal that "took over" from the keyboard.
+        dim.backgroundColor = UIColor.black.withAlphaComponent(0.01)
+        dim.addTarget(self, action: #selector(dismissTapped), for: .touchUpInside)
+        addSubview(dim)
 
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.layer.cornerRadius = 14
         panel.clipsToBounds = false
         panel.alpha = 0
-        panel.transform = CGAffineTransform(translationX: 0, y: 4).scaledBy(x: 0.98, y: 0.96)
-        view.addSubview(panel)
+        addSubview(panel)
 
         let clip = UIView()
         clip.translatesAutoresizingMaskIntoConstraints = false
@@ -109,14 +160,14 @@ private final class ModelCapsuleDropdownController: UIViewController {
         clip.addSubview(stack)
 
         panelWidth = panel.widthAnchor.constraint(equalToConstant: 220)
-        panelLeading = panel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40)
-        panelTop = panel.topAnchor.constraint(equalTo: view.topAnchor, constant: 60)
+        panelLeading = panel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40)
+        panelTop = panel.topAnchor.constraint(equalTo: topAnchor, constant: 60)
 
         NSLayoutConstraint.activate([
-            dim.topAnchor.constraint(equalTo: view.topAnchor),
-            dim.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            dim.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            dim.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            dim.topAnchor.constraint(equalTo: topAnchor),
+            dim.bottomAnchor.constraint(equalTo: bottomAnchor),
+            dim.leadingAnchor.constraint(equalTo: leadingAnchor),
+            dim.trailingAnchor.constraint(equalTo: trailingAnchor),
 
             clip.topAnchor.constraint(equalTo: panel.topAnchor),
             clip.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
@@ -132,40 +183,19 @@ private final class ModelCapsuleDropdownController: UIViewController {
         ])
 
         buildRows()
-        applyTheme()
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(applyTheme), name: .themeDidChange, object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardFrameChanged(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil
-        )
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
+    override func layoutSubviews() {
+        super.layoutSubviews()
         positionPanel()
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        positionPanel()
-        UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
-            self.dim.alpha = 1
-            self.panel.alpha = 1
-            self.panel.transform = .identity
-        }
     }
 
     @objc private func keyboardFrameChanged(_ note: Notification) {
+        // Re-read chip rect if keyboard frame animates while we stay open.
         positionPanel()
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.2
         UIView.animate(withDuration: duration) {
-            self.view.layoutIfNeeded()
+            self.layoutIfNeeded()
         }
     }
 
@@ -207,6 +237,7 @@ private final class ModelCapsuleDropdownController: UIViewController {
             let row = UIButton(type: .custom)
             row.contentHorizontalAlignment = .fill
             row.tag = idx
+            // Don't let the button become first responder / dismiss keyboard.
             row.addTarget(self, action: #selector(rowTapped(_:)), for: .touchUpInside)
             row.addTarget(self, action: #selector(rowDown(_:)), for: .touchDown)
             row.addTarget(self, action: #selector(rowUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
@@ -218,6 +249,7 @@ private final class ModelCapsuleDropdownController: UIViewController {
             title.textColor = selected ? DSTheme.c.accent : DSTheme.c.textPrimary
             title.lineBreakMode = .byTruncatingTail
             title.tag = 9002
+            title.isUserInteractionEnabled = false
 
             let check = UIImageView(image: UIImage(systemName: "checkmark"))
             check.translatesAutoresizingMaskIntoConstraints = false
@@ -226,6 +258,7 @@ private final class ModelCapsuleDropdownController: UIViewController {
             check.tintColor = DSTheme.c.accent
             check.isHidden = !selected
             check.tag = 9001
+            check.isUserInteractionEnabled = false
 
             row.addSubview(title)
             row.addSubview(check)
@@ -256,43 +289,50 @@ private final class ModelCapsuleDropdownController: UIViewController {
     @objc private func rowTapped(_ sender: UIButton) {
         let idx = sender.tag
         guard models.indices.contains(idx) else { return }
-        finish(pick: models[idx])
+        let model = models[idx]
+        finish(pick: model)
     }
 
-    @objc private func dismissDropdown() {
+    @objc private func dismissTapped() {
         finish(pick: nil)
     }
 
-    private func finish(pick: AIModelOption?) {
+    func dismiss(animated: Bool) {
+        finish(pick: nil, animated: animated)
+    }
+
+    private func finish(pick: AIModelOption?, animated: Bool = true) {
         guard !didFinish else { return }
         didFinish = true
-        UIView.animate(withDuration: 0.12, animations: {
-            self.dim.alpha = 0
-            self.panel.alpha = 0
-            self.panel.transform = CGAffineTransform(translationX: 0, y: 3).scaledBy(x: 0.98, y: 0.97)
-        }, completion: { _ in
-            self.dismiss(animated: false) {
-                if let pick = pick {
-                    self.onPick(pick)
-                }
-                self.onDismiss?()
+        NotificationCenter.default.removeObserver(self)
+        let cleanup = {
+            self.removeFromSuperview()
+            if let pick = pick {
+                self.onPick(pick)
             }
-        })
+            self.onDismiss()
+        }
+        if animated {
+            UIView.animate(withDuration: 0.12, animations: {
+                self.alpha = 0
+                self.panel.transform = CGAffineTransform(translationX: 0, y: 3).scaledBy(x: 0.98, y: 0.97)
+            }, completion: { _ in cleanup() })
+        } else {
+            cleanup()
+        }
     }
 
     private func keyboardTopY() -> CGFloat {
-        let screen = view.window?.bounds ?? UIScreen.main.bounds
-        // Prefer live keyboard window if present.
-        for window in UIApplication.shared.windows where window !== view.window {
+        for window in UIApplication.shared.windows where window !== self.window {
             let name = NSStringFromClass(type(of: window))
             if name.contains("Keyboard") || name.contains("UIRemoteKeyboard") {
-                let frame = window.convert(window.bounds, to: view)
-                if frame.height > 40, frame.minY < screen.height - 20 {
+                let frame = window.convert(window.bounds, to: self)
+                if frame.height > 40, frame.minY < bounds.height - 20 {
                     return frame.minY
                 }
             }
         }
-        return view.bounds.height
+        return bounds.height
     }
 
     private func positionPanel() {
@@ -301,12 +341,10 @@ private final class ModelCapsuleDropdownController: UIViewController {
         let font = UIFont.systemFont(ofSize: 15, weight: .regular)
         let longest = names.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 120
         var width = max(longest + 52, 168)
-        if let wr = anchorWindowRect {
-            width = max(width, wr.width)
-        }
-        width = min(width, min(260, view.bounds.width - margin * 2))
+        width = max(width, anchorWindowRect.width)
+        width = min(width, min(260, bounds.width - margin * 2))
         panelWidth.constant = width
-        view.layoutIfNeeded()
+        layoutIfNeeded()
 
         let panelH = max(40, panel.systemLayoutSizeFitting(
             CGSize(width: width, height: 0),
@@ -314,29 +352,20 @@ private final class ModelCapsuleDropdownController: UIViewController {
             verticalFittingPriority: .fittingSizeLevel
         ).height)
 
-        let usableBottom = min(view.bounds.height, keyboardTopY()) - margin
-        var x: CGFloat
-        var y: CGFloat
-        if let wr = anchorWindowRect {
-            let rect = view.convert(wr, from: nil)
-            // Align trailing edge with the chip (chip sits on the right of the composer).
-            x = rect.maxX - width
-            let spaceBelow = usableBottom - rect.maxY - 6
-            let spaceAbove = rect.minY - margin - 6
-            let placeAbove = spaceBelow < panelH + 4 || spaceAbove >= spaceBelow
-            if placeAbove {
-                y = rect.minY - panelH - 6
-            } else {
-                y = rect.maxY + 6
-            }
-        } else {
-            x = (view.bounds.width - width) * 0.5
-            y = usableBottom - panelH - 8
-        }
+        let usableBottom = min(bounds.height, keyboardTopY()) - margin
+        let rect = convert(anchorWindowRect, from: nil)
+        var x = rect.maxX - width
+        let spaceBelow = usableBottom - rect.maxY - 6
+        let spaceAbove = rect.minY - margin - 6
+        let placeAbove = spaceBelow < panelH + 4 || spaceAbove >= spaceBelow
+        var y = placeAbove ? rect.minY - panelH - 6 : rect.maxY + 6
 
-        x = min(max(margin, x), view.bounds.width - width - margin)
+        x = min(max(margin, x), bounds.width - width - margin)
         y = min(max(margin, y), usableBottom - panelH)
         panelLeading.constant = x
         panelTop.constant = y
     }
+
+    /// Don't become first responder — keeps the text view keyboard alive.
+    override var canBecomeFirstResponder: Bool { false }
 }
