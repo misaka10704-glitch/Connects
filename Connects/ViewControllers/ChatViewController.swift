@@ -6864,8 +6864,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let source = ConversationStore.shared.currentConversation else { return }
         let list: [Conversation]
         let title: String
-        if source.isWorkspaceStudySession, let wsID = source.activeStudyWorkspaceID {
-            list = ConversationStore.shared.conversations(inWorkspace: wsID)
+        if source.isWorkspaceStudySession {
+            if let docID = source.studyDocumentID {
+                list = ConversationStore.shared.conversations(sharingParentFolderOfDocument: docID)
+            } else if let wsID = source.activeStudyWorkspaceID {
+                list = ConversationStore.shared.conversations(inWorkspace: wsID)
+            } else {
+                ConnectsToast.show("暂无相关对话", in: view, duration: 1.4)
+                return
+            }
             title = "工作区对话"
         } else if let docID = source.studyDocumentID {
             list = ConversationStore.shared.conversations(boundToDocument: docID)

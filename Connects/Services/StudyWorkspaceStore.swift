@@ -385,6 +385,7 @@ final class StudyWorkspaceStore {
     }
 
     /// Open a file → reuse bookmarked grant when possible; never create DSP(NJU)-style leaf workspaces over it.
+    /// Used for **security scope** only — conversation identity uses `conversationWorkspace(forFileAt:)`.
     @discardableResult
     func bindFolderAroundOpenFile(_ fileURL: URL) throws -> StudyWorkspace {
         let fileAccess = fileURL.startAccessingSecurityScopedResource()
@@ -405,6 +406,71 @@ final class StudyWorkspaceStore {
             folder = parent.standardizedFileURL
         }
         return try openFolderWorkspace(url: folder)
+    }
+
+    /// Parent directory path of a study document (normalized), if known.
+    func parentFolderPath(ofDocumentID documentID: String) -> String? {
+        if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath, !path.isEmpty {
+            return Self.normalizedPath(
+                URL(fileURLWithPath: path).deletingLastPathComponent().path
+            )
+        }
+        if let url = try? StudyDocumentStore.shared.resolvedURL(forID: documentID) {
+            return Self.normalizedPath(url.deletingLastPathComponent().path)
+        }
+        return nil
+    }
+
+    /// Workspace record whose root is exactly `path` (not a covering grant ancestor).
+    func workspaceID(withExactRootPath path: String) -> String? {
+        let target = Self.normalizedPath(path)
+        return workspaces.first(where: { ws in
+            guard !ws.isDefault else { return false }
+            if let abs = ws.absoluteRootPath, !abs.isEmpty {
+                return Self.normalizedPath(abs) == target
+            }
+            if let rel = ws.relativePath, !rel.isEmpty {
+                let url = ConnectsPaths.documentsURL.appendingPathComponent(rel, isDirectory: true)
+                return Self.normalizedPath(url.path) == target
+            }
+            return false
+        })?.id
+    }
+
+    /// Conversation / history identity for an open file = its **immediate parent folder**.
+    /// Never collapses to the project-folder grant (e.g. whole `Workspace/`).
+    @discardableResult
+    func conversationWorkspace(forFileAt fileURL: URL) -> StudyWorkspace {
+        var folder = fileURL.deletingLastPathComponent().standardizedFileURL
+        if let parent = try? fileURL.resourceValues(forKeys: [.parentDirectoryURLKey]).parentDirectory {
+            folder = parent.standardizedFileURL
+        }
+        return ensureExactFolderWorkspace(at: folder)
+    }
+
+    /// Find or create a workspace row for this exact folder path (no grant steal).
+    @discardableResult
+    func ensureExactFolderWorkspace(at folderURL: URL) -> StudyWorkspace {
+        let openedPath = Self.normalizedPath(folderURL.path)
+        if let existingID = workspaceID(withExactRootPath: openedPath),
+           let existing = workspace(id: existingID) {
+            return existing
+        }
+        let created = StudyWorkspace(
+            id: UUID().uuidString,
+            title: folderURL.lastPathComponent.isEmpty ? "文件夹" : folderURL.lastPathComponent,
+            isDefault: false,
+            rootBookmarkData: nil,
+            relativePath: nil,
+            absoluteRootPath: openedPath,
+            documentIDs: [],
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        workspaces.insert(created, at: 0)
+        save()
+        notify()
+        return created
     }
 
     func addDocument(_ documentID: String, to workspaceID: String) {

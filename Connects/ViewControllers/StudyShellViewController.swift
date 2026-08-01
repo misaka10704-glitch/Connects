@@ -1845,11 +1845,21 @@ extension StudyShellViewController: StudyReadingContextProviding {
     func switchActiveDocument(to documentID: String) {
         guard let convID = ConversationStore.shared.currentConversationID else { return }
         let conv = ConversationStore.shared.currentConversation
-        if conv?.isWorkspaceStudySession == true, let wsID = conv?.activeStudyWorkspaceID {
-            StudyWorkspaceStore.shared.addDocument(documentID, to: wsID)
+        if conv?.isWorkspaceStudySession == true {
+            // Keep conversation identity on the file's parent folder (not the grant root).
+            var folderWSID = conv?.activeStudyWorkspaceID
+            if let path = StudyDocumentStore.shared.document(id: documentID)?.displayPath, !path.isEmpty {
+                let folderWS = StudyWorkspaceStore.shared.conversationWorkspace(
+                    forFileAt: URL(fileURLWithPath: path)
+                )
+                folderWSID = folderWS.id
+                StudyWorkspaceStore.shared.addDocument(documentID, to: folderWS.id)
+            } else if let wsID = folderWSID {
+                StudyWorkspaceStore.shared.addDocument(documentID, to: wsID)
+            }
             ConversationStore.shared.updateConversation(id: convID) { draft in
                 draft.studyDocumentID = documentID
-                draft.studyWorkspaceID = wsID
+                draft.studyWorkspaceID = folderWSID
                 draft.studySessionKind = .workspace
                 draft.studyPageCaptureEnabled = true
             }
@@ -2179,7 +2189,8 @@ extension StudyShellViewController: StudyReadingContextProviding {
             }()
             items.append(ConnectsMenuItem(title: "当前授权：\(grant.title)", icon: .folder) { [weak self] in
                 guard let self else { return }
-                self.activateWorkspace(grant.id)
+                // Warm security scope only — do not bind conversation to the grant root.
+                _ = try? StudyWorkspaceStore.shared.folderURL(for: grant.id)
                 ConnectsToast.show("已授权：\(pathHint)", in: self.view, duration: 2.2)
             })
         }
@@ -2282,7 +2293,19 @@ extension StudyShellViewController: StudyReadingContextProviding {
         if isDirectory {
             do {
                 let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url, asProjectGrant: true)
-                activateWorkspace(ws.id)
+                // Directory pick here is project grant — do not dump all subfolder chats into one bucket.
+                StudyWorkspaceStore.shared.markAsProjectFolderGrant(ws.id)
+                if let preferred = ConversationStore.shared.currentConversation?.studyDocumentID,
+                   let path = StudyDocumentStore.shared.document(id: preferred)?.displayPath,
+                   !path.isEmpty {
+                    let folderWS = StudyWorkspaceStore.shared.conversationWorkspace(
+                        forFileAt: URL(fileURLWithPath: path)
+                    )
+                    activateWorkspace(folderWS.id, preferredDocumentID: preferred)
+                } else {
+                    ConnectsToast.show("已授权：\(ws.title)。请打开该目录下的文件。", in: view, duration: 2.0)
+                    presentStudyFilesBrowser()
+                }
             } catch {
                 ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
             }
@@ -2292,7 +2315,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
         openFileBindingParentWorkspace(fileURL: url)
     }
 
-    /// Open one file and silently bind its parent folder so the options menu can list siblings.
+    /// Open one file and bind conversation identity to its **parent folder**
+    /// (same-directory files share workspace chats; other folders stay separate).
+    /// Project-folder grant is warmed for security scope only.
     private func openFileBindingParentWorkspace(fileURL: URL, showSwitcher: Bool = false) {
         do {
             let doc: StudyDocument
@@ -2307,17 +2332,16 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 )
             }
 
-            if let existing = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(
+            // Authorization only — never use the grant root as conversation workspace id.
+            if let grant = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(
                 coveringFilePath: fileURL.path
-            ) {
-                StudyWorkspaceStore.shared.addDocument(doc.id, to: existing.id)
-                _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: existing.id)
-                activateWorkspace(existing.id, preferredDocumentID: doc.id)
-            } else {
-                let ws = try StudyWorkspaceStore.shared.bindFolderAroundOpenFile(fileURL)
-                StudyWorkspaceStore.shared.addDocument(doc.id, to: ws.id)
-                activateWorkspace(ws.id, preferredDocumentID: doc.id)
+            ) ?? StudyWorkspaceStore.shared.bookmarkedWorkspaceCovering(path: fileURL.path) {
+                _ = try? StudyWorkspaceStore.shared.folderURL(for: grant.id)
             }
+
+            let folderWS = StudyWorkspaceStore.shared.conversationWorkspace(forFileAt: fileURL)
+            StudyWorkspaceStore.shared.addDocument(doc.id, to: folderWS.id)
+            activateFolderConversation(workspace: folderWS, documentID: doc.id)
 
             if showSwitcher {
                 DispatchQueue.main.async { [weak self] in
@@ -2337,6 +2361,45 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 ConnectsToast.show(error.localizedDescription, in: view, duration: 2.0)
             }
         }
+    }
+
+    /// Attach the open file to a parent-folder workspace conversation.
+    /// Switching folders selects that folder's existing chat (or creates one) so histories stay isolated.
+    private func activateFolderConversation(workspace folderWS: StudyWorkspace, documentID: String) {
+        let current = ConversationStore.shared.currentConversation
+        let currentParent = current?.studyDocumentID.flatMap {
+            StudyWorkspaceStore.shared.parentFolderPath(ofDocumentID: $0)
+        }
+        let targetParent = StudyWorkspaceStore.shared.parentFolderPath(ofDocumentID: documentID)
+            ?? folderWS.absoluteRootPath.map { StudyWorkspaceStore.normalizedPath($0) }
+        let sameFolder =
+            current?.activeStudyWorkspaceID == folderWS.id
+            || (currentParent != nil && currentParent == targetParent)
+
+        if sameFolder {
+            activateWorkspace(folderWS.id, preferredDocumentID: documentID)
+            return
+        }
+
+        let peers = ConversationStore.shared.conversations(sharingParentFolderOfDocument: documentID)
+        if let peer = peers.first {
+            ConversationStore.shared.selectConversation(id: peer.id)
+            activateWorkspace(folderWS.id, preferredDocumentID: documentID)
+            return
+        }
+
+        let model = current?.model ?? .deepseekV4Pro
+        _ = ConversationStore.shared.createConversation(
+            model: model,
+            projectID: current?.projectID,
+            studyWorkspaceID: folderWS.id,
+            studyDocumentID: documentID,
+            studySessionKind: .workspace,
+            studyPageCaptureEnabled: true,
+            studyAgentMode: StudyAgentMode.coerceForProduct(current?.studyAgentMode ?? .ask)
+        )
+        forceRebindConversation()
+        chatVC.refreshStudyBindingChrome()
     }
 
     private func presentFolderWorkspacePicker() {
@@ -2588,7 +2651,18 @@ extension StudyShellViewController: UIDocumentPickerDelegate {
                 let ws = try StudyWorkspaceStore.shared.openFolderWorkspace(url: url, asProjectGrant: true)
                 UserDefaults.standard.set(true, forKey: "Connects.hasProjectFolderGrant")
                 StudyWorkspaceStore.shared.markAsProjectFolderGrant(ws.id)
-                activateWorkspace(ws.id, preferredDocumentID: preferredDoc)
+                // Grant ≠ conversation folder. Keep chats scoped to the open file's parent.
+                if let preferredDoc,
+                   let path = StudyDocumentStore.shared.document(id: preferredDoc)?.displayPath,
+                   !path.isEmpty {
+                    let folderWS = StudyWorkspaceStore.shared.conversationWorkspace(
+                        forFileAt: URL(fileURLWithPath: path)
+                    )
+                    StudyWorkspaceStore.shared.addDocument(preferredDoc, to: folderWS.id)
+                    activateWorkspace(folderWS.id, preferredDocumentID: preferredDoc)
+                } else if let preferredDoc {
+                    activateDocumentStudy(documentID: preferredDoc)
+                }
                 if StudyWorkspaceStore.isOverlyBroadFolder(url) {
                     ConnectsToast.show(
                         "已授权。建议选具体工程文件夹（不要选整个 iCloud），选项栏只列同目录文件。",

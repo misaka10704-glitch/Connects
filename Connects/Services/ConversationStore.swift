@@ -221,6 +221,31 @@ final class ConversationStore {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    /// Workspace chats that belong to the **same parent folder** as this document.
+    /// Matches exact folder workspace id, or any workspace chat whose bound file lives there
+    /// (recovers older chats that were wrongly tied to a wide project grant).
+    func conversations(sharingParentFolderOfDocument documentID: String, includeArchived: Bool = false) -> [Conversation] {
+        guard let parent = StudyWorkspaceStore.shared.parentFolderPath(ofDocumentID: documentID) else {
+            return conversations(boundToDocument: documentID, includeArchived: includeArchived)
+        }
+        let folderWSID = StudyWorkspaceStore.shared.workspaceID(withExactRootPath: parent)
+        return conversations
+            .filter { conv in
+                if !includeArchived && conv.isArchived { return false }
+                guard conv.studySessionKind == .workspace else { return false }
+                if let folderWSID, conv.studyWorkspaceID == folderWSID {
+                    return true
+                }
+                if let docID = conv.studyDocumentID,
+                   let other = StudyWorkspaceStore.shared.parentFolderPath(ofDocumentID: docID),
+                   other == parent {
+                    return true
+                }
+                return false
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     func conversations(boundToDocument documentID: String, includeArchived: Bool = false) -> [Conversation] {
         conversations
             .filter { conv in
