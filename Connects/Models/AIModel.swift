@@ -96,6 +96,13 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
 
+    /// Fast multimodal pass for image / PDF-screenshot transcription (not a chat picker default).
+    static let kimiK25Vision = AIModelOption(
+        provider: .kimi, modelId: "kimi-k2.5", displayName: "Kimi K2.5 Vision",
+        baseURL: "https://api.moonshot.cn/v1", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
+    )
+
     /// Kimi K2.7 Code — forces thinking (API rejects disabled).
     static let kimiK27 = AIModelOption(
         provider: .kimi, modelId: "kimi-k2.7-code", displayName: "Kimi K2.7",
@@ -175,11 +182,14 @@ struct AIModelOption: Equatable {
     }
 
     static var preferredVision: AIModelOption {
-        if let v = visible.first(where: { $0.supportsVision }) { return v }
-        return all.first(where: { $0.supportsVision }) ?? .kimiK3
+        preferredImageTranscription
     }
 
+    /// Default model for PDF screenshots / user uploads → durable text (fast).
+    static var preferredImageTranscription: AIModelOption { .kimiK25Vision }
+
     static func option(stableID: String) -> AIModelOption? {
-        all.first { $0.stableID == stableID }
+        if stableID == kimiK25Vision.stableID { return kimiK25Vision }
+        return all.first { $0.stableID == stableID }
     }
 }

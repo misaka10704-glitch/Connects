@@ -4768,7 +4768,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             showAlert(title: "无需转写", message: "该消息已附带阅读页文字，不必再做图片转写。")
             return
         }
-        let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
+        let model = AIModelOption.preferredImageTranscription
         ImageTranscriptionCoordinator.shared.start(
             conversationID: conversation.id,
             userMessageID: user.id,
@@ -6578,7 +6578,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                   conversation.messages[index + 1].role == .assistant else { continue }
             let assistant = conversation.messages[index + 1]
             guard assistant.imageTranscriptionPhase != .failed else { return }
-            let model = conversation.model.supportsVision ? conversation.model : AIModelOption.preferredVision
+            let model = AIModelOption.preferredImageTranscription
             ImageTranscriptionCoordinator.shared.start(
                 conversationID: conversation.id,
                 userMessageID: message.id,
@@ -8050,25 +8050,34 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     /// Pick the model for one API request. Never mutates the conversation's stored choice.
+    /// Images on non-vision models are transcribed with Kimi K2.5 Vision first; this
+    /// always returns the conversation model for the actual reply.
     private func streamModel(for conversationModel: AIModelOption, hasImages: Bool) -> AIModelOption? {
-        if !hasImages || conversationModel.supportsVision {
-            guard SettingsManager.shared.hasAPIKey(for: conversationModel.provider) else { return nil }
-            return conversationModel
-        }
-        let vision = AIModelOption.preferredVision
-        guard SettingsManager.shared.hasAPIKey(for: vision.provider) else { return nil }
-        return vision
+        _ = hasImages
+        guard SettingsManager.shared.hasAPIKey(for: conversationModel.provider) else { return nil }
+        return conversationModel
     }
 
     private func streamModelMissingKeyMessage(for conversationModel: AIModelOption, hasImages: Bool) -> String {
-        if !hasImages || conversationModel.supportsVision {
-            return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
+        if hasImages, !conversationModel.supportsVision {
+            let vision = AIModelOption.preferredImageTranscription
+            if !SettingsManager.shared.hasAPIKey(for: conversationModel.provider) {
+                return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
+            }
+            if !SettingsManager.shared.hasAPIKey(for: vision.provider) {
+                return """
+                当前模型 \(conversationModel.displayName) 不支持图片。
+                请先填写 \(vision.provider.displayName) API Key，以便用 \(vision.displayName) 快速转写后再发送。
+                """
+            }
         }
-        let vision = AIModelOption.preferredVision
-        return """
-        当前模型 \(conversationModel.displayName) 不支持图片。
-        请先在设置填写 \(vision.provider.displayName) 的 API Key（\(vision.displayName)），或切换到支持视觉的模型。
-        """
+        return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
+    }
+
+    private func imageTranscriptionModel() -> AIModelOption? {
+        let vision = AIModelOption.preferredImageTranscription
+        guard SettingsManager.shared.hasAPIKey(for: vision.provider) else { return nil }
+        return vision
     }
 
     func imagePickerController(_ picker: UIImagePickerController,
@@ -8142,7 +8151,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        guard let captionModel = streamModel(for: conv.model, hasImages: true) else {
+        guard let captionModel = imageTranscriptionModel() else {
             showAlert(
                 title: "缺少视觉模型 Key",
                 message: streamModelMissingKeyMessage(for: conv.model, hasImages: true)
@@ -8377,17 +8386,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             return
         }
+        let needsImageTranscription = hasImageAttachment
+            && (resolvedStudyCapture?.needsImageTranscription ?? true)
+        // Non-vision models must wait for Kimi K2.5 Vision transcription before the reply.
+        let gateReplyOnTranscription = needsImageTranscription && !conv.model.supportsVision
+        if gateReplyOnTranscription, imageTranscriptionModel() == nil {
+            if currentConversationID == conversationID {
+                showAlert(
+                    title: "缺少转写 Key",
+                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: true)
+                )
+            }
+            return
+        }
 
         let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
         // Rich study text already travels as apiContextPrefix — same as a normal
         // text turn. Running OCR/vision would dump page source into「图片转写」.
-        let needsImageTranscription = hasImageAttachment
-            && (resolvedStudyCapture?.needsImageTranscription ?? true)
-        let imageTranscriptionStatus = needsImageTranscription
-            ? (resolvedStudyCapture != nil
-                ? "正在提取页面文字（OCR），随后转写图片内容…"
-                : "正在将图片转写为文字，主回复不会等待此步骤。")
-            : ""
+        let imageTranscriptionStatus: String
+        if needsImageTranscription {
+            if gateReplyOnTranscription {
+                imageTranscriptionStatus =
+                    "正在用 Kimi K2.5 Vision 快速转写，完成后发给 \(model.displayName)…"
+            } else if resolvedStudyCapture != nil {
+                imageTranscriptionStatus =
+                    "正在提取页面文字（OCR），随后用 Kimi K2.5 Vision 快速转写…"
+            } else {
+                imageTranscriptionStatus =
+                    "正在用 Kimi K2.5 Vision 快速转写（主回复可同时进行）…"
+            }
+        } else {
+            imageTranscriptionStatus = ""
+        }
         let useAgentChrome = conv.usesWorkspaceAgentChrome
         let assistantMsg = ChatMessage(
             role: .assistant,
@@ -8539,10 +8569,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConversationStore.shared.applyProvisionalTitle(id: convID, fromUserText: displayText)
         }
 
-        // Phase B: build API context + start stream off the main-thread hot path
-        // so send paint is not blocked by ContextBuilder / duplicate PDF capture.
+        // Phase B: start the reply. Vision models stream immediately (image uploaded).
+        // Non-vision models wait for Kimi K2.5 Vision transcription first.
         let captureForAPI = resolvedStudyCapture
-        DispatchQueue.main.async { [weak self] in
+        let startReply = { [weak self] in
             guard let self = self else { return }
             if searchOn {
                 self.beginWebSearchThenStream(
@@ -8568,21 +8598,46 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
 
-        // Do not make a reply wait for OCR/vision extraction. The first request
-        // has already captured the image (or will use its finished description);
-        // this independent job prepares the compact durable context for later
-        // turns and drives the small status label on the companion reply.
-        // Skip when Study already extracted rich page text — keep standalone-chat UX.
         if needsImageTranscription, let imageBase64 = finalImage, !imageBase64.isEmpty {
-            let captionModel = streamModel(for: conv.model, hasImages: true) ?? model
-            ImageTranscriptionCoordinator.shared.start(
-                conversationID: convID,
-                userMessageID: userMsg.id,
-                assistantMessageID: assistantMsg.id,
-                base64: imageBase64,
-                model: captionModel,
-                studyPagePDFText: resolvedStudyCapture.map { $0.text }
-            )
+            let captionModel = AIModelOption.preferredImageTranscription
+            if gateReplyOnTranscription {
+                ImageTranscriptionCoordinator.shared.start(
+                    conversationID: convID,
+                    userMessageID: userMsg.id,
+                    assistantMessageID: assistantMsg.id,
+                    base64: imageBase64,
+                    model: captionModel,
+                    studyPagePDFText: resolvedStudyCapture.map { $0.text }
+                ) { [weak self] success in
+                    guard let self = self else { return }
+                    guard success else {
+                        ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
+                            if let i = draft.messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                                draft.messages[i].isStreaming = false
+                            }
+                        }
+                        NotificationCenter.default.post(
+                            name: .imageTranscriptionDidUpdate,
+                            object: nil,
+                            userInfo: ["conversationID": convID]
+                        )
+                        return
+                    }
+                    DispatchQueue.main.async(execute: startReply)
+                }
+            } else {
+                DispatchQueue.main.async(execute: startReply)
+                ImageTranscriptionCoordinator.shared.start(
+                    conversationID: convID,
+                    userMessageID: userMsg.id,
+                    assistantMessageID: assistantMsg.id,
+                    base64: imageBase64,
+                    model: captionModel,
+                    studyPagePDFText: resolvedStudyCapture.map { $0.text }
+                )
+            }
+        } else {
+            DispatchQueue.main.async(execute: startReply)
         }
     }
 

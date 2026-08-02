@@ -89,15 +89,17 @@ extension Notification.Name {
     static let imageTranscriptionDidUpdate = Notification.Name("ConnectsImageTranscriptionDidUpdate")
 }
 
-/// Background semantic extraction for image turns. It intentionally does not
-/// gate the main reply: the image is sent once to the active vision model while
-/// this job prepares durable text for all later turns.
+/// Background semantic extraction for image turns.
+/// - Vision chat models: reply can start immediately with the JPEG; this job
+///   prepares durable text for later turns.
+/// - Non-vision chat models: callers pass `onComplete` and wait before streaming.
 final class ImageTranscriptionCoordinator {
     static let shared = ImageTranscriptionCoordinator()
 
     private let lock = NSLock()
     private var generations: [String: UInt64] = [:]
     private var active: Set<String> = []
+    private var completions: [String: (Bool) -> Void] = [:]
 
     private init() {}
 
@@ -110,7 +112,9 @@ final class ImageTranscriptionCoordinator {
         lock.lock()
         generations[conversationID] = (generations[conversationID] ?? 0) &+ 1
         let changed = active.remove(conversationID) != nil
+        let pending = completions.removeValue(forKey: conversationID)
         lock.unlock()
+        pending?(false)
         if changed { postUpdate(conversationID) }
     }
 
@@ -118,8 +122,15 @@ final class ImageTranscriptionCoordinator {
                userMessageID: String,
                assistantMessageID: String,
                base64: String,
-               model: AIModelOption,
-               studyPagePDFText: String? = nil) {
+               model: AIModelOption = AIModelOption.preferredImageTranscription,
+               studyPagePDFText: String? = nil,
+               onComplete: ((Bool) -> Void)? = nil) {
+        if let onComplete {
+            lock.lock()
+            completions[conversationID] = onComplete
+            lock.unlock()
+        }
+
         guard SettingsManager.shared.hasAPIKey(for: model.provider) else {
             finish(
                 conversationID: conversationID,
@@ -144,8 +155,13 @@ final class ImageTranscriptionCoordinator {
                     conversation.messages[i].imageTranscriptionPhase = .idle
                     conversation.messages[i].imageTranscriptionContent = ""
                 }
+                // Drop JPEG so non-vision models can proceed on reading-context text alone.
+                if let i = conversation.messages.firstIndex(where: { $0.id == userMessageID }) {
+                    conversation.messages[i].imageJPEGBase64 = nil
+                }
             }
             postUpdate(conversationID)
+            invokeCompletion(conversationID, success: true)
             return
         }
 
@@ -160,8 +176,8 @@ final class ImageTranscriptionCoordinator {
             messageID: assistantMessageID,
             phase: .transcribing,
             content: isStudyPage
-                ? "正在提取页面文字（OCR），随后转写图片内容…"
-                : "正在将图片转写为文字，主回复不会等待此步骤。"
+                ? "正在提取页面文字（OCR），随后用 Kimi K2.5 Vision 快速转写…"
+                : "正在用 Kimi K2.5 Vision 快速转写图片…"
         )
         postUpdate(conversationID)
 
@@ -207,6 +223,13 @@ final class ImageTranscriptionCoordinator {
         )
     }
 
+    private func invokeCompletion(_ conversationID: String, success: Bool) {
+        lock.lock()
+        let pending = completions.removeValue(forKey: conversationID)
+        lock.unlock()
+        pending?(success)
+    }
+
     private func isGenerationActive(_ conversationID: String, _ generation: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -226,7 +249,7 @@ final class ImageTranscriptionCoordinator {
             if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 conversation.messages[i].imageTranscriptionPhase = .transcribing
                 conversation.messages[i].imageTranscriptionContent =
-                    durable + "\n\n正在将图片转写为文字…"
+                    durable + "\n\n正在用 Kimi K2.5 Vision 快速转写…"
             }
         }
         postUpdate(conversationID)
@@ -271,9 +294,13 @@ final class ImageTranscriptionCoordinator {
             let current = active.contains(conversationID) && generations[conversationID] == generation
             if current { active.remove(conversationID) }
             lock.unlock()
-            guard current else { return }
+            guard current else {
+                invokeCompletion(conversationID, success: false)
+                return
+            }
         }
 
+        var success = false
         switch result {
         case .success(let raw):
             let transcription = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -285,6 +312,10 @@ final class ImageTranscriptionCoordinator {
                     ocrText: ocrText,
                     failureMessage: "未获得可用的图片转写。点此可重试。"
                 )
+                // OCR-only partial still lets non-vision models proceed.
+                success = !(ocrText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                invokeCompletion(conversationID, success: success)
+                postUpdate(conversationID)
                 return
             }
             let durable = ImageDurableText.merge(ocr: ocrText, transcription: transcription)
@@ -299,6 +330,7 @@ final class ImageTranscriptionCoordinator {
                     conversation.messages[i].imageTranscriptionContent = durable
                 }
             }
+            success = true
         case .failure(let error):
             finalizePartial(
                 conversationID: conversationID,
@@ -307,7 +339,9 @@ final class ImageTranscriptionCoordinator {
                 ocrText: ocrText,
                 failureMessage: "图片转写失败：\(error.localizedDescription)\n点此可重试。"
             )
+            success = !(ocrText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         }
+        invokeCompletion(conversationID, success: success)
         postUpdate(conversationID)
     }
 
@@ -339,6 +373,11 @@ final class ImageTranscriptionCoordinator {
             phase: .failed,
             content: failureMessage
         )
+        ConversationStore.shared.updateConversationQuietly(id: conversationID) { conversation in
+            if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                conversation.messages[i].isStreaming = false
+            }
+        }
     }
 
     private func clearStudyApiContextPrefix(on message: inout ChatMessage) {

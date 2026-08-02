@@ -31,7 +31,7 @@ enum APIClientError: LocalizedError, Equatable {
         case .cancelled:
             return "已取消"
         case .visionNotSupported:
-            return "当前模型不支持图片，请切换到 Kimi / Qwen / 智谱视觉 / 豆包"
+            return "当前模型不支持图片。无视觉模型会先用 Kimi K2.5 Vision 转写再发送；请填写 Kimi API Key，或改用支持视觉的模型。"
         }
     }
 }
