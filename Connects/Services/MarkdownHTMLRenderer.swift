@@ -285,12 +285,55 @@ enum MarkdownHTMLRenderer {
         // A few model responses emit a display formula as a bare TeX line
         // (for example "\frac{a}{b}") without any delimiter. Wrap only lines
         // that clearly begin with a math command, so prose is unaffected.
+        // Never wrap lines that already sit inside `$$` / `\[...\]` fences —
+        // re-wrapping produces `$$\n$$\frac..\n$$` and the parser then sees an
+        // empty display-math block plus a stray closing `$$`.
         let lines = s.components(separatedBy: "\n")
         var normalizedLines = [String]()
         var index = 0
+        var displayFence: DisplayMathFence? = nil
         while index < lines.count {
             let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if let fence = displayFence {
+                normalizedLines.append(line)
+                if closesDisplayFence(trimmed, fence: fence) {
+                    displayFence = nil
+                }
+                index += 1
+                continue
+            }
+
+            if trimmed == "$$" {
+                normalizedLines.append(line)
+                displayFence = .dollars
+                index += 1
+                continue
+            }
+            if trimmed.hasPrefix("$$") {
+                normalizedLines.append(line)
+                // `$$...$$` on one line is a complete fence (even delimiter count).
+                // `$$\frac{a}{b}` without a closer keeps the fence open.
+                let delimiterCount = trimmed.components(separatedBy: "$$").count - 1
+                if delimiterCount % 2 == 1 {
+                    displayFence = .dollars
+                }
+                index += 1
+                continue
+            }
+            if trimmed == "\\[" || (trimmed.hasPrefix("\\[") && !trimmed.contains("\\]")) {
+                normalizedLines.append(line)
+                displayFence = .brackets
+                index += 1
+                continue
+            }
+            if trimmed.hasPrefix("\\[") {
+                normalizedLines.append(line)
+                index += 1
+                continue
+            }
+
             guard isBareDisplayMathStart(trimmed) else {
                 normalizedLines.append(line)
                 index += 1
@@ -314,6 +357,23 @@ enum MarkdownHTMLRenderer {
         }
         s = normalizedLines.joined(separator: "\n")
         return s
+    }
+
+    private enum DisplayMathFence {
+        case dollars
+        case brackets
+    }
+
+    private static func closesDisplayFence(_ trimmed: String, fence: DisplayMathFence) -> Bool {
+        switch fence {
+        case .dollars:
+            if trimmed == "$$" { return true }
+            // Formula line that terminates the block: `x = 1$$`
+            if trimmed.hasSuffix("$$"), trimmed != "$$" { return true }
+            return false
+        case .brackets:
+            return trimmed == "\\]" || trimmed.hasSuffix("\\]")
+        }
     }
 
     /// Only short math snippets become display math; full LaTeX documents stay fenced code.

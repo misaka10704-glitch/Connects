@@ -571,8 +571,18 @@ final class NativeMarkdownParser {
             if open == "\\(" { return nil }
             var next = index + 1
             while next < lines.count {
-                if let range = lines[next].range(of: close) {
-                    body += (body.isEmpty ? "" : "\n") + String(lines[next][..<range.lowerBound])
+                let nextTrimmed = lines[next].trimmingCharacters(in: .whitespaces)
+                // Prefer a fence line that is only the closer (`$$` / `\]`).
+                // Avoid treating the opening `$$` of a nested same-line formula
+                // (legacy double-wrapped normalize output) as the closer.
+                if nextTrimmed == close {
+                    return (body, next + 1)
+                }
+                if nextTrimmed.hasSuffix(close), nextTrimmed != close,
+                   !nextTrimmed.hasPrefix(close) {
+                    let before = String(nextTrimmed.dropLast(close.count))
+                        .trimmingCharacters(in: .whitespaces)
+                    body += (body.isEmpty ? "" : "\n") + before
                     return (body, next + 1)
                 }
                 body += (body.isEmpty ? "" : "\n") + lines[next]

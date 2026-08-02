@@ -34,6 +34,24 @@ final class ConversationRenderSwitchTests: XCTestCase {
         )
     }
 
+    func testMathNormalizationDoesNotNestBareFracInsideDollarFence() {
+        let normalized = MarkdownHTMLRenderer.normalizeForRender("""
+        $$
+        \\frac{a}{b}
+        $$
+        """)
+        XCTAssertEqual(
+            normalized.trimmingCharacters(in: .whitespacesAndNewlines),
+            """
+            $$
+            \\frac{a}{b}
+            $$
+            """.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        XCTAssertFalse(normalized.contains("$$$$"))
+        XCTAssertFalse(normalized.contains("$$\n$$"))
+    }
+
     func testHeightCacheStorageKeyIncludesWidthBucket() {
         let key = RenderCacheStore.heightCacheStorageKey(conversationID: "abc", layoutWidth: 656.2)
         XCTAssertEqual(key, "abc|w656")

@@ -32,7 +32,7 @@ final class NativeFormulaRenderer {
             return disk
         }
         guard Thread.isMainThread else { return nil }
-        let normalizedTeX = normalizeLegacyCommands(tex)
+        let normalizedTeX = normalizeLegacyCommands(stripOuterMathDelimiters(tex))
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
         let trimmedTeX = normalizedTeX.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,7 +120,12 @@ final class NativeFormulaRenderer {
             (#"\\mathrm\{flat\}"#, #"\\flat"#),
             (#"\\mathrm\{sharp\}"#, #"\\sharp"#),
             (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#),
-            (#"\\text\{([^{}]*)\}"#, "$1")
+            (#"\\text\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
+            (#"\\textbf\{([^{}]*)\}"#, #"\\mathbf{$1}"#),
+            (#"\\begin\{aligned\}"#, #"\\begin{matrix}"#),
+            (#"\\end\{aligned\}"#, #"\\end{matrix}"#),
+            (#"\\begin\{align\*?\}"#, #"\\begin{matrix}"#),
+            (#"\\end\{align\*?\}"#, #"\\end{matrix}"#)
         ]
         for (pattern, template) in replacements {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -137,6 +142,21 @@ final class NativeFormulaRenderer {
             .replacingOccurrences(of: "\\Bigr", with: "\\right")
             .replacingOccurrences(of: "\\bigr", with: "\\right")
             .replacingOccurrences(of: "\\dots", with: "\\cdots")
+            // `aligned` / `align` use `&` as a tab; iosMath matrix is happier with `=`.
+            .replacingOccurrences(of: "&=", with: "=")
+    }
+
+    /// Models / broken normalize passes sometimes leave outer `$$` / `\[\]` on the TeX body.
+    private func stripOuterMathDelimiters(_ tex: String) -> String {
+        var result = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pairs = [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")]
+        for (open, close) in pairs {
+            if result.hasPrefix(open), result.hasSuffix(close), result.count > open.count + close.count {
+                result = String(result.dropFirst(open.count).dropLast(close.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return result
     }
 
     /// Strips a leading `\boxed{…}` even when the inner expression contains nested braces.
@@ -177,8 +197,8 @@ final class NativeFormulaRenderer {
               match.numberOfRanges > 1 else { return nil }
         let command = (message as NSString).substring(with: match.range(at: 1))
         let nonRecoverable: Set<String> = [
-            "multicolumn", "multirow", "hline", "text", "textbf", "mathbf", "color",
-            "fbox", "boxed", "begin", "end", "aligned", "array", "tag", "operatorname"
+            "multicolumn", "multirow", "hline", "color",
+            "fbox", "boxed", "begin", "end", "array"
         ]
         if nonRecoverable.contains(command) { return nil }
         let token = "\\\(command)"
