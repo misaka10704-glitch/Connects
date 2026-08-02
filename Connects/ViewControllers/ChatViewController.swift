@@ -10226,6 +10226,23 @@ extension ChatViewController: InputBarViewDelegate {
             )
             reloadChat()
         }
+        if ImageTranscriptionCoordinator.shared.isTranscribing(id) {
+            ImageTranscriptionCoordinator.shared.cancel(id)
+            ConversationStore.shared.updateConversationQuietly(id: id) { draft in
+                if let i = draft.messages.lastIndex(where: { $0.role == .assistant }) {
+                    draft.messages[i].isStreaming = false
+                    if draft.messages[i].imageTranscriptionPhase == .transcribing {
+                        draft.messages[i].imageTranscriptionPhase = .failed
+                        draft.messages[i].imageTranscriptionContent = "已取消图片转写。"
+                    }
+                }
+            }
+            NotificationCenter.default.post(
+                name: .imageTranscriptionDidUpdate,
+                object: nil,
+                userInfo: ["conversationID": id]
+            )
+        }
         StreamManager.shared.cancel(id)
         syncStreamingChrome()
     }
