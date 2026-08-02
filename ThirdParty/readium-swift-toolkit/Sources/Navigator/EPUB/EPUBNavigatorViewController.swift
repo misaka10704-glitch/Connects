@@ -1115,33 +1115,21 @@ extension EPUBNavigatorViewController: EPUBSpreadViewDelegate {
     }
 
     func spreadView(_ spreadView: EPUBSpreadView, didTapOnInternalLink href: String, clickEvent: ClickEvent?) {
-        guard
-            let url = AnyURL(string: href),
-            var link = publication.linkWithHREF(url)
-        else {
-            log(.warning, "Cannot find link with HREF: \(href)")
-            return
-        }
-        link.href = href
-
         Task {
-            // Check to see if this was a noteref link and give delegate the
-            // opportunity to display it.
-            if
-                let clickEvent = clickEvent,
-                let interactive = clickEvent.interactiveElement,
-                let (note, referrer) = await getNoteData(anchor: interactive, href: href),
-                let delegate = delegate
-            {
-                if !delegate.navigator(
-                    self,
-                    shouldNavigateToNoteAt: link,
-                    content: note,
-                    referrer: referrer
-                ) {
-                    return
-                }
+            // Footnotes first — Chinese EPUBs often omit epub:type=noteref; also
+            // linkWithHREF can fail before we ever reach getNoteData.
+            if await presentFootnoteIfPossible(href: href, interactiveHTML: clickEvent?.interactiveElement) {
+                return
             }
+
+            guard
+                let url = AnyURL(string: href),
+                var link = publication.linkWithHREF(url)
+            else {
+                log(.warning, "Cannot find link with HREF: \(href)")
+                return
+            }
+            link.href = href
 
             // Ask if we should navigate to the link
             if let delegate = delegate, !delegate.navigator(self, shouldNavigateToLink: link) {
@@ -1152,7 +1140,73 @@ extension EPUBNavigatorViewController: EPUBSpreadViewDelegate {
         }
     }
 
-    /// Checks if the internal link is a noteref, and retrieves both the referring text of the link and the body of the note.
+    /// Shows a footnote popup via the delegate when possible. Returns `true` if navigation should stop.
+    private func presentFootnoteIfPossible(href: String, interactiveHTML: String?) async -> Bool {
+        var noteHTML: String?
+        var referrerHTML: String?
+
+        if let interactiveHTML,
+           let pair = await getNoteData(anchor: interactiveHTML, href: href)
+        {
+            noteHTML = pair.0
+            referrerHTML = pair.1
+        } else if let url = AnyURL(string: href), let id = url.fragment, isFootnoteFragment(id) {
+            noteHTML = await loadNoteHTML(href: href, fragmentID: id)
+            referrerHTML = "[\(id)]"
+        }
+
+        guard let noteHTML, let delegate else { return false }
+
+        // Synthetic link for the delegate callback.
+        let link: Link = {
+            if let url = AnyURL(string: href), let existing = publication.linkWithHREF(url) {
+                var copy = existing
+                copy.href = href
+                return copy
+            }
+            return Link(href: href)
+        }()
+
+        return !delegate.navigator(
+            self,
+            shouldNavigateToNoteAt: link,
+            content: noteHTML,
+            referrer: referrerHTML
+        )
+    }
+
+    private func isFootnoteFragment(_ id: String) -> Bool {
+        let lower = id.lowercased()
+        if lower.hasPrefix("df-") || lower.hasPrefix("fn") || lower.hasPrefix("footnote") || lower.hasPrefix("note") {
+            return true
+        }
+        return lower.range(of: #"^m\d+$"#, options: .regularExpression) != nil
+            || lower.range(of: #"^n\d+$"#, options: .regularExpression) != nil
+            || lower.range(of: #"^f\d+$"#, options: .regularExpression) != nil
+    }
+
+    private func loadNoteHTML(href: String, fragmentID: String) async -> String? {
+        guard let url = AnyURL(string: href) else { return nil }
+        guard let resource = publication.get(url.removingFragment()) else { return nil }
+        guard let contents = try? await resource.read().asString().get() else { return nil }
+        guard let document = try? parse(contents) else { return nil }
+        let escapedID = fragmentID
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        guard var noteEl = try? document.select("#\(escapedID)").first() else { return nil }
+        let noteText = (try? noteEl.text().trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+        if noteText.isEmpty || noteEl.tagName().lowercased() == "a" {
+            if let parent = noteEl.parent(),
+               ["p", "li", "aside", "section", "div", "blockquote"].contains(parent.tagName().lowercased())
+            {
+                noteEl = parent
+            }
+        }
+        return try? noteEl.html()
+    }
+
+    /// Checks if the internal link is a footnote/noteref, and retrieves both the
+    /// referring text of the link and the body of the note.
     ///
     /// Uses the navigation href from didTapOnInternalLink because it is normalized to a path within the book,
     /// whereas the anchor tag may have just a hash fragment like `#abc123` which is hard to work with.
@@ -1161,41 +1215,67 @@ extension EPUBNavigatorViewController: EPUBSpreadViewDelegate {
     /// Uses `#id` when retrieving the body of the note, not `aside#id` because it may be a `<section>`.
     /// See https://idpf.github.io/epub-vocabs/structure/#footnotes
     /// and http://kb.daisy.org/publishing/docs/html/epub-type.html#ex
+    ///
+    /// Connects: also accept Chinese EPUB patterns (`[1]` links, `duokan-footnote`) that omit `epub:type=noteref`.
     func getNoteData(anchor: String, href: String) async -> (String, String)? {
         do {
             let doc = try parse(anchor)
-            guard let link = try doc.select("a[epub:type=noteref]").first() else { return nil }
+            guard let link = footnoteLinkElement(in: doc) else { return nil }
 
             let anchorHref = try link.attr("href")
-            guard href.hasSuffix(anchorHref) else { return nil }
+            let tapFragment = AnyURL(string: href)?.fragment
+            let linkFragment = AnyURL(string: anchorHref)?.fragment
+                ?? (anchorHref.hasPrefix("#") ? String(anchorHref.dropFirst()) : nil)
+            let hrefMatches = href.hasSuffix(anchorHref)
+                || (tapFragment != nil && tapFragment == linkFragment)
+            guard hrefMatches else { return nil }
 
             guard
-                let url = AnyURL(string: href),
-                let id = url.fragment
+                let id = tapFragment ?? linkFragment, !id.isEmpty
             else {
                 log(.warning, "Could not find hash in link \(href)")
                 return nil
             }
 
-            // Read the note's resource through the publication's resource API.
-            guard let resource = publication.get(url.removingFragment()) else {
-                log(.warning, "Could not open note resource: \(href)")
+            guard let noteHTML = await loadNoteHTML(href: href, fragmentID: id) else {
                 return nil
             }
-            let contents = try await resource.read().asString().get()
-            let document = try parse(contents)
-
-            guard let aside = try document.select("#\(id)").first() else {
-                log(.warning, "Could not find the element '#\(id)' in document \(href)")
-                return nil
-            }
-
-            return try (aside.html(), link.html())
+            return try (noteHTML, link.html())
 
         } catch {
             log(.warning, "Caught error while getting note content: \(error)")
             return nil
         }
+    }
+
+    /// Footnote / index markers used by standard EPUB and common Chinese converters.
+    private func footnoteLinkElement(in doc: Document) -> Element? {
+        let selectors = [
+            "a[epub:type=noteref]",
+            "a.duokan-footnote",
+            "a[class*=footnote]",
+            "a[class*=noteref]",
+        ]
+        for sel in selectors {
+            if let link = try? doc.select(sel).first() {
+                return link
+            }
+        }
+        guard let links = try? doc.select("a[href]") else { return nil }
+        for link in links {
+            let text = (try? link.text().trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+            if text.range(of: #"^\[\d+\]$"#, options: .regularExpression) != nil {
+                return link
+            }
+            let hrefAttr = (try? link.attr("href")) ?? ""
+            if let frag = AnyURL(string: hrefAttr)?.fragment
+                ?? (hrefAttr.hasPrefix("#") ? String(hrefAttr.dropFirst()) : nil),
+               isFootnoteFragment(frag)
+            {
+                return link
+            }
+        }
+        return nil
     }
 
     func spreadView(_ spreadView: EPUBSpreadView, didActivateDecoration id: Decoration.Id, inGroup group: DecorationGroup, frame: CGRect?, point: CGPoint?) {

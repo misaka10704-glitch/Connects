@@ -135,6 +135,7 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         contentsTable.translatesAutoresizingMaskIntoConstraints = false
         contentsTable.dataSource = self
         contentsTable.delegate = self
+        contentsTable.allowsSelection = true
         contentsTable.register(UITableViewCell.self, forCellReuseIdentifier: "ch")
         contentsTable.backgroundColor = DSTheme.c.surface
         contentsPanelHost.addSubview(contentsTable)
@@ -764,6 +765,7 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         isContentsPanelVisible = true
         contentsDim.isHidden = false
         contentsDim.alpha = 0
+        contentsTable.allowsSelection = true
         contentsTable.reloadData()
         view.bringSubviewToFront(contentsDim)
         view.bringSubviewToFront(contentsPanelHost)
@@ -805,32 +807,199 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         ConnectsToast.show("页面资源加载失败：\(href.string)", in: view, duration: 1.6)
     }
 
+    /// Footnote / index markers like `[1]` — show content in a sheet, don't jump.
+    func navigator(
+        _ navigator: Navigator,
+        shouldNavigateToNoteAt link: Link,
+        content: String,
+        referrer: String?
+    ) -> Bool {
+        presentFootnotePopup(html: content, referrerHTML: referrer)
+        return false
+    }
+
+    private weak var footnoteOverlay: UIView?
+
+    private func presentFootnotePopup(html: String, referrerHTML: String?) {
+        _ = referrerHTML
+        var body = Self.plainText(fromHTML: html)
+        // Drop leading [n] marker — popup shows note body only.
+        if let m = body.range(of: #"^\[\d+\]\s*"#, options: .regularExpression) {
+            body = String(body[m.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !body.isEmpty else {
+            ConnectsToast.show("未找到注释内容", in: view, duration: 1.2)
+            return
+        }
+
+        dismissFootnotePopup(animated: false)
+
+        let container: UIView = {
+            var node: UIView? = view
+            while let cur = node {
+                if cur is StudyShellRootViewMarker { return cur }
+                node = cur.superview
+            }
+            return view!
+        }()
+
+        let overlay = UIView()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.backgroundColor = .clear
+
+        let backdrop = UIControl()
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.backgroundColor = UIColor.black.withAlphaComponent(0.14)
+        backdrop.addTarget(self, action: #selector(dismissFootnotePopupFast), for: .touchDown)
+
+        let cardWidth: CGFloat = min(380, max(container.bounds.width - 48, 300))
+        let cardHeight: CGFloat = min(320, max(container.bounds.height * 0.42, 260))
+
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = DSTheme.c.surface.withAlphaComponent(0.88)
+        card.layer.cornerRadius = 16
+        card.clipsToBounds = true
+        card.isUserInteractionEnabled = true
+        card.tag = 90421
+        card.layer.borderWidth = 1 / UIScreen.main.scale
+        card.layer.borderColor = DSTheme.c.border.withAlphaComponent(0.35).cgColor
+
+        let textView = UITextView()
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.backgroundColor = .clear
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = true
+        textView.alwaysBounceVertical = true
+        textView.showsVerticalScrollIndicator = true
+        textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
+        textView.font = UIFont.systemFont(ofSize: 16)
+        textView.textColor = DSTheme.c.textPrimary
+        textView.text = body
+        textView.dataDetectorTypes = []
+
+        card.addSubview(textView)
+        overlay.addSubview(backdrop)
+        overlay.addSubview(card)
+        container.addSubview(overlay)
+        footnoteOverlay = overlay
+
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: container.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            backdrop.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: overlay.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: overlay.bottomAnchor),
+
+            card.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+            card.widthAnchor.constraint(equalToConstant: cardWidth),
+            card.heightAnchor.constraint(equalToConstant: cardHeight),
+
+            textView.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: card.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+
+        textView.setContentOffset(.zero, animated: false)
+        overlay.alpha = 0
+        UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            overlay.alpha = 1
+        }
+    }
+
+    @objc private func dismissFootnotePopupFast() {
+        dismissFootnotePopup(animated: true)
+    }
+
+    @objc private func dismissFootnotePopup() {
+        dismissFootnotePopup(animated: true)
+    }
+
+    private func dismissFootnotePopup(animated: Bool) {
+        guard let overlay = footnoteOverlay else { return }
+        footnoteOverlay = nil
+        let finish = { overlay.removeFromSuperview() }
+        if animated {
+            UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn, .beginFromCurrentState]) {
+                overlay.alpha = 0
+            } completion: { _ in
+                finish()
+            }
+        } else {
+            finish()
+        }
+    }
+
+    /// Lightweight HTML → plain text (no WebKit / NSAttributedString on the tap path).
+    private static func plainText(fromHTML html: String) -> String {
+        var s = html
+        s = s.replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(?i)</p\s*>"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(?i)</div\s*>"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"(?i)</li\s*>"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        let entities: [(String, String)] = [
+            ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"),
+            ("&ldquo;", "“"), ("&rdquo;", "”"), ("&lsquo;", "‘"), ("&rsquo;", "’"),
+            ("&mdash;", "—"), ("&ndash;", "–"), ("&hellip;", "…"),
+        ]
+        for (e, r) in entities {
+            s = s.replacingOccurrences(of: e, with: r)
+        }
+        s = s.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        return s
+            .replacingOccurrences(of: "\u{00a0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - TOC table
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        engineKind == .epub ? tocLinks.count : 0
+        guard engineKind == .epub else { return 0 }
+        return max(tocLinks.count, 1)
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "ch", for: indexPath)
-        if engineKind == .epub {
+        if engineKind == .epub, !tocLinks.isEmpty {
             let link = tocLinks[indexPath.row]
-            cell.textLabel?.text = link.title ?? link.url().string ?? "Untitled"
+            cell.textLabel?.text = link.title ?? link.url().string
+            cell.textLabel?.textColor = DSTheme.c.textPrimary
+            cell.selectionStyle = .default
+            cell.isUserInteractionEnabled = true
+        } else if engineKind == .epub {
+            cell.textLabel?.text = "暂无目录"
+            cell.textLabel?.textColor = DSTheme.c.textSecondary
+            cell.selectionStyle = .none
+            cell.isUserInteractionEnabled = false
         } else {
             cell.textLabel?.text = nil
+            cell.selectionStyle = .none
         }
         cell.textLabel?.numberOfLines = 2
         cell.textLabel?.font = UIFont.systemFont(ofSize: 14)
-        cell.textLabel?.textColor = DSTheme.c.textPrimary
         cell.backgroundColor = DSTheme.c.surface
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        hideContentsPanel()
-        guard engineKind == .epub else { return }
+        guard engineKind == .epub, tocLinks.indices.contains(indexPath.row) else { return }
         let link = tocLinks[indexPath.row]
-        Task { await epubNavigator?.go(to: link) }
+        hideContentsPanel()
+        Task { @MainActor in
+            let ok = await epubNavigator?.go(to: link) ?? false
+            if !ok {
+                ConnectsToast.show("无法跳转到该章节", in: self.view, duration: 1.4)
+            }
+        }
     }
 }
