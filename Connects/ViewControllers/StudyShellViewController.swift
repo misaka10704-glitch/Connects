@@ -12,6 +12,7 @@ final class StudyShellViewController: UIViewController {
     private let pdfReaderVC = PDFReaderViewController()
     private let markdownReaderVC = MarkdownReaderViewController()
     private let textEditorVC = TextCodeEditorViewController()
+    private let ebookReaderVC = EbookReaderViewController()
     private let codeEditCoordinator = CodeEditCoordinator()
     private var activeReaderKind: StudyDocumentKind = .pdf
     private let readerHost = UIView()
@@ -184,6 +185,7 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.onToggleSidebar = toggleSidebar
         markdownReaderVC.onToggleSidebar = toggleSidebar
         textEditorVC.onToggleSidebar = toggleSidebar
+        ebookReaderVC.onToggleSidebar = toggleSidebar
         let askSelection: (String) -> Void = { [weak self] text in
             self?.handleAskSelection(text)
         }
@@ -221,6 +223,7 @@ final class StudyShellViewController: UIViewController {
         textEditorVC.onFileTitleTapped = fileTitle
         pdfReaderVC.onFileTitleTapped = fileTitle
         markdownReaderVC.onFileTitleTapped = fileTitle
+        ebookReaderVC.onFileTitleTapped = fileTitle
         markdownReaderVC.onBuildPlan = { [weak self] in
             guard let self, let docID = self.boundDocumentID else { return }
             if self.chatPanelStage == .collapsed {
@@ -235,10 +238,12 @@ final class StudyShellViewController: UIViewController {
         addChild(pdfReaderVC)
         addChild(markdownReaderVC)
         addChild(textEditorVC)
+        addChild(ebookReaderVC)
         addChild(chatNav)
         pdfReaderVC.didMove(toParent: self)
         markdownReaderVC.didMove(toParent: self)
         textEditorVC.didMove(toParent: self)
+        ebookReaderVC.didMove(toParent: self)
         chatNav.didMove(toParent: self)
 
         [readerHost, panelStageCapsule].forEach {
@@ -248,8 +253,10 @@ final class StudyShellViewController: UIViewController {
         readerHost.addSubview(pdfReaderVC.view)
         readerHost.addSubview(markdownReaderVC.view)
         readerHost.addSubview(textEditorVC.view)
+        readerHost.addSubview(ebookReaderVC.view)
         markdownReaderVC.view.isHidden = true
         textEditorVC.view.isHidden = true
+        ebookReaderVC.view.isHidden = true
         landscapeStatusSpacer.translatesAutoresizingMaskIntoConstraints = false
         landscapeStatusSpacer.isUserInteractionEnabled = false
         landscapeStatusSpacer.backgroundColor = .clear
@@ -263,6 +270,7 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.view.translatesAutoresizingMaskIntoConstraints = false
         markdownReaderVC.view.translatesAutoresizingMaskIntoConstraints = false
         textEditorVC.view.translatesAutoresizingMaskIntoConstraints = false
+        ebookReaderVC.view.translatesAutoresizingMaskIntoConstraints = false
 
         landscapeStatusSpacerHeight = landscapeStatusSpacer.heightAnchor.constraint(equalToConstant: 0)
         portraitSeamSpacerHeight = portraitSeamSpacer.heightAnchor.constraint(equalToConstant: 0)
@@ -327,6 +335,11 @@ final class StudyShellViewController: UIViewController {
             textEditorVC.view.trailingAnchor.constraint(equalTo: readerHost.trailingAnchor),
             textEditorVC.view.topAnchor.constraint(equalTo: readerHost.topAnchor),
             textEditorVC.view.bottomAnchor.constraint(equalTo: readerHost.bottomAnchor),
+
+            ebookReaderVC.view.leadingAnchor.constraint(equalTo: readerHost.leadingAnchor),
+            ebookReaderVC.view.trailingAnchor.constraint(equalTo: readerHost.trailingAnchor),
+            ebookReaderVC.view.topAnchor.constraint(equalTo: readerHost.topAnchor),
+            ebookReaderVC.view.bottomAnchor.constraint(equalTo: readerHost.bottomAnchor),
 
             chatNav.view.trailingAnchor.constraint(equalTo: chatHost.trailingAnchor),
             chatNav.view.bottomAnchor.constraint(equalTo: chatHost.bottomAnchor)
@@ -611,6 +624,9 @@ final class StudyShellViewController: UIViewController {
             textEditorVC.setSidebarButtonHidden(true)
             textEditorVC.setReaderSurfaceActive(false)
             textEditorVC.prepareForShellLayoutChange()
+            ebookReaderVC.setSidebarButtonHidden(true)
+            ebookReaderVC.setReaderSurfaceActive(false)
+            ebookReaderVC.prepareForShellLayoutChange()
         } else {
             readerHost.isHidden = false
         }
@@ -621,6 +637,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: return pdfReaderVC.captureReadingProgress()
         case .markdown: return markdownReaderVC.captureReadingProgress()
         case .text: return textEditorVC.captureReadingProgress()
+        case .ebook: return ebookReaderVC.captureReadingProgress()
         }
     }
 
@@ -629,6 +646,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.beginShellRotation(keeping: progress)
         case .markdown: markdownReaderVC.beginShellRotation(keeping: progress)
         case .text: textEditorVC.beginShellRotation(keeping: progress)
+        case .ebook: ebookReaderVC.beginShellRotation(keeping: progress)
         }
     }
 
@@ -637,6 +655,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.updateDuringShellRotation()
         case .markdown: markdownReaderVC.updateDuringShellRotation()
         case .text: textEditorVC.updateDuringShellRotation()
+        case .ebook: ebookReaderVC.updateDuringShellRotation()
         }
     }
 
@@ -645,6 +664,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.finishShellRotation(using: progress)
         case .markdown: markdownReaderVC.finishShellRotation(using: progress)
         case .text: textEditorVC.finishShellRotation(using: progress)
+        case .ebook: ebookReaderVC.finishShellRotation(using: progress)
         }
     }
 
@@ -653,22 +673,38 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.view.isHidden = kind != .pdf
         markdownReaderVC.view.isHidden = kind != .markdown
         textEditorVC.view.isHidden = kind != .text
+        ebookReaderVC.view.isHidden = kind != .ebook
         switch kind {
         case .pdf:
             markdownReaderVC.setReaderSurfaceActive(false)
             markdownReaderVC.setSidebarButtonHidden(true)
             textEditorVC.setReaderSurfaceActive(false)
             textEditorVC.setSidebarButtonHidden(true)
+            ebookReaderVC.setReaderSurfaceActive(false)
+            ebookReaderVC.setSidebarButtonHidden(true)
         case .markdown:
             pdfReaderVC.setReaderSurfaceActive(false)
             pdfReaderVC.setSidebarButtonHidden(true)
             textEditorVC.setReaderSurfaceActive(false)
             textEditorVC.setSidebarButtonHidden(true)
+            ebookReaderVC.setReaderSurfaceActive(false)
+            ebookReaderVC.setSidebarButtonHidden(true)
         case .text:
             pdfReaderVC.setReaderSurfaceActive(false)
             pdfReaderVC.setSidebarButtonHidden(true)
             markdownReaderVC.setReaderSurfaceActive(false)
             markdownReaderVC.setSidebarButtonHidden(true)
+            ebookReaderVC.setReaderSurfaceActive(false)
+            ebookReaderVC.setSidebarButtonHidden(true)
+        case .ebook:
+            pdfReaderVC.setReaderSurfaceActive(false)
+            pdfReaderVC.setSidebarButtonHidden(true)
+            markdownReaderVC.setReaderSurfaceActive(false)
+            markdownReaderVC.setSidebarButtonHidden(true)
+            textEditorVC.setReaderSurfaceActive(false)
+            textEditorVC.setSidebarButtonHidden(true)
+            ebookReaderVC.setReaderSurfaceActive(true)
+            ebookReaderVC.setSidebarButtonHidden(false)
         }
     }
 
@@ -677,6 +713,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: return pdfReaderVC.isLoaded(documentID: documentID)
         case .markdown: return markdownReaderVC.isLoaded(documentID: documentID)
         case .text: return textEditorVC.isLoaded(documentID: documentID)
+        case .ebook: return ebookReaderVC.isLoaded(documentID: documentID)
         }
     }
 
@@ -686,15 +723,23 @@ final class StudyShellViewController: UIViewController {
         case .pdf:
             markdownReaderVC.clearDocument()
             textEditorVC.clearDocument()
+            ebookReaderVC.clearDocument()
             pdfReaderVC.load(documentID: documentID, completion: completion)
         case .markdown:
             pdfReaderVC.clearDocument()
             textEditorVC.clearDocument()
+            ebookReaderVC.clearDocument()
             markdownReaderVC.load(documentID: documentID, completion: completion)
         case .text:
             pdfReaderVC.clearDocument()
             markdownReaderVC.clearDocument()
+            ebookReaderVC.clearDocument()
             textEditorVC.load(documentID: documentID, completion: completion)
+        case .ebook:
+            pdfReaderVC.clearDocument()
+            markdownReaderVC.clearDocument()
+            textEditorVC.clearDocument()
+            ebookReaderVC.load(documentID: documentID, completion: completion)
         }
     }
 
@@ -703,6 +748,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.saveReadingProgressNow()
         case .markdown: markdownReaderVC.saveReadingProgressNow()
         case .text: textEditorVC.saveReadingProgressNow()
+        case .ebook: ebookReaderVC.saveReadingProgressNow()
         }
     }
 
@@ -710,6 +756,7 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.pauseReading()
         markdownReaderVC.pauseReading()
         textEditorVC.pauseReading()
+        ebookReaderVC.pauseReading()
         if let id = boundDocumentID {
             StudyDocumentStore.shared.releaseAccess(forID: id)
         }
@@ -988,6 +1035,7 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.updateSidebarToggle(collapsed: collapsed)
         markdownReaderVC.updateSidebarToggle(collapsed: collapsed)
         textEditorVC.updateSidebarToggle(collapsed: collapsed)
+        ebookReaderVC.updateSidebarToggle(collapsed: collapsed)
         if !isReaderVisible || chatPanelStage == .full {
             chatVC.updateSidebarToggleTitle(collapsed: collapsed)
         }
@@ -1080,6 +1128,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.setReaderSurfaceActive(true)
         case .markdown: markdownReaderVC.setReaderSurfaceActive(true)
         case .text: textEditorVC.setReaderSurfaceActive(true)
+        case .ebook: ebookReaderVC.setReaderSurfaceActive(true)
         }
 
         DispatchQueue.main.async { [weak self] in
@@ -1090,6 +1139,7 @@ final class StudyShellViewController: UIViewController {
             case .pdf: self.pdfReaderVC.realignVisibleViewport(using: progress)
             case .markdown: self.markdownReaderVC.realignVisibleViewport(using: progress)
             case .text: self.textEditorVC.realignVisibleViewport(using: progress)
+            case .ebook: self.ebookReaderVC.realignVisibleViewport(using: progress)
             }
             self.flushPendingEditAfterSwitchIfNeeded()
         }
@@ -1101,6 +1151,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.setReaderSurfaceActive(true)
         case .markdown: markdownReaderVC.setReaderSurfaceActive(true)
         case .text: textEditorVC.setReaderSurfaceActive(true)
+        case .ebook: ebookReaderVC.setReaderSurfaceActive(true)
         }
 
         DispatchQueue.main.async { [weak self] in
@@ -1111,6 +1162,7 @@ final class StudyShellViewController: UIViewController {
             case .pdf: self.pdfReaderVC.resumeAfterConversationSwitch()
             case .markdown: self.markdownReaderVC.resumeAfterConversationSwitch()
             case .text: self.textEditorVC.resumeAfterConversationSwitch()
+            case .ebook: self.ebookReaderVC.resumeAfterConversationSwitch()
             }
         }
     }
@@ -1133,6 +1185,7 @@ final class StudyShellViewController: UIViewController {
         case .pdf: pdfReaderVC.setSidebarButtonHidden(false)
         case .markdown: markdownReaderVC.setSidebarButtonHidden(false)
         case .text: textEditorVC.setSidebarButtonHidden(false)
+        case .ebook: ebookReaderVC.setSidebarButtonHidden(false)
         }
 
         let layoutSize = layoutBoundsSize(for: size)
@@ -1678,7 +1731,7 @@ final class StudyShellViewController: UIViewController {
         switch activeReaderKind {
         case .text: textEditorVC.pinAskSelectionHighlight()
         case .markdown: markdownReaderVC.pinAskSelectionHighlight()
-        case .pdf: break
+        case .pdf, .ebook: break
         }
         chatVC.prepareAskAboutSelection(trimmed)
         ConnectsToast.show("已附带选区，打开 AI 后提问", in: view, duration: 1.1)
@@ -1749,6 +1802,21 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 customAPIPrefix: """
                 [阅读上下文 · \(label)]
                 （本页仅附带截图，不抽取 PDF 文本；截图不在聊天气泡展示，请结合「图片转写」理解。）
+                """
+            )
+        case .ebook:
+            let label = ebookReaderVC.currentPageLabel()
+            guard !label.isEmpty else { return nil }
+            guard let image = ebookReaderVC.captureCurrentPageImageJPEG() else { return nil }
+            return StudyPageCapture(
+                label: label,
+                text: "",
+                imageJPEGBase64: image,
+                prefersTextOnly: false,
+                hidesImageInChatBubble: true,
+                customAPIPrefix: """
+                [阅读上下文 · \(label)]
+                （本页仅附带截图；截图不在聊天气泡展示，请结合「图片转写」理解。）
                 """
             )
         case .markdown:
@@ -1999,6 +2067,7 @@ extension StudyShellViewController: StudyReadingContextProviding {
         let screenH = view.bounds.height > 1 ? view.bounds.height : UIScreen.main.bounds.height
         let anchor = sourceView
             ?? (pdfReaderVC.viewIfLoaded.flatMap { $0.isHidden ? nil : $0 })
+            ?? (ebookReaderVC.viewIfLoaded.flatMap { $0.isHidden ? nil : $0 })
             ?? textEditorVC.view
         ConnectsMenu.present(
             from: self,
@@ -2844,7 +2913,7 @@ extension StudyShellViewController {
             return textEditorVC.isCodeEditorFirstResponder || textEditorVC.isInEditMode
         case .markdown:
             return markdownReaderVC.isMarkdownEditorFirstResponder
-        case .pdf:
+        case .pdf, .ebook:
             return false
         }
     }
@@ -2873,8 +2942,8 @@ extension StudyShellViewController {
             textEditorVC.saveFromKeyboardShortcut()
         case .markdown:
             markdownReaderVC.saveFromKeyboardShortcut()
-        case .pdf:
-            ConnectsToast.show("PDF 无需文本保存", in: view, duration: 1.0)
+        case .pdf, .ebook:
+            ConnectsToast.show("阅读页无需文本保存", in: view, duration: 1.0)
         }
     }
 
@@ -2908,8 +2977,8 @@ extension StudyShellViewController {
             textEditorVC.focusForKeyboardEditing()
         case .markdown:
             markdownReaderVC.focusForKeyboardEditing()
-        case .pdf:
-            ConnectsToast.show("PDF 阅读页不支持键盘编辑", in: view, duration: 1.2)
+        case .pdf, .ebook:
+            ConnectsToast.show("阅读页不支持键盘编辑", in: view, duration: 1.2)
         }
     }
 }

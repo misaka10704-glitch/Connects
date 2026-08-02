@@ -62,3 +62,6 @@ Payload/
 
 # Archives
 *.xcarchive
+
+# Upstream clone kept locally for Foliate experiments; app ships Connects/Resources/Foliate only.
+ThirdParty/foliate-js/

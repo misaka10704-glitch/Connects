@@ -115,6 +115,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private var viewportScrollAnchor: (row: Int, deltaY: CGFloat)?
     private var scrollSettleWork: DispatchWorkItem?
     private var scrollFreezeGeometryWork: DispatchWorkItem?
+    /// Heavy finger-down prep deferred off the first scroll frames.
+    private var scrollBeginPrepWork: DispatchWorkItem?
+    /// First-history / study prep deferred until finger lifts (never mid-drag).
+    private var pendingFingerDownHeavyPrep: (study: Bool, light: Bool)?
+    /// Visible row set last used for history edge pinning (skip per-frame work).
+    private var lastHistoryEdgePinVisibleRows: Set<Int> = []
     private var studyFrozenShrinkRemeasureWork: DispatchWorkItem?
     private var isSyncingFrozenAssistantGeometry = false
     private var scrollGestureGeometryFinished = false
@@ -1065,7 +1071,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         scrollSettleWork?.cancel()
         scrollFreezeGeometryWork?.cancel()
         scrollFreezeGeometryWork = nil
+        scrollBeginPrepWork?.cancel()
+        scrollBeginPrepWork = nil
+        pendingFingerDownHeavyPrep = nil
         scrollSettleWork = nil
+        lastHistoryEdgePinVisibleRows = []
         pinnedRemeasureWork?.cancel()
         pinnedRemeasureWork = nil
         jumpAnchorWork?.cancel()
@@ -1617,6 +1627,88 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         return changed
     }
 
+    /// Finger-down sync pin: height map only — no chrome paint or cell measurement.
+    private func pinVisibleFrozenRowsFromHeightMap(messages: [ChatMessage]) {
+        guard rowHeights.isScrollHeightFrozen else { return }
+        var pinnedIDs = Set<String>()
+        for case let cell as MessageCellType in tableView.visibleCells {
+            guard let msg = messages.first(where: { $0.id == cell.messageID }),
+                  !msg.isStreaming else { continue }
+            let known = rowHeights.bestKnownColumnHeight(for: msg.id)
+            guard known > 40 else { continue }
+            rowHeights.pinFrozenRowHeight(messageID: msg.id, columnHeight: known)
+            pinnedIDs.insert(msg.id)
+        }
+        rowHeights.setGesturePinnedFrozenMessages(pinnedIDs)
+    }
+
+    /// Freeze visible (±pad) rows to live UITableView geometry — avoids press→teleport.
+    private func beginScrollHeightFreezeMatchingTable(messages: [ChatMessage],
+                                                      rows: [Int],
+                                                      layoutWidth: CGFloat) {
+        let margin = ChatRowHeightResolver.cellVerticalMargin
+        var heights: [String: CGFloat] = [:]
+        heights.reserveCapacity(rows.count)
+        let count = messages.count
+        for row in rows where row >= 0 && row < count {
+            let msg = messages[row]
+            let path = IndexPath(row: row, section: 0)
+            let tableH = tableView.rectForRow(at: path).height
+            if tableH > 40 {
+                heights[msg.id] = tableH
+            } else {
+                let known = rowHeights.bestKnownColumnHeight(for: msg.id)
+                heights[msg.id] = known > 40
+                    ? known + margin
+                    : rowHeights.rowHeight(
+                        for: msg,
+                        row: row,
+                        messageCount: count,
+                        layoutWidth: layoutWidth
+                    )
+            }
+        }
+        rowHeights.beginScrollHeightFreeze(
+            preservingRowHeights: heights,
+            deferLiveFrozenMapUpdates: true
+        )
+        // Pin gesture IDs without rewriting heights (already match the table).
+        rowHeights.setGesturePinnedFrozenMessages(Set(heights.keys))
+    }
+
+    /// Additive freeze expand only — never replace the live frozen map mid-drag.
+    private func expandFrozenScrollRowsIfNeeded(messages: [ChatMessage],
+                                                rows: [Int],
+                                                layoutWidth: CGFloat) {
+        guard rowHeights.isScrollHeightFrozen else { return }
+        let count = messages.count
+        for row in rows where row >= 0 && row < count {
+            let msg = messages[row]
+            guard !msg.isStreaming else { continue }
+            rowHeights.freezeRowHeightIfNeeded(
+                for: msg,
+                row: row,
+                messageCount: count,
+                layoutWidth: layoutWidth
+            )
+        }
+    }
+
+    /// Study / first-history prep that must not run while the finger is down.
+    private func runPendingFingerDownHeavyPrepIfNeeded() {
+        guard let pending = pendingFingerDownHeavyPrep else { return }
+        pendingFingerDownHeavyPrep = nil
+        guard let messages = ConversationStore.shared.currentConversation?.messages,
+              !messages.isEmpty else { return }
+        let layoutWidth = currentRenderWidth()
+        if pending.study {
+            prepareStudyNarrowTailFromOpen(messages: messages, layoutWidth: layoutWidth)
+            lightweightFingerDownHistoryPrep(messages: messages, layoutWidth: layoutWidth)
+        } else if pending.light {
+            lightweightFingerDownHistoryPrep(messages: messages, layoutWidth: layoutWidth)
+        }
+    }
+
     /// Visible rows keep painted geometry when a scroll gesture begins.
     private func pinVisibleFrozenRowsForScrollFreeze(messages: [ChatMessage]) {
         guard rowHeights.isScrollHeightFrozen else { return }
@@ -1626,10 +1718,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             guard let msg = messages.first(where: { $0.id == cell.messageID }),
                   !msg.isStreaming else { continue }
             if let assistant = cell as? AssistantMessageCell, msg.role == .assistant {
+                // Avoid layoutIfNeeded here — it stalls the first drag frames.
                 assistant.showCommittedActionIconsDuringScroll(for: msg)
-                assistant.contentView.layoutIfNeeded()
-            } else if !readingHistory {
-                cell.contentView.layoutIfNeeded()
             }
             let columnH: CGFloat
             if let assistant = cell as? AssistantMessageCell, msg.role == .assistant {
@@ -1639,7 +1729,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     layoutWidth: layoutWidth
                 )
             } else {
-                columnH = cell.measuredContentHeight()
+                let known = rowHeights.bestKnownColumnHeight(for: msg.id)
+                columnH = known > 40 ? known : cell.measuredContentHeight()
             }
             guard columnH > 40 else { continue }
             rowHeights.pinFrozenRowHeight(messageID: msg.id, columnHeight: columnH)
@@ -1656,8 +1747,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let assistant = cell as? AssistantMessageCell, message.role == .assistant {
             columnH = frozenScrollColumnHeight(for: assistant, message: message, layoutWidth: layoutWidth)
         } else {
-            cell.contentView.layoutIfNeeded()
-            columnH = cell.measuredContentHeight()
+            let known = rowHeights.bestKnownColumnHeight(for: message.id)
+            columnH = known > 40 ? known : cell.measuredContentHeight()
         }
         guard columnH > 40 else { return }
         rowHeights.pinFrozenRowHeight(messageID: message.id, columnHeight: columnH)
@@ -1797,9 +1888,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let msg = messages[path.row]
             guard msg.role == .assistant, !msg.isStreaming else { continue }
             if cell.hasVisibleActionButtons { continue }
-            cell.showCommittedActionIconsDuringScroll(for: msg)
-            if !cell.hasVisibleActionButtons {
-                _ = cell.revealReservedActionChromeIfRoom(for: msg)
+            if cell.hasVisibleBodyPaint {
+                cell.showCommittedActionIconsDuringScroll(for: msg)
+                if !cell.hasVisibleActionButtons {
+                    cell.revealActionChromeIfBodyPainted(for: msg)
+                }
             }
         }
     }
@@ -2114,11 +2207,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if self.hydrateVisibleDeferredNativeCells(maxCount: budget) {
                 self.scheduleFrozenAssistantGeometrySync()
             }
-            if self.needsPendingScrollPrep || self.usesStudyHeightBucketPolicy() {
+            // History scroll: also fill blank assistants + restore missing action chrome.
+            if self.needsPendingScrollPrep || self.usesStudyHeightBucketPolicy() || self.readingHistory {
                 self.paintVisibleBlankAssistantsIfNeeded(
                     messages: messages,
                     layoutWidth: self.currentRenderWidth()
                 )
+                self.revealDeferredActionChromeOnVisibleAssistants(messages: messages)
             }
             if !self.needsPendingScrollPrep, self.usesStudyHeightBucketPolicy(), !self.readingHistory {
                 self.applyTurnWindowPrewarm(
@@ -2860,9 +2955,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     }
                 }
             }
-            if !rowHeights.isCommitted(msg.id) {
-                item.cell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
-            } else if !item.cell.revealReservedActionChromeIfRoom(for: msg) {
+            // Always paint icons after body hydrate — room-check reveal can leave them missing.
+            item.cell.showCommittedActionIconsDuringScroll(for: msg)
+            if !item.cell.hasVisibleActionButtons {
+                item.cell.revealActionChromeIfBodyPainted(for: msg)
+            }
+            if !item.cell.hasVisibleActionButtons {
                 _ = item.cell.ensureActionButtonsVisible(for: msg)
             }
         }
@@ -3262,6 +3360,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
                 layoutWidth: layoutWidth
             )
+            if cell.hasVisibleBodyPaint, !cell.hasVisibleActionButtons {
+                cell.revealActionChromeIfBodyPainted(for: msg)
+            }
         }
     }
 
@@ -6206,6 +6307,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         scrollSettleWork = nil
         scrollFreezeGeometryWork?.cancel()
         scrollFreezeGeometryWork = nil
+        scrollBeginPrepWork?.cancel()
+        scrollBeginPrepWork = nil
         studyFrozenShrinkRemeasureWork?.cancel()
         studyFrozenShrinkRemeasureWork = nil
         nativeHydrationScrollWork?.cancel()
@@ -8967,29 +9070,41 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
                         messages: messages
                     )
                     let needsBody = !msg.content.isEmpty && !assistantCell.hasVisibleBodyPaint
-                    if needsBody, !readingHistory {
-                        assistantCell.configureForOpenHistory(
-                            with: msg,
-                            preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
-                            layoutWidth: layoutWidth
-                        )
-                        if assistantCell.hasVisibleBodyPaint {
-                            let measured = assistantCell.measuredContentHeight()
-                            let frozen = rowHeights.frozenRowHeight(for: msg.id) ?? 0
-                            if measured > 40,
-                               measured + ChatRowHeightResolver.cellVerticalMargin > frozen + 12,
-                               rowHeights.growFrozenRowHeightIfNeeded(
-                                   messageID: msg.id,
-                                   columnHeight: measured
-                               ) {
-                                scheduleFrozenAssistantGeometrySync()
+                    if needsBody {
+                        // Warm-cache fill even while readingHistory — blank bodies skip action paint.
+                        let canFill = !readingHistory
+                            || AssistantMessageLayout.hasCachedNativeLayout(
+                                for: msg,
+                                layoutWidth: layoutWidth
+                            )
+                        if canFill {
+                            assistantCell.configureForOpenHistory(
+                                with: msg,
+                                preferredHeight: rowHeights.committedColumnHeight(for: msg.id),
+                                layoutWidth: layoutWidth
+                            )
+                            if assistantCell.hasVisibleBodyPaint {
+                                let measured = assistantCell.measuredContentHeight()
+                                let frozen = rowHeights.frozenRowHeight(for: msg.id) ?? 0
+                                if measured > 40,
+                                   measured + ChatRowHeightResolver.cellVerticalMargin > frozen + 12,
+                                   rowHeights.growFrozenRowHeightIfNeeded(
+                                       messageID: msg.id,
+                                       columnHeight: measured
+                                   ) {
+                                    scheduleFrozenAssistantGeometrySync()
+                                }
                             }
                         }
                     }
-                    if !rowHeights.isCommitted(msg.id) {
-                        assistantCell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
-                    } else {
+                    // Prefer icon paint over reserve-only — reserveActionChromeHeightOnly hides buttons.
+                    if assistantCell.hasVisibleBodyPaint {
                         assistantCell.showCommittedActionIconsDuringScroll(for: msg)
+                        if !assistantCell.hasVisibleActionButtons {
+                            assistantCell.revealActionChromeIfBodyPainted(for: msg)
+                        }
+                    } else {
+                        assistantCell.refreshActionChrome(for: msg, streaming: false, colors: DSTheme.c)
                     }
                 }
             }
@@ -9047,6 +9162,8 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         scrollSettleWork?.cancel()
         scrollFreezeGeometryWork?.cancel()
         scrollFreezeGeometryWork = nil
+        scrollBeginPrepWork?.cancel()
+        scrollBeginPrepWork = nil
         studyFrozenShrinkRemeasureWork?.cancel()
         studyFrozenShrinkRemeasureWork = nil
         nativeHydrationScrollWork?.cancel()
@@ -9070,85 +9187,85 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         gestureMaxContentOffsetY = scrollView.contentOffset.y
         pendingScrollSettleAnchor = nil
         heightWork?.cancel()
+
+        // Press→start: freeze to live table geometry only. Never rewrite heights mid-drag
+        // (that freezes the UI then teleports when the main thread catches up).
+        #if DEBUG
+        ChatHeavyScrollDiagnostics.resetGesture()
+        #endif
+        NativeMessageRenderView.suppressSyncRasterize = true
+
         if let messages = ConversationStore.shared.currentConversation?.messages, !messages.isEmpty {
             let layoutWidth = currentRenderWidth()
-            let pendingFirstPrep = needsFirstHistoryScrollPrep
-            if pendingStudyFirstScrollPrep {
-                prepareStudyFirstScrollFromOpen(messages: messages, layoutWidth: layoutWidth)
-                pendingStudyFirstScrollPrep = false
-            } else if needsFirstHistoryScrollPrep {
-                needsFirstHistoryScrollPrep = false
-                lightweightFingerDownHistoryPrep(messages: messages, layoutWidth: layoutWidth)
+            let shouldStudyPrep = pendingStudyFirstScrollPrep
+            let shouldLightPrep = needsFirstHistoryScrollPrep && !shouldStudyPrep
+            pendingStudyFirstScrollPrep = false
+            needsFirstHistoryScrollPrep = false
+            if shouldStudyPrep || shouldLightPrep {
+                pendingFingerDownHeavyPrep = (study: shouldStudyPrep, light: shouldLightPrep)
+            } else {
+                pendingFingerDownHeavyPrep = nil
             }
+
             let visibleRows = Set((tableView.indexPathsForVisibleRows ?? []).map(\.row))
-            let prioritized = scrollLookaheadRowsPrioritized(in: messages)
             let visibleMin = tableView.indexPathsForVisibleRows?.map(\.row).min()
                 ?? max(0, messages.count - 1)
-            let firstQAEdge = firstQAEdgeWarmRows(in: messages, aboveVisibleMin: visibleMin)
-            var freezeRows = Set(prioritized + firstQAEdge + visibleRows)
-            if pendingFirstPrep || !hasCompletedFirstHistoryScrollGesture {
-                let bandFloor = max(0, visibleMin - Self.turnPrewarmCount * 6 - 4)
-                freezeRows.formUnion(bandFloor..<messages.count)
-            } else if visibleMin > 0 {
-                freezeRows.formUnion(0..<visibleMin)
+            let visibleMax = tableView.indexPathsForVisibleRows?.map(\.row).max() ?? visibleMin
+            let syncPad = 2
+            let syncFloor = max(0, visibleMin - syncPad)
+            let syncCeil = min(messages.count, visibleMax + syncPad + 1)
+            var syncFreezeRows = visibleRows
+            if syncFloor < syncCeil {
+                syncFreezeRows.formUnion(syncFloor..<syncCeil)
             }
-            let lookahead = freezeRows.filter { $0 >= 0 && $0 < messages.count }.sorted()
-            // Collapse stale/char-count heights to layout-cache (code cards) before freeze —
-            // mid-fling must not shrink or the viewport jumps.
-            _ = shrinkInflatedCommittedRows(
+            let syncRows = syncFreezeRows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+
+            beginScrollHeightFreezeMatchingTable(
                 messages: messages,
-                rows: lookahead,
-                layoutWidth: layoutWidth,
-                slackThreshold: usesStudyHeightBucketPolicy() ? 10 : 20
-            )
-            if usesStudyHeightBucketPolicy() {
-                var needsRemeasure = false
-                for row in visibleRows {
-                    let path = IndexPath(row: row, section: 0)
-                    guard let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
-                    let rowH = tableView.rectForRow(at: path).height
-                    let painted = cell.measuredContentHeight() + ChatRowHeightResolver.cellVerticalMargin
-                    if rowH > painted + 36 { needsRemeasure = true; break }
-                }
-                if needsRemeasure {
-                    _ = shrinkInflatedVisibleRows(messages: messages, slackThreshold: 16)
-                    UIView.performWithoutAnimation {
-                        tableView.beginUpdates()
-                        tableView.endUpdates()
-                        if let path = viewportScrollAnchorPath() {
-                            let y = tableView.rectForRow(at: path).minY - tableView.contentOffset.y
-                            remeasureRowsPreservingViewport(
-                                anchorPath: path,
-                                preferSavedViewportAnchor: true,
-                                fixedViewportY: y
-                            )
-                        }
-                    }
-                }
-            }
-            quickCommitVisibleHeights(messages: messages, allowTableUpdates: false)
-            prepareScrollGestureHeights(
-                messages: messages,
-                layoutWidth: layoutWidth,
-                excludeRows: visibleRows
-            )
-            #if DEBUG
-            ChatHeavyScrollDiagnostics.resetGesture()
-            #endif
-            NativeMessageRenderView.suppressSyncRasterize = true
-            // Always queue frozen grows — mid-scroll beginUpdates kills 跟手 on fence-heavy threads.
-            rowHeights.beginScrollHeightFreeze(
-                messages: messages,
-                layoutWidth: layoutWidth,
-                rows: lookahead,
-                deferLiveFrozenMapUpdates: true
-            )
-            pinVisibleFrozenRowsForScrollFreeze(messages: messages)
-            setVisibleNativeScrollRasterization(true)
-            scheduleAsyncLayoutPrewarm(
-                assistants: assistantMessagesAhead(in: messages, rows: lookahead),
+                rows: syncRows,
                 layoutWidth: layoutWidth
             )
+            lastHistoryEdgePinVisibleRows = visibleRows
+
+            let prepWork = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                guard self.rowHeights.isScrollHeightFrozen else { return }
+                self.scrollBeginPrepWork = nil
+
+                // While dragging: additive freeze + async prewarm only.
+                // No map replace, shrink, sync layout, or measured chrome pin.
+                let liveVisible = Set((self.tableView.indexPathsForVisibleRows ?? []).map(\.row))
+                let liveMin = self.tableView.indexPathsForVisibleRows?.map(\.row).min()
+                    ?? max(0, messages.count - 1)
+                let liveMax = self.tableView.indexPathsForVisibleRows?.map(\.row).max() ?? liveMin
+                let prioritized = self.scrollLookaheadRowsPrioritized(in: messages)
+                var expandRows = Set(prioritized + liveVisible)
+                let bandPad = Self.turnPrewarmCount * 2 + 4
+                let bandFloor = max(0, liveMin - bandPad)
+                let bandCeil = min(messages.count, liveMax + bandPad + 1)
+                if bandFloor < bandCeil {
+                    expandRows.formUnion(bandFloor..<bandCeil)
+                }
+                let lookahead = expandRows.filter { $0 >= 0 && $0 < messages.count }.sorted()
+                self.expandFrozenScrollRowsIfNeeded(
+                    messages: messages,
+                    rows: lookahead,
+                    layoutWidth: layoutWidth
+                )
+                self.scheduleAsyncLayoutPrewarm(
+                    assistants: self.assistantMessagesAhead(in: messages, rows: lookahead),
+                    layoutWidth: layoutWidth
+                )
+
+                if !self.tableView.isDragging {
+                    self.runPendingFingerDownHeavyPrepIfNeeded()
+                    self.pinVisibleFrozenRowsForScrollFreeze(messages: messages)
+                    self.lastHistoryEdgePinVisibleRows = liveVisible
+                    self.refreshHistoryEdgePinnedRows()
+                }
+            }
+            scrollBeginPrepWork = prepWork
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: prepWork)
         }
     }
 
@@ -9218,7 +9335,14 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         if rowHeights.isScrollHeightFrozen {
             gestureMinContentOffsetY = min(gestureMinContentOffsetY, y)
             gestureMaxContentOffsetY = max(gestureMaxContentOffsetY, y)
-            refreshHistoryEdgePinnedRows()
+            let visible = Set((tableView.indexPathsForVisibleRows ?? []).map(\.row))
+            if visible != lastHistoryEdgePinVisibleRows {
+                lastHistoryEdgePinVisibleRows = visible
+                refreshHistoryEdgePinnedRows()
+                if let messages = ConversationStore.shared.currentConversation?.messages {
+                    revealDeferredActionChromeOnVisibleAssistants(messages: messages)
+                }
+            }
         }
         refreshLiveHistoryScrollAnchor()
         guard rowHeights.isScrollHeightFrozen else { return }
@@ -9271,6 +9395,12 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         guard let messages = ConversationStore.shared.currentConversation?.messages else { return }
         // Allow pending bitmaps to paint once the finger lifts (before async settle).
         NativeMessageRenderView.suppressSyncRasterize = false
+        // Heavy first-scroll prep off the release frame — was causing press→teleport mid-drag.
+        if pendingFingerDownHeavyPrep != nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.runPendingFingerDownHeavyPrepIfNeeded()
+            }
+        }
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             if cell.hasPendingDeferredNativeRender {
                 cell.applyDeferredNativeRenderIfNeeded(suppressHeightNotify: true)
@@ -10055,6 +10185,7 @@ extension ChatViewController: InputBarViewDelegate {
             case .text?: tip = "发送时将附带代码全文上下文（无截图）"
             case .markdown?: tip = "发送时将附带当前 Markdown 上下文"
             case .pdf?: tip = "发送时将附带当前页截图（不抽取 PDF 文本）"
+            case .ebook?: tip = "发送时将附带当前页截图"
             default: tip = "发送时将附带当前阅读上下文"
             }
             ConnectsToast.show(tip, in: view, duration: 1.6)

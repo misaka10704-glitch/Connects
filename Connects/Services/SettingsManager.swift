@@ -18,6 +18,7 @@ enum ReasoningEffortLevel: String, CaseIterable {
 
 extension Notification.Name {
     static let chatFontSizeDidChange = Notification.Name("ConnectsChatFontSizeDidChange")
+    static let ebookReaderFontSizeDidChange = Notification.Name("ConnectsEbookReaderFontSizeDidChange")
     static let visibleModelsDidChange = Notification.Name("ConnectsVisibleModelsDidChange")
     static let renderDebugDidChange = Notification.Name("ConnectsRenderDebugDidChange")
     static let turnContextBarDidChange = Notification.Name("ConnectsTurnContextBarDidChange")
@@ -205,6 +206,20 @@ final class SettingsManager {
 
     var chatThinkingFontSize: CGFloat {
         chatBodyFontSize - 1.5
+    }
+
+    /// EPUB / MOBI reader body size (pt). Independent of chat font.
+    var ebookReaderFontSize: CGFloat {
+        get {
+            let v = UserDefaults.standard.object(forKey: "connects_ebook_font_size") as? Double
+            let size = CGFloat(v ?? 18)
+            return min(28, max(14, size))
+        }
+        set {
+            let clamped = min(28, max(14, newValue))
+            UserDefaults.standard.set(Double(clamped), forKey: "connects_ebook_font_size")
+            NotificationCenter.default.post(name: .ebookReaderFontSizeDidChange, object: nil)
+        }
     }
 
     /// Top bar showing the user question for the reply currently in view.

@@ -7,6 +7,8 @@ enum StudyDocumentError: LocalizedError {
     case invalidPDF
     case invalidMarkdown
     case invalidText
+    case invalidEbook
+    case unsupportedMobiFormat
     case unsupportedType
     case markdownImportAsyncOnly
     case bookmarkUnavailable
@@ -19,6 +21,8 @@ enum StudyDocumentError: LocalizedError {
         case .invalidPDF: return "不是有效的 PDF 文件。"
         case .invalidMarkdown: return "无法读取 Markdown 文件。"
         case .invalidText: return "无法读取文本文件。"
+        case .invalidEbook: return "无法打开该电子书（可能已加密或格式不支持）。请尝试转为 EPUB。"
+        case .unsupportedMobiFormat: return "暂不支持 MOBI/AZW，请先用 EPUB。"
         case .unsupportedType: return "无法识别的文件类型。"
         case .markdownImportAsyncOnly: return "请使用「打开代码 / 文本」选择 Markdown。"
         case .bookmarkUnavailable: return "无法访问原文件，请重新打开该文档。"
@@ -41,6 +45,7 @@ final class StudyDocumentStore {
     private let pdfCache = NSCache<NSString, PDFDocument>()
     private let maxPDFBytes: Int64 = 160 * 1024 * 1024
     private let maxTextBytes: Int64 = 8 * 1024 * 1024
+    private let maxEbookBytes: Int64 = 80 * 1024 * 1024
     private let registryName = "registry.json"
     private var activeAccess: [String: (url: URL, accessing: Bool)] = [:]
     private let accessLock = NSLock()
@@ -158,7 +163,12 @@ final class StudyDocumentStore {
 
         let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = attrs[.size] as? Int64 ?? 0
-        let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
+        let maxBytes: Int64
+        switch kind {
+        case .pdf: maxBytes = maxPDFBytes
+        case .ebook: maxBytes = maxEbookBytes
+        case .markdown, .text: maxBytes = maxTextBytes
+        }
         guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
 
         if kind == .pdf, size > 0 {
@@ -169,6 +179,10 @@ final class StudyDocumentStore {
                 if let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) {
                     _ = PDFDocument(data: data)
                 }
+            }
+        } else if kind == .ebook, size > 0 {
+            guard (try? Data(contentsOf: fileURL, options: [.mappedIfSafe])) != nil else {
+                throw StudyDocumentError.invalidEbook
             }
         } else if kind != .pdf, size > 0 {
             guard (try? Data(contentsOf: fileURL)) != nil else {
@@ -238,33 +252,35 @@ final class StudyDocumentStore {
     }
 
     /// Resolve security-scoped bookmark (or sandbox copy) and keep access while document is open.
-    /// Prefer `displayPath` when it exists on disk so same-named files never share a stale bookmark URL.
+    ///
+    /// On a **real device**, only the URL returned from `URL(resolvingBookmarkData:)` carries a usable
+    /// security scope. Reconstructing `URL(fileURLWithPath: displayPath)` and calling
+    /// `startAccessingSecurityScopedResource()` on it usually returns `false`, so readers see
+    /// permission failures or half-parsed packages (e.g. EPUB with empty `readingOrder`).
+    /// Simulator often still reads host paths, which hid this bug.
     @discardableResult
     func resolvedURL(forID id: String) throws -> URL {
         guard let doc = document(id: id) else { throw StudyDocumentError.bookmarkUnavailable }
 
-        let displayURL: URL? = {
+        let displayPathStd: String? = {
             guard let path = doc.displayPath, !path.isEmpty else { return nil }
-            let url = URL(fileURLWithPath: path)
-            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-            return url
+            return (path as NSString).standardizingPath
         }()
 
         accessLock.lock()
         if let existing = activeAccess[id] {
-            if let displayURL {
-                let want = (displayURL.path as NSString).standardizingPath
+            if let want = displayPathStd {
                 let have = (existing.url.path as NSString).standardizingPath
-                if want != have {
-                    if existing.accessing {
-                        existing.url.stopAccessingSecurityScopedResource()
-                    }
-                    activeAccess.removeValue(forKey: id)
-                    accessLock.unlock()
-                } else {
+                // Same inode path → reuse held scoped URL (may differ from a fresh fileURLWithPath).
+                if want == have || urlsLikelySameFile(existing.url, URL(fileURLWithPath: want)) {
                     accessLock.unlock()
                     return existing.url
                 }
+                if existing.accessing {
+                    existing.url.stopAccessingSecurityScopedResource()
+                }
+                activeAccess.removeValue(forKey: id)
+                accessLock.unlock()
             } else {
                 accessLock.unlock()
                 return existing.url
@@ -273,50 +289,66 @@ final class StudyDocumentStore {
             accessLock.unlock()
         }
 
-        if let displayURL {
-            // Warm bookmark scope if needed, but always return the display path URL.
-            if let data = doc.bookmarkData {
-                var isStale = false
-                if let scoped = try? URL(
-                    resolvingBookmarkData: data,
-                    options: [],
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                ) {
-                    _ = scoped.startAccessingSecurityScopedResource()
-                }
+        // Directory-scoped workspace grants often outlive file bookmarks on device.
+        // Warm the covering folder first so subsequent reads of children succeed.
+        if let path = displayPathStd ?? doc.displayPath {
+            if let ws = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: path) {
+                _ = try? StudyWorkspaceStore.shared.resolvedFolderURL(for: ws)
             }
-            let accessing = displayURL.startAccessingSecurityScopedResource()
-            accessLock.lock()
-            activeAccess[id] = (displayURL, accessing)
-            accessLock.unlock()
-            return displayURL
         }
 
-        if doc.accessMode == .originalBookmark, let data = doc.bookmarkData {
+        // Prefer the bookmark-resolved URL (security scope lives here on device).
+        if let data = doc.bookmarkData {
             var isStale = false
-            let url = try URL(
+            if let scoped = try? URL(
                 resolvingBookmarkData: data,
-                options: [],
+                options: [.withoutUI],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
-            )
-            let accessing = url.startAccessingSecurityScopedResource()
-            accessLock.lock()
-            activeAccess[id] = (url, accessing)
-            accessLock.unlock()
-            if isStale {
-                if let refreshed = try? url.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                ), let idx = documents.firstIndex(where: { $0.id == id }) {
-                    documents[idx].bookmarkData = refreshed
-                    documents[idx].displayPath = url.path
-                    saveRegistry()
+            ) {
+                let accessing = scoped.startAccessingSecurityScopedResource()
+                // If displayPath moved, keep bookmark URL only when the file still matches / exists.
+                let scopedStd = (scoped.path as NSString).standardizingPath
+                let pathOK: Bool = {
+                    if let want = displayPathStd {
+                        return want == scopedStd || urlsLikelySameFile(scoped, URL(fileURLWithPath: want))
+                    }
+                    return FileManager.default.fileExists(atPath: scoped.path)
+                }()
+                if pathOK, canReadFileContents(at: scoped) {
+                    accessLock.lock()
+                    activeAccess[id] = (scoped, accessing)
+                    accessLock.unlock()
+                    if isStale, let idx = documents.firstIndex(where: { $0.id == id }) {
+                        if let refreshed = try? scoped.bookmarkData(
+                            options: [],
+                            includingResourceValuesForKeys: nil,
+                            relativeTo: nil
+                        ) {
+                            documents[idx].bookmarkData = refreshed
+                            documents[idx].displayPath = scoped.path
+                            saveRegistry()
+                        }
+                    }
+                    return scoped
+                }
+                if accessing {
+                    scoped.stopAccessingSecurityScopedResource()
                 }
             }
-            return url
+        }
+
+        // Fallbacks: path under an active workspace grant, or imported sandbox copy.
+        if let want = displayPathStd {
+            let displayURL = URL(fileURLWithPath: want)
+            if FileManager.default.fileExists(atPath: displayURL.path),
+               canReadFileContents(at: displayURL) {
+                let accessing = displayURL.startAccessingSecurityScopedResource()
+                accessLock.lock()
+                activeAccess[id] = (displayURL, accessing)
+                accessLock.unlock()
+                return displayURL
+            }
         }
 
         guard !doc.localRelativePath.isEmpty else { throw StudyDocumentError.bookmarkUnavailable }
@@ -328,6 +360,25 @@ final class StudyDocumentStore {
         activeAccess[id] = (url, false)
         accessLock.unlock()
         return url
+    }
+
+    private func urlsLikelySameFile(_ a: URL, _ b: URL) -> Bool {
+        let pa = (a.path as NSString).standardizingPath
+        let pb = (b.path as NSString).standardizingPath
+        if pa == pb { return true }
+        guard
+            let ra = try? a.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+            let rb = try? b.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        else { return false }
+        return ra.isEqual(rb)
+    }
+
+    /// True when the process can actually read bytes (not merely `fileExists`).
+    private func canReadFileContents(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let chunk = try? handle.read(upToCount: 4)
+        return (chunk?.count ?? 0) > 0
     }
 
     func releaseAccess(forID id: String) {
@@ -471,7 +522,12 @@ final class StudyDocumentStore {
 
         let attrs = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
         let size = attrs[.size] as? Int64 ?? 0
-        let maxBytes = kind == .pdf ? maxPDFBytes : maxTextBytes
+        let maxBytes: Int64
+        switch kind {
+        case .pdf: maxBytes = maxPDFBytes
+        case .ebook: maxBytes = maxEbookBytes
+        case .markdown, .text: maxBytes = maxTextBytes
+        }
         guard size <= maxBytes else { throw StudyDocumentError.fileTooLarge }
 
         if kind == .pdf, size > 0 {
@@ -480,6 +536,10 @@ final class StudyDocumentStore {
                 if let data = try? Data(contentsOf: sourceURL, options: [.mappedIfSafe]) {
                     _ = PDFDocument(data: data)
                 }
+            }
+        } else if kind == .ebook, size > 0 {
+            guard (try? Data(contentsOf: sourceURL, options: [.mappedIfSafe])) != nil else {
+                throw StudyDocumentError.invalidEbook
             }
         } else if kind != .pdf {
             guard (try? Data(contentsOf: sourceURL)) != nil else {

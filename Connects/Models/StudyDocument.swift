@@ -5,6 +5,7 @@ enum StudyDocumentKind: String, Codable, Equatable {
     case pdf
     case markdown
     case text
+    case ebook
 }
 
 enum StudyDocumentAccessMode: String, Codable, Equatable {
@@ -133,6 +134,9 @@ struct StudyDocument: Codable, Equatable {
             let path = (displayPath ?? localRelativePath).lowercased()
             if path.hasSuffix(".md") || path.hasSuffix(".markdown") {
                 kind = .markdown
+            } else if path.hasSuffix(".epub") || path.hasSuffix(".mobi")
+                        || path.hasSuffix(".azw3") || path.hasSuffix(".azw") {
+                kind = .ebook
             } else if Self.isTextPath(path) {
                 kind = .text
             } else {
@@ -165,6 +169,7 @@ struct StudyDocument: Codable, Equatable {
         case .pdf: return "PDF"
         case .markdown: return "Markdown"
         case .text: return textLanguage?.displayName ?? "文本"
+        case .ebook: return "电子书"
         }
     }
 
@@ -179,6 +184,7 @@ struct StudyDocument: Codable, Equatable {
         if e.isEmpty { return .text }
         switch e {
         case "pdf": return .pdf
+        case "epub", "mobi", "azw3", "azw": return .ebook
         case "md", "markdown",
              "v", "vh", "sv", "svh", "c", "h", "cpp", "cc", "hpp", "py", "txt",
              "html", "htm", "css", "js", "ts", "json", "xml", "yaml", "yml",
@@ -200,6 +206,8 @@ struct StudyProgress: Codable, Equatable {
     var anchorX: CGFloat?
     var anchorY: CGFloat?
     var scaleFactor: CGFloat?
+    /// Readium Locator JSON or Foliate location JSON for ebook progress.
+    var ebookLocatorJSON: String?
     var updatedAt: Date
 
     init(pageIndex: Int = 0,
@@ -208,6 +216,7 @@ struct StudyProgress: Codable, Equatable {
          anchorX: CGFloat? = nil,
          anchorY: CGFloat? = nil,
          scaleFactor: CGFloat? = nil,
+         ebookLocatorJSON: String? = nil,
          updatedAt: Date = Date()) {
         self.pageIndex = pageIndex
         self.pageOffsetY = pageOffsetY
@@ -215,6 +224,7 @@ struct StudyProgress: Codable, Equatable {
         self.anchorX = anchorX
         self.anchorY = anchorY
         self.scaleFactor = scaleFactor
+        self.ebookLocatorJSON = ebookLocatorJSON
         self.updatedAt = updatedAt
     }
 }

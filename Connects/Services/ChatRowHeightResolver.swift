@@ -66,6 +66,14 @@ final class ChatRowHeightResolver {
         scrollFrozenRowHeights = map
     }
 
+    /// Freeze using exact UITableView row heights so finger-down does not relayout/jump.
+    func beginScrollHeightFreeze(preservingRowHeights heights: [String: CGFloat],
+                                 deferLiveFrozenMapUpdates: Bool = false) {
+        deferFrozenMapLiveUpdates = deferLiveFrozenMapUpdates
+        deferredFrozenRowGrows = deferLiveFrozenMapUpdates ? [:] : nil
+        scrollFrozenRowHeights = heights
+    }
+
     func freezeRowHeightIfNeeded(for message: ChatMessage,
                                  row: Int,
                                  messageCount: Int,

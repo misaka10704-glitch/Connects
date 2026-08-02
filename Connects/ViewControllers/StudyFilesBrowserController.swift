@@ -12,6 +12,10 @@ final class StudyFilesBrowserController: UIDocumentBrowserViewController, UIDocu
             var types: [UTType] = [.item, .data, .content, .pdf, .plainText, .text, .sourceCode]
             if let md = UTType("net.daringfireball.markdown") { types.append(md) }
             if let md2 = UTType("public.markdown") { types.append(md2) }
+            if let epub = UTType(filenameExtension: "epub") ?? UTType("org.idpf.epub-container") {
+                types.append(epub)
+            }
+            if let mobi = UTType(filenameExtension: "mobi") { types.append(mobi) }
             browser = StudyFilesBrowserController(forOpening: types)
         } else {
             browser = StudyFilesBrowserController(forOpeningFilesWithContentTypes: [
@@ -23,7 +27,9 @@ final class StudyFilesBrowserController: UIDocumentBrowserViewController, UIDocu
                 "public.text",
                 "public.source-code",
                 "net.daringfireball.markdown",
-                "public.markdown"
+                "public.markdown",
+                "org.idpf.epub-container",
+                "com.amazon.mobi8-ebook"
             ])
         }
         browser.delegate = browser

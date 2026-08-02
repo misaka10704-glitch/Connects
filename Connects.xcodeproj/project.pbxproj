@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		RBF000010000000000000001 /* ReadiumShared in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000001 /* ReadiumShared */; };
+		RBF000010000000000000002 /* ReadiumStreamer in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000002 /* ReadiumStreamer */; };
+		RBF000010000000000000003 /* ReadiumNavigator in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000003 /* ReadiumNavigator */; };
 		A10000010000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* AppDelegate.swift */; };
 		H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */; };
 		A10000010000000000000002 /* AIModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* AIModel.swift */; };
@@ -108,6 +111,8 @@
 		D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000003 /* ConversationRenderSwitchTests.swift */; };
 		D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000004 /* CodeDiffModeTests.swift */; };
 		D10000010000000000000005 /* NativeMathParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000005 /* NativeMathParseTests.swift */; };
+		D10000010000000000000006 /* ReadiumEbookOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000006 /* ReadiumEbookOpenTests.swift */; };
+		D10000010000000000000007 /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000007 /* Fixtures */; };
 		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
@@ -127,6 +132,10 @@
 		S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000008 /* StudyPageOCRExtractor.swift */; };
 		S10000010000000000000004 /* StudyReadingContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000004 /* StudyReadingContext.swift */; };
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
+		S10000010000000000000042 /* EbookReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000042 /* EbookReaderViewController.swift */; };
+		FOL100010000000000000003 /* Foliate in Resources */ = {isa = PBXBuildFile; fileRef = FOL200010000000000000003 /* Foliate */; };
+		S10000010000000000000043 /* ReadiumEbookOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000043 /* ReadiumEbookOpener.swift */; };
+		S10000010000000000000044 /* FoliateEbookEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000044 /* FoliateEbookEngine.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
 		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
 		SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SFB200010000000000000001 /* StudyFilesBrowserController.swift */; };
@@ -251,6 +260,8 @@
 		D20000010000000000000003 /* ConversationRenderSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRenderSwitchTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000004 /* CodeDiffModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeDiffModeTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000005 /* NativeMathParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMathParseTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000006 /* ReadiumEbookOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpenTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000007 /* Fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fixtures; sourceTree = "<group>"; };
 		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
@@ -272,6 +283,10 @@
 		S20000010000000000000008 /* StudyPageOCRExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPageOCRExtractor.swift; sourceTree = "<group>"; };
 		S20000010000000000000004 /* StudyReadingContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyReadingContext.swift; sourceTree = "<group>"; };
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000042 /* EbookReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000043 /* ReadiumEbookOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpener.swift; sourceTree = "<group>"; };
+		S20000010000000000000044 /* FoliateEbookEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoliateEbookEngine.swift; sourceTree = "<group>"; };
+		FOL200010000000000000003 /* Foliate */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Foliate; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
 		SFB200010000000000000001 /* StudyFilesBrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFilesBrowserController.swift; sourceTree = "<group>"; };
@@ -299,6 +314,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000010000000000000017 /* WebKit.framework in Frameworks */,
+				RBF000010000000000000001 /* ReadiumShared in Frameworks */,
+				RBF000010000000000000002 /* ReadiumStreamer in Frameworks */,
+				RBF000010000000000000003 /* ReadiumNavigator in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -389,6 +407,8 @@
 				D20000010000000000000003 /* ConversationRenderSwitchTests.swift */,
 				D20000010000000000000004 /* CodeDiffModeTests.swift */,
 				D20000010000000000000005 /* NativeMathParseTests.swift */,
+				D20000010000000000000006 /* ReadiumEbookOpenTests.swift */,
+				D20000010000000000000007 /* Fixtures */,
 			);
 			path = ConnectsTests;
 			sourceTree = "<group>";
@@ -440,6 +460,8 @@
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
 				S20000010000000000000032 /* ConnectsPaths.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
+				S20000010000000000000043 /* ReadiumEbookOpener.swift */,
+				S20000010000000000000044 /* FoliateEbookEngine.swift */,
 				S20000010000000000000031 /* StudyWorkspaceStore.swift */,
 				S2000001000000000000000D /* MarkdownStudyImporter.swift */,
 				S20000010000000000000003 /* StudyProgressStore.swift */,
@@ -477,6 +499,7 @@
 				C2000001000000000000000F /* ProjectListViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
 				S20000010000000000000005 /* PDFReaderViewController.swift */,
+				S20000010000000000000042 /* EbookReaderViewController.swift */,
 				S2000001000000000000000A /* PDFContentsViewController.swift */,
 				S20000010000000000000009 /* MarkdownReaderViewController.swift */,
 				S2000001000000000000000C /* MarkdownContentsViewController.swift */,
@@ -522,6 +545,7 @@
 		A50000010000000000000009 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				FOL200010000000000000003 /* Foliate */,
 				A20000010000000000000020 /* Icon-76.png */,
 				A20000010000000000000021 /* Icon-76@2x.png */,
 				A20000010000000000000022 /* Icon-83.5@2x.png */,
@@ -556,6 +580,11 @@
 			dependencies = (
 			);
 			name = Connects;
+			packageProductDependencies = (
+				RPD000010000000000000001 /* ReadiumShared */,
+				RPD000010000000000000002 /* ReadiumStreamer */,
+				RPD000010000000000000003 /* ReadiumNavigator */,
+			);
 			productName = Connects;
 			productReference = A30000010000000000000001 /* Connects.app */;
 			productType = "com.apple.product-type.application";
@@ -566,6 +595,7 @@
 			buildPhases = (
 				D70000010000000000000001 /* Sources */,
 				D40000010000000000000001 /* Frameworks */,
+				D70000010000000000000004 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -600,6 +630,9 @@
 				"zh-Hans",
 			);
 			mainGroup = A50000010000000000000001;
+			packageReferences = (
+				LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */,
+			);
 			productRefGroup = A50000010000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -627,6 +660,15 @@
 				A10000010000000000000030 /* katex in Resources */,
 				A10000010000000000000031 /* markdown in Resources */,
 				B10000010000000000000020 /* mathFonts.bundle in Resources */,
+				FOL100010000000000000003 /* Foliate in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D70000010000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000010000000000000007 /* Fixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -770,6 +812,9 @@
 				S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */,
 				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,
 				S10000010000000000000005 /* PDFReaderViewController.swift in Sources */,
+				S10000010000000000000042 /* EbookReaderViewController.swift in Sources */,
+				S10000010000000000000043 /* ReadiumEbookOpener.swift in Sources */,
+				S10000010000000000000044 /* FoliateEbookEngine.swift in Sources */,
 				S1000001000000000000000A /* PDFContentsViewController.swift in Sources */,
 				S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */,
 				S10000010000000000000009 /* MarkdownReaderViewController.swift in Sources */,
@@ -805,6 +850,7 @@
 				D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */,
 				D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */,
 				D10000010000000000000005 /* NativeMathParseTests.swift in Sources */,
+				D10000010000000000000006 /* ReadiumEbookOpenTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1069,6 +1115,31 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "ThirdParty/readium-swift-toolkit";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		RPD000010000000000000001 /* ReadiumShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ReadiumShared;
+			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+		};
+		RPD000010000000000000002 /* ReadiumStreamer */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ReadiumStreamer;
+			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+		};
+		RPD000010000000000000003 /* ReadiumNavigator */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ReadiumNavigator;
+			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A90000010000000000000001 /* Project object */;
 }

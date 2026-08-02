@@ -294,7 +294,17 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         let types: [UTType]
         switch kind {
         case .reading:
-            types = [.pdf, .item, .data]
+            var readingTypes: [UTType] = [.pdf, .item, .data]
+            if let epub = UTType(filenameExtension: "epub") ?? UTType("org.idpf.epub-container") {
+                readingTypes.insert(epub, at: 1)
+            }
+            if let mobi = UTType(filenameExtension: "mobi") {
+                readingTypes.insert(mobi, at: min(2, readingTypes.count))
+            }
+            if let azw3 = UTType(filenameExtension: "azw3") {
+                readingTypes.insert(azw3, at: min(3, readingTypes.count))
+            }
+            types = readingTypes
         case .folderWorkspace:
             types = [.folder]
         case .rebind, .text:
@@ -355,11 +365,12 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     private func handlePickedReading(_ url: URL) {
         let ext = url.pathExtension.lowercased()
-        guard StudyDocument.kind(forExtension: ext) == .pdf else {
+        let kind = StudyDocument.kind(forExtension: ext)
+        guard kind == .pdf || kind == .ebook else {
             let err = NSError(
                 domain: "Connects.Study",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "阅读入口仅支持 PDF。Markdown 请用「打开代码 / 文本」。"]
+                userInfo: [NSLocalizedDescriptionKey: "阅读入口支持 PDF / EPUB / MOBI。Markdown 与代码请用「打开代码 / 文本」。"]
             )
             presentOpenError(err)
             return

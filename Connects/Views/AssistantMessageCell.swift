@@ -159,7 +159,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         guard hasVisibleBodyPaint else { return }
         if hasVisibleActionButtons { return }
         if revealReservedActionChromeIfRoom(for: message) { return }
-        refreshActionChrome(for: message, streaming: false, colors: cachedThemeColors ?? DSTheme.c)
+        // Room check can fail on short frozen rows — still paint icons (may clip slightly).
+        paintActionIconsWithoutLayout(for: message, colors: cachedThemeColors ?? DSTheme.c)
     }
 
     /// Paint reserved action icons once the host row is tall enough — avoids clip-then-shift.

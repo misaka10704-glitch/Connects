@@ -44,6 +44,13 @@ final class StudyProgressStore {
         scheduleSave(documentID: documentID, progress: progress)
     }
 
+    /// Drop a bad / foreign ebook locator (e.g. Foliate JSON) while keeping page/scale fields.
+    func clearEbookLocator(for documentID: String) {
+        guard var progress = progress(for: documentID), progress.ebookLocatorJSON != nil else { return }
+        progress.ebookLocatorJSON = nil
+        update(documentID: documentID, progress: progress)
+    }
+
     func trimMemory() {
         cache.removeAll()
     }
