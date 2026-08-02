@@ -331,7 +331,8 @@ enum MarkdownHTMLRenderer {
             let body = ns.substring(with: match.range(at: 1))
             let replacement: String
             if shouldTreatFencedBodyAsDisplayMath(body) {
-                replacement = "$$\(body)$$"
+                let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                replacement = "$$\(trimmedBody)$$"
             } else {
                 replacement = ns.substring(with: fullRange)
             }

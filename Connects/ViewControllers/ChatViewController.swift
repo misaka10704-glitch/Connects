@@ -8407,13 +8407,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if needsImageTranscription {
             if gateReplyOnTranscription {
                 imageTranscriptionStatus =
-                    "正在用 Kimi K2.5 Vision 快速转写，完成后发给 \(model.displayName)…"
+                    "正在转写图片，完成后发给 \(model.displayName)…"
             } else if resolvedStudyCapture != nil {
                 imageTranscriptionStatus =
-                    "正在提取页面文字（OCR），随后用 Kimi K2.5 Vision 快速转写…"
+                    "正在提取页面文字并转写…"
             } else {
                 imageTranscriptionStatus =
-                    "正在用 Kimi K2.5 Vision 快速转写（主回复可同时进行）…"
+                    "正在转写图片…"
             }
         } else {
             imageTranscriptionStatus = ""
@@ -8609,7 +8609,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                     model: captionModel,
                     studyPagePDFText: resolvedStudyCapture.map { $0.text }
                 ) { [weak self] success in
-                    guard let self = self else { return }
+                    guard self != nil else { return }
                     guard success else {
                         ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
                             if let i = draft.messages.firstIndex(where: { $0.id == assistantMsg.id }) {

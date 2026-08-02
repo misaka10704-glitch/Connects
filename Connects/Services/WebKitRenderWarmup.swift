@@ -123,11 +123,7 @@ enum WebKitRenderWarmup {
             h.isUserInteractionEnabled = false
             h.alpha = 0.01
             h.clipsToBounds = true
-            let window = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap(\.windows)
-                .first(where: \.isKeyWindow)
-                ?? UIApplication.shared.windows.first
+            let window = UIApplication.connectsKeyWindow
             window?.addSubview(h)
             host = h
         }

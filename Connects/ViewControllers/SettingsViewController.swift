@@ -1,5 +1,5 @@
 import UIKit
-import MobileCoreServices
+import UniformTypeIdentifiers
 
 /// Clean form-style settings — no nested colored blocks, no reload-embedding bugs.
 final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFieldDelegate, UITextViewDelegate, UIDocumentPickerDelegate {
@@ -543,7 +543,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     }
 
     @objc private func importBackupTapped() {
-        let picker = UIDocumentPickerViewController(documentTypes: ["public.data", "public.archive"], in: .import)
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.data, .archive],
+            asCopy: true
+        )
         picker.delegate = self
         picker.allowsMultipleSelection = false
         present(picker, animated: true)

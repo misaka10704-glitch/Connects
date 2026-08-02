@@ -2434,13 +2434,15 @@ extension TextCodeEditorViewController {
         if insets.bottom != 0 {
             insets.bottom = 0
             textView.contentInset = insets
-            textView.scrollIndicatorInsets = insets
+            textView.verticalScrollIndicatorInsets = insets
+            textView.horizontalScrollIndicatorInsets = insets
         }
         var gutterInsets = lineNumberView.contentInset
         if gutterInsets.bottom != 0 {
             gutterInsets.bottom = 0
             lineNumberView.contentInset = gutterInsets
-            lineNumberView.scrollIndicatorInsets = gutterInsets
+            lineNumberView.verticalScrollIndicatorInsets = gutterInsets
+            lineNumberView.horizontalScrollIndicatorInsets = gutterInsets
         }
         if !tabSuggestChip.isHidden {
             repositionTabSuggestChip()

@@ -956,8 +956,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         btn.accessibilityIdentifier = item.id
         btn.isUserInteractionEnabled = true
         btn.contentHorizontalAlignment = .left
-        btn.contentEdgeInsets = .zero
-        btn.titleEdgeInsets = .zero
+        btn.connectsSetContentInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
         btn.titleLabel?.font = metaFont
         btn.titleLabel?.numberOfLines = 1
         btn.setTitle(item.text, for: .normal)
@@ -990,8 +989,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         btn.accessibilityIdentifier = item.id
         btn.isUserInteractionEnabled = true
         btn.contentHorizontalAlignment = .left
-        btn.contentEdgeInsets = .zero
-        btn.titleEdgeInsets = .zero
+        btn.connectsSetContentInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
         btn.titleLabel?.font = metaFont
         btn.titleLabel?.textAlignment = .left
         let chevron = expanded ? " ⌵" : " ›"

@@ -95,7 +95,7 @@ enum ConnectsMenu {
             let bar = nav.convert(nav.bounds, to: nil)
             return CGRect(x: bar.maxX - 52, y: bar.midY - 18, width: 44, height: 36)
         }
-        if let window = host.view.window ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow }) {
+        if let window = host.view.window ?? UIApplication.connectsKeyWindow {
             let safe = window.safeAreaInsets
             return CGRect(
                 x: window.bounds.width - safe.right - 56,

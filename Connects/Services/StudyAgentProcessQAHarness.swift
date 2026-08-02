@@ -119,17 +119,6 @@ enum StudyAgentProcessQAHarness {
         return url
     }
 
-    private static func keyWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            return UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
-                ?? UIApplication.shared.windows.first
-        }
-        return UIApplication.shared.keyWindow
-    }
-
     private static func run() {
         emit("begin agent process suite")
         var failures: [String] = []
@@ -192,7 +181,7 @@ enum StudyAgentProcessQAHarness {
         }
 
         // Single-root tool turns expand for API without extra table messages.
-        var rootWithTurns = ChatMessage(
+        let rootWithTurns = ChatMessage(
             role: .assistant,
             content: "live round",
             isStreaming: true,
@@ -952,7 +941,7 @@ enum StudyAgentProcessQAHarness {
 
         let nav = UINavigationController(rootViewController: host)
         nav.modalPresentationStyle = .fullScreen
-        guard let root = keyWindow()?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             emit("FAIL no root")
             finish(failures: failures)
             return

@@ -1006,7 +1006,7 @@ final class StudyWorkspaceStore {
     /// When opening a file, prefer the git/project root so sibling folders (e.g. `Gowin/*.pdf`)
     /// appear in the options menu — not just the immediate parent like `Code/`.
     static func suggestedWorkspaceRoot(forFile fileURL: URL) -> URL {
-        var dir = fileURL.deletingLastPathComponent().standardizedFileURL
+        let dir = fileURL.deletingLastPathComponent().standardizedFileURL
         var current = dir
         for _ in 0..<10 {
             let git = current.appendingPathComponent(".git")

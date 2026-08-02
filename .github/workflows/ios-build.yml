@@ -23,7 +23,7 @@ jobs:
             configuration: Debug-iPhone
             run_tests: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app

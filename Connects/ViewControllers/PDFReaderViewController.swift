@@ -1136,12 +1136,15 @@ final class PDFReaderViewController: UIViewController {
             if #available(iOS 11.0, *) {
                 scrollView.contentInsetAdjustmentBehavior = .never
             }
-            guard scrollView.contentInset != .zero || scrollView.scrollIndicatorInsets != .zero else { continue }
+            guard scrollView.contentInset != .zero
+                    || scrollView.verticalScrollIndicatorInsets != .zero
+                    || scrollView.horizontalScrollIndicatorInsets != .zero else { continue }
             var offset = scrollView.contentOffset
             offset.x += scrollView.contentInset.left
             offset.y += scrollView.contentInset.top
             scrollView.contentInset = .zero
-            scrollView.scrollIndicatorInsets = .zero
+            scrollView.verticalScrollIndicatorInsets = .zero
+            scrollView.horizontalScrollIndicatorInsets = .zero
             scrollView.contentOffset = offset
         }
     }

@@ -89,9 +89,8 @@ extension Notification.Name {
     static let imageTranscriptionDidUpdate = Notification.Name("ConnectsImageTranscriptionDidUpdate")
 }
 
-/// Background semantic extraction for image turns.
-/// - Vision chat models: reply can start immediately with the JPEG; this job
-///   prepares durable text for later turns.
+/// Quiet Kimi K2.5 Vision transcription for image turns (no live token UI — avoids row bounce).
+/// - Vision chat models: reply starts immediately; this job prepares durable text.
 /// - Non-vision chat models: callers pass `onComplete` and wait before streaming.
 final class ImageTranscriptionCoordinator {
     static let shared = ImageTranscriptionCoordinator()
@@ -171,13 +170,14 @@ final class ImageTranscriptionCoordinator {
         active.insert(conversationID)
         lock.unlock()
 
+        // Header-only status (collapsed) — no live body growth that shakes the list.
         updateAssistant(
             conversationID: conversationID,
             messageID: assistantMessageID,
             phase: .transcribing,
             content: isStudyPage
-                ? "正在提取页面文字（OCR），随后用 Kimi K2.5 Vision 快速转写…"
-                : "正在用 Kimi K2.5 Vision 快速转写图片…"
+                ? "正在提取页面文字并转写…"
+                : "正在转写图片…"
         )
         postUpdate(conversationID)
 
@@ -248,8 +248,7 @@ final class ImageTranscriptionCoordinator {
             }
             if let i = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 conversation.messages[i].imageTranscriptionPhase = .transcribing
-                conversation.messages[i].imageTranscriptionContent =
-                    durable + "\n\n正在用 Kimi K2.5 Vision 快速转写…"
+                conversation.messages[i].imageTranscriptionContent = "正在转写图片…"
             }
         }
         postUpdate(conversationID)
@@ -294,10 +293,8 @@ final class ImageTranscriptionCoordinator {
             let current = active.contains(conversationID) && generations[conversationID] == generation
             if current { active.remove(conversationID) }
             lock.unlock()
-            guard current else {
-                invokeCompletion(conversationID, success: false)
-                return
-            }
+            // Stale / replaced job — never touch the newer completion handler.
+            guard current else { return }
         }
 
         var success = false
@@ -312,7 +309,6 @@ final class ImageTranscriptionCoordinator {
                     ocrText: ocrText,
                     failureMessage: "未获得可用的图片转写。点此可重试。"
                 )
-                // OCR-only partial still lets non-vision models proceed.
                 success = !(ocrText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                 invokeCompletion(conversationID, success: success)
                 postUpdate(conversationID)

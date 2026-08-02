@@ -361,11 +361,7 @@ final class StableRichRenderer: NSObject, WKNavigationDelegate {
         let host = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
         host.alpha = 0.01
         host.clipsToBounds = false
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)
-            ?? UIApplication.shared.windows.first
+        let window = UIApplication.connectsKeyWindow
         window?.addSubview(host)
         host.addSubview(view)
         self.host = host

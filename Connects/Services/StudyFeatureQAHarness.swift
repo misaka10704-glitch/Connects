@@ -347,7 +347,7 @@ enum StudyFeatureQAHarness {
     }
 
     private static func topPresented() -> UIViewController? {
-        var top = UIApplication.shared.keyWindow?.rootViewController
+        var top = UIApplication.connectsKeyWindow?.rootViewController
         while let p = top?.presentedViewController { top = p }
         return top
     }
@@ -361,7 +361,7 @@ enum StudyFeatureQAHarness {
             log("FAIL chrome preview missing pdf: \(path)")
             return
         }
-        guard let chat = findChatVC(in: UIApplication.shared.keyWindow?.rootViewController) else {
+        guard let chat = findChatVC(in: UIApplication.connectsKeyWindow?.rootViewController) else {
             log("FAIL chrome preview: ChatViewController not found")
             return
         }
@@ -672,7 +672,7 @@ enum StudyFeatureQAHarness {
     }
 
     private static func present(_ vc: UIViewController, completion: @escaping () -> Void) {
-        guard let root = UIApplication.shared.keyWindow?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             log("FAIL no key window root")
             completion()
             return
@@ -684,7 +684,7 @@ enum StudyFeatureQAHarness {
     }
 
     private static func dismissPresented(completion: @escaping () -> Void) {
-        guard let root = UIApplication.shared.keyWindow?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             completion()
             return
         }
@@ -860,7 +860,7 @@ enum StudyFeatureQAHarness {
     }
 
     private static func noteFieldIsFirstResponder() -> Bool {
-        guard let window = UIApplication.shared.keyWindow else { return false }
+        guard let window = UIApplication.connectsKeyWindow else { return false }
         func walk(_ view: UIView) -> Bool {
             if let field = view as? UITextField, field.isFirstResponder { return true }
             for sub in view.subviews where walk(sub) { return true }

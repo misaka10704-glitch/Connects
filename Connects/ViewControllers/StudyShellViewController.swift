@@ -2411,12 +2411,7 @@ extension StudyShellViewController: StudyReadingContextProviding {
         } else {
             ConnectsToast.show("请选择工程根目录（如 Workspace）", in: view, duration: 2.0)
         }
-        let picker: UIDocumentPickerViewController
-        if #available(iOS 14.0, *) {
-            picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
-        } else {
-            picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
-        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         // Full-screen feels like the main open step (first-time project grant).
@@ -2518,11 +2513,10 @@ extension StudyShellViewController: StudyReadingContextProviding {
         pendingFolderPick = false
         pendingImportWorkspaceID = workspaceID
         let picker = UIDocumentPickerViewController(
-            documentTypes: [
-                "public.item", "public.data", "public.text", "public.source-code",
-                "com.adobe.pdf", "public.plain-text"
+            forOpeningContentTypes: [
+                .item, .data, .text, .sourceCode, .pdf, .plainText
             ],
-            in: .open
+            asCopy: false
         )
         picker.delegate = self
         picker.allowsMultipleSelection = false

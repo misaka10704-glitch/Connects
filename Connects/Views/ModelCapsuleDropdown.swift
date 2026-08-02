@@ -20,7 +20,7 @@ enum ModelCapsuleDropdown {
 
         guard let window = anchor.window
             ?? host.view.window
-            ?? UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else { return }
+            ?? UIApplication.connectsKeyWindow else { return }
 
         let keptResponder = findFirstResponder(in: window) as? UIView
 

@@ -875,7 +875,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         button.clipsToBounds = true
         button.layer.cornerRadius = btnSize / 2
         button.imageView?.contentMode = .scaleAspectFit
-        button.adjustsImageWhenHighlighted = false
     }
 
     private func refreshModelChipAppearance() {

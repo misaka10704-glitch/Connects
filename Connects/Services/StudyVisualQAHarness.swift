@@ -441,12 +441,8 @@ enum StudyVisualQAHarness {
     }
 
     private static func present(_ vc: UIViewController, completion: @escaping () -> Void) {
-        guard let root = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .rootViewController
-            ?? UIApplication.shared.windows.first?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController
+            ?? UIApplication.connectsWindows.first?.rootViewController else {
             emit("FAIL no key window root")
             completion()
             return
@@ -458,12 +454,8 @@ enum StudyVisualQAHarness {
     }
 
     private static func dismissPresented(completion: @escaping () -> Void) {
-        guard let root = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .rootViewController
-            ?? UIApplication.shared.windows.first?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController
+            ?? UIApplication.connectsWindows.first?.rootViewController else {
             completion()
             return
         }
@@ -477,12 +469,8 @@ enum StudyVisualQAHarness {
     }
 
     private static func findChatVC() -> ChatViewController? {
-        guard let root = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .rootViewController
-            ?? UIApplication.shared.windows.first?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController
+            ?? UIApplication.connectsWindows.first?.rootViewController else {
             return nil
         }
         func walk(_ vc: UIViewController?) -> ChatViewController? {

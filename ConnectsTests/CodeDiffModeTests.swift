@@ -295,12 +295,12 @@ final class CodeDiffModeTests: XCTestCase {
 
         vc.diffKeepAll()
         XCTAssertEqual(vc.diffPendingHunkCount, 0)
-        // Keep All already enters edit mode when no coordinator is wired.
-        XCTAssertTrue(vc.isInEditMode)
-        vc.toggleEditModeFromKeyboardShortcut()
+        // Keep All enters reading mode when no coordinator is wired.
         XCTAssertFalse(vc.isInEditMode)
         vc.toggleEditModeFromKeyboardShortcut()
         XCTAssertTrue(vc.isInEditMode)
+        vc.toggleEditModeFromKeyboardShortcut()
+        XCTAssertFalse(vc.isInEditMode)
     }
 
     func testUndoAllRestoresAndUnlocksEdit() {
@@ -329,7 +329,7 @@ final class CodeDiffModeTests: XCTestCase {
 
         vc.diffKeepAll()
         XCTAssertEqual(vc.diffPendingHunkCount, 0)
-        XCTAssertTrue(vc.isInEditMode)
+        XCTAssertFalse(vc.isInEditMode)
     }
 
     func testRapidFontResizeLoopDoesNotEjectDiff() {
@@ -385,6 +385,10 @@ final class CodeDiffModeTests: XCTestCase {
         vc.toggleEditModeFromKeyboardShortcut()
         XCTAssertFalse(vc.isInEditMode)
         vc.diffKeepAll()
+        // Keep All finishes Diff into reading mode (tap mode to edit).
+        XCTAssertEqual(vc.diffPendingHunkCount, 0)
+        XCTAssertFalse(vc.isInEditMode)
+        vc.toggleEditModeFromKeyboardShortcut()
         XCTAssertTrue(vc.isInEditMode)
     }
 

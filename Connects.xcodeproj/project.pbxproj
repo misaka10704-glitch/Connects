@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A10000010000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* AppDelegate.swift */; };
+		H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */; };
 		A10000010000000000000002 /* AIModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* AIModel.swift */; };
 		A10000010000000000000003 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* ChatMessage.swift */; };
 		A10000010000000000000004 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* Conversation.swift */; };
@@ -148,6 +149,7 @@
 
 /* Begin PBXFileReference section */
 		A20000010000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIApplication+ConnectsWindows.swift"; sourceTree = "<group>"; };
 		A20000010000000000000002 /* AIModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModel.swift; sourceTree = "<group>"; };
 		A20000010000000000000003 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		A20000010000000000000004 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
@@ -336,6 +338,7 @@
 				B2000001000000000000001B /* MTTypesetter.m */,
 				B2000001000000000000001C /* MTFontMathTable.m */,
 				A50000010000000000000004 /* Models */,
+				H50000010000000000000001 /* Helpers */,
 				A50000010000000000000005 /* Services */,
 				A50000010000000000000006 /* ViewControllers */,
 				A50000010000000000000007 /* Views */,
@@ -353,6 +356,14 @@
 				D30000010000000000000001 /* ConnectsTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		H50000010000000000000001 /* Helpers */ = {
+			isa = PBXGroup;
+			children = (
+				H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */,
+			);
+			path = Helpers;
 			sourceTree = "<group>";
 		};
 		A50000010000000000000004 /* Models */ = {
@@ -661,6 +672,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000010000000000000001 /* AppDelegate.swift in Sources */,
+				H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */,
 				A10000010000000000000002 /* AIModel.swift in Sources */,
 				A10000010000000000000003 /* ChatMessage.swift in Sources */,
 				A10000010000000000000004 /* Conversation.swift in Sources */,

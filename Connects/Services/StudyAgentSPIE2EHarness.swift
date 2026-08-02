@@ -53,17 +53,6 @@ enum StudyAgentSPIE2EHarness {
         return url
     }
 
-    private static func keyWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            return UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
-                ?? UIApplication.shared.windows.first
-        }
-        return UIApplication.shared.keyWindow
-    }
-
     private static func findChatVC(in root: UIViewController?) -> ChatViewController? {
         guard let root else { return nil }
         if let chat = root as? ChatViewController { return chat }
@@ -189,7 +178,7 @@ enum StudyAgentSPIE2EHarness {
             exit(1)
         }
 
-        guard let root = keyWindow()?.rootViewController,
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController,
               let chat = findChatVC(in: root) else {
             emit("FAIL chat VC not found")
             exit(1)
@@ -249,7 +238,7 @@ enum StudyAgentSPIE2EHarness {
                     self.waitAgentIdle(chat: chat, timeout: 420) { idle2 in
                         chat.view.layoutIfNeeded()
                         self.capture(chat.view, frame: "03_half_after_slave")
-                        if let window = self.keyWindow() {
+                        if let window = UIApplication.connectsKeyWindow {
                             self.capture(window, frame: "03b_half_window")
                         }
                         if !ok2 && !idle2 { failures.append("half slave turn incomplete") }
@@ -283,7 +272,7 @@ enum StudyAgentSPIE2EHarness {
                                     self.waitAgentIdle(chat: chat, timeout: 480) { idle4 in
                                         chat.view.layoutIfNeeded()
                                         self.capture(chat.view, frame: "06_full_after_fifo")
-                                        if let window = self.keyWindow() {
+                                        if let window = UIApplication.connectsKeyWindow {
                                             self.capture(window, frame: "06b_full_window")
                                         }
                                         if !ok4 && !idle4 { failures.append("fifo/uart turn incomplete") }

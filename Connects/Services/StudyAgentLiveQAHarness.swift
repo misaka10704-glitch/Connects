@@ -53,17 +53,6 @@ enum StudyAgentLiveQAHarness {
         return url
     }
 
-    private static func keyWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            return UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
-                ?? UIApplication.shared.windows.first
-        }
-        return UIApplication.shared.keyWindow
-    }
-
     private static func findChatVC(in root: UIViewController?) -> ChatViewController? {
         guard let root else { return nil }
         if let chat = root as? ChatViewController { return chat }
@@ -227,7 +216,7 @@ enum StudyAgentLiveQAHarness {
             return
         }
 
-        let window = keyWindow()
+        let window = UIApplication.connectsKeyWindow
         guard let root = window?.rootViewController,
               let chat = findChatVC(in: root) else {
             emit("FAIL chat VC not found")

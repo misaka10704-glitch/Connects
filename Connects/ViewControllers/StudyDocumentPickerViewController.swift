@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 protocol StudyDocumentPickerDelegate: AnyObject {
     func studyDocumentPicker(_ picker: StudyDocumentPickerViewController, didSelect documentID: String)
@@ -290,25 +291,24 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
 
     private func presentOpenPicker(kind: OpenKind) {
         pendingOpenKind = kind
-        let types: [String]
+        let types: [UTType]
         switch kind {
         case .reading:
-            types = ["com.adobe.pdf", "public.item", "public.data"]
+            types = [.pdf, .item, .data]
         case .folderWorkspace:
-            types = ["public.folder"]
+            types = [.folder]
         case .rebind, .text:
             types = [
-                "com.adobe.pdf",
-                "net.daringfireball.markdown",
-                "public.markdown",
-                "public.plain-text",
-                "public.source-code",
-                "public.text",
-                "public.item",
-                "public.data"
+                .pdf,
+                UTType(filenameExtension: "md") ?? .plainText,
+                .plainText,
+                .sourceCode,
+                .text,
+                .item,
+                .data
             ]
         }
-        let picker = UIDocumentPickerViewController(documentTypes: types, in: .open)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.delegate = self
         picker.allowsMultipleSelection = false
         if let pop = picker.popoverPresentationController {

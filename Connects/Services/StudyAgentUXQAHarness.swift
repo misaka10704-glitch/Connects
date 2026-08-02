@@ -53,17 +53,6 @@ enum StudyAgentUXQAHarness {
         return url
     }
 
-    private static func keyWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            return UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
-                ?? UIApplication.shared.windows.first
-        }
-        return UIApplication.shared.keyWindow
-    }
-
     private static func findChatVC(in root: UIViewController?) -> ChatViewController? {
         guard let root else { return nil }
         if let chat = root as? ChatViewController { return chat }
@@ -102,7 +91,7 @@ enum StudyAgentUXQAHarness {
 
         let nav = UINavigationController(rootViewController: host)
         nav.modalPresentationStyle = .fullScreen
-        guard let root = keyWindow()?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             emit("FAIL no root")
             exit(1)
         }
@@ -185,7 +174,7 @@ enum StudyAgentUXQAHarness {
         let picker = StudyDocumentPickerViewController()
         let nav = UINavigationController(rootViewController: picker)
         nav.modalPresentationStyle = .formSheet
-        guard let root = keyWindow()?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             emit("FAIL no root for picker")
             finish(failures: failures)
             return
@@ -241,7 +230,7 @@ enum StudyAgentUXQAHarness {
 
         let nav = UINavigationController(rootViewController: host)
         nav.modalPresentationStyle = .fullScreen
-        guard let root = keyWindow()?.rootViewController else {
+        guard let root = UIApplication.connectsKeyWindow?.rootViewController else {
             finish(failures: failures)
             return
         }
@@ -302,7 +291,7 @@ enum StudyAgentUXQAHarness {
     }
 
     private static func topPresented() -> UIViewController? {
-        var top = keyWindow()?.rootViewController
+        var top = UIApplication.connectsKeyWindow?.rootViewController
         while let p = top?.presentedViewController { top = p }
         return top
     }
