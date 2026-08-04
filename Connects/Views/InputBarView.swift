@@ -676,7 +676,9 @@ final class InputBarView: UIView, ThemeRefreshable {
         agentModeWidthConstraint = agentModeButton.widthAnchor.constraint(equalToConstant: 0)
         askSelectionWidthConstraint = askSelectionButton.widthAnchor.constraint(equalToConstant: 0)
         aiOptionsWidthConstraint = aiOptionsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68)
-        let aiOptionsMaxW = aiOptionsButton.widthAnchor.constraint(lessThanOrEqualToConstant: 132)
+        // iPhone portrait: keep the model chip short so tools don't collide.
+        let modelChipMax: CGFloat = UIDevice.current.userInterfaceIdiom == .phone ? 100 : 132
+        let aiOptionsMaxW = aiOptionsButton.widthAnchor.constraint(lessThanOrEqualToConstant: modelChipMax)
         contextUsageWidthConstraint = contextUsageButton.widthAnchor.constraint(equalToConstant: 0)
         textTopToContainer?.isActive = true
         diffBannerHeightConstraint = diffReviewBanner.heightAnchor.constraint(equalToConstant: 0)

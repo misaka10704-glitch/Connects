@@ -144,7 +144,6 @@ final class PDFReaderViewController: UIViewController {
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
             fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
-            fileTitleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
 

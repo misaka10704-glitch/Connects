@@ -42,6 +42,10 @@ final class RootSplitViewController: UIViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .phone ? .portrait : .all
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         sidebarVC.delegate = self
@@ -155,6 +159,10 @@ final class RootSplitViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         preloadChatIfNeeded()
+        // Cold launch on iPhone can miss chatDidFinishInitialLaunch — don't leave the veil up.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.dismissLaunchOverlayIfNeeded()
+        }
         let studyNow = isStudySessionActive()
         if studyNow != studySessionActive {
             studySessionActive = studyNow

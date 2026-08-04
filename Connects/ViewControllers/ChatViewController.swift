@@ -231,13 +231,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Align empty/list chrome with the restored store before the first open bind.
     private func bootstrapColdLaunchChrome() {
         updateEmptyState()
-        guard renderedConversationID == nil else { return }
-        let hasMessages = !(ConversationStore.shared.currentConversation?.messages.isEmpty ?? true)
-        guard hasMessages else { return }
-        // Launch overlay covers the chat, but keep the empty-state UI from flashing
-        // underneath if the overlay is dismissed early.
-        emptyContainer.isHidden = true
-        tableView.isHidden = true
     }
 
     private func loadLaunchHeightCaches() {
@@ -296,6 +289,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        repairStuckBlankContentIfNeeded()
         if renderedConversationID == nil, view.window != nil {
             // Root preloads this controller before its navigation view is in a
             // window. UITableView must not lay out/reload its visible rows yet.
@@ -327,6 +321,23 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         UsageSimulationHarness.startIfRequested(from: self)
         WebSearchDebugHarness.startIfRequested(from: self)
         #endif
+    }
+
+    private func repairStuckBlankContentIfNeeded() {
+        let empty = (ConversationStore.shared.currentConversation?.messages.isEmpty ?? true)
+        if empty {
+            if emptyContainer.isHidden {
+                updateEmptyState()
+            }
+            return
+        }
+        guard tableView.isHidden || tableView.alpha < 0.05 else { return }
+        tableView.isHidden = false
+        tableView.alpha = 1
+        emptyContainer.isHidden = true
+        if renderedConversationID == nil, view.window != nil {
+            reloadChat()
+        }
     }
 
     /// If a rich cell is still showing blank WebView / failed inject, rebind it.
@@ -6410,6 +6421,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if let collapsed = pendingSidebarCollapsed {
             updateSidebarToggleTitle(collapsed: collapsed)
         }
+        refreshRightBarButtons()
         // Root evaluates compact mode while preloading child controllers.
         // Forcing the table to lay out before it joins a window causes an
         // extra inaccurate pass (and a UIKit warning on recent iOS).
@@ -6738,6 +6750,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let moreItem = studyBarButtonItem(matching: #selector(moreTapped))
             ?? navigationItem.rightBarButtonItems?.first
+        // Compact / iPhone: + and history live here so they don't collide with ▲▼.
+        if isStudySessionActive(), prefersCompactStudyNavChrome {
+            let isWorkspace = conv.isWorkspaceStudySession
+            items.append(ConnectsMenuItem(
+                title: isWorkspace ? "同工作区新对话" : "同文件新对话",
+                icon: .plus
+            ) { [weak self] in
+                self?.studyNewChatTapped()
+            })
+            items.append(ConnectsMenuItem(
+                title: isWorkspace ? "同工作区对话" : "同文件对话",
+                icon: .clock
+            ) { [weak self] in
+                self?.studyHistoryTapped()
+            })
+        }
         items.append(ConnectsMenuItem(title: "打开…", icon: .book) { [weak self] in
             guard let self else { return }
             if let shell = self.studyContextProvider {
@@ -6929,6 +6957,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateModelButton()
     }
 
+    /// Narrow chat chrome (iPhone / Slide Over): keep only ⋯ so the floating ▲▼
+    /// capsule does not sit on top of + / history.
+    private var prefersCompactStudyNavChrome: Bool {
+        if isCompactChrome { return true }
+        if UIDevice.current.userInterfaceIdiom == .phone { return true }
+        let width = view.window?.bounds.width ?? view.bounds.width
+        return width > 0 && width < 520
+    }
+
     private func refreshRightBarButtons() {
         let moreItem = ActionIconFactory.barItem(
             kind: .more,
@@ -6936,7 +6973,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             action: #selector(moreTapped),
             accessibility: "更多"
         )
-        if isStudySessionActive() {
+        if isStudySessionActive(), !prefersCompactStudyNavChrome {
             let conv = ConversationStore.shared.currentConversation
             let isWorkspace = conv?.isWorkspaceStudySession == true
             let historyItem = ActionIconFactory.barItem(
@@ -7005,7 +7042,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             title: title,
             items: Array(items),
             barButtonItem: studyBarButtonItem(matching: #selector(studyHistoryTapped))
-                ?? navigationItem.rightBarButtonItems?.dropFirst().first
+                ?? studyBarButtonItem(matching: #selector(moreTapped))
+                ?? navigationItem.rightBarButtonItems?.first
         )
     }
 
@@ -7026,7 +7064,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 }
             ],
             barButtonItem: studyBarButtonItem(matching: #selector(studyHistoryTapped))
-                ?? navigationItem.rightBarButtonItems?.dropFirst().first,
+                ?? studyBarButtonItem(matching: #selector(moreTapped))
+                ?? navigationItem.rightBarButtonItems?.first,
             preferVertical: true
         )
     }
@@ -7067,6 +7106,24 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMessageLongPress(_:)))
         longPress.minimumPressDuration = 0.45
         tableView.addGestureRecognizer(longPress)
+
+        setupKeyboardDismissTap()
+    }
+
+    /// Tap anywhere outside the composer (messages / empty state / chrome) to put the keyboard away.
+    private func setupKeyboardDismissTap() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboardFromOutsideTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        view.addGestureRecognizer(tap)
+    }
+
+    @objc private func dismissKeyboardFromOutsideTap(_ gesture: UITapGestureRecognizer) {
+        guard isComposerFirstResponder || keyboardVisible else { return }
+        guard !ConnectsNoteSheet.isVisible else { return }
+        let point = gesture.location(in: view)
+        if inputBar.bounds.contains(inputBar.convert(point, from: view)) { return }
+        dismissComposerKeyboard()
     }
 
     private func setupInputBar() {
@@ -8774,6 +8831,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
     #endif
+}
+
+extension ChatViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard isComposerFirstResponder || keyboardVisible else { return false }
+        guard !ConnectsNoteSheet.isVisible else { return false }
+        guard let touched = touch.view else { return true }
+        // Keep taps on the composer (chips / model / send) from dismissing.
+        if touched === inputBar || touched.isDescendant(of: inputBar) { return false }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
+    }
 }
 
 extension ChatViewController: UITableViewDataSource, UITableViewDelegate {

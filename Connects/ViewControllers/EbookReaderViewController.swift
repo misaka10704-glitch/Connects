@@ -165,7 +165,6 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
             fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
-            fileTitleButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: fontSmallerButton.leadingAnchor, constant: -4),
 

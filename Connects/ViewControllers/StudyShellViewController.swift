@@ -44,6 +44,7 @@ final class StudyShellViewController: UIViewController {
 
     private var landscapeResizePan: UIPanGestureRecognizer!
     private var portraitResizePan: UIPanGestureRecognizer!
+    private var readerKeyboardDismissTap: UITapGestureRecognizer!
     private var loadGeneration: UInt = 0
     private var boundDocumentID: String?
     private var boundConversationID: String?
@@ -378,6 +379,12 @@ final class StudyShellViewController: UIViewController {
         portraitResizePan.delegate = self
         chatHost.addGestureRecognizer(portraitResizePan)
 
+        let readerTap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboardFromReaderTap(_:)))
+        readerTap.cancelsTouchesInView = false
+        readerTap.delegate = self
+        readerHost.addGestureRecognizer(readerTap)
+        readerKeyboardDismissTap = readerTap
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(conversationStoreDidUpdate),
@@ -404,7 +411,34 @@ final class StudyShellViewController: UIViewController {
             object: nil
         )
 
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            isPortraitMode = true
+            didSeedPortraitMode = true
+        }
+
         bindCurrentConversation()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        if !isPortraitMode {
+            isPortraitMode = true
+            didSeedPortraitMode = true
+            applyLayoutMode()
+            view.layoutIfNeeded()
+        }
+        if chatHost.superview == nil {
+            applyLayoutMode()
+        }
+    }
+
+    @objc private func dismissKeyboardFromReaderTap(_ gesture: UITapGestureRecognizer) {
+        guard isReaderVisible else { return }
+        guard chatVC.isComposerFirstResponder else { return }
+        guard !ConnectsNoteSheet.isVisible else { return }
+        chatVC.dismissComposerKeyboard()
+        view.endEditing(true)
     }
 
     @objc private func studyKeyboardWillChange(_ note: Notification) {
@@ -593,6 +627,7 @@ final class StudyShellViewController: UIViewController {
 
     /// Prefer scene orientation; fall back to bounds aspect.
     private func currentPortraitLayout() -> Bool {
+        if UIDevice.current.userInterfaceIdiom == .phone { return true }
         if #available(iOS 13.0, *) {
             if let orientation = view.window?.windowScene?.interfaceOrientation,
                orientation != .unknown {
@@ -2765,6 +2800,9 @@ extension StudyShellViewController: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldReceive touch: UITouch
     ) -> Bool {
+        if gestureRecognizer === readerKeyboardDismissTap {
+            return chatVC.isComposerFirstResponder && !ConnectsNoteSheet.isVisible
+        }
         // Don't let resize pans steal taps on stage chips / nav chrome / controls.
         guard gestureRecognizer === landscapeResizePan || gestureRecognizer === portraitResizePan else {
             return true
@@ -2788,6 +2826,12 @@ extension StudyShellViewController: UIGestureRecognizerDelegate {
             return false
         }
         return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === readerKeyboardDismissTap
+            || otherGestureRecognizer === readerKeyboardDismissTap
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {

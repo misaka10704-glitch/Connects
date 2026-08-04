@@ -277,7 +277,6 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             progressLabel.topAnchor.constraint(equalTo: topBar.topAnchor),
             progressLabel.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
-            progressLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
             progressLabel.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             progressLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeButton.leadingAnchor, constant: -4),
 

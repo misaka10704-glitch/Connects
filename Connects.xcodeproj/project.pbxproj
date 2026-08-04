@@ -3,15 +3,11 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 50;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		RBF000010000000000000001 /* ReadiumShared in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000001 /* ReadiumShared */; };
-		RBF000010000000000000002 /* ReadiumStreamer in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000002 /* ReadiumStreamer */; };
-		RBF000010000000000000003 /* ReadiumNavigator in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000003 /* ReadiumNavigator */; };
 		A10000010000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* AppDelegate.swift */; };
-		H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */; };
 		A10000010000000000000002 /* AIModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* AIModel.swift */; };
 		A10000010000000000000003 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* ChatMessage.swift */; };
 		A10000010000000000000004 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* Conversation.swift */; };
@@ -19,126 +15,107 @@
 		A10000010000000000000006 /* ConversationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000006 /* ConversationStore.swift */; };
 		A10000010000000000000007 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000007 /* KeychainHelper.swift */; };
 		A10000010000000000000008 /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000008 /* SettingsManager.swift */; };
-		M10000010000000000000001 /* MessageChromeViewerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = M20000010000000000000001 /* MessageChromeViewerViewController.swift */; };
 		A10000010000000000000009 /* ChatViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000009 /* ChatViewController.swift */; };
 		A1000001000000000000000A /* RootSplitViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000A /* RootSplitViewController.swift */; };
 		A1000001000000000000000B /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000B /* SettingsViewController.swift */; };
 		A1000001000000000000000C /* SidebarViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000C /* SidebarViewController.swift */; };
 		A1000001000000000000000D /* InputBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000D /* InputBarView.swift */; };
-		T10000010000000000000001 /* ConnectsToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000001 /* ConnectsToast.swift */; };
-		T10000010000000000000002 /* ConnectsShimmerLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000002 /* ConnectsShimmerLabel.swift */; };
 		A1000001000000000000000E /* AssistantMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000E /* AssistantMessageCell.swift */; };
-		E10000010000000000000004 /* AssistantMessageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000004 /* AssistantMessageLayout.swift */; };
-		E10000010000000000000001 /* MessageCellType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000001 /* MessageCellType.swift */; };
-		E10000010000000000000002 /* BaseMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000002 /* BaseMessageCell.swift */; };
-		E10000010000000000000003 /* UserMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000003 /* UserMessageCell.swift */; };
 		A1000001000000000000000F /* DSTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000F /* DSTheme.swift */; };
 		A10000010000000000000012 /* ImageAttachmentHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* ImageAttachmentHelper.swift */; };
 		A10000010000000000000014 /* MarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* MarkdownExporter.swift */; };
 		A10000010000000000000015 /* MathContentDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000015 /* MathContentDetector.swift */; };
+		A10000010000000000000016 /* WeakScriptMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000016 /* WeakScriptMessageHandler.swift */; };
+		A10000010000000000000017 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000010000000000000017 /* WebKit.framework */; };
 		A10000010000000000000018 /* StreamManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000018 /* StreamManager.swift */; };
 		A10000010000000000000019 /* AITitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* AITitleGenerator.swift */; };
+		A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001A /* MarkdownHTMLRenderer.swift */; };
+		A1000001000000000000001B /* PlainMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* PlainMarkdown.swift */; };
 		A1000001000000000000001C /* ActionIconFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001C /* ActionIconFactory.swift */; };
 		A1000001000000000000001D /* ContextBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001D /* ContextBuilder.swift */; };
 		A1000001000000000000001E /* ContextCompactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001E /* ContextCompactor.swift */; };
 		A1000001000000000000001F /* ContextUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001F /* ContextUsageView.swift */; };
-		F10000010000000000000004 /* ContextUsageRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000004 /* ContextUsageRingView.swift */; };
-		F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000005 /* ContextUsageDetailViewController.swift */; };
-		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
-		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
-		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
-		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
-		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
-		E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000005 /* ChatRowHeightResolver.swift */; };
-		A10000010000000000000056 /* ConnectsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000056 /* ConnectsMenu.swift */; };
-		A10000010000000000000057 /* ModelVisibilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000057 /* ModelVisibilityView.swift */; };
-		A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000058 /* ModelCapsuleDropdown.swift */; };
-		A1000001000000000000001A /* MarkdownHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001A /* MarkdownHTMLRenderer.swift */; };
-		A1000001000000000000001B /* PlainMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* PlainMarkdown.swift */; };
-		A10000010000000000000030 /* katex in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* katex */; };
-		A10000010000000000000031 /* markdown in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000031 /* markdown */; };
-		A10000010000000000000016 /* WeakScriptMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000016 /* WeakScriptMessageHandler.swift */; };
-		A10000010000000000000017 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000010000000000000017 /* WebKit.framework */; };
 		A10000010000000000000020 /* Icon-76.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000020 /* Icon-76.png */; };
 		A10000010000000000000021 /* Icon-76@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000021 /* Icon-76@2x.png */; };
 		A10000010000000000000022 /* Icon-83.5@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000022 /* Icon-83.5@2x.png */; };
 		A10000010000000000000023 /* Icon-1024.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000023 /* Icon-1024.png */; };
 		A10000010000000000000024 /* Logo-120.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000024 /* Logo-120.png */; };
 		A10000010000000000000025 /* Logo.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000025 /* Logo.png */; };
+		A10000010000000000000030 /* katex in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* katex */; };
+		A10000010000000000000031 /* markdown in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000031 /* markdown */; };
 		A10000010000000000000040 /* icon-copy.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000040 /* icon-copy.png */; };
 		A10000010000000000000041 /* icon-retry.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000041 /* icon-retry.png */; };
 		A10000010000000000000042 /* icon-fork.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000042 /* icon-fork.png */; };
-		A10000010000000000000052 /* LaunchScreen.storyboardc in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000052 /* LaunchScreen.storyboardc */; };
+		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
+		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
+		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
+		A10000010000000000000056 /* ConnectsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000056 /* ConnectsMenu.swift */; };
+		A10000010000000000000057 /* ModelVisibilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000057 /* ModelVisibilityView.swift */; };
+		A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000058 /* ModelCapsuleDropdown.swift */; };
+		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
+		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
 		B10000010000000000000001 /* NativeMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* NativeMarkdown.swift */; };
 		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
+		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
+		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
+		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
 		B10000010000000000000006 /* ScrollStressHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ScrollStressHarness.swift */; };
 		B10000010000000000000007 /* RenderAuditHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* RenderAuditHarness.swift */; };
-		S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000012 /* StudyFeatureQAHarness.swift */; };
-		V10000010000000000000001 /* StudyVisualQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = V20000010000000000000001 /* StudyVisualQAHarness.swift */; };
-		S10000010000000000000037 /* StudyAgentUXQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000037 /* StudyAgentUXQAHarness.swift */; };
-		S10000010000000000000038 /* StudyAgentProcessQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000038 /* StudyAgentProcessQAHarness.swift */; };
-		S1000001000000000000003A /* StudyAgentLiveQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003A /* StudyAgentLiveQAHarness.swift */; };
-		S1000001000000000000003C /* StudyAgentSPIE2EHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003C /* StudyAgentSPIE2EHarness.swift */; };
-		S10000010000000000000039 /* StudyPlanDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000039 /* StudyPlanDocument.swift */; };
-		S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000013 /* PDFCustomTextSelector.swift */; };
-		S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */; };
 		B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* DebugAPIBootstrap.swift */; };
 		B10000010000000000000009 /* RenderAuditChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000009 /* RenderAuditChecks.swift */; };
 		B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000A /* UsageSimulationHarness.swift */; };
 		B1000001000000000000000B /* WebSearchDebugHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000B /* WebSearchDebugHarness.swift */; };
-		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
-		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
-		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
-		B10000010000000000000010 /* MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* MTMathListIndex.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000011 /* MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* MTMathListBuilder.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000012 /* MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* MTMathList.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000013 /* MTMathAtomFactory.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000013 /* MTMathAtomFactory.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000014 /* MTUnicode.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000014 /* MTUnicode.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000015 /* UIColor+HexString.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000015 /* UIColor+HexString.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000016 /* MTLabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000016 /* MTLabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000017 /* MTFont.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000017 /* MTFont.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000018 /* MTMathListDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000018 /* MTMathListDisplay.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B10000010000000000000019 /* MTMathUILabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000019 /* MTMathUILabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B1000001000000000000001A /* MTFontManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001A /* MTFontManager.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B1000001000000000000001B /* MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* MTTypesetter.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
-		B1000001000000000000001C /* MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* MTFontMathTable.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000013 /* Vendor/iosMath/lib/MTMathAtomFactory.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000013 /* Vendor/iosMath/lib/MTMathAtomFactory.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000014 /* Vendor/iosMath/lib/MTUnicode.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000014 /* Vendor/iosMath/lib/MTUnicode.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000015 /* Vendor/iosMath/render/UIColor+HexString.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000015 /* Vendor/iosMath/render/UIColor+HexString.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000016 /* Vendor/iosMath/render/MTLabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000016 /* Vendor/iosMath/render/MTLabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000017 /* Vendor/iosMath/render/MTFont.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000017 /* Vendor/iosMath/render/MTFont.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000018 /* Vendor/iosMath/render/MTMathListDisplay.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000018 /* Vendor/iosMath/render/MTMathListDisplay.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B10000010000000000000019 /* Vendor/iosMath/render/MTMathUILabel.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000019 /* Vendor/iosMath/render/MTMathUILabel.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001A /* Vendor/iosMath/render/MTFontManager.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001A /* Vendor/iosMath/render/MTFontManager.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001B /* Vendor/iosMath/render/internal/MTTypesetter.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001B /* Vendor/iosMath/render/internal/MTTypesetter.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
+		B1000001000000000000001C /* Vendor/iosMath/render/internal/MTFontMathTable.m in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000001C /* Vendor/iosMath/render/internal/MTFontMathTable.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
 		B10000010000000000000020 /* mathFonts.bundle in Resources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000020 /* mathFonts.bundle */; };
 		C10000010000000000000008 /* DiffPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000008 /* DiffPreviewViewController.swift */; };
 		C1000001000000000000000C /* AgentAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000C /* AgentAppearance.swift */; };
 		C1000001000000000000000D /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000D /* Project.swift */; };
 		C1000001000000000000000E /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000E /* ProjectStore.swift */; };
 		C1000001000000000000000F /* ProjectListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000001000000000000000F /* ProjectListViewController.swift */; };
+		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
 		D10000010000000000000003 /* ConversationRenderSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000003 /* ConversationRenderSwitchTests.swift */; };
 		D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000004 /* CodeDiffModeTests.swift */; };
 		D10000010000000000000005 /* NativeMathParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000005 /* NativeMathParseTests.swift */; };
 		D10000010000000000000006 /* ReadiumEbookOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000006 /* ReadiumEbookOpenTests.swift */; };
 		D10000010000000000000007 /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000007 /* Fixtures */; };
-		D10000010000000000000002 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000010000000000000002 /* XCTest.framework */; };
+		DFL100010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */; };
+		E10000010000000000000001 /* MessageCellType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000001 /* MessageCellType.swift */; };
+		E10000010000000000000002 /* BaseMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000002 /* BaseMessageCell.swift */; };
+		E10000010000000000000003 /* UserMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000003 /* UserMessageCell.swift */; };
+		E10000010000000000000004 /* AssistantMessageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000004 /* AssistantMessageLayout.swift */; };
+		E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000005 /* ChatRowHeightResolver.swift */; };
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
 		F10000010000000000000003 /* ConnectsBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000003 /* ConnectsBackupService.swift */; };
+		F10000010000000000000004 /* ContextUsageRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000004 /* ContextUsageRingView.swift */; };
+		F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000005 /* ContextUsageDetailViewController.swift */; };
+		F100000100000000000000C1 /* ChatCodeFencePopupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */; };
+		FOL100010000000000000003 /* Foliate in Resources */ = {isa = PBXBuildFile; fileRef = FOL200010000000000000003 /* Foliate */; };
+		H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */; };
+		M10000010000000000000001 /* MessageChromeViewerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = M20000010000000000000001 /* MessageChromeViewerViewController.swift */; };
+		RBF000010000000000000001 /* ReadiumShared in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000001 /* ReadiumShared */; };
+		RBF000010000000000000002 /* ReadiumStreamer in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000002 /* ReadiumStreamer */; };
+		RBF000010000000000000003 /* ReadiumNavigator in Frameworks */ = {isa = PBXBuildFile; productRef = RPD000010000000000000003 /* ReadiumNavigator */; };
 		S10000010000000000000001 /* StudyDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000001 /* StudyDocument.swift */; };
-		S10000010000000000000030 /* StudyWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000030 /* StudyWorkspace.swift */; };
-		S10000010000000000000031 /* StudyWorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000031 /* StudyWorkspaceStore.swift */; };
-		S10000010000000000000032 /* ConnectsPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000032 /* ConnectsPaths.swift */; };
-		S10000010000000000000036 /* WorkspaceEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000036 /* WorkspaceEditSession.swift */; };
-		S10000010000000000000035 /* AgentOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000035 /* AgentOrchestrator.swift */; };
-		S1000001000000000000003B /* AgentSubagentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003B /* AgentSubagentRunner.swift */; };
-		S10000010000000000000034 /* AgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000034 /* AgentTools.swift */; };
-		S1000001000000000000003E /* WorkspaceAgentRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003E /* WorkspaceAgentRuntime.swift */; };
-		S10000010000000000000033 /* AgentProcessModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000033 /* AgentProcessModels.swift */; };
 		S10000010000000000000002 /* StudyDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000002 /* StudyDocumentStore.swift */; };
 		S10000010000000000000003 /* StudyProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000003 /* StudyProgressStore.swift */; };
-		S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000008 /* StudyPageOCRExtractor.swift */; };
 		S10000010000000000000004 /* StudyReadingContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000004 /* StudyReadingContext.swift */; };
 		S10000010000000000000005 /* PDFReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000005 /* PDFReaderViewController.swift */; };
-		S10000010000000000000042 /* EbookReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000042 /* EbookReaderViewController.swift */; };
-		FOL100010000000000000003 /* Foliate in Resources */ = {isa = PBXBuildFile; fileRef = FOL200010000000000000003 /* Foliate */; };
-		S10000010000000000000043 /* ReadiumEbookOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000043 /* ReadiumEbookOpener.swift */; };
-		S10000010000000000000044 /* FoliateEbookEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000044 /* FoliateEbookEngine.swift */; };
 		S10000010000000000000006 /* StudyShellViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000006 /* StudyShellViewController.swift */; };
 		S10000010000000000000007 /* StudyDocumentPickerViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000007 /* StudyDocumentPickerViewController.swift */; };
-		SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SFB200010000000000000001 /* StudyFilesBrowserController.swift */; };
+		S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000008 /* StudyPageOCRExtractor.swift */; };
 		S10000010000000000000009 /* MarkdownReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000009 /* MarkdownReaderViewController.swift */; };
 		S1000001000000000000000A /* PDFContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000A /* PDFContentsViewController.swift */; };
 		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
@@ -147,19 +124,50 @@
 		S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000E /* CodeSyntaxHighlighter.swift */; };
 		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
 		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
-		F100000100000000000000C1 /* ChatCodeFencePopupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */; };
 		S10000010000000000000011 /* StudyAskSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000011 /* StudyAskSupport.swift */; };
+		S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000012 /* StudyFeatureQAHarness.swift */; };
+		S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000013 /* PDFCustomTextSelector.swift */; };
+		S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */; };
 		S10000010000000000000020 /* CodeEditorIndent.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000020 /* CodeEditorIndent.swift */; };
 		S10000010000000000000021 /* CodeEditorAIBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000021 /* CodeEditorAIBridge.swift */; };
-		S10000010000000000000024 /* CodeEditCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000024 /* CodeEditCoordinator.swift */; };
-		S10000010000000000000023 /* CodeEditApplyTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000023 /* CodeEditApplyTools.swift */; };
 		S10000010000000000000022 /* CodeTextDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000022 /* CodeTextDiff.swift */; };
-		DFL100010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */; };
+		S10000010000000000000023 /* CodeEditApplyTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000023 /* CodeEditApplyTools.swift */; };
+		S10000010000000000000024 /* CodeEditCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000024 /* CodeEditCoordinator.swift */; };
+		S10000010000000000000030 /* StudyWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000030 /* StudyWorkspace.swift */; };
+		S10000010000000000000031 /* StudyWorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000031 /* StudyWorkspaceStore.swift */; };
+		S10000010000000000000032 /* ConnectsPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000032 /* ConnectsPaths.swift */; };
+		S10000010000000000000033 /* AgentProcessModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000033 /* AgentProcessModels.swift */; };
+		S10000010000000000000034 /* AgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000034 /* AgentTools.swift */; };
+		S10000010000000000000035 /* AgentOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000035 /* AgentOrchestrator.swift */; };
+		S10000010000000000000036 /* WorkspaceEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000036 /* WorkspaceEditSession.swift */; };
+		S10000010000000000000037 /* StudyAgentUXQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000037 /* StudyAgentUXQAHarness.swift */; };
+		S10000010000000000000038 /* StudyAgentProcessQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000038 /* StudyAgentProcessQAHarness.swift */; };
+		S10000010000000000000039 /* StudyPlanDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000039 /* StudyPlanDocument.swift */; };
+		S1000001000000000000003A /* StudyAgentLiveQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003A /* StudyAgentLiveQAHarness.swift */; };
+		S1000001000000000000003B /* AgentSubagentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003B /* AgentSubagentRunner.swift */; };
+		S1000001000000000000003C /* StudyAgentSPIE2EHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003C /* StudyAgentSPIE2EHarness.swift */; };
+		S1000001000000000000003E /* WorkspaceAgentRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000003E /* WorkspaceAgentRuntime.swift */; };
+		S10000010000000000000042 /* EbookReaderViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000042 /* EbookReaderViewController.swift */; };
+		S10000010000000000000043 /* ReadiumEbookOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000043 /* ReadiumEbookOpener.swift */; };
+		S10000010000000000000044 /* FoliateEbookEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000044 /* FoliateEbookEngine.swift */; };
+		SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SFB200010000000000000001 /* StudyFilesBrowserController.swift */; };
+		T10000010000000000000001 /* ConnectsToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000001 /* ConnectsToast.swift */; };
+		T10000010000000000000002 /* ConnectsShimmerLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000002 /* ConnectsShimmerLabel.swift */; };
+		V10000010000000000000001 /* StudyVisualQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = V20000010000000000000001 /* StudyVisualQAHarness.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D90000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A60000010000000000000001;
+			remoteInfo = Connects;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A20000010000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIApplication+ConnectsWindows.swift"; sourceTree = "<group>"; };
 		A20000010000000000000002 /* AIModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModel.swift; sourceTree = "<group>"; };
 		A20000010000000000000003 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		A20000010000000000000004 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
@@ -167,129 +175,108 @@
 		A20000010000000000000006 /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
 		A20000010000000000000007 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		A20000010000000000000008 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
-		M20000010000000000000001 /* MessageChromeViewerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageChromeViewerViewController.swift; sourceTree = "<group>"; };
 		A20000010000000000000009 /* ChatViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000A /* RootSplitViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootSplitViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000B /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000C /* SidebarViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarViewController.swift; sourceTree = "<group>"; };
 		A2000001000000000000000D /* InputBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBarView.swift; sourceTree = "<group>"; };
-		T20000010000000000000001 /* ConnectsToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsToast.swift; sourceTree = "<group>"; };
-		T20000010000000000000002 /* ConnectsShimmerLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsShimmerLabel.swift; sourceTree = "<group>"; };
 		A2000001000000000000000E /* AssistantMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageCell.swift; sourceTree = "<group>"; };
-		E20000010000000000000004 /* AssistantMessageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageLayout.swift; sourceTree = "<group>"; };
-		E20000010000000000000001 /* MessageCellType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageCellType.swift; sourceTree = "<group>"; };
-		E20000010000000000000002 /* BaseMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseMessageCell.swift; sourceTree = "<group>"; };
-		E20000010000000000000003 /* UserMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageCell.swift; sourceTree = "<group>"; };
 		A2000001000000000000000F /* DSTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSTheme.swift; sourceTree = "<group>"; };
+		A20000010000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000010000000000000013 /* ImageAttachmentHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAttachmentHelper.swift; sourceTree = "<group>"; };
 		A20000010000000000000014 /* MarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExporter.swift; sourceTree = "<group>"; };
 		A20000010000000000000015 /* MathContentDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathContentDetector.swift; sourceTree = "<group>"; };
 		A20000010000000000000016 /* WeakScriptMessageHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeakScriptMessageHandler.swift; sourceTree = "<group>"; };
+		A20000010000000000000017 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		A20000010000000000000018 /* StreamManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamManager.swift; sourceTree = "<group>"; };
 		A20000010000000000000019 /* AITitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AITitleGenerator.swift; sourceTree = "<group>"; };
+		A2000001000000000000001A /* MarkdownHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownHTMLRenderer.swift; sourceTree = "<group>"; };
+		A2000001000000000000001B /* PlainMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainMarkdown.swift; sourceTree = "<group>"; };
 		A2000001000000000000001C /* ActionIconFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionIconFactory.swift; sourceTree = "<group>"; };
 		A2000001000000000000001D /* ContextBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBuilder.swift; sourceTree = "<group>"; };
 		A2000001000000000000001E /* ContextCompactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCompactor.swift; sourceTree = "<group>"; };
 		A2000001000000000000001F /* ContextUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageView.swift; sourceTree = "<group>"; };
-		F20000010000000000000004 /* ContextUsageRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageRingView.swift; sourceTree = "<group>"; };
-		F20000010000000000000005 /* ContextUsageDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageDetailViewController.swift; sourceTree = "<group>"; };
-		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
-		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
-		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
-		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
-		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
-		E20000010000000000000005 /* ChatRowHeightResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowHeightResolver.swift; sourceTree = "<group>"; };
-		A20000010000000000000056 /* ConnectsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsMenu.swift; sourceTree = "<group>"; };
-		A20000010000000000000057 /* ModelVisibilityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelVisibilityView.swift; sourceTree = "<group>"; };
-		A20000010000000000000058 /* ModelCapsuleDropdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCapsuleDropdown.swift; sourceTree = "<group>"; };
-		A2000001000000000000001A /* MarkdownHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownHTMLRenderer.swift; sourceTree = "<group>"; };
-		A2000001000000000000001B /* PlainMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlainMarkdown.swift; sourceTree = "<group>"; };
-		A20000010000000000000017 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		A20000010000000000000020 /* Icon-76.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icon-76.png"; sourceTree = "<group>"; };
 		A20000010000000000000021 /* Icon-76@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icon-76@2x.png"; sourceTree = "<group>"; };
 		A20000010000000000000022 /* Icon-83.5@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icon-83.5@2x.png"; sourceTree = "<group>"; };
 		A20000010000000000000023 /* Icon-1024.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icon-1024.png"; sourceTree = "<group>"; };
 		A20000010000000000000024 /* Logo-120.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Logo-120.png"; sourceTree = "<group>"; };
-		A20000010000000000000025 /* Logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Logo.png"; sourceTree = "<group>"; };
+		A20000010000000000000025 /* Logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Logo.png; sourceTree = "<group>"; };
+		A20000010000000000000030 /* katex */ = {isa = PBXFileReference; lastKnownFileType = folder; path = katex; sourceTree = "<group>"; };
+		A20000010000000000000031 /* markdown */ = {isa = PBXFileReference; lastKnownFileType = folder; path = markdown; sourceTree = "<group>"; };
 		A20000010000000000000040 /* icon-copy.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-copy.png"; sourceTree = "<group>"; };
 		A20000010000000000000041 /* icon-retry.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-retry.png"; sourceTree = "<group>"; };
 		A20000010000000000000042 /* icon-fork.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-fork.png"; sourceTree = "<group>"; };
-		A20000010000000000000030 /* katex */ = {isa = PBXFileReference; lastKnownFileType = folder; path = katex; sourceTree = "<group>"; };
-		A20000010000000000000031 /* markdown */ = {isa = PBXFileReference; lastKnownFileType = folder; path = markdown; sourceTree = "<group>"; };
-		A20000010000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000010000000000000052 /* LaunchScreen.storyboardc */ = {isa = PBXFileReference; lastKnownFileType = wrapper.storyboardc; path = LaunchScreen.storyboardc; sourceTree = "<group>"; };
+		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
+		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
+		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
+		A20000010000000000000056 /* ConnectsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsMenu.swift; sourceTree = "<group>"; };
+		A20000010000000000000057 /* ModelVisibilityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelVisibilityView.swift; sourceTree = "<group>"; };
+		A20000010000000000000058 /* ModelCapsuleDropdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCapsuleDropdown.swift; sourceTree = "<group>"; };
+		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
+		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* Connects.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Connects.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* NativeMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdown.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
+		B20000010000000000000003 /* NativeFormulaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormulaRenderer.swift; sourceTree = "<group>"; };
+		B20000010000000000000004 /* NativeMessageLayouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageLayouter.swift; sourceTree = "<group>"; };
+		B20000010000000000000005 /* NativeMessageRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageRenderView.swift; sourceTree = "<group>"; };
 		B20000010000000000000006 /* ScrollStressHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollStressHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000007 /* RenderAuditHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditHarness.swift; sourceTree = "<group>"; };
-		S20000010000000000000012 /* StudyFeatureQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFeatureQAHarness.swift; sourceTree = "<group>"; };
-		V20000010000000000000001 /* StudyVisualQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyVisualQAHarness.swift; sourceTree = "<group>"; };
-		S20000010000000000000037 /* StudyAgentUXQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentUXQAHarness.swift; sourceTree = "<group>"; };
-		S20000010000000000000038 /* StudyAgentProcessQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentProcessQAHarness.swift; sourceTree = "<group>"; };
-		S2000001000000000000003A /* StudyAgentLiveQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentLiveQAHarness.swift; sourceTree = "<group>"; };
-		S2000001000000000000003C /* StudyAgentSPIE2EHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentSPIE2EHarness.swift; sourceTree = "<group>"; };
-		S20000010000000000000013 /* PDFCustomTextSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFCustomTextSelector.swift; sourceTree = "<group>"; };
-		S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsKeyboardGeometry.swift; sourceTree = "<group>"; };
 		B20000010000000000000008 /* DebugAPIBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugAPIBootstrap.swift; sourceTree = "<group>"; };
 		B20000010000000000000009 /* RenderAuditChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditChecks.swift; sourceTree = "<group>"; };
 		B2000001000000000000000A /* UsageSimulationHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageSimulationHarness.swift; sourceTree = "<group>"; };
 		B2000001000000000000000B /* WebSearchDebugHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchDebugHarness.swift; sourceTree = "<group>"; };
-		B20000010000000000000003 /* NativeFormulaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormulaRenderer.swift; sourceTree = "<group>"; };
-		B20000010000000000000004 /* NativeMessageLayouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageLayouter.swift; sourceTree = "<group>"; };
-		B20000010000000000000005 /* NativeMessageRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageRenderView.swift; sourceTree = "<group>"; };
-		B20000010000000000000010 /* MTMathListIndex.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListIndex.m; sourceTree = "<group>"; };
-		B20000010000000000000011 /* MTMathListBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListBuilder.m; sourceTree = "<group>"; };
-		B20000010000000000000012 /* MTMathList.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathList.m; sourceTree = "<group>"; };
-		B20000010000000000000013 /* MTMathAtomFactory.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathAtomFactory.m; sourceTree = "<group>"; };
-		B20000010000000000000014 /* MTUnicode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTUnicode.m; sourceTree = "<group>"; };
-		B20000010000000000000015 /* UIColor+HexString.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Vendor/iosMath/render/UIColor+HexString.m"; sourceTree = "<group>"; };
-		B20000010000000000000016 /* MTLabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTLabel.m; sourceTree = "<group>"; };
-		B20000010000000000000017 /* MTFont.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFont.m; sourceTree = "<group>"; };
-		B20000010000000000000018 /* MTMathListDisplay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathListDisplay.m; sourceTree = "<group>"; };
-		B20000010000000000000019 /* MTMathUILabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathUILabel.m; sourceTree = "<group>"; };
-		B2000001000000000000001A /* MTFontManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFontManager.m; sourceTree = "<group>"; };
-		B2000001000000000000001B /* MTTypesetter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTTypesetter.m; sourceTree = "<group>"; };
-		B2000001000000000000001C /* MTFontMathTable.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTFontMathTable.m; sourceTree = "<group>"; };
-		B20000010000000000000020 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.plug-in; path = mathFonts.bundle; sourceTree = "<group>"; };
+		B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListIndex.m; sourceTree = "<group>"; };
+		B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListBuilder.m; sourceTree = "<group>"; };
+		B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathList.m; sourceTree = "<group>"; };
+		B20000010000000000000013 /* Vendor/iosMath/lib/MTMathAtomFactory.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathAtomFactory.m; sourceTree = "<group>"; };
+		B20000010000000000000014 /* Vendor/iosMath/lib/MTUnicode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTUnicode.m; sourceTree = "<group>"; };
+		B20000010000000000000015 /* Vendor/iosMath/render/UIColor+HexString.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Vendor/iosMath/render/UIColor+HexString.m"; sourceTree = "<group>"; };
+		B20000010000000000000016 /* Vendor/iosMath/render/MTLabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTLabel.m; sourceTree = "<group>"; };
+		B20000010000000000000017 /* Vendor/iosMath/render/MTFont.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFont.m; sourceTree = "<group>"; };
+		B20000010000000000000018 /* Vendor/iosMath/render/MTMathListDisplay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathListDisplay.m; sourceTree = "<group>"; };
+		B20000010000000000000019 /* Vendor/iosMath/render/MTMathUILabel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTMathUILabel.m; sourceTree = "<group>"; };
+		B2000001000000000000001A /* Vendor/iosMath/render/MTFontManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/MTFontManager.m; sourceTree = "<group>"; };
+		B2000001000000000000001B /* Vendor/iosMath/render/internal/MTTypesetter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTTypesetter.m; sourceTree = "<group>"; };
+		B2000001000000000000001C /* Vendor/iosMath/render/internal/MTFontMathTable.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/render/internal/MTFontMathTable.m; sourceTree = "<group>"; };
+		B20000010000000000000020 /* mathFonts.bundle */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.plug-in"; path = mathFonts.bundle; sourceTree = "<group>"; };
 		C20000010000000000000008 /* DiffPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffPreviewViewController.swift; sourceTree = "<group>"; };
 		C2000001000000000000000C /* AgentAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentAppearance.swift; sourceTree = "<group>"; };
 		C2000001000000000000000D /* Project.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Project.swift; sourceTree = "<group>"; };
 		C2000001000000000000000E /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
 		C2000001000000000000000F /* ProjectListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectListViewController.swift; sourceTree = "<group>"; };
+		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D20000010000000000000003 /* ConversationRenderSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRenderSwitchTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000004 /* CodeDiffModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeDiffModeTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000005 /* NativeMathParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMathParseTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000006 /* ReadiumEbookOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpenTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000007 /* Fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fixtures; sourceTree = "<group>"; };
-		D20000010000000000000002 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFullLineBackgroundLayoutManager.swift; sourceTree = "<group>"; };
+		E20000010000000000000001 /* MessageCellType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageCellType.swift; sourceTree = "<group>"; };
+		E20000010000000000000002 /* BaseMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseMessageCell.swift; sourceTree = "<group>"; };
+		E20000010000000000000003 /* UserMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageCell.swift; sourceTree = "<group>"; };
+		E20000010000000000000004 /* AssistantMessageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageLayout.swift; sourceTree = "<group>"; };
+		E20000010000000000000005 /* ChatRowHeightResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRowHeightResolver.swift; sourceTree = "<group>"; };
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
 		F20000010000000000000002 /* SimpleZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleZip.swift; sourceTree = "<group>"; };
 		F20000010000000000000003 /* ConnectsBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsBackupService.swift; sourceTree = "<group>"; };
+		F20000010000000000000004 /* ContextUsageRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageRingView.swift; sourceTree = "<group>"; };
+		F20000010000000000000005 /* ContextUsageDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageDetailViewController.swift; sourceTree = "<group>"; };
+		F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCodeFencePopupViewController.swift; sourceTree = "<group>"; };
+		FOL200010000000000000003 /* Foliate */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Foliate; sourceTree = "<group>"; };
+		H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIApplication+ConnectsWindows.swift"; sourceTree = "<group>"; };
+		M20000010000000000000001 /* MessageChromeViewerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageChromeViewerViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000001 /* StudyDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocument.swift; sourceTree = "<group>"; };
-		S20000010000000000000030 /* StudyWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyWorkspace.swift; sourceTree = "<group>"; };
-		S20000010000000000000031 /* StudyWorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyWorkspaceStore.swift; sourceTree = "<group>"; };
-		S20000010000000000000032 /* ConnectsPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsPaths.swift; sourceTree = "<group>"; };
-		S20000010000000000000036 /* WorkspaceEditSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEditSession.swift; sourceTree = "<group>"; };
-		S20000010000000000000035 /* AgentOrchestrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOrchestrator.swift; sourceTree = "<group>"; };
-		S2000001000000000000003B /* AgentSubagentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSubagentRunner.swift; sourceTree = "<group>"; };
-		S20000010000000000000034 /* AgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTools.swift; sourceTree = "<group>"; };
-		S2000001000000000000003E /* WorkspaceAgentRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceAgentRuntime.swift; sourceTree = "<group>"; };
-		S20000010000000000000033 /* AgentProcessModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentProcessModels.swift; sourceTree = "<group>"; };
-		S20000010000000000000039 /* StudyPlanDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPlanDocument.swift; sourceTree = "<group>"; };
 		S20000010000000000000002 /* StudyDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000003 /* StudyProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyProgressStore.swift; sourceTree = "<group>"; };
-		S20000010000000000000008 /* StudyPageOCRExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPageOCRExtractor.swift; sourceTree = "<group>"; };
 		S20000010000000000000004 /* StudyReadingContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyReadingContext.swift; sourceTree = "<group>"; };
 		S20000010000000000000005 /* PDFReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReaderViewController.swift; sourceTree = "<group>"; };
-		S20000010000000000000042 /* EbookReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderViewController.swift; sourceTree = "<group>"; };
-		S20000010000000000000043 /* ReadiumEbookOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpener.swift; sourceTree = "<group>"; };
-		S20000010000000000000044 /* FoliateEbookEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoliateEbookEngine.swift; sourceTree = "<group>"; };
-		FOL200010000000000000003 /* Foliate */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Foliate; sourceTree = "<group>"; };
 		S20000010000000000000006 /* StudyShellViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyShellViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000007 /* StudyDocumentPickerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyDocumentPickerViewController.swift; sourceTree = "<group>"; };
-		SFB200010000000000000001 /* StudyFilesBrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFilesBrowserController.swift; sourceTree = "<group>"; };
+		S20000010000000000000008 /* StudyPageOCRExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPageOCRExtractor.swift; sourceTree = "<group>"; };
 		S20000010000000000000009 /* MarkdownReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownReaderViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000A /* PDFContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFContentsViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
@@ -298,14 +285,36 @@
 		S2000001000000000000000E /* CodeSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
-		F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCodeFencePopupViewController.swift; sourceTree = "<group>"; };
 		S20000010000000000000011 /* StudyAskSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAskSupport.swift; sourceTree = "<group>"; };
+		S20000010000000000000012 /* StudyFeatureQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFeatureQAHarness.swift; sourceTree = "<group>"; };
+		S20000010000000000000013 /* PDFCustomTextSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFCustomTextSelector.swift; sourceTree = "<group>"; };
+		S20000010000000000000014 /* ConnectsKeyboardGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsKeyboardGeometry.swift; sourceTree = "<group>"; };
 		S20000010000000000000020 /* CodeEditorIndent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorIndent.swift; sourceTree = "<group>"; };
 		S20000010000000000000021 /* CodeEditorAIBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditorAIBridge.swift; sourceTree = "<group>"; };
-		S20000010000000000000024 /* CodeEditCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditCoordinator.swift; sourceTree = "<group>"; };
-		S20000010000000000000023 /* CodeEditApplyTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditApplyTools.swift; sourceTree = "<group>"; };
 		S20000010000000000000022 /* CodeTextDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeTextDiff.swift; sourceTree = "<group>"; };
-		DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFullLineBackgroundLayoutManager.swift; sourceTree = "<group>"; };
+		S20000010000000000000023 /* CodeEditApplyTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditApplyTools.swift; sourceTree = "<group>"; };
+		S20000010000000000000024 /* CodeEditCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditCoordinator.swift; sourceTree = "<group>"; };
+		S20000010000000000000030 /* StudyWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyWorkspace.swift; sourceTree = "<group>"; };
+		S20000010000000000000031 /* StudyWorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyWorkspaceStore.swift; sourceTree = "<group>"; };
+		S20000010000000000000032 /* ConnectsPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsPaths.swift; sourceTree = "<group>"; };
+		S20000010000000000000033 /* AgentProcessModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentProcessModels.swift; sourceTree = "<group>"; };
+		S20000010000000000000034 /* AgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTools.swift; sourceTree = "<group>"; };
+		S20000010000000000000035 /* AgentOrchestrator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOrchestrator.swift; sourceTree = "<group>"; };
+		S20000010000000000000036 /* WorkspaceEditSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEditSession.swift; sourceTree = "<group>"; };
+		S20000010000000000000037 /* StudyAgentUXQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentUXQAHarness.swift; sourceTree = "<group>"; };
+		S20000010000000000000038 /* StudyAgentProcessQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentProcessQAHarness.swift; sourceTree = "<group>"; };
+		S20000010000000000000039 /* StudyPlanDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyPlanDocument.swift; sourceTree = "<group>"; };
+		S2000001000000000000003A /* StudyAgentLiveQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentLiveQAHarness.swift; sourceTree = "<group>"; };
+		S2000001000000000000003B /* AgentSubagentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSubagentRunner.swift; sourceTree = "<group>"; };
+		S2000001000000000000003C /* StudyAgentSPIE2EHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAgentSPIE2EHarness.swift; sourceTree = "<group>"; };
+		S2000001000000000000003E /* WorkspaceAgentRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceAgentRuntime.swift; sourceTree = "<group>"; };
+		S20000010000000000000042 /* EbookReaderViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000043 /* ReadiumEbookOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpener.swift; sourceTree = "<group>"; };
+		S20000010000000000000044 /* FoliateEbookEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoliateEbookEngine.swift; sourceTree = "<group>"; };
+		SFB200010000000000000001 /* StudyFilesBrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFilesBrowserController.swift; sourceTree = "<group>"; };
+		T20000010000000000000001 /* ConnectsToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsToast.swift; sourceTree = "<group>"; };
+		T20000010000000000000002 /* ConnectsShimmerLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsShimmerLabel.swift; sourceTree = "<group>"; };
+		V20000010000000000000001 /* StudyVisualQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyVisualQAHarness.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -337,6 +346,7 @@
 				A50000010000000000000002 /* Connects */,
 				D50000010000000000000001 /* ConnectsTests */,
 				A50000010000000000000003 /* Products */,
+				D44B86293021E0D9004FAB20 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -344,19 +354,19 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000001 /* AppDelegate.swift */,
-				B20000010000000000000010 /* MTMathListIndex.m */,
-				B20000010000000000000011 /* MTMathListBuilder.m */,
-				B20000010000000000000012 /* MTMathList.m */,
-				B20000010000000000000013 /* MTMathAtomFactory.m */,
-				B20000010000000000000014 /* MTUnicode.m */,
-				B20000010000000000000015 /* UIColor+HexString.m */,
-				B20000010000000000000016 /* MTLabel.m */,
-				B20000010000000000000017 /* MTFont.m */,
-				B20000010000000000000018 /* MTMathListDisplay.m */,
-				B20000010000000000000019 /* MTMathUILabel.m */,
-				B2000001000000000000001A /* MTFontManager.m */,
-				B2000001000000000000001B /* MTTypesetter.m */,
-				B2000001000000000000001C /* MTFontMathTable.m */,
+				B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */,
+				B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */,
+				B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */,
+				B20000010000000000000013 /* Vendor/iosMath/lib/MTMathAtomFactory.m */,
+				B20000010000000000000014 /* Vendor/iosMath/lib/MTUnicode.m */,
+				B20000010000000000000015 /* Vendor/iosMath/render/UIColor+HexString.m */,
+				B20000010000000000000016 /* Vendor/iosMath/render/MTLabel.m */,
+				B20000010000000000000017 /* Vendor/iosMath/render/MTFont.m */,
+				B20000010000000000000018 /* Vendor/iosMath/render/MTMathListDisplay.m */,
+				B20000010000000000000019 /* Vendor/iosMath/render/MTMathUILabel.m */,
+				B2000001000000000000001A /* Vendor/iosMath/render/MTFontManager.m */,
+				B2000001000000000000001B /* Vendor/iosMath/render/internal/MTTypesetter.m */,
+				B2000001000000000000001C /* Vendor/iosMath/render/internal/MTFontMathTable.m */,
 				A50000010000000000000004 /* Models */,
 				H50000010000000000000001 /* Helpers */,
 				A50000010000000000000005 /* Services */,
@@ -378,14 +388,6 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		H50000010000000000000001 /* Helpers */ = {
-			isa = PBXGroup;
-			children = (
-				H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */,
-			);
-			path = Helpers;
-			sourceTree = "<group>";
-		};
 		A50000010000000000000004 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -399,18 +401,6 @@
 				B20000010000000000000001 /* NativeMarkdown.swift */,
 			);
 			path = Models;
-			sourceTree = "<group>";
-		};
-		D50000010000000000000001 /* ConnectsTests */ = {
-			isa = PBXGroup;
-			children = (
-				D20000010000000000000003 /* ConversationRenderSwitchTests.swift */,
-				D20000010000000000000004 /* CodeDiffModeTests.swift */,
-				D20000010000000000000005 /* NativeMathParseTests.swift */,
-				D20000010000000000000006 /* ReadiumEbookOpenTests.swift */,
-				D20000010000000000000007 /* Fixtures */,
-			);
-			path = ConnectsTests;
 			sourceTree = "<group>";
 		};
 		A50000010000000000000005 /* Services */ = {
@@ -563,6 +553,35 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		D44B86293021E0D9004FAB20 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000017 /* WebKit.framework */,
+				D20000010000000000000002 /* XCTest.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		D50000010000000000000001 /* ConnectsTests */ = {
+			isa = PBXGroup;
+			children = (
+				D20000010000000000000003 /* ConversationRenderSwitchTests.swift */,
+				D20000010000000000000004 /* CodeDiffModeTests.swift */,
+				D20000010000000000000005 /* NativeMathParseTests.swift */,
+				D20000010000000000000006 /* ReadiumEbookOpenTests.swift */,
+				D20000010000000000000007 /* Fixtures */,
+			);
+			path = ConnectsTests;
+			sourceTree = "<group>";
+		};
+		H50000010000000000000001 /* Helpers */ = {
+			isa = PBXGroup;
+			children = (
+				H20000010000000000000001 /* UIApplication+ConnectsWindows.swift */,
+			);
+			path = Helpers;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -674,24 +693,6 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
-/* Begin PBXContainerItemProxy section */
-		D90000010000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A90000010000000000000001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = A60000010000000000000001;
-			remoteInfo = Connects;
-		};
-/* End PBXContainerItemProxy section */
-
-/* Begin PBXTargetDependency section */
-		D91000010000000000000001 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = A60000010000000000000001 /* Connects */;
-			targetProxy = D90000010000000000000001 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXShellScriptBuildPhase section */
 		A70000010000000000000003 /* Copy LaunchScreen.storyboardc */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -782,19 +783,19 @@
 				B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */,
 				B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */,
 				B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */,
-				B10000010000000000000010 /* MTMathListIndex.m in Sources */,
-				B10000010000000000000011 /* MTMathListBuilder.m in Sources */,
-				B10000010000000000000012 /* MTMathList.m in Sources */,
-				B10000010000000000000013 /* MTMathAtomFactory.m in Sources */,
-				B10000010000000000000014 /* MTUnicode.m in Sources */,
-				B10000010000000000000015 /* UIColor+HexString.m in Sources */,
-				B10000010000000000000016 /* MTLabel.m in Sources */,
-				B10000010000000000000017 /* MTFont.m in Sources */,
-				B10000010000000000000018 /* MTMathListDisplay.m in Sources */,
-				B10000010000000000000019 /* MTMathUILabel.m in Sources */,
-				B1000001000000000000001A /* MTFontManager.m in Sources */,
-				B1000001000000000000001B /* MTTypesetter.m in Sources */,
-				B1000001000000000000001C /* MTFontMathTable.m in Sources */,
+				B10000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m in Sources */,
+				B10000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m in Sources */,
+				B10000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m in Sources */,
+				B10000010000000000000013 /* Vendor/iosMath/lib/MTMathAtomFactory.m in Sources */,
+				B10000010000000000000014 /* Vendor/iosMath/lib/MTUnicode.m in Sources */,
+				B10000010000000000000015 /* Vendor/iosMath/render/UIColor+HexString.m in Sources */,
+				B10000010000000000000016 /* Vendor/iosMath/render/MTLabel.m in Sources */,
+				B10000010000000000000017 /* Vendor/iosMath/render/MTFont.m in Sources */,
+				B10000010000000000000018 /* Vendor/iosMath/render/MTMathListDisplay.m in Sources */,
+				B10000010000000000000019 /* Vendor/iosMath/render/MTMathUILabel.m in Sources */,
+				B1000001000000000000001A /* Vendor/iosMath/render/MTFontManager.m in Sources */,
+				B1000001000000000000001B /* Vendor/iosMath/render/internal/MTTypesetter.m in Sources */,
+				B1000001000000000000001C /* Vendor/iosMath/render/internal/MTFontMathTable.m in Sources */,
 				C10000010000000000000008 /* DiffPreviewViewController.swift in Sources */,
 				C1000001000000000000000C /* AgentAppearance.swift in Sources */,
 				C1000001000000000000000D /* Project.swift in Sources */,
@@ -856,6 +857,14 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		D91000010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A60000010000000000000001 /* Connects */;
+			targetProxy = D90000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		AA0000010000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -912,13 +921,13 @@
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_TESTABILITY = YES;
-				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
+				INFOPLIST_FILE = Connects/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -932,8 +941,8 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
-				TARGETED_DEVICE_FAMILY = 2;
+				SWIFT_OBJC_BRIDGING_HEADER = "Connects/Connects-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -946,13 +955,13 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C8XVZJLC2D;
 				ENABLE_APP_SANDBOX = NO;
-				INFOPLIST_FILE = Connects/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render",
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
+				INFOPLIST_FILE = Connects/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -966,79 +975,10 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
-				TARGETED_DEVICE_FAMILY = 2;
+				SWIFT_OBJC_BRIDGING_HEADER = "Connects/Connects-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
-		};
-		G10000010000000000000001 /* Debug-iPhone */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
-				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = C8XVZJLC2D;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_TESTABILITY = YES;
-				INFOPLIST_FILE = Connects/Info.plist;
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
-					"$(SRCROOT)/Connects/Vendor/iosMath/render",
-					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
-				);
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lz",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = "Debug-iPhone";
-		};
-		G10000010000000000000002 /* Release-iPhone */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
-				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = C8XVZJLC2D;
-				ENABLE_APP_SANDBOX = NO;
-				INFOPLIST_FILE = Connects/Info.plist;
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
-					"$(SRCROOT)/Connects/Vendor/iosMath/render",
-					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
-				);
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lz",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = Connects/Connects-Bridging-Header.h;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = "Release-iPhone";
 		};
 		D70000010000000000000002 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1081,6 +1021,75 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Connects.app/Connects";
 			};
 			name = Release;
+		};
+		G10000010000000000000001 /* Debug-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_TESTABILITY = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				INFOPLIST_FILE = Connects/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Connects/Connects-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = "Debug-iPhone";
+		};
+		G10000010000000000000002 /* Release-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = C8XVZJLC2D;
+				ENABLE_APP_SANDBOX = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				INFOPLIST_FILE = Connects/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Connects/Connects-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = "Release-iPhone";
 		};
 /* End XCBuildConfiguration section */
 
@@ -1126,18 +1135,18 @@
 /* Begin XCSwiftPackageProductDependency section */
 		RPD000010000000000000001 /* ReadiumShared */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = ReadiumShared;
 			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+			productName = ReadiumShared;
 		};
 		RPD000010000000000000002 /* ReadiumStreamer */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = ReadiumStreamer;
 			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+			productName = ReadiumStreamer;
 		};
 		RPD000010000000000000003 /* ReadiumNavigator */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = ReadiumNavigator;
 			package = LPR000010000000000000001 /* XCLocalSwiftPackageReference "ThirdParty/readium-swift-toolkit" */;
+			productName = ReadiumNavigator;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
