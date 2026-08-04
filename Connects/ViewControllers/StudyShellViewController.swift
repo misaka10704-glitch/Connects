@@ -77,7 +77,7 @@ final class StudyShellViewController: UIViewController {
         width: StudyPanelStageCapsule.chipWidth,
         height: StudyPanelStageCapsule.chipHeight
     )
-    private let collapsedHandleBottomInset: CGFloat = 12
+    private let collapsedHandleBottomInset: CGFloat = UIDevice.current.userInterfaceIdiom == .phone ? 18 : 12
     private let landscapeSeamHitWidth: CGFloat = 28
     /// Clockwise 90°: left▲ → top, right▼ → bottom (portrait chip stood on the vertical seam).
     private let landscapeCapsuleRotation = CGAffineTransform(rotationAngle: -.pi / 2)
@@ -622,6 +622,7 @@ final class StudyShellViewController: UIViewController {
         } else {
             updateChatPanelShadowPath()
         }
+        syncPortraitStageCapsuleChromeAlignment()
         postChatWidthNotification()
     }
 
@@ -886,21 +887,28 @@ final class StudyShellViewController: UIViewController {
 
             if self.isPortraitMode {
                 self.panelStageCapsule.transform = .identity
-                self.panelStageCapsule.isHidden = false
                 self.panelStageCapsule.isUserInteractionEnabled = true
                 self.panelStageCapsule.prefersFullBoundsHitTesting = true
                 self.panelCapsulePortraitCenterX.isActive = true
                 if self.isChatCollapsed {
                     // Full reading: chip centered on the bottom edge.
+                    self.panelStageCapsule.isHidden = false
                     self.panelCapsulePortraitBottomY.isActive = true
                     self.panelCapsulePortraitBottomY.constant = -(size.height / 2 + self.collapsedHandleBottomInset)
+                    self.panelCapsulePortraitSeamY.isActive = false
                 } else {
-                    // Half / full AI: same horizontal line as nav sidebar / ⋯.
+                    // Half / full AI: same horizontal line as chat nav (+ / ⋯).
+                    // Keep the floating chip (not nav titleView) so stage animation
+                    // doesn't drag ▲▼ across the screen inside chatHost.
+                    self.panelStageCapsule.isHidden = false
                     self.panelCapsulePortraitSeamY.isActive = true
-                    self.panelCapsulePortraitSeamY.constant = 0
+                    self.panelCapsulePortraitBottomY.isActive = false
+                    // Constant is resolved after layout against the real bar-button mid-line.
                 }
                 self.view.bringSubviewToFront(self.chatHost)
-                self.view.bringSubviewToFront(self.panelStageCapsule)
+                if !self.panelStageCapsule.isHidden {
+                    self.view.bringSubviewToFront(self.panelStageCapsule)
+                }
             } else {
                 // Landscape
                 if self.isChatCollapsed {
@@ -939,14 +947,43 @@ final class StudyShellViewController: UIViewController {
             UIView.performWithoutAnimation {
                 place()
                 self.view.layoutIfNeeded()
+                self.syncPortraitStageCapsuleChromeAlignment()
             }
         } else {
             place()
+            syncPortraitStageCapsuleChromeAlignment()
+        }
+        if !isAnimatingPanelStage, !panelStageCapsule.isHidden, panelStageCapsule.alpha < 0.99 {
+            panelStageCapsule.alpha = 1
         }
         // Avoid cascading refreshStudyComposerLayout from every layout pass —
         // callers that change stage / orientation pass reconcileChrome: true.
         if reconcileChrome {
             syncStudyOverlayChrome()
+        }
+    }
+
+    /// Pin ▲▼ mid-line to + / history / ⋯ — `navigationBar.centerY` sits lower than
+    /// the custom 30pt bar buttons on current iOS, so the chip looked clearly too low.
+    private func syncPortraitStageCapsuleChromeAlignment() {
+        guard isPortraitMode, panelCapsulePortraitSeamY.isActive, !panelStageCapsule.isHidden else { return }
+        let bar = chatNav.navigationBar
+        guard bar.bounds.height > 1 else { return }
+
+        let targetY: CGFloat
+        if let align = chatVC.studyChromeAlignView(), align.bounds.height > 1 {
+            targetY = align.convert(CGPoint(x: 0, y: align.bounds.midY), to: view).y
+        } else {
+            // Fallback: content row inside a standard nav bar (buttons sit in the
+            // lower/content band, not the geometric mid of a tall bar).
+            let contentH = min(44, bar.bounds.height)
+            targetY = bar.convert(CGPoint(x: 0, y: bar.bounds.maxY - contentH / 2), to: view).y
+        }
+
+        let barMidY = bar.convert(CGPoint(x: 0, y: bar.bounds.midY), to: view).y
+        let delta = targetY - barMidY
+        if abs(panelCapsulePortraitSeamY.constant - delta) > 0.25 {
+            panelCapsulePortraitSeamY.constant = delta
         }
     }
 
@@ -1267,8 +1304,13 @@ final class StudyShellViewController: UIViewController {
             chatVC.edgesForExtendedLayout = .all
             chatVC.extendedLayoutIncludesOpaqueBars = false
         }
-        // Full AI covers the document top-bar sidebar; rehost it on chat nav (leading).
-        chatVC.setStudyShowsSidebarToggle(chatPanelStage == .full)
+        // Full AI covers the document top-bar sidebar; rehost it on chat nav (leading)
+        // on iPad. iPhone keeps conversation + / history there instead (edge swipe opens drawer).
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            chatVC.setStudyShowsSidebarToggle(false)
+        } else {
+            chatVC.setStudyShowsSidebarToggle(chatPanelStage == .full)
+        }
 
         guard reconcileContent, !isAnimatingPanelStage else { return }
         chatVC.refreshStudyComposerLayout(reconcileViewport: reconcileContent)
@@ -1556,10 +1598,22 @@ final class StudyShellViewController: UIViewController {
         if animated {
             isAnimatingPanelStage = true
         }
-        // Place capsule first and keep it interactive; defer heavy chat reconcile.
-        syncPanelStageCapsuleLayout(layoutNow: false)
-        // Capsule must stay above chatHost for taps (mount brings chatHost forward).
-        panelStageCapsule.isUserInteractionEnabled = true
+
+        // Don't retarget ▲▼ constraints before the panel resize animation — bottom ↔
+        // nav-seam (and seam following chatHost) reads as the chip flying. Hide it,
+        // animate the panel alone, then snap the chip and fade back in.
+        panelStageCapsule.setStage(chatPanelStage)
+        panelStageCapsule.applyTheme(elevated: false)
+        let capsuleFade = animated && isReaderVisible
+        if capsuleFade {
+            panelStageCapsule.alpha = 0
+            panelStageCapsule.isUserInteractionEnabled = false
+        } else {
+            UIView.performWithoutAnimation {
+                self.syncPanelStageCapsuleLayout(layoutNow: true)
+            }
+            panelStageCapsule.isUserInteractionEnabled = true
+        }
         if !panelStageCapsule.isHidden {
             view.bringSubviewToFront(panelStageCapsule)
         }
@@ -1584,8 +1638,18 @@ final class StudyShellViewController: UIViewController {
                 self.chatVC.dismissComposerKeyboard()
                 self.view.endEditing(true)
             }
-            self.syncPanelStageCapsuleLayout(layoutNow: false)
+            UIView.performWithoutAnimation {
+                self.syncPanelStageCapsuleLayout(layoutNow: true)
+            }
+            self.panelStageCapsule.isUserInteractionEnabled = true
             self.bringChromeToFront()
+            if capsuleFade, !self.panelStageCapsule.isHidden {
+                UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+                    self.panelStageCapsule.alpha = 1
+                }
+            } else if !self.panelStageCapsule.isHidden {
+                self.panelStageCapsule.alpha = 1
+            }
             self.isAnimatingPanelStage = false
             // Defer width/height reconcile so stage buttons accept the next tap immediately.
             DispatchQueue.main.async { [weak self] in

@@ -32,7 +32,11 @@ enum ActionIconFactory {
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
-        let img = image(kind, pointSize: 18)
+        barItem(kind: kind, pointSize: 18, target: target, action: action, accessibility: accessibility)
+    }
+
+    static func barItem(kind: Kind, pointSize: CGFloat, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
+        let img = image(kind, pointSize: pointSize)
         let item = UIBarButtonItem(image: img, style: .plain, target: target, action: action)
         item.accessibilityLabel = accessibility
         return item

@@ -139,27 +139,33 @@ extension StudyReadingContextProviding {
     func presentProjectFolderGrantPicker() {}
 }
 
-/// Nav `titleView` host that pins itself to the bar’s horizontal center
-/// (screen mid-line when the bar spans the window), so asymmetric left/right
-/// bar buttons don’t nudge ▲▼ off the vertical mid-line.
+/// Nav `titleView` host for ▲▼. Does not manually mutate `center` in
+/// `layoutSubviews` — that fought UINavigationBar layout and made the chip jitter.
 final class StudyPanelNavTitleHost: UIView {
     let capsule: StudyPanelStageCapsule
-    private let hostSize = CGSize(width: 156, height: 44)
-    private let capsuleSize = CGSize(width: 148, height: 36)
+    private let hostSize: CGSize
+    private let capsuleSize: CGSize
 
     init(capsule: StudyPanelStageCapsule) {
         self.capsule = capsule
+        let chip = CGSize(
+            width: StudyPanelStageCapsule.chipWidth,
+            height: StudyPanelStageCapsule.chipHeight
+        )
+        capsuleSize = chip
+        hostSize = CGSize(width: chip.width + 8, height: 44)
         super.init(frame: CGRect(origin: .zero, size: hostSize))
         isUserInteractionEnabled = true
         clipsToBounds = false
-        capsule.translatesAutoresizingMaskIntoConstraints = true
-        capsule.frame = CGRect(
-            x: (hostSize.width - capsuleSize.width) / 2,
-            y: (hostSize.height - capsuleSize.height) / 2,
-            width: capsuleSize.width,
-            height: capsuleSize.height
-        )
+        capsule.translatesAutoresizingMaskIntoConstraints = false
+        capsule.prefersFullBoundsHitTesting = true
         addSubview(capsule)
+        NSLayoutConstraint.activate([
+            capsule.centerXAnchor.constraint(equalTo: centerXAnchor),
+            capsule.centerYAnchor.constraint(equalTo: centerYAnchor),
+            capsule.widthAnchor.constraint(equalToConstant: capsuleSize.width),
+            capsule.heightAnchor.constraint(equalToConstant: capsuleSize.height)
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -167,25 +173,6 @@ final class StudyPanelNavTitleHost: UIView {
     override var intrinsicContentSize: CGSize { hostSize }
 
     override func sizeThatFits(_ size: CGSize) -> CGSize { hostSize }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        capsule.center = CGPoint(x: bounds.midX, y: bounds.midY)
-        guard let bar = enclosingNavigationBar(), let container = superview else { return }
-        let desiredX = bar.convert(CGPoint(x: bar.bounds.midX, y: 0), to: container).x
-        if abs(center.x - desiredX) > 0.5 {
-            center = CGPoint(x: desiredX, y: center.y)
-        }
-    }
-
-    private func enclosingNavigationBar() -> UINavigationBar? {
-        var node: UIView? = superview
-        while let cur = node {
-            if let bar = cur as? UINavigationBar { return bar }
-            node = cur.superview
-        }
-        return nil
-    }
 }
 
 /// ▲ expands AI / ▼ collapses reading — same left▲ right▼ chip.
@@ -196,7 +183,6 @@ final class StudyPanelStageCapsule: UIView {
 
     private let upButton = UIButton(type: .custom)
     private let downButton = UIButton(type: .custom)
-    private let divider = UIView()
     private var axisConstraints: [NSLayoutConstraint] = []
     private(set) var axis: NSLayoutConstraint.Axis = .vertical
     private let buttonHitSlop: CGFloat = 12
@@ -222,11 +208,10 @@ final class StudyPanelStageCapsule: UIView {
         [upButton, downButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             $0.isExclusiveTouch = true
+            $0.backgroundColor = .clear
+            $0.adjustsImageWhenHighlighted = false
             addSubview($0)
         }
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.isUserInteractionEnabled = false
-        addSubview(divider)
 
         upButton.addTarget(self, action: #selector(upTapped), for: .touchUpInside)
         downButton.addTarget(self, action: #selector(downTapped), for: .touchUpInside)
@@ -236,10 +221,10 @@ final class StudyPanelStageCapsule: UIView {
         downButton.addTarget(self, action: #selector(stageTouchDown(_:)), for: .touchDown)
         upButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         downButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-        upButton.setImage(ActionIconFactory.image(.chevronUp, pointSize: 12), for: .normal)
-        downButton.setImage(ActionIconFactory.image(.chevronDown, pointSize: 12), for: .normal)
-        upButton.connectsSetContentInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
-        downButton.connectsSetContentInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+        upButton.setImage(ActionIconFactory.image(.chevronUp, pointSize: 13), for: .normal)
+        downButton.setImage(ActionIconFactory.image(.chevronDown, pointSize: 13), for: .normal)
+        upButton.connectsSetContentInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
+        downButton.connectsSetContentInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
 
         setAxis(.horizontal)
         applyTheme()
@@ -291,23 +276,18 @@ final class StudyPanelStageCapsule: UIView {
         self.axis = .horizontal
         NSLayoutConstraint.deactivate(axisConstraints)
         axisConstraints.removeAll()
-        let hair = 1 / UIScreen.main.scale
         layer.cornerRadius = Self.chipHeight / 2
+        // One continuous pill — no center hairline / half-fill split.
         axisConstraints = [
             upButton.leadingAnchor.constraint(equalTo: leadingAnchor),
             upButton.topAnchor.constraint(equalTo: topAnchor),
             upButton.bottomAnchor.constraint(equalTo: bottomAnchor),
-            upButton.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.5),
+            upButton.trailingAnchor.constraint(equalTo: centerXAnchor),
 
+            downButton.leadingAnchor.constraint(equalTo: centerXAnchor),
             downButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             downButton.topAnchor.constraint(equalTo: topAnchor),
-            downButton.bottomAnchor.constraint(equalTo: bottomAnchor),
-            downButton.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.5),
-
-            divider.centerXAnchor.constraint(equalTo: centerXAnchor),
-            divider.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            divider.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
-            divider.widthAnchor.constraint(equalToConstant: hair)
+            downButton.bottomAnchor.constraint(equalTo: bottomAnchor)
         ]
         NSLayoutConstraint.activate(axisConstraints)
     }
@@ -320,14 +300,13 @@ final class StudyPanelStageCapsule: UIView {
     func applyTheme(elevated: Bool) {
         _ = elevated
         let c = DSTheme.c
-        backgroundColor = c.accent.withAlphaComponent(0.08)
-        layer.borderColor = c.accent.withAlphaComponent(0.22).cgColor
+        backgroundColor = c.accent.withAlphaComponent(0.10)
+        layer.borderColor = c.accent.withAlphaComponent(0.20).cgColor
         layer.shadowOpacity = 0
         layer.shadowRadius = 0
         layer.shadowPath = nil
-        divider.backgroundColor = c.accent.withAlphaComponent(0.18)
         upButton.tintColor = c.accent
-        downButton.tintColor = c.textSecondary
+        downButton.tintColor = c.accent
         refreshStageButtonBackgrounds()
     }
 
@@ -336,27 +315,25 @@ final class StudyPanelStageCapsule: UIView {
         let canDown = stage != .collapsed
         upButton.isEnabled = canUp
         downButton.isEnabled = canDown
-        upButton.alpha = canUp ? 1 : 0.32
-        downButton.alpha = canDown ? 1 : 0.32
+        upButton.alpha = canUp ? 1 : 0.34
+        downButton.alpha = canDown ? 1 : 0.34
         upButton.isUserInteractionEnabled = canUp
         downButton.isUserInteractionEnabled = canDown
         refreshStageButtonBackgrounds()
     }
 
     private func refreshStageButtonBackgrounds() {
-        let c = DSTheme.c
-        upButton.backgroundColor = upButton.isEnabled ? c.accent.withAlphaComponent(0.10) : .clear
-        downButton.backgroundColor = downButton.isEnabled ? c.surfaceHover.withAlphaComponent(0.55) : .clear
+        upButton.backgroundColor = .clear
+        downButton.backgroundColor = .clear
     }
 
     @objc private func stageTouchDown(_ sender: UIButton) {
-        let c = DSTheme.c
-        sender.backgroundColor = sender === upButton
-            ? c.accent.withAlphaComponent(0.18)
-            : c.textSecondary.withAlphaComponent(0.12)
+        sender.alpha = 0.55
     }
 
     @objc private func stageTouchUp(_ sender: UIButton) {
+        let enabled = sender.isEnabled
+        sender.alpha = enabled ? 1 : 0.34
         refreshStageButtonBackgrounds()
     }
 

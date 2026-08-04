@@ -6383,8 +6383,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         // Document Study can hide the chat sidebar toggle while reading; workspace
         // sessions keep it (archive / switch chats) like a normal conversation.
-        let hideSidebar = hasStudyDoc && !isWorkspace && !studyShowsSidebarToggle
-        navigationItem.leftBarButtonItem = hideSidebar ? nil : sidebarToggleItem
+        // iPhone / compact: reader top bar (or edge swipe) owns the drawer — never
+        // duplicate the sidebar key on chat nav; that slot holds + / history instead.
+        let phoneLike = UIDevice.current.userInterfaceIdiom == .phone || isCompactChrome
+        let inStudy = hasStudyDoc || isWorkspace || studyChromeMode != .none
+        if phoneLike, inStudy {
+            // leftBarButtonItems filled in refreshRightBarButtons().
+            navigationItem.leftBarButtonItem = nil
+        } else {
+            let hideSidebar = hasStudyDoc && !isWorkspace && !studyShowsSidebarToggle
+            navigationItem.leftBarButtonItems = nil
+            navigationItem.leftBarButtonItem = hideSidebar ? nil : sidebarToggleItem
+        }
         if isViewLoaded, turnContextBarTopToSafe != nil, turnContextBarTopToView != nil {
             let portraitPanel = studyChromeMode == .portraitPanel
             turnContextBarTopToSafe.isActive = !portraitPanel
@@ -6400,11 +6410,26 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     func syncStudyPanelStageControl() {
-        // Model / AI 选项 live only in the input bar. Stage ▲▼ is the floating
-        // shell chip (nav titleView was not hittable right after half-open).
-        if navigationItem.titleView === studyPanelNavHost || navigationItem.titleView === modelButton {
+        // ▲▼ stay on the shell floating chip (stable placement). Never install
+        // them as nav titleView — that rode the animating chatHost and looked
+        // like the control was flying up/down the screen.
+        if navigationItem.titleView === studyPanelNavHost
+            || navigationItem.titleView === modelButton {
             navigationItem.titleView = nil
         }
+    }
+
+    /// Custom view used to align the floating ▲▼ chip with + / history / ⋯.
+    func studyChromeAlignView() -> UIView? {
+        let items =
+            (navigationItem.leftBarButtonItems ?? [])
+            + (navigationItem.rightBarButtonItems ?? [])
+        for item in items {
+            if let view = item.customView, view.bounds.height > 1, view.window != nil {
+                return view
+            }
+        }
+        return nil
     }
 
     /// Slide Over / narrow width: tighter chrome for 网课侧拉.
@@ -6731,7 +6756,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     /// Prefer matching by action — `rightBarButtonItems` order is rightmost-first and fragile.
     private func studyBarButtonItem(matching action: Selector) -> UIBarButtonItem? {
-        navigationItem.rightBarButtonItems?.first { $0.action == action }
+        if let item = navigationItem.rightBarButtonItems?.first(where: { $0.action == action }) {
+            return item
+        }
+        if let item = navigationItem.leftBarButtonItems?.first(where: { $0.action == action }) {
+            return item
+        }
+        if navigationItem.leftBarButtonItem?.action == action {
+            return navigationItem.leftBarButtonItem
+        }
+        return nil
     }
 
     @objc private func moreTapped() {
@@ -6750,22 +6784,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let moreItem = studyBarButtonItem(matching: #selector(moreTapped))
             ?? navigationItem.rightBarButtonItems?.first
-        // Compact / iPhone: + and history live here so they don't collide with ▲▼.
-        if isStudySessionActive(), prefersCompactStudyNavChrome {
-            let isWorkspace = conv.isWorkspaceStudySession
-            items.append(ConnectsMenuItem(
-                title: isWorkspace ? "同工作区新对话" : "同文件新对话",
-                icon: .plus
-            ) { [weak self] in
-                self?.studyNewChatTapped()
-            })
-            items.append(ConnectsMenuItem(
-                title: isWorkspace ? "同工作区对话" : "同文件对话",
-                icon: .clock
-            ) { [weak self] in
-                self?.studyHistoryTapped()
-            })
-        }
         items.append(ConnectsMenuItem(title: "打开…", icon: .book) { [weak self] in
             guard let self else { return }
             if let shell = self.studyContextProvider {
@@ -6957,9 +6975,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateModelButton()
     }
 
-    /// Narrow chat chrome (iPhone / Slide Over): keep only ⋯ so the floating ▲▼
-    /// capsule does not sit on top of + / history.
-    private var prefersCompactStudyNavChrome: Bool {
+    /// iPhone Study: put + / history on the leading side (no duplicate sidebar key).
+    /// Wider iPad keeps them on the trailing side next to ⋯.
+    private var prefersLeadingStudyConversationButtons: Bool {
         if isCompactChrome { return true }
         if UIDevice.current.userInterfaceIdiom == .phone { return true }
         let width = view.window?.bounds.width ?? view.bounds.width
@@ -6967,31 +6985,144 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func refreshRightBarButtons() {
-        let moreItem = ActionIconFactory.barItem(
-            kind: .more,
-            target: self,
-            action: #selector(moreTapped),
-            accessibility: "更多"
-        )
-        if isStudySessionActive(), !prefersCompactStudyNavChrome {
-            let conv = ConversationStore.shared.currentConversation
-            let isWorkspace = conv?.isWorkspaceStudySession == true
+        // iPhone Study: compact chrome next to ▲▼; hide iOS 26 glass frames (they looked like
+        // oversized outer pills around + / history / ⋯).
+        let compactChrome = prefersLeadingStudyConversationButtons
+        let moreItem = compactChrome
+            ? Self.compactStudyBarItem(
+                kind: .more,
+                target: self,
+                action: #selector(moreTapped),
+                accessibility: "更多"
+            )
+            : ActionIconFactory.barItem(
+                kind: .more,
+                target: self,
+                action: #selector(moreTapped),
+                accessibility: "更多"
+            )
+        Self.hideBarItemGlass(moreItem)
+
+        guard isStudySessionActive() else {
+            navigationItem.leftBarButtonItems = nil
+            if let sidebar = sidebarToggleItem {
+                Self.hideBarItemGlass(sidebar)
+            }
+            navigationItem.leftBarButtonItem = sidebarToggleItem
+            navigationItem.rightBarButtonItems = [moreItem]
+            return
+        }
+
+        let conv = ConversationStore.shared.currentConversation
+        let isWorkspace = conv?.isWorkspaceStudySession == true
+        let historyA11y = isWorkspace ? "同工作区对话" : "同文件对话"
+        let newChatA11y = isWorkspace ? "同工作区新对话" : "同文件新对话"
+
+        if compactChrome {
+            // One custom cluster — iOS 26 groups adjacent bar items into one glass pill,
+            // and hidesSharedBackground is ignored inside multi-item groups.
+            let cluster = Self.compactStudyConversationCluster(
+                target: self,
+                newChatAction: #selector(studyNewChatTapped),
+                historyAction: #selector(studyHistoryTapped),
+                newChatAccessibility: newChatA11y,
+                historyAccessibility: historyA11y
+            )
+            Self.hideBarItemGlass(cluster)
+            navigationItem.leftBarButtonItem = nil
+            navigationItem.leftBarButtonItems = [cluster]
+            navigationItem.rightBarButtonItems = [moreItem]
+        } else {
             let historyItem = ActionIconFactory.barItem(
                 kind: .clock,
                 target: self,
                 action: #selector(studyHistoryTapped),
-                accessibility: isWorkspace ? "同工作区对话" : "同文件对话"
+                accessibility: historyA11y
             )
             let newChatItem = ActionIconFactory.barItem(
                 kind: .plus,
                 target: self,
                 action: #selector(studyNewChatTapped),
-                accessibility: isWorkspace ? "同工作区新对话" : "同文件新对话"
+                accessibility: newChatA11y
             )
-            // UIKit: first item is rightmost.
+            Self.hideBarItemGlass(historyItem)
+            Self.hideBarItemGlass(newChatItem)
+            // UIKit: first right item is rightmost.
             navigationItem.rightBarButtonItems = [moreItem, historyItem, newChatItem]
-        } else {
-            navigationItem.rightBarButtonItems = [moreItem]
+        }
+    }
+
+    /// Compact chrome next to the stage ▲▼ chip — same 30pt height as the capsule.
+    private static func compactStudyBarItem(
+        kind: ActionIconFactory.Kind,
+        target: Any?,
+        action: Selector,
+        accessibility: String
+    ) -> UIBarButtonItem {
+        let side = StudyPanelStageCapsule.chipHeight
+        let button = UIButton(type: .system)
+        button.frame = CGRect(x: 0, y: 0, width: side, height: side)
+        button.setImage(ActionIconFactory.image(kind, pointSize: 15), for: .normal)
+        button.tintColor = DSTheme.c.textSecondary
+        button.accessibilityLabel = accessibility
+        if let target {
+            button.addTarget(target, action: action, for: .touchUpInside)
+        }
+        let item = UIBarButtonItem(customView: button)
+        item.accessibilityLabel = accessibility
+        item.target = target as AnyObject?
+        item.action = action
+        return item
+    }
+
+    /// + and history in one custom view so iOS 26 won’t wrap them in a shared glass capsule.
+    private static func compactStudyConversationCluster(
+        target: Any?,
+        newChatAction: Selector,
+        historyAction: Selector,
+        newChatAccessibility: String,
+        historyAccessibility: String
+    ) -> UIBarButtonItem {
+        let side = StudyPanelStageCapsule.chipHeight
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 2
+        stack.isUserInteractionEnabled = true
+
+        func makeButton(kind: ActionIconFactory.Kind, action: Selector, a11y: String) -> UIButton {
+            let button = UIButton(type: .system)
+            button.setImage(ActionIconFactory.image(kind, pointSize: 15), for: .normal)
+            button.tintColor = DSTheme.c.textSecondary
+            button.accessibilityLabel = a11y
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: side),
+                button.heightAnchor.constraint(equalToConstant: side)
+            ])
+            if let target {
+                button.addTarget(target, action: action, for: .touchUpInside)
+            }
+            return button
+        }
+
+        let plus = makeButton(kind: .plus, action: newChatAction, a11y: newChatAccessibility)
+        let clock = makeButton(kind: .clock, action: historyAction, a11y: historyAccessibility)
+        stack.addArrangedSubview(plus)
+        stack.addArrangedSubview(clock)
+        stack.frame = CGRect(x: 0, y: 0, width: side * 2 + 2, height: side)
+
+        let item = UIBarButtonItem(customView: stack)
+        item.accessibilityLabel = "\(newChatAccessibility)，\(historyAccessibility)"
+        // Menu / toast anchors prefer the history control.
+        item.target = target as AnyObject?
+        item.action = historyAction
+        return item
+    }
+
+    private static func hideBarItemGlass(_ item: UIBarButtonItem) {
+        if #available(iOS 26.0, *) {
+            item.hidesSharedBackground = true
         }
     }
 

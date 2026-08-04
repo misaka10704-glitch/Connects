@@ -210,6 +210,19 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
 
     // MARK: - Public Study surface
 
+    /// Top hugs Study chrome (contentHost is already below the top bar — do NOT
+    /// re-apply window safeArea.top or pages look empty under the title).
+    /// Bottom clears floating ▲▼ chip + home-indicator band.
+    private static var readingContentInsets: (top: CGFloat, bottom: CGFloat) {
+        let phone = UIDevice.current.userInterfaceIdiom == .phone
+        let handleInset: CGFloat = phone ? 18 : 12
+        let chip = StudyPanelStageCapsule.chipHeight
+        return (
+            top: 0,
+            bottom: chip + handleInset + 16
+        )
+    }
+
     func setReaderSurfaceActive(_ active: Bool) { readerSurfaceActive = active }
     func setSidebarButtonHidden(_ hidden: Bool) {
         sidebarButton.isHidden = hidden
@@ -418,10 +431,12 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         var config = EPUBNavigatorViewController.Configuration()
         config.preferences = makeEPUBPreferences()
         config.defaults = EPUBDefaults(pageMargins: 0.85, scroll: false, spread: .never)
-        // Study already has a top bar — keep Readium page gutters modest.
+        // Study top bar already provides chrome — hug it at the top.
+        // Bottom must clear the floating ▲▼ stage chip on both iPhone and iPad.
+        let insets = Self.readingContentInsets
         config.contentInset = [
-            .compact: (top: 12, bottom: 12),
-            .regular: (top: 16, bottom: 16),
+            .compact: insets,
+            .regular: insets,
         ]
         let rs = readingSystemCSSColors()
         // Wide enough for iPad, but keep a readable side gutter (not edge-to-edge).
@@ -788,6 +803,14 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
     }
 
     // MARK: - NavigatorDelegate
+
+    /// contentHost already sits under our Study top bar (past the status bar).
+    /// Readium’s default path re-applies window.safeAreaInsets.top and leaves a
+    /// large blank band under the chrome — override with our reading insets only.
+    func navigatorContentInset(_ navigator: VisualNavigator) -> UIEdgeInsets? {
+        let pad = Self.readingContentInsets
+        return UIEdgeInsets(top: pad.top, left: 0, bottom: pad.bottom, right: 0)
+    }
 
     func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
         lastLocatorJSON = try? locator.jsonString()
