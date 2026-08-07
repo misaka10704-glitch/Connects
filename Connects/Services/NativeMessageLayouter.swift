@@ -238,18 +238,21 @@ final class NativeMessageLayouter {
                     color: style.colors.textSecondary,
                     renderMissingFormulas: renderMissingFormulas
                 )
-                let height = textHeight(attributed, width: width - inset - 2)
+                let height = textHeight(attributed, width: width - inset - 8)
+                let padY: CGFloat = 6
+                let fill = CGRect(x: 0, y: y, width: width, height: height + padY * 2)
+                commands.append(.fill(fill, style.colors.mdQuoteFill, 8))
                 commands.append(.line(
-                    CGPoint(x: 1.5, y: y),
-                    CGPoint(x: 1.5, y: y + height),
-                    style.colors.border,
-                    3
+                    CGPoint(x: 3, y: y + 4),
+                    CGPoint(x: 3, y: y + height + padY * 2 - 4),
+                    style.colors.mdQuoteBar,
+                    3.5
                 ))
                 commands.append(.text(fragment(
                     attributed,
-                    frame: CGRect(x: inset, y: y, width: width - inset, height: height)
+                    frame: CGRect(x: inset, y: y + padY, width: width - inset - 6, height: height)
                 )))
-                y += height + 10
+                y += height + padY * 2 + 10
 
             case .codeBlock(let language, let code):
                 expectReferencesList = false
@@ -394,9 +397,11 @@ final class NativeMessageLayouter {
                     height: rowHeight
                 )
                 if rowIndex == 0 {
-                    commands.append(.fill(cell, style.colors.surfaceHover.withAlphaComponent(0.45), 0))
+                    commands.append(.fill(cell, style.colors.mdTableHeaderFill, 0))
+                } else if rowIndex % 2 == 0 {
+                    commands.append(.fill(cell, style.colors.mdTableStripeFill, 0))
                 }
-                commands.append(.stroke(cell, style.colors.border, 1 / UIScreen.main.scale))
+                commands.append(.stroke(cell, style.colors.border.withAlphaComponent(0.85), 1 / UIScreen.main.scale))
                 commands.append(.text(fragment(
                     cellTexts[column],
                     frame: cell.insetBy(dx: padding, dy: padding)
@@ -430,6 +435,7 @@ final class NativeMessageLayouter {
                                   font: UIFont,
                                   color: UIColor? = nil,
                                   linkStyle: LinkStyle = .default,
+                                  mathBold: Bool = false,
                                   renderMissingFormulas: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let foreground = color ?? style.colors.textPrimary
@@ -443,8 +449,9 @@ final class NativeMessageLayouter {
                     children,
                     style: style,
                     font: bold,
-                    color: foreground,
+                    color: style.colors.mdBoldFg,
                     linkStyle: linkStyle,
+                    mathBold: true,
                     renderMissingFormulas: renderMissingFormulas
                 ))
             case .italic(let children):
@@ -455,23 +462,25 @@ final class NativeMessageLayouter {
                     font: UIFont(descriptor: descriptor, size: font.pointSize),
                     color: foreground,
                     linkStyle: linkStyle,
+                    mathBold: mathBold,
                     renderMissingFormulas: renderMissingFormulas
                 ))
             case .inlineCode(let code):
                 result.append(NSAttributedString(string: code, attributes: [
                     .font: DSTheme.monoFont(size: font.pointSize * 0.9),
-                    .foregroundColor: foreground,
-                    .backgroundColor: style.colors.surfaceHover.withAlphaComponent(0.65)
+                    .foregroundColor: style.colors.mdInlineCodeFg,
+                    .backgroundColor: style.colors.mdInlineCodeFill
                 ]))
             case .link(let children, let url):
                 let start = result.length
-                let linkColor = linkStyle == .reference ? style.colors.accent : style.colors.accent
+                let linkColor = linkStyle == .reference ? style.colors.mdLinkFg : style.colors.mdLinkFg
                 result.append(attributedString(
                     children,
                     style: style,
                     font: font,
                     color: linkColor,
                     linkStyle: linkStyle,
+                    mathBold: mathBold,
                     renderMissingFormulas: renderMissingFormulas
                 ))
                 let range = NSRange(location: start, length: result.length - start)
@@ -486,10 +495,12 @@ final class NativeMessageLayouter {
                     }
                 }
             case .inlineMath(let tex):
+                let mathTex = boldMathTeXIfNeeded(tex, mathBold: mathBold)
+                let mathColor = inlineMathColor(tex: mathTex, mathBold: mathBold, style: style, fallback: foreground)
                 if renderMissingFormulas, let formula = NativeFormulaRenderer.shared.artifact(
-                    tex: tex,
+                    tex: mathTex,
                     fontSize: font.pointSize,
-                    color: foreground,
+                    color: mathColor,
                     display: false
                 ) {
                     let attachment = NSTextAttachment()
@@ -509,10 +520,10 @@ final class NativeMessageLayouter {
                     result.append(NSAttributedString(attachment: attachment))
                 } else {
                     appendInlineMathPreview(
-                        tex: tex,
+                        tex: mathTex,
                         to: result,
                         font: font,
-                        foreground: foreground,
+                        foreground: mathColor,
                         style: style
                     )
                 }
@@ -529,6 +540,31 @@ final class NativeMessageLayouter {
 
     private func baseAttributes(font: UIFont, color: UIColor) -> [NSAttributedString.Key: Any] {
         [.font: font, .foregroundColor: color]
+    }
+
+    /// When math is nested under `**...**`, iosMath needs `\boldsymbol` (plain bold font
+    /// does not affect equation glyphs).
+    private func boldMathTeXIfNeeded(_ tex: String, mathBold: Bool) -> String {
+        let trimmed = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard mathBold, !trimmed.isEmpty else { return tex }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("\\boldsymbol{") || lower.hasPrefix("\\mathbf{") || lower.hasPrefix("\\bm{") {
+            return trimmed
+        }
+        return "\\boldsymbol{\(trimmed)}"
+    }
+
+    private func inlineMathColor(tex: String,
+                                 mathBold: Bool,
+                                 style: NativeLayoutStyle,
+                                 fallback: UIColor) -> UIColor {
+        if mathBold || isBoldMathTeX(tex) { return style.colors.mdBoldFg }
+        return fallback
+    }
+
+    private func isBoldMathTeX(_ tex: String) -> Bool {
+        let lower = tex.lowercased()
+        return lower.contains("\\boldsymbol{") || lower.contains("\\mathbf{") || lower.contains("\\bm{")
     }
 
     private func bodyFont(_ style: NativeLayoutStyle) -> UIFont {
@@ -586,8 +622,8 @@ final class NativeMessageLayouter {
             font: mono,
             color: style.colors.textPrimary,
             mutedColor: style.colors.textSecondary,
-            cardFill: style.colors.surfaceHover.withAlphaComponent(0.72),
-            cardBorder: style.colors.border.withAlphaComponent(0.55),
+            cardFill: style.colors.mdCodeBlockFill,
+            cardBorder: style.colors.mdCodeBlockBorder.withAlphaComponent(0.9),
             lineStep: lineStep,
             showsFade: showsFade
         )))

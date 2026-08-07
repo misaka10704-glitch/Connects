@@ -132,6 +132,95 @@ final class ThemeManager {
     }
 }
 
+/// Everforest Dark–aligned reading chrome (Typora). Page `background` stays Connects default.
+extension ThemeColors {
+    var isLightAppearance: Bool {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        if background.getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.55
+        }
+        var w: CGFloat = 0
+        if background.getWhite(&w, alpha: &a) { return w > 0.55 }
+        return true
+    }
+
+    /// Everforest Green — `**bold**` / `\boldsymbol`.
+    var mdBoldFg: UIColor {
+        isLightAppearance
+            ? UIColor(red: 141/255, green: 161/255, blue: 1/255, alpha: 1)   // #8da101
+            : UIColor(red: 167/255, green: 192/255, blue: 128/255, alpha: 1) // #a7c080
+    }
+
+    /// Everforest Blue — markdown links.
+    var mdLinkFg: UIColor {
+        isLightAppearance
+            ? UIColor(red: 58/255, green: 148/255, blue: 197/255, alpha: 1)  // #3a94c5
+            : UIColor(red: 127/255, green: 187/255, blue: 179/255, alpha: 1) // #7fbbb3
+    }
+
+    var mdQuoteBar: UIColor { mdLinkFg }
+
+    var mdQuoteFill: UIColor {
+        mdLinkFg.withAlphaComponent(isLightAppearance ? 0.08 : 0.11)
+    }
+
+    /// Everforest Orange — inline `` `code` ``.
+    var mdInlineCodeFg: UIColor {
+        isLightAppearance
+            ? UIColor(red: 245/255, green: 125/255, blue: 38/255, alpha: 1)  // #f57d26
+            : UIColor(red: 230/255, green: 152/255, blue: 117/255, alpha: 1) // #e69875
+    }
+
+    var mdInlineCodeFill: UIColor {
+        isLightAppearance
+            ? UIColor(red: 245/255, green: 125/255, blue: 38/255, alpha: 0.10)
+            : UIColor(red: 52/255, green: 63/255, blue: 68/255, alpha: 0.85) // bg1 tint
+    }
+
+    /// Code fence panel — everforest bg1/bg2, not page background.
+    var mdCodeBlockFill: UIColor {
+        isLightAppearance
+            ? UIColor(red: 244/255, green: 240/255, blue: 217/255, alpha: 1)
+            : UIColor(red: 52/255, green: 63/255, blue: 68/255, alpha: 1)    // #343f44
+    }
+
+    var mdCodeBlockBorder: UIColor {
+        isLightAppearance
+            ? UIColor(red: 147/255, green: 159/255, blue: 145/255, alpha: 0.55)
+            : UIColor(red: 79/255, green: 88/255, blue: 94/255, alpha: 1)  // #4f585e
+    }
+
+    var mdTableHeaderFill: UIColor {
+        mdBoldFg.withAlphaComponent(isLightAppearance ? 0.12 : 0.14)
+    }
+
+    var mdTableStripeFill: UIColor {
+        isLightAppearance
+            ? UIColor(red: 141/255, green: 161/255, blue: 1/255, alpha: 0.05)
+            : UIColor(red: 167/255, green: 192/255, blue: 128/255, alpha: 0.05)
+    }
+
+    var mdHeadingRule: UIColor {
+        isLightAppearance
+            ? UIColor(red: 147/255, green: 159/255, blue: 145/255, alpha: 0.65)
+            : UIColor(red: 79/255, green: 88/255, blue: 94/255, alpha: 1)  // bg4
+    }
+
+    /// Everforest Yellow — `==mark==` / highlight.
+    var mdMarkFill: UIColor {
+        isLightAppearance
+            ? UIColor(red: 223/255, green: 160/255, blue: 0/255, alpha: 0.35)
+            : UIColor(red: 219/255, green: 188/255, blue: 127/255, alpha: 0.32) // #dbbc7f
+    }
+
+    /// Display-math panel tint (subtle bg2 on existing page).
+    var mdMathDisplayFill: UIColor {
+        isLightAppearance
+            ? UIColor(red: 141/255, green: 161/255, blue: 1/255, alpha: 0.06)
+            : UIColor(red: 61/255, green: 72/255, blue: 77/255, alpha: 0.55)  // #3d484d
+    }
+}
+
 protocol ThemeRefreshable: AnyObject {
     func applyTheme()
 }

@@ -154,4 +154,45 @@ final class NativeMathParseTests: XCTestCase {
         )
         XCTAssertTrue(hasFormulaImage(layout), describe(doc.blocks))
     }
+
+    func testBoldWrappedInlineMathNormalizesAndParses() {
+        NativeMarkdownParser.shared.clear()
+        let raw = "使得**$y(t)=H(j\\omega)e^{j\\omega t}$**恒成立"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(
+            normalized.contains("\\boldsymbol{"),
+            "bold-wrapped math should become boldsymbol: \(normalized)"
+        )
+        XCTAssertFalse(
+            normalized.contains("**$"),
+            "markdown bold markers around pure math should be peeled: \(normalized)"
+        )
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .paragraph(let inlines) = $0 {
+                return inlines.contains {
+                    if case .inlineMath(let tex) = $0 {
+                        return tex.contains("y(t)")
+                    }
+                    return false
+                }
+            }
+            return false
+        }), describe(doc.blocks))
+    }
+
+    func testBoldWrappedConvolutionMathKeepsAsteriskInsideTeX() {
+        NativeMarkdownParser.shared.clear()
+        let raw = "**$x(t)*h(t)$**"
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        guard case .paragraph(let inlines) = doc.blocks.first else {
+            return XCTFail(describe(doc.blocks))
+        }
+        XCTAssertTrue(inlines.contains {
+            if case .inlineMath(let tex) = $0 {
+                return tex.contains("x(t)") && tex.contains("h(t)")
+            }
+            return false
+        }, describe(doc.blocks))
+    }
 }

@@ -146,7 +146,7 @@ enum PlainMarkdown {
                     let bold = String(s[start..<endRange.lowerBound])
                     out.append(NSAttributedString(string: bold, attributes: [
                         .font: boldFont,
-                        .foregroundColor: textColor
+                        .foregroundColor: DSTheme.c.mdBoldFg
                     ]))
                     i = endRange.upperBound
                     continue

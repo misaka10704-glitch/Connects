@@ -23,6 +23,7 @@ enum MarkdownHTMLRenderer {
         let bg = cssColor(backgroundColor)
         let sec = cssColor(secondaryColor)
         let border = cssColor(textColor.withAlphaComponent(0.16))
+        let chrome = readingChromeCSS(compact: true, secondary: sec, border: border)
         let katexCSS = includeMath ? #"<link rel="stylesheet" href="katex/katex.min.css"/>"# : ""
         let katexJS = includeMath
             ? #"<script src="katex/katex.min.js"></script><script src="katex/auto-render.min.js"></script>"#
@@ -63,21 +64,7 @@ enum MarkdownHTMLRenderer {
           #c p { margin:0.5em 0; }
           #c ul, #c ol { margin:0.4em 0; padding-left:1.35em; }
           #c li { margin:0.2em 0; }
-          #c strong { font-weight:700; }
-          #c em { font-style:italic; }
-          #c a { color:#4da3ff; }
-          #c code { font-family:Menlo, Monaco, monospace; font-size:0.9em;
-            background:rgba(127,127,127,0.16); padding:0.12em 0.35em; border-radius:4px; }
-          #c pre { background:rgba(127,127,127,0.12); padding:12px 14px; border-radius:10px;
-            overflow-x:auto; margin:0.7em 0; -webkit-overflow-scrolling:touch; }
-          #c pre code { background:transparent; padding:0; }
-          #c blockquote { margin:0.6em 0; padding:0.1em 0 0.1em 0.9em;
-            border-left:3px solid \(border); color:\(sec); }
-          #c table { border-collapse:collapse; width:100%; margin:0.75em 0; font-size:0.95em;
-            display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
-          #c th, #c td { border:1px solid \(border); padding:7px 10px; text-align:left; }
-          #c th { background:rgba(127,127,127,0.1); font-weight:600; }
-          #c hr { border:none; border-top:1px solid \(border); margin:0.9em 0; }
+          \(chrome)
           .katex-display { margin:0.7em 0; overflow-x:auto; overflow-y:hidden; }
           \(ConnectsWebKit.scrollPerformanceCSS)
         </style>
@@ -112,7 +99,9 @@ enum MarkdownHTMLRenderer {
             var i = 0;
             function stash(re) {
               src = src.replace(re, function(m) {
-                var key = "@@MATH" + (i++) + "@@";
+                // Letter-only tokens: CommonMark treats `@`/`$` as punctuation, so
+                // `中文**@@MATH0@@**中文` would NOT become <strong> (same for raw `**$x$**`).
+                var key = "zzMDMATH" + (i++) + "zz";
                 map.push([key, m]);
                 return key;
               });
@@ -223,6 +212,7 @@ enum MarkdownHTMLRenderer {
     /// Render-time normalize (does not mutate stored conversation text).
     static func normalizeForRender(_ raw: String) -> String {
         var s = normalizeMathDelimiters(raw)
+        s = normalizeEmphasisWrappedMath(s)
         s = s.replacingOccurrences(of: "\r\n", with: "\n")
         s = s.replacingOccurrences(of: "\r", with: "\n")
         // Old / CN model fullwidth table punctuation → GFM
@@ -232,6 +222,33 @@ enum MarkdownHTMLRenderer {
         // Collapse 3+ blank lines left by older plain renderers / copy-paste
         while s.contains("\n\n\n\n") {
             s = s.replacingOccurrences(of: "\n\n\n\n", with: "\n\n\n")
+        }
+        return s
+    }
+
+    /// Typora-style bold/italic around a lone math span: `**$x$**`, `*$x$*`, `**\(x\)**`.
+    /// CommonMark treats `$` as punctuation, so `中文**$x$**中文` never becomes <strong>;
+    /// rewrite to `\boldsymbol` / keep math so both Native and KaTeX render a bold formula.
+    private static func normalizeEmphasisWrappedMath(_ raw: String) -> String {
+        var s = raw
+        // NSRegularExpression templates: `$$` or `\$` → literal `$`; `\\` → `\`.
+        let rules: [(pattern: String, template: String)] = [
+            (#"(?s)\*\*\$\$(.+?)\$\$\*\*"#, #"\$\$\\boldsymbol{$1}\$\$"#),
+            (#"(?s)\*\$\$(.+?)\$\$\*"#, #"\$\$\\boldsymbol{$1}\$\$"#),
+            (#"\*\*\\\((.+?)\\\)\*\*"#, #"\\(\\boldsymbol{$1}\\)"#),
+            (#"\*\\\((.+?)\\\)\*"#, #"\\(\\boldsymbol{$1}\\)"#),
+            (#"\*\*\$([^$\n]+)\$\*\*"#, #"\$\\boldsymbol{$1}\$"#),
+            (#"\*\$([^$\n]+)\$\*"#, #"\$\\boldsymbol{$1}\$"#)
+        ]
+        for rule in rules {
+            guard let re = try? NSRegularExpression(pattern: rule.pattern) else { continue }
+            let range = NSRange(location: 0, length: (s as NSString).length)
+            s = re.stringByReplacingMatches(
+                in: s,
+                options: [],
+                range: range,
+                withTemplate: rule.template
+            )
         }
         return s
     }
@@ -519,6 +536,11 @@ enum MarkdownHTMLRenderer {
         let bg = cssColor(backgroundColor)
         let sec = cssColor(secondaryColor)
         let border = cssColor(textColor.withAlphaComponent(0.16))
+        let chrome = readingChromeCSS(compact: false, secondary: sec, border: border)
+        let headingRule = cssColor(DSTheme.c.mdHeadingRule)
+        let markFill = cssColor(DSTheme.c.mdMarkFill)
+        let mdLink = cssColor(DSTheme.c.mdLinkFg)
+        let mathPanel = cssColor(DSTheme.c.mdMathDisplayFill)
         return """
         <!DOCTYPE html>
         <html>
@@ -528,44 +550,49 @@ enum MarkdownHTMLRenderer {
         <link rel="stylesheet" href="katex/katex.min.css"/>
         <style>
           /* Content defines height; WKWebView.scrollView owns finger scrolling.
-             Avoid height:100% + overflow:auto — that often yields a non-scrollable viewport. */
+             Avoid height:100% + overflow:auto — that often yields a non-scrollable viewport.
+             Reading chrome: Everforest Dark (Typora). Page background stays Connects default. */
           html, body { margin:0; padding:0; background:\(bg); color:\(fg);
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-            font-size:\(String(format: "%.1f", fontSize))px; line-height:1.7;
-            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%; }
-          #c { padding:18px 22px 64px; max-width:52em; margin:0 auto; display:flow-root; }
-          #c h1,#c h2,#c h3,#c h4 { font-weight:600; line-height:1.3; margin:1em 0 0.4em; }
-          #c h1 { font-size:1.45em; } #c h2 { font-size:1.25em; }
-          #c h3 { font-size:1.1em; } #c h4 { font-size:1.02em; }
-          #c p { margin:0.55em 0; }
-          #c ul, #c ol { margin:0.45em 0; padding-left:1.4em; }
-          #c li { margin:0.22em 0; }
-          #c strong { font-weight:700; }
+            font-size:\(String(format: "%.1f", fontSize))px; line-height:1.75;
+            word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
+            -webkit-font-smoothing:antialiased; }
+          #c { padding:20px 24px 72px; max-width:52em; margin:0 auto; display:flow-root; }
+          #c h1,#c h2,#c h3,#c h4,#c h5,#c h6 {
+            font-weight:600; line-height:1.28; margin:1.15em 0 0.45em; letter-spacing:-0.01em;
+          }
+          #c h1 { font-size:1.55em; padding-bottom:0.28em;
+            border-bottom:1px solid \(headingRule); }
+          #c h2 { font-size:1.32em; padding-bottom:0.22em;
+            border-bottom:1px solid \(headingRule); }
+          #c h3 { font-size:1.14em; color:\(fg); }
+          #c h4 { font-size:1.05em; } #c h5,#c h6 { font-size:1em; opacity:0.92; }
+          #c h1:first-child, #c h2:first-child { margin-top:0.15em; }
+          #c p { margin:0.6em 0; }
+          #c ul, #c ol { margin:0.5em 0; padding-left:1.45em; }
+          #c li { margin:0.28em 0; }
+          #c li > p { margin:0.25em 0; }
           #c em { font-style:italic; }
-          #c a { color:#4da3ff; }
-          #c code { font-family:Menlo, Monaco, monospace; font-size:0.9em;
-            background:rgba(127,127,127,0.16); padding:0.12em 0.35em; border-radius:4px; }
-          #c pre { background:rgba(127,127,127,0.12); padding:12px 14px; border-radius:10px;
-            overflow-x:auto; margin:0.75em 0; -webkit-overflow-scrolling:touch; }
-          #c pre code { background:transparent; padding:0; white-space:pre-wrap; word-break:break-word; tab-size:4; }
-          #c blockquote { margin:0.65em 0; padding:0.1em 0 0.1em 0.9em;
-            border-left:3px solid \(border); color:\(sec); }
-          #c table { border-collapse:collapse; width:100%; margin:0.8em 0; font-size:0.95em;
-            table-layout:fixed; word-break:break-word; display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
-          #c th, #c td { border:1px solid \(border); padding:7px 10px; text-align:left; }
-          #c th { background:rgba(127,127,127,0.1); font-weight:600; }
-          #c hr { border:none; border-top:1px solid \(border); margin:1em 0; }
-          #c img { max-width:100%; height:auto; }
+          #c del { color:\(sec); text-decoration:line-through; }
+          #c mark { background:\(markFill); color:inherit; padding:0.05em 0.2em; border-radius:3px; }
+          #c kbd { font-family:Menlo, Monaco, monospace; font-size:0.85em;
+            padding:0.1em 0.4em; border-radius:5px; border:1px solid \(border);
+            background:rgba(127,127,127,0.10); box-shadow:inset 0 -1px 0 rgba(0,0,0,0.08); }
+          #c input[type="checkbox"] { accent-color:\(mdLink); margin-right:0.35em; }
+          \(chrome)
+          #c img { max-width:100%; height:auto; border-radius:8px; }
           #c a[href^="https://connects.local/"],
           #c a[href^="connects-asset:"],
           #c a[href$=".png"], #c a[href$=".jpg"], #c a[href$=".jpeg"],
           #c a[href$=".gif"], #c a[href$=".webp"], #c a[href$=".svg"] {
-            display:inline-block; margin:0.15em 0; padding:0.12em 0.55em;
-            border:1px solid \(border); border-radius:6px;
-            background:rgba(127,127,127,0.10); text-decoration:none;
-            font-size:0.92em; line-height:1.4;
+            display:inline-block; margin:0.15em 0; padding:0.14em 0.6em;
+            border:1px solid \(border); border-radius:8px;
+            background:rgba(127,127,127,0.08); text-decoration:none;
+            font-size:0.92em; line-height:1.4; color:\(mdLink);
           }
-          .katex-display { margin:0.75em 0; overflow-x:auto; overflow-y:hidden; }
+          .katex-display { margin:0.85em 0; padding:0.55em 0.75em; border-radius:10px;
+            background:\(mathPanel); overflow-x:auto; overflow-y:hidden; }
+          ::selection { background:\(mdLink); color:\(bg); }
           img, video { max-width:100%; height:auto; }
         </style>
         <script src="markdown/marked.min.js"></script>
@@ -580,7 +607,9 @@ enum MarkdownHTMLRenderer {
             var i = 0;
             function stash(re) {
               src = src.replace(re, function(m) {
-                var key = "@@MATH" + (i++) + "@@";
+                // Letter-only tokens: CommonMark treats `@`/`$` as punctuation, so
+                // `中文**@@MATH0@@**中文` would NOT become <strong> (same for raw `**$x$**`).
+                var key = "zzMDMATH" + (i++) + "zz";
                 map.push([key, m]);
                 return key;
               });
@@ -753,6 +782,53 @@ enum MarkdownHTMLRenderer {
         }
         out += "\""
         return out
+    }
+
+    /// Shared Typora-like chrome for chat shell + Study preview (same tokens as Native).
+    private static func readingChromeCSS(compact: Bool, secondary: String, border: String) -> String {
+        let c = DSTheme.c
+        let link = cssColor(c.mdLinkFg)
+        let codeBg = cssColor(c.mdInlineCodeFill)
+        let codeFg = cssColor(c.mdInlineCodeFg)
+        let preBg = cssColor(c.mdCodeBlockFill)
+        let preBorder = cssColor(c.mdCodeBlockBorder)
+        let quoteBg = cssColor(c.mdQuoteFill)
+        let quoteBar = cssColor(c.mdQuoteBar)
+        let thBg = cssColor(c.mdTableHeaderFill)
+        let stripe = cssColor(c.mdTableStripeFill)
+        let hrColor = cssColor(c.mdHeadingRule)
+        let boldFg = cssColor(c.mdBoldFg)
+        let prePad = compact ? "10px 12px" : "14px 16px"
+        let quotePad = compact ? "0.35em 0.75em 0.35em 0.85em" : "0.55em 0.9em 0.55em 1em"
+        let preRadius = compact ? "8px" : "10px"
+        let quoteRadius = compact ? "0 6px 6px 0" : "0 8px 8px 0"
+        let preWrap = compact ? "" : "white-space:pre-wrap; word-break:break-word; tab-size:4;"
+        let tableLayout = compact ? "" : "table-layout:fixed; word-break:break-word;"
+        return """
+          #c a { color:\(link); text-decoration:none; border-bottom:1px solid transparent; }
+          #c a:hover { border-bottom-color:\(link); }
+          #c code { font-family:Menlo, Monaco, "SF Mono", monospace; font-size:0.88em;
+            color:\(codeFg); background:\(codeBg); padding:0.12em 0.38em; border-radius:5px; }
+          #c pre { background:\(preBg); border:1px solid \(preBorder); padding:\(prePad);
+            border-radius:\(preRadius); overflow-x:auto; margin:0.8em 0;
+            -webkit-overflow-scrolling:touch; }
+          #c pre code { background:transparent; color:inherit; padding:0; \(preWrap) }
+          #c blockquote { margin:0.75em 0; padding:\(quotePad);
+            border-left:4px solid \(quoteBar); background:\(quoteBg);
+            border-radius:\(quoteRadius); color:\(secondary); }
+          #c blockquote > :first-child { margin-top:0; }
+          #c blockquote > :last-child { margin-bottom:0; }
+          #c table { border-collapse:collapse; width:100%; margin:0.85em 0; font-size:0.95em;
+            \(tableLayout) display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
+            border-radius:8px; }
+          #c th, #c td { border:1px solid \(border); padding:8px 11px; text-align:left; }
+          #c th { background:\(thBg); font-weight:600; color:inherit; }
+          #c tr:nth-child(even) td { background:\(stripe); }
+          #c hr { border:none; height:0; border-top:1px solid \(hrColor); margin:1.15em 0; }
+          #c strong, #c b { color:\(boldFg); font-weight:650; }
+          #c strong .katex, #c b .katex { color:inherit; }
+          #c .katex .mathbf, #c .katex .boldsymbol, #c .katex .bm { color:\(boldFg); }
+        """
     }
 
     private static func cssColor(_ color: UIColor) -> String {

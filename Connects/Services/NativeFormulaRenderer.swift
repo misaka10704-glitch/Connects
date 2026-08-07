@@ -122,6 +122,8 @@ final class NativeFormulaRenderer {
             (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#),
             (#"\\text\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
             (#"\\textbf\{([^{}]*)\}"#, #"\\mathbf{$1}"#),
+            (#"\\boldsymbol\{"#, #"\\mathbf{"#),
+            (#"\\bm\{"#, #"\\mathbf{"#),
             (#"\\begin\{aligned\}"#, #"\\begin{matrix}"#),
             (#"\\end\{aligned\}"#, #"\\end{matrix}"#),
             (#"\\begin\{align\*?\}"#, #"\\begin{matrix}"#),
