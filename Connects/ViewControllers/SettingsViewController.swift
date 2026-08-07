@@ -191,100 +191,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -40)
         ])
 
-        contentStack.addArrangedSubview(makeSectionTitle("外观"))
-        appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
-        appearanceControl.addTarget(self, action: #selector(appearanceChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: appearanceControl, height: 36, inset: 12))
-        contentStack.setCustomSpacing(12, after: contentStack.arrangedSubviews.last!)
-
-        let keepScreenRow = makeSwitchRow(
-            label: keepScreenOnLabel,
-            text: "保持屏幕常亮",
-            sw: keepScreenOnSwitch,
-            isOn: SettingsManager.shared.keepScreenOn,
-            action: #selector(keepScreenOnChanged)
-        )
-        contentStack.addArrangedSubview(makeCard(embedding: keepScreenRow, height: 44, inset: 12))
-        let keepScreenTip = UILabel()
-        keepScreenTip.numberOfLines = 0
-        keepScreenTip.font = DSTheme.bodyFont(size: 13)
-        keepScreenTip.text = "前台使用时防止自动锁屏，方便长时间阅读与对话。切到后台后会恢复系统熄屏。"
-        footerLabels.append(keepScreenTip)
-        contentStack.addArrangedSubview(keepScreenTip)
-        contentStack.setCustomSpacing(16, after: keepScreenTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("聊天字号"))
-        fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
-        fontSizeControl.addTarget(self, action: #selector(fontSizeChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: fontSizeControl, height: 36, inset: 12))
-        let fontTip = UILabel()
-        fontTip.numberOfLines = 0
-        fontTip.font = DSTheme.bodyFont(size: 13)
-        fontTip.text = "调整对话正文与思考区字号。侧栏可用聊天页左上角「关闭 / 侧栏」切换。"
-        footerLabels.append(fontTip)
-        contentStack.addArrangedSubview(fontTip)
-        contentStack.setCustomSpacing(12, after: fontTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("Kimi K3 思考程度"))
-        if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
-            reasoningEffortControl.selectedSegmentIndex = idx
-        } else {
-            reasoningEffortControl.selectedSegmentIndex = 0
-        }
-        reasoningEffortControl.addTarget(self, action: #selector(reasoningEffortChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: reasoningEffortControl, height: 36, inset: 12))
-        let effortTip = UILabel()
-        effortTip.numberOfLines = 0
-        effortTip.font = DSTheme.bodyFont(size: 13)
-        effortTip.text = "仅影响 Kimi K3。默认「低」以减少等待；难题可改为「高」或「最大」。也可在输入栏长按灯泡切换。"
-        footerLabels.append(effortTip)
-        contentStack.addArrangedSubview(effortTip)
-        contentStack.setCustomSpacing(12, after: effortTip)
-
-        let turnContextRow = makeSwitchRow(
-            label: turnContextBarLabel,
-            text: "显示「问题」跳转条",
-            sw: turnContextBarSwitch,
-            isOn: SettingsManager.shared.turnContextBarEnabled,
-            action: #selector(turnContextBarChanged)
-        )
-        contentStack.addArrangedSubview(makeCard(embedding: turnContextRow, height: 44, inset: 12))
-        let turnContextTip = UILabel()
-        turnContextTip.numberOfLines = 0
-        turnContextTip.font = DSTheme.bodyFont(size: 13)
-        turnContextTip.text = "聊天页顶部显示当前可见回复对应的问题；点按可从本对话全部问题中选择并跳转。"
-        footerLabels.append(turnContextTip)
-        contentStack.addArrangedSubview(turnContextTip)
-        contentStack.setCustomSpacing(22, after: turnContextTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("开发者"))
-        let debugRow = makeSwitchRow(
-            label: renderDebugLabel,
-            text: "聊天布局调试框（红=列，绿=原生回复，蓝=用户气泡）",
-            sw: renderDebugSwitch,
-            isOn: SettingsManager.shared.renderDebugOverlayEnabled,
-            action: #selector(renderDebugChanged)
-        )
-        contentStack.addArrangedSubview(debugRow)
-        let debugTip = UILabel()
-        debugTip.numberOfLines = 0
-        debugTip.font = DSTheme.bodyFont(size: 13)
-        debugTip.text = "用于排查气泡空白、高度异常等问题。开启后返回聊天页即可看到描边。"
-        footerLabels.append(debugTip)
-        contentStack.addArrangedSubview(debugTip)
-        contentStack.setCustomSpacing(22, after: debugTip)
-
-        contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
-        contentStack.addArrangedSubview(modelVisibility)
-        cards.append(modelVisibility)
-        let visTip = UILabel()
-        visTip.numberOfLines = 0
-        visTip.font = DSTheme.bodyFont(size: 13)
-        visTip.text = "关掉的模型不会出现在顶栏选择列表里。至少保留一个。"
-        footerLabels.append(visTip)
-        contentStack.addArrangedSubview(visTip)
-        contentStack.setCustomSpacing(22, after: visTip)
-
+        // 1. API keys first — cold-start path.
         contentStack.addArrangedSubview(makeSectionTitle("DeepSeek（Pro / Flash 共用）"))
         configureField(deepseekField)
         deepseekField.text = SettingsManager.shared.deepseekAPIKey
@@ -339,11 +246,91 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let tip = UILabel()
         tip.numberOfLines = 0
         tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串，不可混用。图片：Kimi / Qwen / 豆包。联网 / 深度思考：输入栏地球与灯泡图标。"
+        tip.text = "Key 存在本机钥匙串，不可混用。填写后请点左上角「完成」才会保存生效。图片：Kimi / Qwen / 豆包。联网 / 深度思考：输入栏地球与灯泡图标。"
         footerLabels.append(tip)
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
 
+        // 2. Visible models
+        contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
+        contentStack.addArrangedSubview(modelVisibility)
+        cards.append(modelVisibility)
+        let visTip = UILabel()
+        visTip.numberOfLines = 0
+        visTip.font = DSTheme.bodyFont(size: 13)
+        visTip.text = "关掉的模型不会出现在顶栏选择列表里。至少保留一个。"
+        footerLabels.append(visTip)
+        contentStack.addArrangedSubview(visTip)
+        contentStack.setCustomSpacing(22, after: visTip)
+
+        // 3. Appearance
+        contentStack.addArrangedSubview(makeSectionTitle("外观"))
+        appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
+        appearanceControl.addTarget(self, action: #selector(appearanceChanged), for: .valueChanged)
+        contentStack.addArrangedSubview(makeCard(embedding: appearanceControl, height: 36, inset: 12))
+        contentStack.setCustomSpacing(12, after: contentStack.arrangedSubviews.last!)
+
+        let keepScreenRow = makeSwitchRow(
+            label: keepScreenOnLabel,
+            text: "保持屏幕常亮",
+            sw: keepScreenOnSwitch,
+            isOn: SettingsManager.shared.keepScreenOn,
+            action: #selector(keepScreenOnChanged)
+        )
+        contentStack.addArrangedSubview(makeCard(embedding: keepScreenRow, height: 44, inset: 12))
+        let keepScreenTip = UILabel()
+        keepScreenTip.numberOfLines = 0
+        keepScreenTip.font = DSTheme.bodyFont(size: 13)
+        keepScreenTip.text = "前台使用时防止自动锁屏，方便长时间阅读与对话。切到后台后会恢复系统熄屏。"
+        footerLabels.append(keepScreenTip)
+        contentStack.addArrangedSubview(keepScreenTip)
+        contentStack.setCustomSpacing(22, after: keepScreenTip)
+
+        // 4. Chat (font + turn bar + reasoning)
+        contentStack.addArrangedSubview(makeSectionTitle("聊天"))
+        fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
+        fontSizeControl.addTarget(self, action: #selector(fontSizeChanged), for: .valueChanged)
+        contentStack.addArrangedSubview(makeCard(embedding: fontSizeControl, height: 36, inset: 12))
+        let fontTip = UILabel()
+        fontTip.numberOfLines = 0
+        fontTip.font = DSTheme.bodyFont(size: 13)
+        fontTip.text = "字号：小 / 中 / 大。侧栏可用聊天页左上角「关闭 / 侧栏」切换。"
+        footerLabels.append(fontTip)
+        contentStack.addArrangedSubview(fontTip)
+        contentStack.setCustomSpacing(12, after: fontTip)
+
+        let turnContextRow = makeSwitchRow(
+            label: turnContextBarLabel,
+            text: "显示「问题」跳转条",
+            sw: turnContextBarSwitch,
+            isOn: SettingsManager.shared.turnContextBarEnabled,
+            action: #selector(turnContextBarChanged)
+        )
+        contentStack.addArrangedSubview(makeCard(embedding: turnContextRow, height: 44, inset: 12))
+        let turnContextTip = UILabel()
+        turnContextTip.numberOfLines = 0
+        turnContextTip.font = DSTheme.bodyFont(size: 13)
+        turnContextTip.text = "聊天页顶部显示当前可见回复对应的问题；点按可从本对话全部问题中选择并跳转。"
+        footerLabels.append(turnContextTip)
+        contentStack.addArrangedSubview(turnContextTip)
+        contentStack.setCustomSpacing(12, after: turnContextTip)
+
+        if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
+            reasoningEffortControl.selectedSegmentIndex = idx
+        } else {
+            reasoningEffortControl.selectedSegmentIndex = 0
+        }
+        reasoningEffortControl.addTarget(self, action: #selector(reasoningEffortChanged), for: .valueChanged)
+        contentStack.addArrangedSubview(makeCard(embedding: reasoningEffortControl, height: 36, inset: 12))
+        let effortTip = UILabel()
+        effortTip.numberOfLines = 0
+        effortTip.font = DSTheme.bodyFont(size: 13)
+        effortTip.text = "Kimi K3 思考程度。默认「低」以减少等待；难题可改为「高」或「最大」。也可在输入栏长按灯泡切换。"
+        footerLabels.append(effortTip)
+        contentStack.addArrangedSubview(effortTip)
+        contentStack.setCustomSpacing(22, after: effortTip)
+
+        // 5. Slide Over
         contentStack.addArrangedSubview(makeSectionTitle("网课侧拉（Slide Over）"))
         let slideTip = UILabel()
         slideTip.numberOfLines = 0
@@ -359,6 +346,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(slideTip)
         contentStack.setCustomSpacing(22, after: slideTip)
 
+        // 6. Backup
         contentStack.addArrangedSubview(makeSectionTitle("备份与恢复"))
         exportBackupButton.setTitle("导出完整备份", for: .normal)
         exportBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
@@ -385,6 +373,25 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(backupTip)
         contentStack.setCustomSpacing(22, after: backupTip)
 
+        // 7. Developer
+        contentStack.addArrangedSubview(makeSectionTitle("开发者"))
+        let debugRow = makeSwitchRow(
+            label: renderDebugLabel,
+            text: "聊天布局调试框（红=列，绿=原生回复，蓝=用户气泡）",
+            sw: renderDebugSwitch,
+            isOn: SettingsManager.shared.renderDebugOverlayEnabled,
+            action: #selector(renderDebugChanged)
+        )
+        contentStack.addArrangedSubview(debugRow)
+        let debugTip = UILabel()
+        debugTip.numberOfLines = 0
+        debugTip.font = DSTheme.bodyFont(size: 13)
+        debugTip.text = "用于排查气泡空白、高度异常等问题。开启后返回聊天页即可看到描边。"
+        footerLabels.append(debugTip)
+        contentStack.addArrangedSubview(debugTip)
+        contentStack.setCustomSpacing(22, after: debugTip)
+
+        // 8. About
         contentStack.addArrangedSubview(makeSectionTitle("关于"))
         let about = UILabel()
         about.numberOfLines = 0

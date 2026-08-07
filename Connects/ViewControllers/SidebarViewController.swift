@@ -189,7 +189,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
     private func refreshArchiveIcon() {
         let showingArchive = ConversationStore.shared.showArchived
-        archiveFilterButton.setImage(ActionIconFactory.image(.archive, pointSize: 17), for: .normal)
+        archiveFilterButton.setImage(ActionIconFactory.image(.archive, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         archiveFilterButton.setTitle(nil, for: .normal)
         archiveFilterButton.accessibilityLabel = showingArchive ? "返回对话列表" : "归档"
         archiveFilterButton.alpha = showingArchive ? 1.0 : 0.85
@@ -273,7 +273,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         wrap.addSubview(label)
 
         let addButton = UIButton(type: .system)
-        addButton.setImage(ActionIconFactory.image(.plus, pointSize: 14, color: c.textSecondary), for: .normal)
+        addButton.setImage(ActionIconFactory.image(.plus, pointSize: ActionIconFactory.fieldGlyph, color: c.textSecondary), for: .normal)
         addButton.tintColor = c.textSecondary
         addButton.accessibilityLabel = "新建项目"
         addButton.addTarget(self, action: #selector(newProjectTapped), for: .touchUpInside)
@@ -321,6 +321,22 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "删除", style: .destructive) { _ in
             ProjectStore.shared.delete(id: project.id)
+        })
+        present(alert, animated: true)
+    }
+
+    private func confirmDeleteConversation(_ conv: Conversation, completion: ((Bool) -> Void)? = nil) {
+        let alert = UIAlertController(
+            title: "删除对话？",
+            message: "将永久删除「\(conv.title)」。此操作不可撤销。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            completion?(false)
+        })
+        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
+            completion?(true)
         })
         present(alert, animated: true)
     }
@@ -401,7 +417,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
         newChatButton.translatesAutoresizingMaskIntoConstraints = false
         newChatButton.setTitle("  新对话", for: .normal)
-        newChatButton.setImage(ActionIconFactory.image(.newChat, pointSize: 15), for: .normal)
+        newChatButton.setImage(ActionIconFactory.image(.newChat, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         newChatButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
         newChatButton.layer.cornerRadius = 12
         newChatButton.layer.borderWidth = 1
@@ -414,7 +430,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         searchField.font = DSTheme.bodyFont(size: 14)
         searchField.layer.cornerRadius = 10
         searchField.layer.borderWidth = 1
-        let searchIcon = UIImageView(image: ActionIconFactory.image(.search, pointSize: 13))
+        let searchIcon = UIImageView(image: ActionIconFactory.image(.search, pointSize: ActionIconFactory.fieldGlyph))
         searchIcon.tintColor = DSTheme.c.textTertiary
         searchIcon.contentMode = .center
         searchIcon.frame = CGRect(x: 0, y: 0, width: 30, height: 30)
@@ -445,7 +461,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
 
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.setTitle("  设置", for: .normal)
-        settingsButton.setImage(ActionIconFactory.image(.settings, pointSize: 16), for: .normal)
+        settingsButton.setImage(ActionIconFactory.image(.settings, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         settingsButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
         settingsButton.contentHorizontalAlignment = .left
         settingsButton.connectsSetContentInsets(top: 0, leading: 16, bottom: 0, trailing: 18)
@@ -625,8 +641,13 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             return nil
         }
         let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, completion in
-            self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
-            completion(true)
+            guard let self else {
+                completion(false)
+                return
+            }
+            self.confirmDeleteConversation(conv) { deleted in
+                completion(deleted)
+            }
         }
         let archiveTitle = conv.isArchived ? "取消归档" : "归档"
         let archive = UIContextualAction(style: .normal, title: archiveTitle) { [weak self] _, _, completion in
@@ -711,7 +732,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
                     self?.delegate?.sidebarDidArchiveConversation(id: conv.id, archive: !conv.isArchived)
                 },
                 ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
-                    self?.delegate?.sidebarDidDeleteConversation(id: conv.id)
+                    self?.confirmDeleteConversation(conv)
                 }
             ],
             sourceView: sourceView,

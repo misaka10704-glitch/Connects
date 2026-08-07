@@ -373,12 +373,14 @@ final class StudyDocumentStore {
         return ra.isEqual(rb)
     }
 
-    /// True when the process can actually read bytes (not merely `fileExists`).
+    /// True when the process can open the file for reading (empty files count as OK).
     private func canReadFileContents(at url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
-        let chunk = try? handle.read(upToCount: 4)
-        return (chunk?.count ?? 0) > 0
+        // Empty files must still pass — otherwise bookmark URLs for new/blank docs are discarded
+        // and later writes fail with permission errors on device.
+        _ = try? handle.read(upToCount: 4)
+        return true
     }
 
     func releaseAccess(forID id: String) {
@@ -434,26 +436,51 @@ final class StudyDocumentStore {
     }
 
     func writeTextContent(_ text: String, for documentID: String) throws {
+        // Warm security scope (bookmark / workspace grant) before writing.
         let url = try resolvedURL(forID: documentID)
+        if let path = document(id: documentID)?.displayPath ?? Optional(url.path),
+           let ws = StudyWorkspaceStore.shared.workspaceWithDirectoryAccess(coveringFilePath: path) {
+            _ = try? StudyWorkspaceStore.shared.resolvedFolderURL(for: ws)
+        }
         let data = Data(text.utf8)
         guard Int64(data.count) <= maxTextBytes else { throw StudyDocumentError.fileTooLarge }
+        do {
+            try writeDataCoordinated(data, to: url, atomic: true)
+        } catch {
+            // Atomic replace can fail on some security-scoped / network volumes — retry plain write.
+            do {
+                try writeDataCoordinated(data, to: url, atomic: false)
+            } catch {
+                // Last resort: re-resolve (may refresh stale bookmark) and write again.
+                releaseAccess(forID: documentID)
+                let retryURL = try resolvedURL(forID: documentID)
+                try writeDataCoordinated(data, to: retryURL, atomic: false)
+            }
+        }
+        if let idx = documents.firstIndex(where: { $0.id == documentID }) {
+            documents[idx].fileSize = Int64(data.count)
+            documents[idx].contentFingerprint = Self.fingerprint(data: data, fileSize: Int64(data.count))
+            saveRegistry()
+        }
+    }
+
+    private func writeDataCoordinated(_ data: Data, to url: URL, atomic: Bool) throws {
         var writeError: Error?
         let coordinator = NSFileCoordinator()
         var coError: NSError?
         coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &coError) { writeURL in
             do {
-                try data.write(to: writeURL, options: .atomic)
+                if atomic {
+                    try data.write(to: writeURL, options: .atomic)
+                } else {
+                    try data.write(to: writeURL, options: [])
+                }
             } catch {
                 writeError = error
             }
         }
         if let coError = coError { throw coError }
         if let writeError = writeError { throw writeError }
-        if let idx = documents.firstIndex(where: { $0.id == documentID }) {
-            documents[idx].fileSize = Int64(data.count)
-            documents[idx].contentFingerprint = Self.fingerprint(data: data, fileSize: Int64(data.count))
-            saveRegistry()
-        }
     }
 
     func writePDFDocument(_ pdf: PDFDocument, for documentID: String) throws {

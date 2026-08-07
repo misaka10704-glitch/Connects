@@ -170,13 +170,13 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
             if let docID = editor.activeDocumentID {
                 WorkspaceEditSession.shared.remove(documentID: docID)
             }
-            ConnectsToast.show("Kept", in: editor.view, duration: 1.0)
+            ConnectsToast.show("已保留", in: editor.view, duration: 1.0)
         } else {
             // Editor already restored `before` in finishDiffSession when undoing.
             if let docID = editor.activeDocumentID {
                 WorkspaceEditSession.shared.remove(documentID: docID)
             }
-            ConnectsToast.show("Undone", in: editor.view, duration: 1.0)
+            ConnectsToast.show("已撤销", in: editor.view, duration: 1.0)
         }
         onDiffSessionChange?(false, 0)
     }
@@ -239,6 +239,10 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
         linePrefix: String,
         completion: @escaping ([String]) -> Void
     ) {
+        guard CodeEditorFeatureFlags.tabCompletionEnabled else {
+            completion([])
+            return
+        }
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Flash
         let ext = (fileName as NSString).pathExtension
         let prompt = ChatMessage(

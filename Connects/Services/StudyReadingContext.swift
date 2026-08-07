@@ -221,8 +221,8 @@ final class StudyPanelStageCapsule: UIView {
         downButton.addTarget(self, action: #selector(stageTouchDown(_:)), for: .touchDown)
         upButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         downButton.addTarget(self, action: #selector(stageTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
-        upButton.setImage(ActionIconFactory.image(.chevronUp, pointSize: 13), for: .normal)
-        downButton.setImage(ActionIconFactory.image(.chevronDown, pointSize: 13), for: .normal)
+        upButton.setImage(ActionIconFactory.image(.chevronUp, pointSize: ActionIconFactory.fieldGlyph), for: .normal)
+        downButton.setImage(ActionIconFactory.image(.chevronDown, pointSize: ActionIconFactory.fieldGlyph), for: .normal)
         upButton.connectsSetContentInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
         downButton.connectsSetContentInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
 

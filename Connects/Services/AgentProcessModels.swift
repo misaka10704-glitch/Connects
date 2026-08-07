@@ -280,7 +280,9 @@ struct AgentTimelinePart: Codable, Equatable {
 
     static func isExploreChild(stepKind: AgentStepKind?) -> Bool {
         switch stepKind {
-        case .thought, .read, .grepped, .exploring, .subagent, .deleted, .planned: return true
+        case .thought, .read, .grepped, .exploring, .subagent, .deleted, .planned,
+             .edited, .created:
+            return true
         default: return false
         }
     }

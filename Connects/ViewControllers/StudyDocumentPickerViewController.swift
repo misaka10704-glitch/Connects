@@ -147,15 +147,15 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
         case .openReading:
             cell.textLabel?.text = "打开阅读…"
             cell.detailTextLabel?.text = "打开 PDF（一文件一对话；划线写回原文件）"
-            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
+            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: ActionIconFactory.toolGlyph)
         case .openText:
             cell.textLabel?.text = "打开代码 / 文本…"
             cell.detailTextLabel?.text = "任意文本后缀；一文件一对话"
-            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: 16)
+            cell.imageView?.image = ActionIconFactory.image(.plus, pointSize: ActionIconFactory.toolGlyph)
         case .openFilesWorkspace:
             cell.textLabel?.text = "打开 Files…"
             cell.detailTextLabel?.text = "选择文件夹作为工作区（可在 Files 内新建文件夹）"
-            cell.imageView?.image = ActionIconFactory.image(.folder, pointSize: 16)
+            cell.imageView?.image = ActionIconFactory.image(.folder, pointSize: ActionIconFactory.toolGlyph)
         case .document(let doc):
             let fileName: String
             if let path = doc.displayPath, !path.isEmpty {
@@ -168,7 +168,7 @@ final class StudyDocumentPickerViewController: UIViewController, UITableViewData
             let opened = dateFormatter.string(from: doc.lastOpenedAt)
             let mode = doc.accessMode == .originalBookmark ? "原文件" : "副本"
             cell.detailTextLabel?.text = "\(doc.kindLabel) · \(mode) · \(size) · \(opened)"
-            cell.imageView?.image = ActionIconFactory.image(.book, pointSize: 16)
+            cell.imageView?.image = ActionIconFactory.image(.book, pointSize: ActionIconFactory.toolGlyph)
         }
         return cell
     }

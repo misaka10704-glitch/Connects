@@ -565,9 +565,7 @@ extension RootSplitViewController: SidebarViewControllerDelegate {
 
     func sidebarDidMoveConversation(id: String, toProject projectID: String?) {
         ConversationStore.shared.setProject(projectID, for: id)
-        if let projectID = projectID {
-            ConversationStore.shared.setSelectedProjectID(projectID)
-        }
+        ConversationStore.shared.setSelectedProjectID(projectID)
     }
 
     private func presentProjectSettings() {
@@ -587,5 +585,9 @@ extension RootSplitViewController: ChatViewControllerDelegate {
     }
     func chatDidFinishInitialLaunch() {
         dismissLaunchOverlayIfNeeded()
+    }
+
+    func chatDidRequestSettings() {
+        sidebarDidRequestSettings()
     }
 }

@@ -161,6 +161,12 @@ enum MarkdownHTMLRenderer {
         return "window.__connectsRender(\(jsonString(normalized)));"
     }
 
+    /// Live font-size update for Study / markdown preview shells (pinch / ⌘±).
+    static func setFontSizeJavaScript(_ fontSize: CGFloat) -> String {
+        let px = String(format: "%.1f", fontSize)
+        return "window.__connectsSetFontSize && window.__connectsSetFontSize(\(px));"
+    }
+
     static func measureJavaScript() -> String {
         "(window.__connectsMeasure ? window.__connectsMeasure() : 0);"
     }
@@ -754,6 +760,13 @@ enum MarkdownHTMLRenderer {
             var el = document.getElementById(id);
             if (!el) return false;
             el.scrollIntoView(true);
+            return true;
+          };
+          window.__connectsSetFontSize = function(px) {
+            var n = Number(px);
+            if (!(n > 0)) return false;
+            document.documentElement.style.fontSize = n + "px";
+            document.body.style.fontSize = n + "px";
             return true;
           };
           window.__connectsReady = true;

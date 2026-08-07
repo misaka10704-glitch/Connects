@@ -1,4 +1,5 @@
 import UIKit
+import ObjectiveC
 
 /// Assistant reply row: native markdown, thinking/search chrome, action row.
 final class AssistantMessageCell: UITableViewCell, MessageCellType {
@@ -885,8 +886,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             // Resolve full card when possible; header text is already in item.text.
             let stub = AgentEditCard(fileName: item.text, additions: 0, deletions: 0)
             let box = makeAgentEditCardView(stub, colors: colors)
-            if let label = box.viewWithTag(7101) as? UILabel {
-                label.text = "▾  \(item.text)"
+            if let btn = box.viewWithTag(7101) as? UIButton {
+                btn.setTitle("  \(item.text)", for: .normal)
             }
             return box
         case .prose, .ask:
@@ -1083,7 +1084,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         for card in cards.suffix(4) {
             let view = makeAgentEditCardView(card, colors: colors)
             agentEditCardsStack.addArrangedSubview(view)
-            totalH += 72
+            totalH += MessageChromeStyle.collapsedRowHeight
         }
         agentEditCardsHeight.constant = totalH + CGFloat(max(0, min(cards.count, 4) - 1) * 8)
     }
@@ -1091,17 +1092,25 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func makeAgentEditCardView(_ card: AgentEditCard, colors: ThemeColors) -> UIView {
         let box = UIView()
         box.translatesAutoresizingMaskIntoConstraints = false
-        box.backgroundColor = colors.surface.withAlphaComponent(0.85)
-        box.layer.cornerRadius = 10
+        box.backgroundColor = colors.surface.withAlphaComponent(MessageChromeStyle.surfaceAlpha)
+        box.layer.cornerRadius = MessageChromeStyle.cornerRadius
+        box.layer.borderWidth = MessageChromeStyle.borderWidth
         box.clipsToBounds = true
+        box.accessibilityIdentifier = card.documentID
 
-        let header = UILabel()
+        let header = UIButton(type: .system)
         header.translatesAutoresizingMaskIntoConstraints = false
-        header.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        header.textColor = colors.textPrimary
-        header.numberOfLines = 1
-        header.text = "▾  \(card.headerLine)"
+        header.contentHorizontalAlignment = .left
+        header.titleLabel?.font = MessageChromeStyle.headerFont
+        header.setTitleColor(colors.textPrimary, for: .normal)
+        header.setTitle("  \(card.headerLine)", for: .normal)
         header.tag = 7101
+        header.contentEdgeInsets = UIEdgeInsets(
+            top: 0,
+            left: MessageChromeStyle.horizontalPadding,
+            bottom: 0,
+            right: MessageChromeStyle.horizontalPadding
+        )
 
         let body = UILabel()
         body.translatesAutoresizingMaskIntoConstraints = false
@@ -1109,6 +1118,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         body.numberOfLines = 3
         body.textColor = colors.textSecondary
         body.tag = 7102
+        body.isHidden = true
         var lines: [String] = []
         if !card.snippetMinus.isEmpty {
             lines.append(card.snippetMinus.split(separator: "\n").prefix(2).map { "− \($0)" }.joined(separator: "\n"))
@@ -1120,17 +1130,52 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         box.addSubview(header)
         box.addSubview(body)
+        let collapsedH = header.heightAnchor.constraint(equalToConstant: MessageChromeStyle.headerHeight)
+        let bodyBottom = body.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8)
+        bodyBottom.isActive = false
+        let headerBottom = header.bottomAnchor.constraint(equalTo: box.bottomAnchor)
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: box.topAnchor, constant: 8),
-            header.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
-            header.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
+            header.topAnchor.constraint(equalTo: box.topAnchor),
+            header.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            collapsedH,
+            headerBottom,
             body.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
-            body.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
-            body.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
-            body.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -8),
-            box.heightAnchor.constraint(greaterThanOrEqualToConstant: 56)
+            body.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: MessageChromeStyle.horizontalPadding),
+            body.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -MessageChromeStyle.horizontalPadding),
+            box.heightAnchor.constraint(greaterThanOrEqualToConstant: MessageChromeStyle.headerHeight)
         ])
+
+        header.addTarget(self, action: #selector(agentEditCardHeaderTapped(_:)), for: .touchUpInside)
+        // Stash constraints via associated tags on the button for toggle.
+        objc_setAssociatedObject(header, AssociatedKeys.editCardHeaderBottom, headerBottom, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(header, AssociatedKeys.editCardBodyBottom, bodyBottom, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(header, AssociatedKeys.editCardTitle, card.headerLine as NSString, .OBJC_ASSOCIATION_COPY_NONATOMIC)
+
         return box
+    }
+
+    private struct AssociatedKeys {
+        static let editCardHeaderBottom = UnsafeRawPointer(bitPattern: 7_101)!
+        static let editCardBodyBottom = UnsafeRawPointer(bitPattern: 7_102)!
+        static let editCardTitle = UnsafeRawPointer(bitPattern: 7_103)!
+    }
+
+    @objc private func agentEditCardHeaderTapped(_ sender: UIButton) {
+        guard let box = sender.superview,
+              let body = box.viewWithTag(7102) as? UILabel,
+              let headerBottom = objc_getAssociatedObject(sender, AssociatedKeys.editCardHeaderBottom) as? NSLayoutConstraint,
+              let bodyBottom = objc_getAssociatedObject(sender, AssociatedKeys.editCardBodyBottom) as? NSLayoutConstraint,
+              let title = objc_getAssociatedObject(sender, AssociatedKeys.editCardTitle) as? String
+        else { return }
+        let expanding = body.isHidden
+        body.isHidden = !expanding
+        headerBottom.isActive = !expanding
+        bodyBottom.isActive = expanding
+        sender.setTitle(expanding ? "▾  \(title)" : "  \(title)", for: .normal)
+        UIView.animate(withDuration: 0.18) {
+            box.superview?.layoutIfNeeded()
+        }
     }
 
     private func updateSearchHeaderInteraction(messageIsStreaming: Bool) {
@@ -1665,7 +1710,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 }
                 applyChromeHeaderTitle(searchHeader, title: cachedSearchTitleCore, color: colors.textSecondary)
                 updateSearchHeaderInteraction(messageIsStreaming: streaming)
-                searchBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
+                searchBox.backgroundColor = colors.surface.withAlphaComponent(MessageChromeStyle.surfaceAlpha)
                 searchBox.layer.borderWidth = 0
             } else {
                 setSearch(visible: false, expanded: false)
@@ -1705,8 +1750,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
                 : "已深度思考"
             applyChromeHeaderTitle(thinkingHeader, title: title, color: colors.textSecondary)
             updateThinkingHeaderInteraction(messageIsStreaming: streaming)
-            thinkingBox.backgroundColor = colors.surface.withAlphaComponent(0.65)
-            thinkingBox.layer.borderWidth = 0
+            thinkingBox.backgroundColor = colors.surface.withAlphaComponent(MessageChromeStyle.surfaceAlpha)
+            thinkingBox.layer.borderWidth = MessageChromeStyle.borderWidth
         } else {
             setThinking(visible: false, expanded: false)
         }
@@ -2881,7 +2926,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private func styleActionButton(_ button: UIButton, kind: ActionIconFactory.Kind, label: String, color: ThemeColors) {
-        let img = ActionIconFactory.image(kind, pointSize: 17)
+        let img = ActionIconFactory.image(kind, pointSize: ActionIconFactory.messageActionGlyph)
         button.setImage(img, for: .normal)
         button.setTitle(nil, for: .normal)
         button.tintColor = color.textSecondary
@@ -3012,7 +3057,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func setThinking(visible: Bool, expanded: Bool) {
         thinkingBox.isHidden = !visible
         thinkingHeader.isHidden = !visible
-        thinkingHeaderH.constant = visible ? 32 : 0
+        thinkingHeaderH.constant = visible ? MessageChromeStyle.headerHeight : 0
         thinkingTop.constant = visible ? 8 : 0
         if visible {
             thinkingBoxH.isActive = false
@@ -3044,7 +3089,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private func setSearch(visible: Bool, expanded: Bool) {
         searchBox.isHidden = !visible
         searchHeader.isHidden = !visible
-        searchHeaderH.constant = visible ? 32 : 0
+        searchHeaderH.constant = visible ? MessageChromeStyle.headerHeight : 0
         searchTop.constant = visible ? 8 : 0
         if visible {
             searchBoxH.isActive = false
@@ -3190,7 +3235,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         column.addSubview(imageViewMsg)
 
         searchBox.translatesAutoresizingMaskIntoConstraints = false
-        searchBox.layer.cornerRadius = 10
+        searchBox.layer.cornerRadius = MessageChromeStyle.cornerRadius
         searchBox.layer.borderWidth = 0
         searchBox.clipsToBounds = true
         searchBox.isHidden = true
@@ -3229,8 +3274,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         column.addSubview(agentTimelineStack)
 
         thinkingBox.translatesAutoresizingMaskIntoConstraints = false
-        thinkingBox.layer.cornerRadius = 10
-        thinkingBox.layer.borderWidth = 0
+        thinkingBox.layer.cornerRadius = MessageChromeStyle.cornerRadius
+        thinkingBox.layer.borderWidth = MessageChromeStyle.borderWidth
         thinkingBox.clipsToBounds = true
         thinkingBox.isHidden = true
         column.addSubview(thinkingBox)

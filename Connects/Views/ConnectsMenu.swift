@@ -370,7 +370,7 @@ private final class ConnectsMenuController: UIViewController {
             for (idx, action) in headerTrailingActions.enumerated() {
                 let btn = UIButton(type: .system)
                 btn.translatesAutoresizingMaskIntoConstraints = false
-                btn.setImage(ActionIconFactory.image(action.icon, pointSize: 15), for: .normal)
+                btn.setImage(ActionIconFactory.image(action.icon, pointSize: ActionIconFactory.menuGlyph), for: .normal)
                 btn.accessibilityLabel = action.accessibilityLabel
                 btn.tag = idx
                 btn.addTarget(self, action: #selector(headerActionTapped(_:)), for: .touchUpInside)
@@ -580,7 +580,7 @@ private final class MenuRowView: UIView {
         if let image = item.customImage {
             iconView.image = image
         } else if let kind = item.icon {
-            iconView.image = ActionIconFactory.image(kind, pointSize: 15)
+            iconView.image = ActionIconFactory.image(kind, pointSize: ActionIconFactory.menuGlyph)
         }
         addSubview(iconView)
 

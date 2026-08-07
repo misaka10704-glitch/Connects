@@ -2,7 +2,10 @@ import UIKit
 import WebKit
 
 /// Study-mode Markdown reader — same shell role as `PDFReaderViewController`.
-final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UITextViewDelegate, UIScrollViewDelegate {
+/// Legacy Study Markdown reader (read/edit + Build).
+/// Canonical path: `.md` opens in `TextCodeEditorViewController` (preview + edit).
+/// Keep this VC only for rare stored `kind == .markdown` fallback loads.
+final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler, UITextViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let topBar = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
@@ -41,6 +44,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     /// Throttle top chrome % updates so scroll-path stays finger-tracking.
     private var lastProgressLabelAt: CFTimeInterval = 0
     private var lastProgressLabelPct: Int = -1
+
+    private static let fontSizeDefaultsKey = "connects.markdownPreview.fontSize"
+    private static let minFontPointSize: CGFloat = 11
+    private static let maxFontPointSize: CGFloat = 32
+    private var fontPointSize: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: MarkdownReaderViewController.fontSizeDefaultsKey)
+        if stored >= 11, stored <= 32 { return CGFloat(stored) }
+        return 17
+    }()
+    private var pinchBaseFontSize: CGFloat = 17
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
@@ -174,17 +187,17 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         sidebarButton.accessibilityLabel = "打开侧栏"
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
-        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget)
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
-        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
+        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
         topBar.addSubview(contentsButton)
 
         modeButton.translatesAutoresizingMaskIntoConstraints = false
-        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: 18), for: .normal)
+        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         modeButton.imageView?.contentMode = .scaleAspectFit
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
         modeButton.accessibilityLabel = "切换到编辑模式"
@@ -202,7 +215,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         buildButtonWidthConstraint = buildButton.widthAnchor.constraint(equalToConstant: 0)
 
         saveButton.translatesAutoresizingMaskIntoConstraints = false
-        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         saveButton.imageView?.contentMode = .scaleAspectFit
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
@@ -237,6 +250,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         webView.onAskSelection = { [weak self] text in
             self?.onAskSelection?(text)
         }
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleFontPinch(_:)))
+        pinch.delegate = self
+        webView.addGestureRecognizer(pinch)
         view.addSubview(webView)
 
         editorView.translatesAutoresizingMaskIntoConstraints = false
@@ -267,12 +283,12 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 40),
+            topBar.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
             sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             sidebarButtonWidthConstraint,
-            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+            sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             progressLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             progressLabel.topAnchor.constraint(equalTo: topBar.topAnchor),
@@ -282,23 +298,23 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
             modeButton.trailingAnchor.constraint(equalTo: buildButton.leadingAnchor, constant: -2),
             modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            modeButton.widthAnchor.constraint(equalToConstant: 40),
-            modeButton.heightAnchor.constraint(equalToConstant: 40),
+            modeButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            modeButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             buildButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
             buildButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            buildButton.heightAnchor.constraint(equalToConstant: 40),
+            buildButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             buildButtonWidthConstraint,
 
             saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            saveButton.widthAnchor.constraint(equalToConstant: 40),
-            saveButton.heightAnchor.constraint(equalToConstant: 40),
+            saveButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            saveButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            contentsButton.widthAnchor.constraint(equalToConstant: 40),
-            contentsButton.heightAnchor.constraint(equalToConstant: 40),
+            contentsButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            contentsButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             webView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -352,14 +368,32 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
-        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
 
-    func setSidebarButtonHidden(_ hidden: Bool) {
-        sidebarButton.isHidden = hidden
-        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    func setSidebarButtonHidden(_ hidden: Bool, animated: Bool = false) {
+        let apply = {
+            self.sidebarButton.alpha = hidden ? 0 : 1
+            self.sidebarButton.isUserInteractionEnabled = !hidden
+            self.sidebarButtonWidthConstraint.constant = 40
+            self.sidebarButton.isHidden = false
+        }
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    func sidebarButtonAnchorFrame(in target: UIView) -> CGRect {
+        guard let bar = sidebarButton.superview else { return .zero }
+        bar.layoutIfNeeded()
+        // Pre-layout / cold start: zero-height bar makes y = -hitTarget/2 → floats above the screen.
+        guard bar.bounds.height > 1, bar.window != nil else { return .zero }
+        let y = (bar.bounds.height - ActionIconFactory.hitTarget) / 2
+        return bar.convert(CGRect(x: 4, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget), to: target)
     }
 
     @objc private func sidebarTapped() {
@@ -434,7 +468,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         editorView.isHidden = !editing
         if editing {
             editorView.text = markdownSource
-            editorView.becomeFirstResponder()
+            // Don't auto-focus — wait until the user taps into the editor.
         } else {
             editorView.resignFirstResponder()
             pendingMarkdown = markdownSource
@@ -448,11 +482,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let c = DSTheme.c
         let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
         modeButton.setTitle(nil, for: .normal)
-        modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+        modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         modeButton.tintColor = c.textSecondary
         modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
         saveButton.setTitle(nil, for: .normal)
-        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         saveButton.isHidden = false
         saveButton.isEnabled = isEditMode
         saveButton.alpha = isEditMode ? 1 : 0.35
@@ -465,9 +499,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     func focusForKeyboardEditing() {
         if !isEditMode {
             setEditMode(true)
-        } else {
-            _ = editorView.becomeFirstResponder()
         }
+        _ = editorView.becomeFirstResponder()
     }
 
     var isMarkdownEditorFirstResponder: Bool {
@@ -476,6 +509,54 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     func saveFromKeyboardShortcut() {
         flushMarkdownSaveIfNeeded(force: true)
+    }
+
+    /// Shell / hardware keyboard: ⌘+ / ⌘- (same as code editor zoom).
+    func adjustFontSizeFromKeyboardShortcut(by delta: CGFloat) {
+        guard !isEditMode else { return }
+        let next = min(Self.maxFontPointSize, max(Self.minFontPointSize, fontPointSize + delta))
+        guard abs(next - fontPointSize) >= 0.1 else { return }
+        applyFontSize(next, persist: true)
+        let pt = Int(next.rounded())
+        ConnectsToast.show("字号 \(pt)", in: view, duration: 0.7)
+    }
+
+    @objc private func handleFontPinch(_ gesture: UIPinchGestureRecognizer) {
+        guard !isEditMode else { return }
+        switch gesture.state {
+        case .began:
+            pinchBaseFontSize = fontPointSize
+        case .changed:
+            let next = min(
+                Self.maxFontPointSize,
+                max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
+            )
+            guard abs(next - fontPointSize) >= 0.4 else { return }
+            applyFontSize(next, persist: false)
+        case .ended, .cancelled:
+            applyFontSize(fontPointSize, persist: true)
+            let pt = Int(fontPointSize.rounded())
+            ConnectsToast.show("字号 \(pt)", in: view, duration: 0.7)
+        default:
+            break
+        }
+    }
+
+    private func applyFontSize(_ size: CGFloat, persist: Bool) {
+        fontPointSize = size
+        if persist {
+            UserDefaults.standard.set(Double(fontPointSize), forKey: Self.fontSizeDefaultsKey)
+        }
+        guard shellLoaded else { return }
+        webView.evaluateJavaScript(
+            MarkdownHTMLRenderer.setFontSizeJavaScript(fontPointSize),
+            completionHandler: nil
+        )
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer is UIPinchGestureRecognizer
     }
 
     private func flushMarkdownSaveIfNeeded(force: Bool = false) {
@@ -1000,7 +1081,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             textColor: DSTheme.c.textPrimary,
             backgroundColor: DSTheme.c.background,
             secondaryColor: DSTheme.c.textSecondary,
-            fontSize: 17
+            fontSize: fontPointSize
         )
         webView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
     }

@@ -43,7 +43,7 @@ enum StudyAskMenu {
         guard !installed else { return }
         installed = true
         UIMenuController.shared.menuItems = [
-            UIMenuItem(title: "Ask", action: askSelector)
+            UIMenuItem(title: "提问", action: askSelector)
         ]
     }
 }

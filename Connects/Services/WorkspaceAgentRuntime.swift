@@ -76,10 +76,7 @@ final class WorkspaceAgentRuntime {
             before = diskNow
         }
 
-        if diskNow != body {
-            try? StudyDocumentStore.shared.writeTextContent(body, for: docID)
-        }
-
+        // Defer disk write until Keep — session holds before/after for review.
         let fileName = StudyDocumentStore.shared.document(id: docID)?.title ?? name
         lock.lock()
         if let idx = pending.firstIndex(where: { $0.documentID == docID }) {

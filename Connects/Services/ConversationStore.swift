@@ -148,13 +148,19 @@ final class ConversationStore {
     func createConversation(
         model: AIModelOption = .deepseekV4Pro,
         projectID: String? = nil,
+        inheritSelectedProjectFilter: Bool = true,
         studyWorkspaceID: String? = nil,
         studyDocumentID: String? = nil,
         studySessionKind: StudySessionKind = .document,
         studyPageCaptureEnabled: Bool = false,
         studyAgentMode: StudyAgentMode = .ask
     ) -> Conversation {
-        let assignedProject = projectID ?? selectedProjectID
+        let assignedProject: String?
+        if inheritSelectedProjectFilter {
+            assignedProject = projectID ?? selectedProjectID
+        } else {
+            assignedProject = projectID
+        }
         let conversation = Conversation(
             model: model,
             projectID: assignedProject,
@@ -184,6 +190,7 @@ final class ConversationStore {
             return createConversation(
                 model: source.model,
                 projectID: source.projectID,
+                inheritSelectedProjectFilter: false,
                 studyWorkspaceID: source.studyWorkspaceID,
                 studyDocumentID: keepActiveDocument ? source.studyDocumentID : nil,
                 studySessionKind: .workspace,
@@ -194,6 +201,7 @@ final class ConversationStore {
         return createConversation(
             model: source.model,
             projectID: source.projectID,
+            inheritSelectedProjectFilter: false,
             studyWorkspaceID: nil,
             studyDocumentID: keepActiveDocument ? source.studyDocumentID : nil,
             studySessionKind: .document,

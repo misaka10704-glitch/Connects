@@ -83,10 +83,10 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         sidebarButton.addTarget(self, action: #selector(sidebarTapped), for: .touchUpInside)
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
-        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget)
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
-        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
+        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
@@ -150,7 +150,7 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 40),
+            topBar.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -160,7 +160,7 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
             sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             sidebarButtonWidthConstraint,
-            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+            sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
@@ -170,18 +170,18 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            contentsButton.widthAnchor.constraint(equalToConstant: 40),
-            contentsButton.heightAnchor.constraint(equalToConstant: 40),
+            contentsButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            contentsButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             fontLargerButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
             fontLargerButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             fontLargerButton.widthAnchor.constraint(equalToConstant: 36),
-            fontLargerButton.heightAnchor.constraint(equalToConstant: 40),
+            fontLargerButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             fontSmallerButton.trailingAnchor.constraint(equalTo: fontLargerButton.leadingAnchor),
             fontSmallerButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             fontSmallerButton.widthAnchor.constraint(equalToConstant: 36),
-            fontSmallerButton.heightAnchor.constraint(equalToConstant: 40),
+            fontSmallerButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             contentHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -224,13 +224,32 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
     }
 
     func setReaderSurfaceActive(_ active: Bool) { readerSurfaceActive = active }
-    func setSidebarButtonHidden(_ hidden: Bool) {
-        sidebarButton.isHidden = hidden
-        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    func setSidebarButtonHidden(_ hidden: Bool, animated: Bool = false) {
+        let apply = {
+            self.sidebarButton.alpha = hidden ? 0 : 1
+            self.sidebarButton.isUserInteractionEnabled = !hidden
+            self.sidebarButtonWidthConstraint.constant = 40
+            self.sidebarButton.isHidden = false
+        }
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: apply)
+        } else {
+            apply()
+        }
     }
+
+    func sidebarButtonAnchorFrame(in target: UIView) -> CGRect {
+        guard let bar = sidebarButton.superview else { return .zero }
+        bar.layoutIfNeeded()
+        // Pre-layout / cold start: zero-height bar makes y = -hitTarget/2 → floats above the screen.
+        guard bar.bounds.height > 1, bar.window != nil else { return .zero }
+        let y = (bar.bounds.height - ActionIconFactory.hitTarget) / 2
+        return bar.convert(CGRect(x: 4, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget), to: target)
+    }
+
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
-        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }

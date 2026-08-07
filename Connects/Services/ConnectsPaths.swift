@@ -38,6 +38,10 @@ enum ConnectsPaths {
         applicationSupportURL.appendingPathComponent("conversations_v2.json.bak")
     }
 
+    static var workspaceEditSessionsDirectoryURL: URL {
+        applicationSupportURL.appendingPathComponent("EditSessions", isDirectory: true)
+    }
+
     @discardableResult
     static func ensureDirectory(_ url: URL) -> URL {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -46,6 +50,7 @@ enum ConnectsPaths {
 
     static func ensureAppFolders() {
         _ = ensureDirectory(applicationSupportURL)
+        _ = ensureDirectory(workspaceEditSessionsDirectoryURL)
         _ = ensureDirectory(connectsRootURL)
         _ = ensureDirectory(registryURL)
         _ = ensureDirectory(studyRootURL)

@@ -44,14 +44,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         application.isIdleTimerDisabled = false
         // Xcode rebuild / task switch often kills before the debounced save lands.
         ConversationStore.shared.flushPendingSave()
+        WorkspaceEditSession.shared.flush()
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         ConversationStore.shared.flushPendingSave()
+        WorkspaceEditSession.shared.flush()
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
         ConversationStore.shared.flushPendingSave()
+        WorkspaceEditSession.shared.flush()
     }
 
     func application(_ application: UIApplication,

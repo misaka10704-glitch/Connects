@@ -222,7 +222,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         attachButton.tintColor = c.textSecondary
         stopButton.backgroundColor = c.textPrimary
         stopButton.tintColor = c.background
-        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: 12, color: .white), for: .normal)
+        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: ActionIconFactory.sendGlyph, color: .white), for: .normal)
         chip.backgroundColor = c.surfaceHover
         chip.layer.borderColor = c.border.cgColor
         chipLabel.textColor = c.textSecondary
@@ -246,7 +246,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         setDiffReviewBanner(
             visible: visible,
             files: changeCount > 0
-                ? [(documentID: "", fileName: "\(changeCount) change\(changeCount == 1 ? "" : "s")", additions: changeCount, deletions: 0)]
+                ? [(documentID: "", fileName: "\(changeCount) 处改动", additions: changeCount, deletions: 0)]
                 : [],
             multifile: false
         )
@@ -282,9 +282,9 @@ final class InputBarView: UIView, ThemeRefreshable {
         if show {
             if let currentTitle, !currentTitle.isEmpty, done < total {
                 let clip = String(currentTitle.prefix(36))
-                buildTodoLabel.text = "Todos \(done)/\(total) · \(clip)"
+                buildTodoLabel.text = "待办 \(done)/\(total) · \(clip)"
             } else {
-                buildTodoLabel.text = "Todos \(done)/\(total)"
+                buildTodoLabel.text = "待办 \(done)/\(total)"
             }
         }
         buildTodoHeightConstraint?.constant = show ? 24 : 0
@@ -336,7 +336,7 @@ final class InputBarView: UIView, ThemeRefreshable {
                 diffChangesLabel.text = "+\(add) −\(del)"
             } else {
                 let changes = max(add, n)
-                diffChangesLabel.text = changes == 1 ? "1 change" : "\(changes) changes"
+                diffChangesLabel.text = changes == 1 ? "1 处改动" : "\(changes) 处改动"
             }
         }
 
@@ -482,7 +482,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
         diffChangesLabel.translatesAutoresizingMaskIntoConstraints = false
         diffChangesLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
-        diffChangesLabel.text = "0 changes"
+        diffChangesLabel.text = "0 处改动"
         diffReviewBanner.addSubview(diffChangesLabel)
 
         for btn in [diffUndoAllButton, diffKeepAllButton, diffReviewButton] {
@@ -490,9 +490,9 @@ final class InputBarView: UIView, ThemeRefreshable {
             btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
             diffReviewBanner.addSubview(btn)
         }
-        diffUndoAllButton.setTitle("Undo All", for: .normal)
-        diffKeepAllButton.setTitle("Keep All", for: .normal)
-        diffReviewButton.setTitle("Review", for: .normal)
+        diffUndoAllButton.setTitle("全部撤销", for: .normal)
+        diffKeepAllButton.setTitle("全部保留", for: .normal)
+        diffReviewButton.setTitle("审阅", for: .normal)
         diffReviewButton.isHidden = true
         diffUndoAllButton.addTarget(self, action: #selector(diffUndoAllTapped), for: .touchUpInside)
         diffKeepAllButton.addTarget(self, action: #selector(diffKeepAllTapped), for: .touchUpInside)
@@ -532,8 +532,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         chip.addSubview(chipLabel)
 
         chipRemove.translatesAutoresizingMaskIntoConstraints = false
-        chipRemove.setImage(ActionIconFactory.image(.plus, pointSize: 10), for: .normal)
-        // Draw a small × via title for clarity on iOS 12.
+        // Draw a small × via title for clarity.
         chipRemove.setImage(nil, for: .normal)
         chipRemove.setTitle("×", for: .normal)
         chipRemove.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
@@ -543,19 +542,19 @@ final class InputBarView: UIView, ThemeRefreshable {
         chip.addSubview(chipRemove)
 
         attachButton.translatesAutoresizingMaskIntoConstraints = false
-        attachButton.setImage(ActionIconFactory.image(.plus, pointSize: 16), for: .normal)
+        attachButton.setImage(ActionIconFactory.image(.plus, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         attachButton.accessibilityLabel = "添加图片"
         attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
         containerView.addSubview(attachButton)
 
         webSearchButton.translatesAutoresizingMaskIntoConstraints = false
-        webSearchButton.setImage(ActionIconFactory.image(.globe, pointSize: 16), for: .normal)
+        webSearchButton.setImage(ActionIconFactory.image(.globe, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         webSearchButton.accessibilityLabel = "联网搜索"
         webSearchButton.addTarget(self, action: #selector(webSearchTapped), for: .touchUpInside)
         containerView.addSubview(webSearchButton)
 
         thinkingButton.translatesAutoresizingMaskIntoConstraints = false
-        thinkingButton.setImage(ActionIconFactory.image(.think, pointSize: 16), for: .normal)
+        thinkingButton.setImage(ActionIconFactory.image(.think, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         thinkingButton.accessibilityLabel = "深度思考"
         thinkingButton.accessibilityHint = "长按可选择 Kimi K3 思考程度"
         thinkingButton.addTarget(self, action: #selector(thinkingTapped), for: .touchUpInside)
@@ -564,7 +563,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         thinkingButton.addGestureRecognizer(thinkingLong)
 
         codeAIEditButton.translatesAutoresizingMaskIntoConstraints = false
-        codeAIEditButton.setImage(ActionIconFactory.image(.editMode, pointSize: 16), for: .normal)
+        codeAIEditButton.setImage(ActionIconFactory.image(.aiEdit, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         codeAIEditButton.accessibilityLabel = "AI 编辑"
         codeAIEditButton.accessibilityHint = "开启后允许模型提出改文件提案，并同时打开文档上下文；关闭则仅问答（不影响文档开关）。默认关闭。"
         codeAIEditButton.addTarget(self, action: #selector(codeAIEditTapped), for: .touchUpInside)
@@ -582,7 +581,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(agentModeButton)
 
         studyCaptureButton.translatesAutoresizingMaskIntoConstraints = false
-        studyCaptureButton.setImage(ActionIconFactory.image(.book, pointSize: 16), for: .normal)
+        studyCaptureButton.setImage(ActionIconFactory.image(.docContext, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         studyCaptureButton.accessibilityLabel = "附带文档上下文"
         studyCaptureButton.accessibilityHint = "开启后发送时附带文档上下文；长按可选择全文/选区/重新同步"
         studyCaptureButton.addTarget(self, action: #selector(studyCaptureTapped), for: .touchUpInside)
@@ -593,7 +592,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(studyCaptureButton)
 
         askSelectionButton.translatesAutoresizingMaskIntoConstraints = false
-        askSelectionButton.setImage(ActionIconFactory.image(.ask, pointSize: 16), for: .normal)
+        askSelectionButton.setImage(ActionIconFactory.image(.ask, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         askSelectionButton.accessibilityLabel = "Ask 选区"
         askSelectionButton.accessibilityHint = "选中文本并 Ask 后点亮；点按可取消附带选区"
         askSelectionButton.addTarget(self, action: #selector(askSelectionTapped), for: .touchUpInside)
@@ -649,7 +648,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(placeholderLabel)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
-        sendButton.setImage(ActionIconFactory.image(.send, pointSize: 14, color: .white), for: .normal)
+        sendButton.setImage(ActionIconFactory.image(.send, pointSize: ActionIconFactory.sendGlyph, color: .white), for: .normal)
         sendButton.tintColor = .white
         sendButton.imageView?.contentMode = .scaleAspectFit
         sendButton.layer.cornerRadius = btnSize / 2
@@ -657,7 +656,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(sendButton)
 
         stopButton.translatesAutoresizingMaskIntoConstraints = false
-        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: 12, color: .white), for: .normal)
+        stopButton.setImage(ActionIconFactory.image(.stop, pointSize: ActionIconFactory.sendGlyph, color: .white), for: .normal)
         stopButton.tintColor = .white
         stopButton.imageView?.contentMode = .scaleAspectFit
         stopButton.layer.cornerRadius = btnSize / 2
@@ -881,7 +880,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func refreshModelChipAppearance() {
         let c = DSTheme.c
-        let image = ActionIconFactory.image(.ai, pointSize: 11, color: c.accent)
+        let image = ActionIconFactory.image(.ai, pointSize: ActionIconFactory.chipGlyph, color: c.accent)
         let name = NSAttributedString(
             string: modelChipDisplayName,
             attributes: [

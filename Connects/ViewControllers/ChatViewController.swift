@@ -4,6 +4,7 @@ protocol ChatViewControllerDelegate: AnyObject {
     func chatDidUpdateTitle(_ title: String)
     func chatDidRequestShare()
     func chatDidFinishInitialLaunch()
+    func chatDidRequestSettings()
 }
 
 final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate, StudyDocumentPickerDelegate {
@@ -26,6 +27,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private lazy var studyPanelNavHost = StudyPanelNavTitleHost(capsule: studyPanelNavCapsule)
     private let emptyTitleLabel = UILabel()
     private let emptySubtitleLabel = UILabel()
+    private let emptyConfigureKeyButton = UIButton(type: .system)
     private let emptyContainer = UIView()
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
@@ -280,6 +282,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         applyStudyChrome()
+        updateEmptyState()
         if renderedConversationID == nil, view.window != nil {
             // Bind the restored conversation as soon as we are in a window —
             // before the first painted frame shows the empty-state chrome.
@@ -4811,6 +4814,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func streamTTFT(_ note: Notification) {
+        #if DEBUG
         guard let id = note.userInfo?["conversationID"] as? String,
               id == currentConversationID,
               let ms = note.userInfo?["ms"] as? Int,
@@ -4819,6 +4823,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let think = (note.userInfo?["thinking"] as? Bool) ?? false
         let tip = "首包 \(ms)ms · \(host)\(think ? " · 思考开" : " · Instant")"
         ConnectsToast.show(tip, in: view, duration: 2.2)
+        #endif
     }
 
     @objc private func imageTranscriptionUpdated(_ note: Notification) {
@@ -5414,44 +5419,36 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let rootID = agentProcessRootIDs[conv.id] ?? assistantMessageID
         let snippets = Self.lightDiffSnippets(before: before, after: body)
         let stats = WorkspaceEditSession.shared.previewLineStats(before: before, after: body)
-        // Disk write off main — large files were freezing taps after first edit.
-        DispatchQueue.global(qos: .userInitiated).async {
-            if diskNow != body {
-                try? StudyDocumentStore.shared.writeTextContent(body, for: docID)
+        // Defer disk write until Keep — session + Diff hold the proposal.
+        WorkspaceEditSession.shared.upsert(
+            documentID: docID,
+            fileName: name,
+            before: before,
+            after: body
+        )
+        let card = AgentEditCard(
+            fileName: name,
+            documentID: docID,
+            additions: stats.add,
+            deletions: stats.del,
+            snippetMinus: snippets.minus,
+            snippetPlus: snippets.plus
+        )
+        ConversationStore.shared.updateConversationQuietly(id: conv.id) { draft in
+            guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
+            if let existing = draft.messages[idx].agentEditCards.firstIndex(where: {
+                $0.documentID == docID || $0.fileName == name
+            }) {
+                draft.messages[idx].agentEditCards[existing] = card
+            } else {
+                draft.messages[idx].agentEditCards.append(card)
             }
-            DispatchQueue.main.async { [weak self] in
-                WorkspaceEditSession.shared.upsert(
-                    documentID: docID,
-                    fileName: name,
-                    before: before,
-                    after: body
-                )
-                let card = AgentEditCard(
-                    fileName: name,
-                    documentID: docID,
-                    additions: stats.add,
-                    deletions: stats.del,
-                    snippetMinus: snippets.minus,
-                    snippetPlus: snippets.plus
-                )
-                ConversationStore.shared.updateConversationQuietly(id: conv.id) { draft in
-                    guard let idx = draft.messages.lastIndex(where: { $0.id == rootID }) else { return }
-                    if let existing = draft.messages[idx].agentEditCards.firstIndex(where: {
-                        $0.documentID == docID || $0.fileName == name
-                    }) {
-                        draft.messages[idx].agentEditCards[existing] = card
-                    } else {
-                        draft.messages[idx].agentEditCards.append(card)
-                    }
-                }
-                self?.applyPlanFileEditIfNeeded(path: path, body: body)
-                self?.refreshWorkspaceDiffBanner()
-                // Open Diff so Keep/Undo hunks are visible (not write-only).
-                self?.studyContextProvider?.studyCodeDiffOpen(documentID: docID)
-                if self?.renderedConversationID == conv.id {
-                    self?.refreshAgentProcessChrome(messageID: rootID)
-                }
-            }
+        }
+        applyPlanFileEditIfNeeded(path: path, body: body)
+        refreshWorkspaceDiffBanner()
+        studyContextProvider?.studyCodeDiffOpen(documentID: docID)
+        if renderedConversationID == conv.id {
+            refreshAgentProcessChrome(messageID: rootID)
         }
     }
 
@@ -5802,8 +5799,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let persisted: String
         if presented {
             // Diff is the real product; don't claim “已提出” with an empty bubble.
-            persisted = emptyProse ? "（已打开 Diff，请在阅读器中 Keep / Undo）" : prose
-            ConnectsToast.show("Diff 已打开 — 按块 Keep / Undo，或用输入栏 Keep All", in: view, duration: 1.6)
+            persisted = emptyProse ? "（已打开 Diff，请在阅读器中按块保留或撤销）" : prose
+            ConnectsToast.show("Diff 已打开 — 可按块保留/撤销，或用输入栏全部保留", in: view, duration: 1.6)
         } else if studyContextProvider?.studyCodeAIEditSupported != true {
             persisted = emptyProse
                 ? "（已生成编辑提案，但当前不是代码/文本页，未改文件）"
@@ -6234,7 +6231,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         pendingSidebarCollapsed = collapsed
         guard let item = sidebarToggleItem else { return }
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
-        item.image = ActionIconFactory.image(kind, pointSize: 18)
+        item.image = ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph)
         if isCompactChrome {
             item.accessibilityLabel = collapsed ? "打开对话列表" : "关闭对话列表"
         } else {
@@ -6268,7 +6265,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    /// Full-AI study panel covers the document sidebar control; re-host it on chat nav.
+    /// Legacy hook — Study now uses a shell floating sidebar; callers always pass `false`.
     func setStudyShowsSidebarToggle(_ visible: Bool) {
         guard studyShowsSidebarToggle != visible else { return }
         studyShowsSidebarToggle = visible
@@ -6381,19 +6378,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             studyChromeMode = .none
             studyShowsSidebarToggle = false
         }
-        // Document Study can hide the chat sidebar toggle while reading; workspace
-        // sessions keep it (archive / switch chats) like a normal conversation.
-        // iPhone / compact: reader top bar (or edge swipe) owns the drawer — never
-        // duplicate the sidebar key on chat nav; that slot holds + / history instead.
-        let phoneLike = UIDevice.current.userInterfaceIdiom == .phone || isCompactChrome
+        // Study: shell owns the single floating sidebar key — never put one on chat nav.
+        // Non-Study: normal chat sidebar on the leading edge.
         let inStudy = hasStudyDoc || isWorkspace || studyChromeMode != .none
-        if phoneLike, inStudy {
-            // leftBarButtonItems filled in refreshRightBarButtons().
-            navigationItem.leftBarButtonItem = nil
-        } else {
-            let hideSidebar = hasStudyDoc && !isWorkspace && !studyShowsSidebarToggle
+        if !inStudy {
             navigationItem.leftBarButtonItems = nil
-            navigationItem.leftBarButtonItem = hideSidebar ? nil : sidebarToggleItem
+            navigationItem.leftBarButtonItem = sidebarToggleItem
+        } else {
+            // Clear leading so + / history can live on trailing without a second sidebar key.
+            navigationItem.leftBarButtonItem = nil
+            navigationItem.leftBarButtonItems = nil
         }
         if isViewLoaded, turnContextBarTopToSafe != nil, turnContextBarTopToView != nil {
             let portraitPanel = studyChromeMode == .portraitPanel
@@ -6821,8 +6815,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 ConnectsMenuItem(title: "重跑上一轮", icon: .retry) { [weak self] in
                     self?.retryLastTurn()
                 },
-                ConnectsMenuItem(title: "删除对话", icon: .trash, isDestructive: true) {
-                    ConversationStore.shared.deleteConversation(id: conv.id)
+                ConnectsMenuItem(title: "删除对话", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.confirmDeleteConversation(id: conv.id, title: conv.title)
                 }
         ])
         ConnectsMenu.present(
@@ -6975,9 +6969,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         updateModelButton()
     }
 
-    /// iPhone Study: put + / history on the leading side (no duplicate sidebar key).
-    /// Wider iPad keeps them on the trailing side next to ⋯.
-    private var prefersLeadingStudyConversationButtons: Bool {
+    /// iPhone / Slide Over: tighter Study chrome (no iOS 26 glass pills).
+    /// Placement is always trailing — leading stays clear for the shell’s single sidebar key.
+    private var prefersCompactStudyChrome: Bool {
         if isCompactChrome { return true }
         if UIDevice.current.userInterfaceIdiom == .phone { return true }
         let width = view.window?.bounds.width ?? view.bounds.width
@@ -6985,9 +6979,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func refreshRightBarButtons() {
-        // iPhone Study: compact chrome next to ▲▼; hide iOS 26 glass frames (they looked like
-        // oversized outer pills around + / history / ⋯).
-        let compactChrome = prefersLeadingStudyConversationButtons
+        // Compact Study chrome: hide oversized iOS 26 glass frames around + / history / ⋯.
+        let compactChrome = prefersCompactStudyChrome
         let moreItem = compactChrome
             ? Self.compactStudyBarItem(
                 kind: .more,
@@ -7018,36 +7011,55 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let historyA11y = isWorkspace ? "同工作区对话" : "同文件对话"
         let newChatA11y = isWorkspace ? "同工作区新对话" : "同文件新对话"
 
-        if compactChrome {
-            // One custom cluster — iOS 26 groups adjacent bar items into one glass pill,
-            // and hidesSharedBackground is ignored inside multi-item groups.
-            let cluster = Self.compactStudyConversationCluster(
-                target: self,
-                newChatAction: #selector(studyNewChatTapped),
-                historyAction: #selector(studyHistoryTapped),
-                newChatAccessibility: newChatA11y,
-                historyAccessibility: historyA11y
-            )
-            Self.hideBarItemGlass(cluster)
-            navigationItem.leftBarButtonItem = nil
-            navigationItem.leftBarButtonItems = [cluster]
-            navigationItem.rightBarButtonItems = [moreItem]
-        } else {
-            let historyItem = ActionIconFactory.barItem(
+        let historyItem = compactChrome
+            ? Self.compactStudyBarItem(
                 kind: .clock,
                 target: self,
                 action: #selector(studyHistoryTapped),
                 accessibility: historyA11y
             )
-            let newChatItem = ActionIconFactory.barItem(
+            : ActionIconFactory.barItem(
+                kind: .clock,
+                target: self,
+                action: #selector(studyHistoryTapped),
+                accessibility: historyA11y
+            )
+        let newChatItem = compactChrome
+            ? Self.compactStudyBarItem(
                 kind: .plus,
                 target: self,
                 action: #selector(studyNewChatTapped),
                 accessibility: newChatA11y
             )
-            Self.hideBarItemGlass(historyItem)
-            Self.hideBarItemGlass(newChatItem)
-            // UIKit: first right item is rightmost.
+            : ActionIconFactory.barItem(
+                kind: .plus,
+                target: self,
+                action: #selector(studyNewChatTapped),
+                accessibility: newChatA11y
+            )
+        Self.hideBarItemGlass(historyItem)
+        Self.hideBarItemGlass(newChatItem)
+
+        // Study: never host a sidebar key on chat nav (shell floating control only).
+        // Workspace + / history stay on trailing with ⋯ — iPhone included.
+        navigationItem.leftBarButtonItem = nil
+        navigationItem.leftBarButtonItems = nil
+        if compactChrome {
+            // One cluster for + / history / ⋯ so spacing is even and iOS 26 won’t
+            // glass-wrap only part of the group.
+            let cluster = Self.compactStudyTrailingCluster(
+                target: self,
+                newChatAction: #selector(studyNewChatTapped),
+                historyAction: #selector(studyHistoryTapped),
+                moreAction: #selector(moreTapped),
+                newChatAccessibility: newChatA11y,
+                historyAccessibility: historyA11y,
+                moreAccessibility: "更多"
+            )
+            Self.hideBarItemGlass(cluster)
+            navigationItem.rightBarButtonItems = [cluster]
+        } else {
+            // UIKit: first right item is rightmost → ⋯ | history | +
             navigationItem.rightBarButtonItems = [moreItem, historyItem, newChatItem]
         }
     }
@@ -7062,7 +7074,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let side = StudyPanelStageCapsule.chipHeight
         let button = UIButton(type: .system)
         button.frame = CGRect(x: 0, y: 0, width: side, height: side)
-        button.setImage(ActionIconFactory.image(kind, pointSize: 15), for: .normal)
+        button.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.menuGlyph), for: .normal)
         button.tintColor = DSTheme.c.textSecondary
         button.accessibilityLabel = accessibility
         if let target {
@@ -7075,24 +7087,27 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         return item
     }
 
-    /// + and history in one custom view so iOS 26 won’t wrap them in a shared glass capsule.
-    private static func compactStudyConversationCluster(
+    /// + / history / ⋯ in one custom view — equal spacing, no mixed bar-item gaps.
+    private static func compactStudyTrailingCluster(
         target: Any?,
         newChatAction: Selector,
         historyAction: Selector,
+        moreAction: Selector,
         newChatAccessibility: String,
-        historyAccessibility: String
+        historyAccessibility: String,
+        moreAccessibility: String
     ) -> UIBarButtonItem {
         let side = StudyPanelStageCapsule.chipHeight
+        let spacing: CGFloat = 4
         let stack = UIStackView()
         stack.axis = .horizontal
         stack.alignment = .center
-        stack.spacing = 2
+        stack.spacing = spacing
         stack.isUserInteractionEnabled = true
 
         func makeButton(kind: ActionIconFactory.Kind, action: Selector, a11y: String) -> UIButton {
             let button = UIButton(type: .system)
-            button.setImage(ActionIconFactory.image(kind, pointSize: 15), for: .normal)
+            button.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.menuGlyph), for: .normal)
             button.tintColor = DSTheme.c.textSecondary
             button.accessibilityLabel = a11y
             button.translatesAutoresizingMaskIntoConstraints = false
@@ -7106,17 +7121,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return button
         }
 
+        // Visual L→R: + | history | ⋯ (⋯ sits at the trailing edge).
         let plus = makeButton(kind: .plus, action: newChatAction, a11y: newChatAccessibility)
         let clock = makeButton(kind: .clock, action: historyAction, a11y: historyAccessibility)
+        let more = makeButton(kind: .more, action: moreAction, a11y: moreAccessibility)
         stack.addArrangedSubview(plus)
         stack.addArrangedSubview(clock)
-        stack.frame = CGRect(x: 0, y: 0, width: side * 2 + 2, height: side)
+        stack.addArrangedSubview(more)
+        let count = 3
+        stack.frame = CGRect(x: 0, y: 0, width: side * CGFloat(count) + spacing * CGFloat(count - 1), height: side)
 
         let item = UIBarButtonItem(customView: stack)
-        item.accessibilityLabel = "\(newChatAccessibility)，\(historyAccessibility)"
-        // Menu / toast anchors prefer the history control.
+        item.accessibilityLabel = "\(newChatAccessibility)，\(historyAccessibility)，\(moreAccessibility)"
+        // Menu / toast anchors prefer the more control (rightmost).
         item.target = target as AnyObject?
-        item.action = historyAction
+        item.action = moreAction
         return item
     }
 
@@ -7190,8 +7209,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 ConnectsMenuItem(title: archiveTitle, icon: .archive) {
                     ConversationStore.shared.setArchived(id: conv.id, archived: !conv.isArchived)
                 },
-                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) {
-                    ConversationStore.shared.deleteConversation(id: conv.id)
+                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.confirmDeleteConversation(id: conv.id, title: conv.title)
                 }
             ],
             barButtonItem: studyBarButtonItem(matching: #selector(studyHistoryTapped))
@@ -7360,6 +7379,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         refreshContextUsage()
     }
 
+    private func confirmDeleteConversation(id: String, title: String) {
+        let alert = UIAlertController(
+            title: "删除对话？",
+            message: "将永久删除「\(title)」。此操作不可撤销。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { _ in
+            ConversationStore.shared.deleteConversation(id: id)
+        })
+        present(alert, animated: true)
+    }
+
     private func setupEmptyState() {
         emptyContainer.translatesAutoresizingMaskIntoConstraints = false
         emptyContainer.isUserInteractionEnabled = true
@@ -7378,7 +7410,15 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptySubtitleLabel.text = "选择模型后开始对话"
         emptySubtitleLabel.textAlignment = .center
         emptySubtitleLabel.font = DSTheme.bodyFont(size: 14)
+        emptySubtitleLabel.numberOfLines = 0
         emptyContainer.addSubview(emptySubtitleLabel)
+
+        emptyConfigureKeyButton.translatesAutoresizingMaskIntoConstraints = false
+        emptyConfigureKeyButton.setTitle("配置 API Key", for: .normal)
+        emptyConfigureKeyButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        emptyConfigureKeyButton.addTarget(self, action: #selector(emptyConfigureKeyTapped), for: .touchUpInside)
+        emptyConfigureKeyButton.isHidden = true
+        emptyContainer.addSubview(emptyConfigureKeyButton)
 
         // Center empty chrome in the band above the composer (moves with keyboard).
         NSLayoutConstraint.activate([
@@ -7393,10 +7433,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -24),
 
             emptySubtitleLabel.topAnchor.constraint(equalTo: emptyTitleLabel.bottomAnchor, constant: 10),
-            emptySubtitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor)
+            emptySubtitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
+            emptySubtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 28),
+            emptySubtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -28),
+
+            emptyConfigureKeyButton.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 18),
+            emptyConfigureKeyButton.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor)
         ])
 
         view.bringSubviewToFront(inputBar)
+    }
+
+    @objc private func emptyConfigureKeyTapped() {
+        delegate?.chatDidRequestSettings()
     }
 
     private func updateEmptyState() {
@@ -7419,16 +7468,38 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             clearNavigationPrompt()
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
+            emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
+            refreshEmptyOnboardingCopy()
+        } else {
+            emptyConfigureKeyButton.isHidden = true
         }
         layoutEmptyChromeForKeyboard()
+    }
+
+    /// Cold-start / missing-key empty state vs normal suggestions.
+    private func refreshEmptyOnboardingCopy() {
+        let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+        let hasKey = SettingsManager.shared.hasAPIKey(for: model.provider)
+        emptyConfigureKeyButton.isHidden = hasKey
+        if hasKey {
+            emptyTitleLabel.text = "今天想聊些什么？"
+            emptySubtitleLabel.text = "试试：解释当前文档 · 总结要点 · 帮我改一处代码"
+        } else {
+            emptyTitleLabel.text = "先配置 API Key"
+            emptySubtitleLabel.text = "在设置中填写 \(model.provider.displayName) 密钥后即可开始对话。点右上角「完成」才会保存。"
+        }
     }
 
     /// When keyboard is up, keep title above the composer; hide subtitle to avoid clutter.
     private func layoutEmptyChromeForKeyboard() {
         guard !emptyContainer.isHidden else { return }
         emptySubtitleLabel.isHidden = keyboardVisible
-        // Slightly higher title when keyboard consumes the lower half.
-        // (centerY constant is fixed in constraints; hide chips is enough for Air 1 landscape.)
+        if keyboardVisible {
+            emptyConfigureKeyButton.isHidden = true
+        } else {
+            let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+            emptyConfigureKeyButton.isHidden = SettingsManager.shared.hasAPIKey(for: model.provider)
+        }
     }
 
     private func updateModelButton() {
@@ -7437,6 +7508,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         inputBar.setModelChip(title: model.displayName)
         modelButton.setTitle("\(model.displayName)  ▾", for: .normal)
         syncStudyPanelStageControl()
+        if (ConversationStore.shared.currentConversation?.messages.count ?? 0) == 0 {
+            refreshEmptyOnboardingCopy()
+            layoutEmptyChromeForKeyboard()
+        }
     }
 
     private func stepStudyPanel(towardAI: Bool) {
@@ -7963,7 +8038,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let model = streamModel(for: conv.model, hasImages: hasImages) else {
             showAlert(
                 title: "缺少 API Key",
-                message: streamModelMissingKeyMessage(for: conv.model, hasImages: hasImages)
+                message: streamModelMissingKeyMessage(for: conv.model, hasImages: hasImages),
+                offerSettings: true
             )
             return
         }
@@ -8445,7 +8521,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let captionModel = imageTranscriptionModel() else {
             showAlert(
                 title: "缺少视觉模型 Key",
-                message: streamModelMissingKeyMessage(for: conv.model, hasImages: true)
+                message: streamModelMissingKeyMessage(for: conv.model, hasImages: true),
+                offerSettings: true
             )
             return
         }
@@ -8672,7 +8749,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if currentConversationID == conversationID {
                 showAlert(
                     title: "缺少 API Key",
-                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: hasImageAttachment)
+                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: hasImageAttachment),
+                    offerSettings: true
                 )
             }
             return
@@ -8685,7 +8763,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             if currentConversationID == conversationID {
                 showAlert(
                     title: "缺少转写 Key",
-                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: true)
+                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: true),
+                    offerSettings: true
                 )
             }
             return
@@ -8932,9 +9011,16 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    private func showAlert(title: String, message: String) {
+    private func showAlert(title: String, message: String, offerSettings: Bool = false) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default))
+        if offerSettings {
+            alert.addAction(UIAlertAction(title: "去设置", style: .default) { [weak self] _ in
+                self?.delegate?.chatDidRequestSettings()
+            })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        } else {
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+        }
         present(alert, animated: true)
     }
 

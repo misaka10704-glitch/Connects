@@ -49,6 +49,21 @@ final class ProjectStore {
         saveAndNotify()
     }
 
+    /// Persist list order after drag-reorder in project settings.
+    func moveProject(from source: Int, to destination: Int) {
+        var sorted = sortedProjects
+        guard source >= 0, source < sorted.count,
+              destination >= 0, destination < sorted.count,
+              source != destination else { return }
+        let item = sorted.remove(at: source)
+        sorted.insert(item, at: destination)
+        for (index, project) in sorted.enumerated() {
+            guard let storageIndex = projects.firstIndex(where: { $0.id == project.id }) else { continue }
+            projects[storageIndex].sortOrder = index
+        }
+        saveAndNotify()
+    }
+
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: projectsKey),
               let decoded = try? JSONDecoder().decode([Project].self, from: data) else { return }

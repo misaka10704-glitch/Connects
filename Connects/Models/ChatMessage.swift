@@ -355,14 +355,19 @@ struct ChatMessage: Codable, Equatable {
 
         func flushPendingChild() {
             guard let p = pending else { return }
-            let text = coalesceCount > 1 ? "\(p.line) · ×\(coalesceCount)" : p.line
+            var text = coalesceCount > 1 ? "\(p.line) · ×\(coalesceCount)" : p.line
+            if p.kind == .edited || p.kind == .created {
+                text = Self.localizedEditTimelineLine(text)
+            }
             if AgentTimelinePart.isExploreChild(stepKind: p.kind) {
+                let shimmer = running && (p.kind == .edited || p.kind == .created)
                 exploreChildren.append(AgentTimelinePaintItem(
                     id: p.id,
                     role: .exploreChild,
                     text: text,
                     detail: coalesceCount > 1 ? "" : p.detail,
                     stepKind: p.kind,
+                    shimmer: shimmer,
                     indented: true
                 ))
             }
@@ -1157,5 +1162,19 @@ struct ChatMessage: Codable, Equatable {
             return agentTimelineBody
         }
         return chatDisplayBodyCurrentRound
+    }
+
+    /// Timeline label for edit/create steps (matches thinking-tag thickness chrome).
+    static func localizedEditTimelineLine(_ line: String) -> String {
+        if line.hasPrefix("Editing ") {
+            return "正在编辑 " + line.dropFirst("Editing ".count)
+        }
+        if line.hasPrefix("Creating ") {
+            return "正在创建 " + line.dropFirst("Creating ".count)
+        }
+        if line == "Editing…" || line == "Editing..." {
+            return "正在编辑…"
+        }
+        return line
     }
 }

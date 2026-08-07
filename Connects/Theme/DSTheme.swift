@@ -260,3 +260,15 @@ extension UIButton {
         configuration = config
     }
 }
+
+/// Shared chrome for thinking / search / edit tags — consistent thickness.
+enum MessageChromeStyle {
+    static let cornerRadius: CGFloat = 10
+    static let borderWidth: CGFloat = 0
+    static let headerHeight: CGFloat = 32
+    static let horizontalPadding: CGFloat = 12
+    static let surfaceAlpha: CGFloat = 0.65
+    static let headerFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
+    /// Collapsed chrome row (tag only).
+    static let collapsedRowHeight: CGFloat = 40
+}

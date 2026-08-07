@@ -59,10 +59,10 @@ final class PDFReaderViewController: UIViewController {
         sidebarButton.accessibilityLabel = "打开侧栏"
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
-        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget)
 
         highlightPenButton.translatesAutoresizingMaskIntoConstraints = false
-        highlightPenButton.setImage(ActionIconFactory.image(.highlighter, pointSize: 17), for: .normal)
+        highlightPenButton.setImage(ActionIconFactory.image(.highlighter, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         highlightPenButton.accessibilityLabel = "高亮笔"
         highlightPenButton.accessibilityHint = "点按开/关；长按选线宽。划线时停住会自动拉直，按住可调角度"
         highlightPenButton.addTarget(self, action: #selector(highlightPenTapped), for: .touchUpInside)
@@ -73,7 +73,7 @@ final class PDFReaderViewController: UIViewController {
         topBar.addSubview(highlightPenButton)
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
-        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: 18), for: .normal)
+        contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录与书签"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
@@ -134,12 +134,12 @@ final class PDFReaderViewController: UIViewController {
             topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 40),
+            topBar.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
             sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             sidebarButtonWidthConstraint,
-            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+            sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
@@ -149,13 +149,13 @@ final class PDFReaderViewController: UIViewController {
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            contentsButton.widthAnchor.constraint(equalToConstant: 40),
-            contentsButton.heightAnchor.constraint(equalToConstant: 40),
+            contentsButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            contentsButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             highlightPenButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
             highlightPenButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            highlightPenButton.widthAnchor.constraint(equalToConstant: 40),
-            highlightPenButton.heightAnchor.constraint(equalToConstant: 40),
+            highlightPenButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            highlightPenButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -278,14 +278,32 @@ final class PDFReaderViewController: UIViewController {
 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
-        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
 
-    func setSidebarButtonHidden(_ hidden: Bool) {
-        sidebarButton.isHidden = hidden
-        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    func setSidebarButtonHidden(_ hidden: Bool, animated: Bool = false) {
+        let apply = {
+            self.sidebarButton.alpha = hidden ? 0 : 1
+            self.sidebarButton.isUserInteractionEnabled = !hidden
+            self.sidebarButtonWidthConstraint.constant = 40
+            self.sidebarButton.isHidden = false
+        }
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    func sidebarButtonAnchorFrame(in target: UIView) -> CGRect {
+        guard let bar = sidebarButton.superview else { return .zero }
+        bar.layoutIfNeeded()
+        // Pre-layout / cold start: zero-height bar makes y = -hitTarget/2 → floats above the screen.
+        guard bar.bounds.height > 1, bar.window != nil else { return .zero }
+        let y = (bar.bounds.height - ActionIconFactory.hitTarget) / 2
+        return bar.convert(CGRect(x: 4, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget), to: target)
     }
 
     @objc private func sidebarTapped() {

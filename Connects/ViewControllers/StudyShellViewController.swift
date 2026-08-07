@@ -19,6 +19,8 @@ final class StudyShellViewController: UIViewController {
     private let chatHost = UIView()
     /// Vertical ▲/▼ at the old AI-panel handle position (not in the input bar).
     private let panelStageCapsule = StudyPanelStageCapsule()
+    /// Single Study sidebar control (file-chrome style). Readers keep a layout spacer only.
+    private let floatingSidebarButton = UIButton(type: .system)
 
     private var chatWidthConstraint: NSLayoutConstraint!
     private var portraitChatHeightConstraint: NSLayoutConstraint!
@@ -178,6 +180,7 @@ final class StudyShellViewController: UIViewController {
         chatHost.clipsToBounds = false
         chatHost.backgroundColor = DSTheme.c.background
         panelStageCapsule.layer.zPosition = 100
+        setupFloatingSidebarButton()
         readerHost.clipsToBounds = false
         chatVC.studyContextProvider = self
         let toggleSidebar: () -> Void = { [weak self] in
@@ -225,15 +228,17 @@ final class StudyShellViewController: UIViewController {
         pdfReaderVC.onFileTitleTapped = fileTitle
         markdownReaderVC.onFileTitleTapped = fileTitle
         ebookReaderVC.onFileTitleTapped = fileTitle
-        markdownReaderVC.onBuildPlan = { [weak self] in
+        let buildPlan: () -> Void = { [weak self] in
             guard let self, let docID = self.boundDocumentID else { return }
-            if self.chatPanelStage == .collapsed {
+            if self.isChatCollapsed {
                 self.applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
             } else {
                 self.chatVC.prepareForStudyPanelControlTap()
             }
             self.chatVC.startPlanBuild(documentID: docID)
         }
+        textEditorVC.onBuildPlan = buildPlan
+        markdownReaderVC.onBuildPlan = buildPlan
         StudyAskMenu.installIfNeeded()
 
         addChild(pdfReaderVC)
@@ -618,6 +623,7 @@ final class StudyShellViewController: UIViewController {
             : updateLandscapeOverlay()
         if overlayTouched {
             updateChatPanelShadowPath()
+            syncFloatingSidebarButton(animated: false)
             bringChromeToFront()
         } else {
             updateChatPanelShadowPath()
@@ -710,38 +716,12 @@ final class StudyShellViewController: UIViewController {
         markdownReaderVC.view.isHidden = kind != .markdown
         textEditorVC.view.isHidden = kind != .text
         ebookReaderVC.view.isHidden = kind != .ebook
-        switch kind {
-        case .pdf:
-            markdownReaderVC.setReaderSurfaceActive(false)
-            markdownReaderVC.setSidebarButtonHidden(true)
-            textEditorVC.setReaderSurfaceActive(false)
-            textEditorVC.setSidebarButtonHidden(true)
-            ebookReaderVC.setReaderSurfaceActive(false)
-            ebookReaderVC.setSidebarButtonHidden(true)
-        case .markdown:
-            pdfReaderVC.setReaderSurfaceActive(false)
-            pdfReaderVC.setSidebarButtonHidden(true)
-            textEditorVC.setReaderSurfaceActive(false)
-            textEditorVC.setSidebarButtonHidden(true)
-            ebookReaderVC.setReaderSurfaceActive(false)
-            ebookReaderVC.setSidebarButtonHidden(true)
-        case .text:
-            pdfReaderVC.setReaderSurfaceActive(false)
-            pdfReaderVC.setSidebarButtonHidden(true)
-            markdownReaderVC.setReaderSurfaceActive(false)
-            markdownReaderVC.setSidebarButtonHidden(true)
-            ebookReaderVC.setReaderSurfaceActive(false)
-            ebookReaderVC.setSidebarButtonHidden(true)
-        case .ebook:
-            pdfReaderVC.setReaderSurfaceActive(false)
-            pdfReaderVC.setSidebarButtonHidden(true)
-            markdownReaderVC.setReaderSurfaceActive(false)
-            markdownReaderVC.setSidebarButtonHidden(true)
-            textEditorVC.setReaderSurfaceActive(false)
-            textEditorVC.setSidebarButtonHidden(true)
-            ebookReaderVC.setReaderSurfaceActive(true)
-            ebookReaderVC.setSidebarButtonHidden(false)
-        }
+        pdfReaderVC.setReaderSurfaceActive(kind == .pdf)
+        markdownReaderVC.setReaderSurfaceActive(kind == .markdown)
+        textEditorVC.setReaderSurfaceActive(kind == .text)
+        ebookReaderVC.setReaderSurfaceActive(kind == .ebook)
+        // Native keys stay hidden; shell floating control repositions to the active reader.
+        syncReaderSidebarButtonVisibility(animated: true)
     }
 
     private func isActiveReaderLoaded(documentID: String) -> Bool {
@@ -1024,9 +1004,148 @@ final class StudyShellViewController: UIViewController {
         if !panelStageCapsule.isHidden {
             view.bringSubviewToFront(panelStageCapsule)
         }
+        if !floatingSidebarButton.isHidden {
+            view.bringSubviewToFront(floatingSidebarButton)
+        }
         // Note sheet must stay above chat chrome or the panel flash looks like a black screen
         // and steals first responder from the comment field.
         ConnectsNoteSheet.bringToFront(in: view)
+    }
+
+    private func setupFloatingSidebarButton() {
+        floatingSidebarButton.translatesAutoresizingMaskIntoConstraints = true
+        floatingSidebarButton.frame = CGRect(x: 0, y: 0, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget)
+        floatingSidebarButton.setImage(ActionIconFactory.image(.sidebarOpen, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        floatingSidebarButton.tintColor = DSTheme.c.textSecondary
+        floatingSidebarButton.accessibilityLabel = "打开侧栏"
+        floatingSidebarButton.alpha = 0
+        floatingSidebarButton.isHidden = true
+        floatingSidebarButton.layer.zPosition = 110
+        floatingSidebarButton.addTarget(self, action: #selector(floatingSidebarTapped), for: .touchUpInside)
+        view.addSubview(floatingSidebarButton)
+    }
+
+    @objc private func floatingSidebarTapped() {
+        onToggleSidebar?()
+    }
+
+    /// Exactly one sidebar key: shell-owned floating control (file chrome style).
+    private func syncReaderSidebarButtonVisibility(animated: Bool = false) {
+        // Native reader buttons stay hidden in Study — floating control is the only key.
+        let hideNative = true
+        pdfReaderVC.setSidebarButtonHidden(hideNative, animated: animated)
+        markdownReaderVC.setSidebarButtonHidden(hideNative, animated: animated)
+        textEditorVC.setSidebarButtonHidden(hideNative, animated: animated)
+        ebookReaderVC.setSidebarButtonHidden(hideNative, animated: animated)
+        syncFloatingSidebarButton(animated: animated)
+    }
+
+    private var floatingSidebarLayoutRetryPending = false
+
+    private func syncFloatingSidebarButton(animated: Bool) {
+        let shouldShow = isReaderVisible
+        var target = floatingSidebarTargetFrame()
+        if shouldShow, !isPlausibleFloatingSidebarFrame(target) {
+            target = fallbackFloatingSidebarFrame()
+            scheduleFloatingSidebarLayoutRetry()
+        }
+        let applyFrame = {
+            if target.width > 1 {
+                self.floatingSidebarButton.frame = target
+            }
+        }
+        if shouldShow {
+            floatingSidebarButton.isHidden = false
+            floatingSidebarButton.isUserInteractionEnabled = true
+            if animated {
+                if floatingSidebarButton.alpha < 0.05 {
+                    applyFrame()
+                }
+                UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) {
+                    applyFrame()
+                    self.floatingSidebarButton.alpha = 1
+                }
+            } else {
+                applyFrame()
+                floatingSidebarButton.alpha = 1
+            }
+            view.bringSubviewToFront(floatingSidebarButton)
+        } else {
+            floatingSidebarLayoutRetryPending = false
+            let hide = {
+                self.floatingSidebarButton.alpha = 0
+            }
+            let finish = {
+                self.floatingSidebarButton.isHidden = true
+                self.floatingSidebarButton.isUserInteractionEnabled = false
+            }
+            if animated, !floatingSidebarButton.isHidden {
+                UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: hide, completion: { _ in
+                    finish()
+                })
+            } else {
+                hide()
+                finish()
+            }
+        }
+    }
+
+    private func scheduleFloatingSidebarLayoutRetry() {
+        guard !floatingSidebarLayoutRetryPending else { return }
+        floatingSidebarLayoutRetryPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.floatingSidebarLayoutRetryPending = false
+            guard self.isReaderVisible else { return }
+            self.view.layoutIfNeeded()
+            self.syncFloatingSidebarButton(animated: false)
+        }
+    }
+
+    private func isPlausibleFloatingSidebarFrame(_ frame: CGRect) -> Bool {
+        guard frame.width > 1, frame.height > 1, view.bounds.height > 1 else { return false }
+        let top = view.safeAreaInsets.top
+        // Above the safe area (or completely off-screen) = cold-start / pre-layout garbage.
+        if frame.minY < top - 1 { return false }
+        if frame.minY > view.bounds.height - 8 { return false }
+        if frame.maxX < 0 || frame.minX > view.bounds.width { return false }
+        return true
+    }
+
+    private func fallbackFloatingSidebarFrame() -> CGRect {
+        let size = ActionIconFactory.hitTarget
+        view.layoutIfNeeded()
+        // Align to reader host leading + top bar band under the safe area.
+        let originInShell = readerHost.convert(CGPoint(x: 4, y: 0), to: view)
+        let y = max(view.safeAreaInsets.top, originInShell.y)
+        let x = max(4, originInShell.x)
+        return CGRect(x: x, y: y, width: size, height: size)
+    }
+
+    private func floatingSidebarTargetFrame() -> CGRect {
+        guard isReaderVisible else { return .zero }
+        view.layoutIfNeeded()
+        let raw: CGRect
+        if chatPanelStage == .full {
+            let bar = chatNav.navigationBar
+            bar.layoutIfNeeded()
+            let y = bar.convert(CGPoint(x: 0, y: (bar.bounds.height - ActionIconFactory.hitTarget) / 2), to: view).y
+            let x = chatHost.convert(CGPoint(x: 8, y: 0), to: view).x
+            raw = CGRect(x: x, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget)
+        } else {
+            switch activeReaderKind {
+            case .pdf: raw = pdfReaderVC.sidebarButtonAnchorFrame(in: view)
+            case .markdown: raw = markdownReaderVC.sidebarButtonAnchorFrame(in: view)
+            case .text: raw = textEditorVC.sidebarButtonAnchorFrame(in: view)
+            case .ebook: raw = ebookReaderVC.sidebarButtonAnchorFrame(in: view)
+            }
+        }
+        guard isPlausibleFloatingSidebarFrame(raw) else { return .zero }
+        // Clamp into safe area so a slightly-early layout never sits under the status bar.
+        var frame = raw
+        frame.origin.y = max(frame.origin.y, view.safeAreaInsets.top)
+        frame.origin.x = max(4, min(frame.origin.x, view.bounds.width - frame.width - 4))
+        return frame
     }
 
     private func syncChatPanelChrome() {
@@ -1071,6 +1190,7 @@ final class StudyShellViewController: UIViewController {
         view.backgroundColor = DSTheme.c.background
         syncChatPanelChrome()
         panelStageCapsule.applyTheme(elevated: false)
+        floatingSidebarButton.tintColor = DSTheme.c.textSecondary
         chatVC.syncStudyPanelStageControl()
     }
 
@@ -1108,9 +1228,11 @@ final class StudyShellViewController: UIViewController {
         markdownReaderVC.updateSidebarToggle(collapsed: collapsed)
         textEditorVC.updateSidebarToggle(collapsed: collapsed)
         ebookReaderVC.updateSidebarToggle(collapsed: collapsed)
-        if !isReaderVisible || chatPanelStage == .full {
-            chatVC.updateSidebarToggleTitle(collapsed: collapsed)
-        }
+        let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
+        floatingSidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        floatingSidebarButton.tintColor = DSTheme.c.textSecondary
+        floatingSidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
+        chatVC.updateSidebarToggleTitle(collapsed: collapsed)
     }
 
     private func bindCurrentConversation() {
@@ -1137,6 +1259,16 @@ final class StudyShellViewController: UIViewController {
         boundConversationID = convID
         loadGeneration &+= 1
         let gen = loadGeneration
+
+        // Restore pending Diff review for this conversation (survives app kill).
+        WorkspaceEditSession.shared.bind(conversationID: convID)
+        chatVC.refreshWorkspaceDiffBanner()
+        if let firstPending = WorkspaceEditSession.shared.files.first {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.boundConversationID == convID else { return }
+                self.studyCodeDiffOpen(documentID: firstPending.documentID)
+            }
+        }
 
         let enteringOrLeavingStudy = (docID != nil) != wasInStudy || docChanged
         if let docID = docID {
@@ -1249,16 +1381,12 @@ final class StudyShellViewController: UIViewController {
             chatHost.isHidden = false
             chatNav.view.isHidden = false
             view.bringSubviewToFront(chatHost)
+            syncFloatingSidebarButton(animated: true)
             return
         }
 
         setChatOnlyLayout(false)
-        switch activeReaderKind {
-        case .pdf: pdfReaderVC.setSidebarButtonHidden(false)
-        case .markdown: markdownReaderVC.setSidebarButtonHidden(false)
-        case .text: textEditorVC.setSidebarButtonHidden(false)
-        case .ebook: ebookReaderVC.setSidebarButtonHidden(false)
-        }
+        syncReaderSidebarButtonVisibility()
 
         let layoutSize = layoutBoundsSize(for: size)
         if isPortraitMode {
@@ -1283,6 +1411,7 @@ final class StudyShellViewController: UIViewController {
             chatVC.setStudyChrome(.none)
             applyStudyPanelSpacers(expanded: false)
             chatNav.additionalSafeAreaInsets = .zero
+            syncFloatingSidebarButton(animated: true)
             return
         }
 
@@ -1304,13 +1433,9 @@ final class StudyShellViewController: UIViewController {
             chatVC.edgesForExtendedLayout = .all
             chatVC.extendedLayoutIncludesOpaqueBars = false
         }
-        // Full AI covers the document top-bar sidebar; rehost it on chat nav (leading)
-        // on iPad. iPhone keeps conversation + / history there instead (edge swipe opens drawer).
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            chatVC.setStudyShowsSidebarToggle(false)
-        } else {
-            chatVC.setStudyShowsSidebarToggle(chatPanelStage == .full)
-        }
+        // Single floating sidebar key (file chrome). Never rehost onto chat nav.
+        chatVC.setStudyShowsSidebarToggle(false)
+        syncReaderSidebarButtonVisibility(animated: false)
 
         guard reconcileContent, !isAnimatingPanelStage else { return }
         chatVC.refreshStudyComposerLayout(reconcileViewport: reconcileContent)
@@ -1617,10 +1742,27 @@ final class StudyShellViewController: UIViewController {
         if !panelStageCapsule.isHidden {
             view.bringSubviewToFront(panelStageCapsule)
         }
+        if isReaderVisible {
+            floatingSidebarButton.isHidden = false
+            floatingSidebarButton.alpha = max(floatingSidebarButton.alpha, 0.01)
+            view.bringSubviewToFront(floatingSidebarButton)
+        }
 
         let animations = {
             self.view.layoutIfNeeded()
             self.updateChatPanelShadowPath()
+            if self.isReaderVisible {
+                var frame = self.floatingSidebarTargetFrame()
+                if !self.isPlausibleFloatingSidebarFrame(frame) {
+                    frame = self.fallbackFloatingSidebarFrame()
+                }
+                if frame.width > 1 {
+                    self.floatingSidebarButton.frame = frame
+                }
+                self.floatingSidebarButton.alpha = 1
+            } else {
+                self.floatingSidebarButton.alpha = 0
+            }
         }
         let finish = {
             if becomingCollapsed {
@@ -1642,6 +1784,7 @@ final class StudyShellViewController: UIViewController {
                 self.syncPanelStageCapsuleLayout(layoutNow: true)
             }
             self.panelStageCapsule.isUserInteractionEnabled = true
+            self.syncFloatingSidebarButton(animated: false)
             self.bringChromeToFront()
             if capsuleFade, !self.panelStageCapsule.isHidden {
                 UIView.animate(withDuration: 0.14, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
@@ -1651,6 +1794,7 @@ final class StudyShellViewController: UIViewController {
                 self.panelStageCapsule.alpha = 1
             }
             self.isAnimatingPanelStage = false
+            self.maybeShowPanelShortcutTipOnce()
             // Defer width/height reconcile so stage buttons accept the next tap immediately.
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -1680,6 +1824,20 @@ final class StudyShellViewController: UIViewController {
             animations()
             finish()
         }
+    }
+
+    private static let panelShortcutTipDefaultsKey = "connects.study.panelShortcutTipShown"
+
+    private func maybeShowPanelShortcutTipOnce() {
+        guard isReaderVisible, chatPanelStage != .collapsed else { return }
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.panelShortcutTipDefaultsKey) else { return }
+        defaults.set(true, forKey: Self.panelShortcutTipDefaultsKey)
+        ConnectsToast.show(
+            "可用 ▲▼ 或 ⌘←/→ 调整 AI 面板；⌘J 聚焦输入",
+            in: view,
+            duration: 2.4
+        )
     }
 
     @objc private func handleLandscapeResizePan(_ gesture: UIPanGestureRecognizer) {
@@ -1826,14 +1984,18 @@ final class StudyShellViewController: UIViewController {
         ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
             draft.studyPageCaptureEnabled = true
         }
-        // Keep reading: do not pop half-AI or steal keyboard — selection stays highlighted.
         switch activeReaderKind {
         case .text: textEditorVC.pinAskSelectionHighlight()
         case .markdown: markdownReaderVC.pinAskSelectionHighlight()
         case .pdf, .ebook: break
         }
         chatVC.prepareAskAboutSelection(trimmed)
-        ConnectsToast.show("已附带选区，打开 AI 后提问", in: view, duration: 1.1)
+        if isChatCollapsed {
+            applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
+        } else {
+            chatVC.focusComposerFromShortcut()
+        }
+        ConnectsToast.show("已附带选区，可直接提问", in: view, duration: 1.1)
     }
 
     func clearAskSelectionHighlightInReader() {
@@ -2177,7 +2339,8 @@ extension StudyShellViewController: StudyReadingContextProviding {
             maxHeight: min(480, max(240, screenH * 0.62)),
             menuWidth: 320,
             titleTap: { [weak self] in
-                self?.presentWorkspaceSwitcher()
+                // Folder title → open Files at the current file's directory (not last-used location).
+                self?.presentStudyFilesBrowser()
             },
             headerTrailingActions: [
                 ConnectsMenuHeaderAction(icon: .folder, accessibilityLabel: "打开文件 / New File") { [weak self] in
@@ -2238,7 +2401,26 @@ extension StudyShellViewController: StudyReadingContextProviding {
         browser.onPick = { [weak self] url in
             self?.handleFreeOpenURL(url)
         }
-        present(browser, animated: true)
+        let revealURL: URL? = {
+            guard let docID = ConversationStore.shared.currentConversation?.studyDocumentID else { return nil }
+            if let fileURL = try? StudyDocumentStore.shared.resolvedURL(forID: docID) {
+                return fileURL
+            }
+            if let path = StudyDocumentStore.shared.document(id: docID)?.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path)
+            }
+            return nil
+        }()
+        present(browser, animated: true) {
+            guard let revealURL else { return }
+            // Prefer revealing the file so the browser lands in its parent folder.
+            browser.revealDocument(at: revealURL, importIfNeeded: false) { _, error in
+                if error != nil {
+                    let folder = revealURL.deletingLastPathComponent()
+                    browser.revealDocument(at: folder, importIfNeeded: false) { _, _ in }
+                }
+            }
+        }
     }
 
     private func presentFreeFilePicker(from sourceView: UIView?, barButtonItem: UIBarButtonItem? = nil) {
@@ -2533,8 +2715,19 @@ extension StudyShellViewController: StudyReadingContextProviding {
 
     /// Attach the open file to a parent-folder workspace conversation.
     /// Switching folders selects that folder's existing chat (or creates one) so histories stay isolated.
+    /// Empty unbound chats bind in place so opening a file never jumps to another project's「新对话」.
     private func activateFolderConversation(workspace folderWS: StudyWorkspace, documentID: String) {
         let current = ConversationStore.shared.currentConversation
+        let unboundCurrent =
+            current != nil
+            && current?.studyDocumentID == nil
+            && current?.activeStudyWorkspaceID == nil
+
+        if unboundCurrent {
+            activateWorkspace(folderWS.id, preferredDocumentID: documentID)
+            return
+        }
+
         let currentParent = current?.studyDocumentID.flatMap {
             StudyWorkspaceStore.shared.parentFolderPath(ofDocumentID: $0)
         }
@@ -2549,7 +2742,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
             return
         }
 
+        let currentProject = current?.projectID
         let peers = ConversationStore.shared.conversations(sharingParentFolderOfDocument: documentID)
+            .filter { $0.projectID == currentProject }
         if let peer = peers.first {
             ConversationStore.shared.selectConversation(id: peer.id)
             activateWorkspace(folderWS.id, preferredDocumentID: documentID)
@@ -2559,7 +2754,8 @@ extension StudyShellViewController: StudyReadingContextProviding {
         let model = current?.model ?? .deepseekV4Pro
         _ = ConversationStore.shared.createConversation(
             model: model,
-            projectID: current?.projectID,
+            projectID: currentProject,
+            inheritSelectedProjectFilter: false,
             studyWorkspaceID: folderWS.id,
             studyDocumentID: documentID,
             studySessionKind: .workspace,
@@ -2720,7 +2916,7 @@ extension StudyShellViewController: StudyReadingContextProviding {
         WorkspaceEditSession.shared.clear()
         chatVC.refreshWorkspaceDiffBanner()
         let n = pending.count
-        ConnectsToast.show(n == 1 ? "Kept 1 file" : "Kept \(n) files", in: view, duration: 1.4)
+        ConnectsToast.show(n == 1 ? "已保留 1 个文件" : "已保留 \(n) 个文件", in: view, duration: 1.4)
     }
 
     func studyCodeDiffUndoAll() {
@@ -2737,7 +2933,7 @@ extension StudyShellViewController: StudyReadingContextProviding {
         WorkspaceEditSession.shared.clear()
         chatVC.refreshWorkspaceDiffBanner()
         if !pending.isEmpty {
-            ConnectsToast.show("Undone", in: view, duration: 1.2)
+            ConnectsToast.show("已撤销全部改动", in: view, duration: 1.2)
         }
     }
 
@@ -2759,9 +2955,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
             guard let bound = self.boundDocumentID, documentIDs.contains(bound) else { return }
             if self.codeEditCoordinator.isPresentingDiff { return }
             guard let pending = WorkspaceEditSession.shared.pending(documentID: bound) else { return }
-            // Only refresh the text editor surface for workspace Agent writes.
+            // Open Diff from session (disk still holds `before` until Keep).
             if !self.textEditorVC.view.isHidden {
-                self.textEditorVC.applyResolvedDiffText(pending.after)
+                _ = self.codeEditCoordinator.presentCumulativeSessionDiff(documentID: bound)
             }
         }
         agentEditorReloadWork = work
@@ -2938,11 +3134,11 @@ extension StudyShellViewController {
             makeKeyCommand(input: "2", modifiers: .command, action: #selector(shortcutFocusAI), title: "聚焦 AI 输入"),
             makeKeyCommand(input: "s", modifiers: .command, action: #selector(shortcutSave), title: "保存文档"),
             // Code editor zoom (VS Code–style). Multiple + bindings cover = / Shift+= / numpad.
-            makeKeyCommand(input: "=", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
-            makeKeyCommand(input: "+", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
-            makeKeyCommand(input: "+", modifiers: [.command, .shift], action: #selector(shortcutCodeFontLarger), title: "增大代码字号"),
-            makeKeyCommand(input: "-", modifiers: .command, action: #selector(shortcutCodeFontSmaller), title: "减小代码字号"),
-            makeKeyCommand(input: "_", modifiers: [.command, .shift], action: #selector(shortcutCodeFontSmaller), title: "减小代码字号"),
+            makeKeyCommand(input: "=", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大字号"),
+            makeKeyCommand(input: "+", modifiers: .command, action: #selector(shortcutCodeFontLarger), title: "增大字号"),
+            makeKeyCommand(input: "+", modifiers: [.command, .shift], action: #selector(shortcutCodeFontLarger), title: "增大字号"),
+            makeKeyCommand(input: "-", modifiers: .command, action: #selector(shortcutCodeFontSmaller), title: "减小字号"),
+            makeKeyCommand(input: "_", modifiers: [.command, .shift], action: #selector(shortcutCodeFontSmaller), title: "减小字号"),
             makeKeyCommand(input: "m", modifiers: .command, action: #selector(shortcutToggleCodeEditMode), title: "切换阅读 / 编辑")
         ]
         return cmds
@@ -3051,23 +3247,50 @@ extension StudyShellViewController {
         case .markdown:
             markdownReaderVC.saveFromKeyboardShortcut()
         case .pdf, .ebook:
-            ConnectsToast.show("阅读页无需文本保存", in: view, duration: 1.0)
+            ConnectsToast.show("PDF / 电子书无需文本保存", in: view, duration: 1.1)
         }
     }
 
     @objc private func shortcutCodeFontLarger() {
-        guard isReaderVisible, activeReaderKind == .text else { return }
-        textEditorVC.adjustFontSizeFromKeyboardShortcut(by: 1)
+        guard isReaderVisible else { return }
+        switch activeReaderKind {
+        case .text, .markdown:
+            // Canonical markdown opens as `.text`; legacy `.markdown` still zooms.
+            if activeReaderKind == .text {
+                textEditorVC.adjustFontSizeFromKeyboardShortcut(by: 1)
+            } else {
+                markdownReaderVC.adjustFontSizeFromKeyboardShortcut(by: 1)
+            }
+        case .pdf, .ebook:
+            ConnectsToast.show("PDF / 电子书不支持调整字号", in: view, duration: 1.1)
+        }
     }
 
     @objc private func shortcutCodeFontSmaller() {
-        guard isReaderVisible, activeReaderKind == .text else { return }
-        textEditorVC.adjustFontSizeFromKeyboardShortcut(by: -1)
+        guard isReaderVisible else { return }
+        switch activeReaderKind {
+        case .text, .markdown:
+            if activeReaderKind == .text {
+                textEditorVC.adjustFontSizeFromKeyboardShortcut(by: -1)
+            } else {
+                markdownReaderVC.adjustFontSizeFromKeyboardShortcut(by: -1)
+            }
+        case .pdf, .ebook:
+            ConnectsToast.show("PDF / 电子书不支持调整字号", in: view, duration: 1.1)
+        }
     }
 
     @objc private func shortcutToggleCodeEditMode() {
-        guard isReaderVisible, activeReaderKind == .text else { return }
-        textEditorVC.toggleEditModeFromKeyboardShortcut()
+        guard isReaderVisible else { return }
+        switch activeReaderKind {
+        case .text:
+            textEditorVC.toggleEditModeFromKeyboardShortcut()
+        case .markdown:
+            // Legacy reader: toggle via save/edit path if still visible.
+            markdownReaderVC.focusForKeyboardEditing()
+        case .pdf, .ebook:
+            ConnectsToast.show("PDF / 电子书不支持编辑", in: view, duration: 1.1)
+        }
     }
 
     @objc private func shortcutSend() {
@@ -3086,7 +3309,7 @@ extension StudyShellViewController {
         case .markdown:
             markdownReaderVC.focusForKeyboardEditing()
         case .pdf, .ebook:
-            ConnectsToast.show("阅读页不支持键盘编辑", in: view, duration: 1.2)
+            ConnectsToast.show("PDF / 电子书不支持键盘编辑", in: view, duration: 1.2)
         }
     }
 }

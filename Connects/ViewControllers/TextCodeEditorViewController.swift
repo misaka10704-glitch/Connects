@@ -7,6 +7,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let topBarSeparator = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let modeButton = UIButton(type: .system)
+    private let buildButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
     private let fileTitleButton = UIButton(type: .system)
     private let gutterView = UIView()
@@ -24,13 +25,16 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var language: StudyTextLanguage = .plain
     private var loadGeneration: UInt = 0
     private var sidebarButtonWidthConstraint: NSLayoutConstraint!
+    private var buildButtonWidthConstraint: NSLayoutConstraint!
     private var gutterWidthConstraint: NSLayoutConstraint!
     private var isEditMode = false
     private var isDirty = false
+    private var isPlanDocument = false
     /// Reading sub-state. `diff` = hunk UI; `diffPreview` = all-kept plain preview (still in Diff session).
     private enum ReadSurface { case plain, diff, diffPreview }
     private var readSurface: ReadSurface = .plain
     private var tabCompletionEnabled: Bool = {
+        guard CodeEditorFeatureFlags.tabCompletionEnabled else { return false }
         if UserDefaults.standard.object(forKey: "connects.codeEditor.tabCompletion") == nil { return true }
         return UserDefaults.standard.bool(forKey: "connects.codeEditor.tabCompletion")
     }()
@@ -38,6 +42,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var tabCompleteWorkItem: DispatchWorkItem?
     private var tabCompleteGeneration: UInt = 0
     private let tabToggleButton = UIButton(type: .system)
+    private var tabToggleWidthConstraint: NSLayoutConstraint!
     /// Caret-trailing Tab accept chip (not a bottom dock).
     private let tabSuggestChip = UIView()
     private let tabSuggestLabel = UILabel()
@@ -83,20 +88,31 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     // Implemented on this VC; coordinator drives Diff + Keep/Reject.
 
     private static let fontSizeDefaultsKey = "connects.codeEditor.fontSize"
+    private static let markdownPreviewFontDefaultsKey = "connects.markdownPreview.fontSize"
     private static let minFontPointSize: CGFloat = 9
     private static let maxFontPointSize: CGFloat = 28
+    private static let minMarkdownPreviewFont: CGFloat = 11
+    private static let maxMarkdownPreviewFont: CGFloat = 32
     private var fontPointSize: CGFloat = {
         let stored = UserDefaults.standard.double(forKey: TextCodeEditorViewController.fontSizeDefaultsKey)
         if stored >= 9, stored <= 28 { return CGFloat(stored) }
         return CodeSyntaxHighlighter.defaultPointSize
     }()
+    private var markdownPreviewFontSize: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: TextCodeEditorViewController.markdownPreviewFontDefaultsKey)
+        if stored >= 11, stored <= 32 { return CGFloat(stored) }
+        return 17
+    }()
     private var pinchBaseFontSize: CGFloat = CodeSyntaxHighlighter.defaultPointSize
+    private var pinchTargetsPreview = false
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onFileTitleTapped: ((UIView) -> Void)?
     var onContentEdited: (() -> Void)?
     var onAskSelection: ((String) -> Void)?
+    /// Plan markdown: run Agent Build from the text/markdown chrome.
+    var onBuildPlan: (() -> Void)?
 
     private var lastWrapLayoutWidth: CGFloat = 0
 
@@ -127,17 +143,28 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         sidebarButton.accessibilityLabel = "打开侧栏"
         topBar.addSubview(sidebarButton)
         updateSidebarToggle(collapsed: true)
-        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: 40)
+        sidebarButtonWidthConstraint = sidebarButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget)
 
         modeButton.translatesAutoresizingMaskIntoConstraints = false
-        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: 18), for: .normal)
+        modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         modeButton.imageView?.contentMode = .scaleAspectFit
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
         modeButton.accessibilityLabel = "切换到编辑模式"
         topBar.addSubview(modeButton)
 
+        buildButton.translatesAutoresizingMaskIntoConstraints = false
+        buildButton.setTitle("Build", for: .normal)
+        buildButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.c.accent.withAlphaComponent(0.55), for: .highlighted)
+        buildButton.addTarget(self, action: #selector(buildTapped), for: .touchUpInside)
+        buildButton.accessibilityLabel = "按计划 Build"
+        buildButton.isHidden = true
+        topBar.addSubview(buildButton)
+        buildButtonWidthConstraint = buildButton.widthAnchor.constraint(equalToConstant: 0)
+
         saveButton.translatesAutoresizingMaskIntoConstraints = false
-        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         saveButton.imageView?.contentMode = .scaleAspectFit
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
@@ -149,6 +176,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         tabToggleButton.addTarget(self, action: #selector(tabToggleTapped), for: .touchUpInside)
         tabToggleButton.accessibilityLabel = "Tab 补全"
         tabToggleButton.accessibilityHint = "关闭后编辑时不再出现灰字建议"
+        tabToggleWidthConstraint = tabToggleButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget)
         topBar.addSubview(tabToggleButton)
         refreshTabToggleChrome()
 
@@ -162,9 +190,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
         fileTitleButton.accessibilityLabel = "切换文件"
         topBar.addSubview(fileTitleButton)
-        // Keep mode / save / Tab above the title control.
+        // Keep mode / Build / save / Tab above the title control.
         topBar.bringSubviewToFront(tabToggleButton)
         topBar.bringSubviewToFront(modeButton)
+        topBar.bringSubviewToFront(buildButton)
         topBar.bringSubviewToFront(saveButton)
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
@@ -283,6 +312,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         previewWebView.scrollView.isScrollEnabled = true
         previewWebView.isHidden = true
         previewWebView.navigationDelegate = self
+        let previewPinch = UIPinchGestureRecognizer(target: self, action: #selector(handleFontPinch(_:)))
+        previewPinch.delegate = self
+        previewWebView.addGestureRecognizer(previewPinch)
         view.addSubview(previewWebView)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -293,12 +325,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 40),
+            topBar.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             sidebarButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 4),
             sidebarButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             sidebarButtonWidthConstraint,
-            sidebarButton.heightAnchor.constraint(equalToConstant: 40),
+            sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             // Visually centered on the bar; leading/trailing keep it clear of chrome.
             fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
@@ -307,20 +339,25 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
 
-            // Far-right chrome: [Tab][mode][save]
+            // Far-right chrome: [Tab][mode][Build?][save]
             saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            saveButton.widthAnchor.constraint(equalToConstant: 40),
-            saveButton.heightAnchor.constraint(equalToConstant: 40),
+            saveButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            saveButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
-            modeButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            buildButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            buildButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            buildButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            buildButtonWidthConstraint,
+
+            modeButton.trailingAnchor.constraint(equalTo: buildButton.leadingAnchor, constant: -2),
             modeButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            modeButton.widthAnchor.constraint(equalToConstant: 40),
-            modeButton.heightAnchor.constraint(equalToConstant: 40),
+            modeButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            modeButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             tabToggleButton.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -2),
             tabToggleButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            tabToggleButton.widthAnchor.constraint(equalToConstant: 40),
+            tabToggleWidthConstraint,
             tabToggleButton.heightAnchor.constraint(equalToConstant: 32),
 
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -415,14 +452,33 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
-        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: 18), for: .normal)
+        sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
 
-    func setSidebarButtonHidden(_ hidden: Bool) {
-        sidebarButton.isHidden = hidden
-        sidebarButtonWidthConstraint.constant = hidden ? 0 : 40
+    func setSidebarButtonHidden(_ hidden: Bool, animated: Bool = false) {
+        let apply = {
+            self.sidebarButton.alpha = hidden ? 0 : 1
+            self.sidebarButton.isUserInteractionEnabled = !hidden
+            // Keep width so file title layout stays stable while shell owns the floating key.
+            self.sidebarButtonWidthConstraint.constant = 40
+            self.sidebarButton.isHidden = false
+        }
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    func sidebarButtonAnchorFrame(in target: UIView) -> CGRect {
+        guard let bar = sidebarButton.superview else { return .zero }
+        bar.layoutIfNeeded()
+        // Pre-layout / cold start: zero-height bar makes y = -hitTarget/2 → floats above the screen.
+        guard bar.bounds.height > 1, bar.window != nil else { return .zero }
+        let y = (bar.bounds.height - ActionIconFactory.hitTarget) / 2
+        return bar.convert(CGRect(x: 4, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget), to: target)
     }
 
     func load(documentID: String, completion: @escaping (Bool) -> Void) {
@@ -447,11 +503,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                 }
                 self.language = lang
                 self.isDirty = false
+                self.isPlanDocument = (lang == .markdown) && StudyPlanDocument.parse(text).isPlan
                 self.applyHighlightedText(text)
                 self.updateLineNumbers(force: true)
                 self.syncLineNumberOffset()
                 self.updateProgressLabel()
                 self.syncSurfaceVisibility()
+                self.refreshModeChrome()
                 if self.showsMarkdownPreview {
                     self.refreshMarkdownPreview(text: text)
                 }
@@ -471,6 +529,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         askPinnedRange = nil
         currentDocumentID = nil
         language = .plain
+        isPlanDocument = false
         textView.text = ""
         lineNumberView.text = ""
         fileTitleButton.setTitle(nil, for: .normal)
@@ -478,6 +537,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         pendingPreviewMarkdown = nil
         previewWebView.evaluateJavaScript("window.__connectsRender && window.__connectsRender('');", completionHandler: nil)
         syncSurfaceVisibility()
+        refreshModeChrome()
     }
 
     func pauseReading() {
@@ -652,19 +712,40 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     @objc private func handleFontPinch(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
-            pinchBaseFontSize = fontPointSize
+            pinchTargetsPreview = showsMarkdownPreview
+            pinchBaseFontSize = pinchTargetsPreview ? markdownPreviewFontSize : fontPointSize
         case .changed:
-            let next = min(
-                Self.maxFontPointSize,
-                max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
-            )
-            guard abs(next - fontPointSize) >= 0.4 else { return }
-            applyFontSize(next, persist: false)
+            if pinchTargetsPreview {
+                let next = min(
+                    Self.maxMarkdownPreviewFont,
+                    max(Self.minMarkdownPreviewFont, pinchBaseFontSize * gesture.scale)
+                )
+                guard abs(next - markdownPreviewFontSize) >= 0.4 else { return }
+                applyMarkdownPreviewFontSize(next, persist: false)
+            } else {
+                let next = min(
+                    Self.maxFontPointSize,
+                    max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
+                )
+                guard abs(next - fontPointSize) >= 0.4 else { return }
+                applyFontSize(next, persist: false)
+            }
         case .ended, .cancelled:
-            applyFontSize(fontPointSize, persist: true)
+            if pinchTargetsPreview {
+                applyMarkdownPreviewFontSize(markdownPreviewFontSize, persist: true)
+                showFontSizeFeedback(markdownPreviewFontSize)
+            } else {
+                applyFontSize(fontPointSize, persist: true)
+                showFontSizeFeedback(fontPointSize)
+            }
         default:
             break
         }
+    }
+
+    private func showFontSizeFeedback(_ size: CGFloat) {
+        let pt = Int(size.rounded())
+        ConnectsToast.show("字号 \(pt)", in: view, duration: 0.7)
     }
 
     private func applyFontSize(_ size: CGFloat, persist: Bool) {
@@ -682,6 +763,18 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         if !tabSuggestChip.isHidden {
             repositionTabSuggestChip()
         }
+    }
+
+    private func applyMarkdownPreviewFontSize(_ size: CGFloat, persist: Bool) {
+        markdownPreviewFontSize = size
+        if persist {
+            UserDefaults.standard.set(Double(markdownPreviewFontSize), forKey: Self.markdownPreviewFontDefaultsKey)
+        }
+        guard previewWebView != nil, previewShellLoaded else { return }
+        previewWebView.evaluateJavaScript(
+            MarkdownHTMLRenderer.setFontSizeJavaScript(markdownPreviewFontSize),
+            completionHandler: nil
+        )
     }
 
     /// Re-paint editor text at the current font/theme without exiting Diff review.
@@ -705,9 +798,20 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func bumpFontSize(by delta: CGFloat) {
+        if showsMarkdownPreview {
+            let next = min(
+                Self.maxMarkdownPreviewFont,
+                max(Self.minMarkdownPreviewFont, markdownPreviewFontSize + delta)
+            )
+            guard abs(next - markdownPreviewFontSize) >= 0.1 else { return }
+            applyMarkdownPreviewFontSize(next, persist: true)
+            showFontSizeFeedback(next)
+            return
+        }
         let next = min(Self.maxFontPointSize, max(Self.minFontPointSize, fontPointSize + delta))
         guard abs(next - fontPointSize) >= 0.1 else { return }
         applyFontSize(next, persist: true)
+        showFontSizeFeedback(next)
     }
 
     /// Shell / hardware keyboard: ⌘+ / ⌘- (VS Code–style zoom).
@@ -729,9 +833,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
         let next = !isEditMode
         applyEditMode(next)
-        if next {
-            focusForKeyboardEditing()
-        }
+        // Don't auto-focus — wait until the user taps into the editor.
     }
 
     /// Leave edit mode without focusing (used when jumping to AI input).
@@ -758,9 +860,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
         let next = !isEditMode
         applyEditMode(next)
-        if next {
-            focusForKeyboardEditing()
-        } else {
+        if !next {
             // Ensure chrome reflects read mode even if focus handoff raced.
             refreshModeChrome()
         }
@@ -885,7 +985,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             let showingDiff = readSurface == .diff
             let modeKind: ActionIconFactory.Kind = showingDiff ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
-            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
             modeButton.tintColor = c.accent
             modeButton.isEnabled = true
             modeButton.alpha = 1
@@ -895,7 +995,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         } else {
             let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
-            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: 18), for: .normal)
+            modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
             // Accent while editing so the toggle is visibly “on”.
             modeButton.tintColor = isEditMode ? c.accent : c.textSecondary
             modeButton.isEnabled = true
@@ -908,11 +1008,35 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             }
         }
         saveButton.setTitle(nil, for: .normal)
-        saveButton.setImage(ActionIconFactory.image(.save, pointSize: 18), for: .normal)
+        saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         saveButton.isHidden = false
         saveButton.isEnabled = isEditMode && !isDiffSessionActive
         saveButton.alpha = saveButton.isEnabled ? 1 : 0.35
         saveButton.tintColor = saveButton.isEnabled ? c.accent : c.textTertiary
+        updateBuildButtonVisibility()
+    }
+
+    @objc private func buildTapped() {
+        onBuildPlan?()
+    }
+
+    private func updateBuildButtonVisibility() {
+        let show = language == .markdown && isPlanDocument && onBuildPlan != nil && !isDiffSessionActive
+        buildButton.isHidden = !show
+        buildButtonWidthConstraint.constant = show ? 56 : 0
+        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.isUserInteractionEnabled = show
+        if show {
+            topBar.bringSubviewToFront(buildButton)
+        }
+    }
+
+    private func recomputePlanFlagFromEditorText() {
+        guard language == .markdown else {
+            isPlanDocument = false
+            return
+        }
+        isPlanDocument = StudyPlanDocument.parse(textView.text ?? "").isPlan
     }
 
     private func syncSurfaceVisibility() {
@@ -927,6 +1051,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             previewWebView.scrollView.isScrollEnabled = true
             view.bringSubviewToFront(previewWebView)
             view.bringSubviewToFront(spinner)
+            // Keep live size if shell was built earlier at a different pt.
+            applyMarkdownPreviewFontSize(markdownPreviewFontSize, persist: false)
         }
         liftTopChrome()
     }
@@ -945,7 +1071,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             textColor: DSTheme.c.textPrimary,
             backgroundColor: DSTheme.c.background,
             secondaryColor: DSTheme.c.textSecondary,
-            fontSize: 17
+            fontSize: markdownPreviewFontSize
         )
         previewWebView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
     }
@@ -1232,6 +1358,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             askPinnedRange = nil
         }
         isDirty = true
+        if language == .markdown {
+            recomputePlanFlagFromEditorText()
+            updateBuildButtonVisibility()
+        }
         updateProgressLabel()
         // Line numbers refresh after debounced highlight. Doing ensureLayout +
         // gutter work on every keystroke fights soft-wrap and scrolls the page.
@@ -1354,7 +1484,7 @@ extension TextCodeEditorViewController {
     override var keyCommands: [UIKeyCommand]? {
         // Published on VC + StudyAskTextView (via provider) so shortcuts work in
         // read/preview and while the text view is first responder.
-        [
+        var commands: [UIKeyCommand] = [
             makeEditorKeyCommand(input: "=", modifiers: .command,
                                  action: #selector(shortcutFontLarger), title: "增大代码字号"),
             makeEditorKeyCommand(input: "+", modifiers: .command,
@@ -1375,13 +1505,19 @@ extension TextCodeEditorViewController {
                                  action: #selector(shortcutLineStart), title: "跳到文字行首"),
             makeEditorKeyCommand(input: UIKeyCommand.inputRightArrow, modifiers: .alternate,
                                  action: #selector(shortcutLineEnd), title: "跳到文字行末"),
-            makeEditorKeyCommand(input: "\t", modifiers: [],
-                                 action: #selector(shortcutAcceptGhost), title: "Accept Tab"),
             makeEditorKeyCommand(input: "y", modifiers: [],
                                  action: #selector(shortcutDiffAccept), title: "Keep Diff"),
             makeEditorKeyCommand(input: "n", modifiers: [],
                                  action: #selector(shortcutDiffReject), title: "Undo Diff")
         ]
+        if CodeEditorFeatureFlags.tabCompletionEnabled {
+            commands.insert(
+                makeEditorKeyCommand(input: "\t", modifiers: [],
+                                     action: #selector(shortcutAcceptGhost), title: "Accept Tab"),
+                at: commands.count - 2
+            )
+        }
+        return commands
     }
 
     @objc private func shortcutAcceptGhost() {
@@ -1988,7 +2124,7 @@ extension TextCodeEditorViewController {
 
         let undo = UIButton(type: .system)
         undo.translatesAutoresizingMaskIntoConstraints = false
-        undo.setTitle("Undo", for: .normal)
+        undo.setTitle("撤销", for: .normal)
         undo.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         undo.backgroundColor = UIColor(red: 0.75, green: 0.18, blue: 0.18, alpha: 0.88)
         undo.setTitleColor(.white, for: .normal)
@@ -1998,7 +2134,7 @@ extension TextCodeEditorViewController {
 
         let keep = UIButton(type: .system)
         keep.translatesAutoresizingMaskIntoConstraints = false
-        keep.setTitle("Keep", for: .normal)
+        keep.setTitle("保留", for: .normal)
         keep.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         keep.backgroundColor = UIColor(red: 0.10, green: 0.55, blue: 0.28, alpha: 0.88)
         keep.setTitleColor(.white, for: .normal)
@@ -2008,7 +2144,7 @@ extension TextCodeEditorViewController {
 
         bar.addSubview(undo)
         bar.addSubview(keep)
-        // Fixed equal widths — "Undo"/"Keep" intrinsic sizes differ and looked uneven.
+        // Fixed equal widths — Chinese labels stay visually even.
         let btnW: CGFloat = 56
         NSLayoutConstraint.activate([
             undo.leadingAnchor.constraint(equalTo: leading, constant: leadingConstant),
@@ -2224,18 +2360,28 @@ extension TextCodeEditorViewController {
         decideHunk(segIdx: sender.tag, keep: true)
     }
 
-    @objc private func tabToggleTapped() {
-        tabCompletionEnabled.toggle()
-        UserDefaults.standard.set(tabCompletionEnabled, forKey: "connects.codeEditor.tabCompletion")
-        refreshTabToggleChrome()
-        if !tabCompletionEnabled { clearGhostSuggestion() }
-    }
-
     private func refreshTabToggleChrome() {
         let c = DSTheme.c
+        // Diff hunk chrome still refreshes here (shared theme pass).
+        tabConfirmButton.setTitleColor(c.accent, for: .normal)
+        tabDismissButton.setTitleColor(c.textSecondary, for: .normal)
+        tabSuggestChip.backgroundColor = c.surface
+        tabSuggestChip.layer.borderColor = c.border.cgColor
+        diffHunkBar.backgroundColor = c.surface.withAlphaComponent(0.78)
+        diffHunkBar.layer.borderColor = c.border.withAlphaComponent(0.55).cgColor
+
+        guard CodeEditorFeatureFlags.tabCompletionEnabled else {
+            tabToggleButton.isHidden = true
+            tabToggleButton.isEnabled = false
+            tabToggleWidthConstraint.constant = 0
+            clearGhostSuggestion()
+            return
+        }
+
         let usable = isEditMode && !isDiffSessionActive
         let on = tabCompletionEnabled && usable
         tabToggleButton.isHidden = false
+        tabToggleWidthConstraint.constant = 40
         tabToggleButton.alpha = usable ? 1 : 0.35
         tabToggleButton.isEnabled = usable
         tabToggleButton.setTitleColor(on ? c.accent : c.textSecondary, for: .normal)
@@ -2243,12 +2389,14 @@ extension TextCodeEditorViewController {
         tabToggleButton.layer.cornerRadius = 8
         tabToggleButton.accessibilityValue = tabCompletionEnabled ? "开" : "关"
         tabToggleButton.accessibilityHint = "仅开关补全；接受请用光标旁 Accept"
-        tabConfirmButton.setTitleColor(c.accent, for: .normal)
-        tabDismissButton.setTitleColor(c.textSecondary, for: .normal)
-        tabSuggestChip.backgroundColor = c.surface
-        tabSuggestChip.layer.borderColor = c.border.cgColor
-        diffHunkBar.backgroundColor = c.surface.withAlphaComponent(0.78)
-        diffHunkBar.layer.borderColor = c.border.withAlphaComponent(0.55).cgColor
+    }
+
+    @objc private func tabToggleTapped() {
+        guard CodeEditorFeatureFlags.tabCompletionEnabled else { return }
+        tabCompletionEnabled.toggle()
+        UserDefaults.standard.set(tabCompletionEnabled, forKey: "connects.codeEditor.tabCompletion")
+        refreshTabToggleChrome()
+        if !tabCompletionEnabled { clearGhostSuggestion() }
     }
 
     private func clearGhostSuggestion() {
@@ -2280,7 +2428,8 @@ extension TextCodeEditorViewController {
     }
 
     private func scheduleTabCompletion() {
-        guard tabCompletionEnabled, isEditMode, !isDiffSessionActive else { return }
+        guard CodeEditorFeatureFlags.tabCompletionEnabled,
+              tabCompletionEnabled, isEditMode, !isDiffSessionActive else { return }
         tabCompleteWorkItem?.cancel()
         tabCompleteGeneration &+= 1
         let gen = tabCompleteGeneration
