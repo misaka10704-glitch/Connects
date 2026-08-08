@@ -194,7 +194,7 @@ enum StudyFeatureQAHarness {
         }
     }
 
-    /// Self-check highlighter: toggle latency, draw-surface arming, Connects note sheet.
+    /// Self-check box-select tool: toggle latency, overlay arming, Connects note sheet.
     private static func runHighlightQA() {
         let pdfPath = argValue(prefix: "-StudyQAPDF=")
             ?? "/Users/misaka10704/Downloads/After all.pdf"
@@ -217,41 +217,23 @@ enum StudyFeatureQAHarness {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                         // Toggle must stay under a tight budget (no PDF write / scroll-view walk).
                         let t0 = CFAbsoluteTimeGetCurrent()
-                        pdfView.highlighter.setEnabled(true)
+                        pdfView.boxSelect.setEnabled(true)
                         let onMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                        guard pdfView.highlighter.isDrawSurfaceArmed else {
-                            self.log("FAIL draw surface not armed after enable (\(String(format: "%.1f", onMs))ms)")
+                        guard pdfView.boxSelect.isEnabled else {
+                            self.log("FAIL box select not enabled after toggle (\(String(format: "%.1f", onMs))ms)")
                             self.dismissPresented { }
                             return
                         }
-                        // Overlay must be sibling of PDFView, not a PDFKit child.
-                        let overlayIsChild = pdfView.subviews.contains {
-                            String(describing: type(of: $0)).contains("HighlightDrawOverlay")
-                        }
-                        if overlayIsChild {
-                            self.log("FAIL draw overlay is PDFView child (will freeze scroll)")
-                            self.dismissPresented { }
-                            return
-                        }
-                        let siblingArmed = pdfView.superview?.subviews.contains {
-                            !$0.isHidden && $0.isUserInteractionEnabled
-                                && String(describing: type(of: $0)).contains("HighlightDrawOverlay")
-                        } ?? false
-                        guard siblingArmed else {
-                            self.log("FAIL draw overlay not sibling-armed")
-                            self.dismissPresented { }
-                            return
-                        }
+                        pdfView.boxSelect.ensureOverlayInstalled()
 
                         let t1 = CFAbsoluteTimeGetCurrent()
-                        pdfView.highlighter.setEnabled(false)
+                        pdfView.boxSelect.setEnabled(false)
                         let offMs = (CFAbsoluteTimeGetCurrent() - t1) * 1000
-                        if pdfView.highlighter.isDrawSurfaceArmed {
-                            self.log("FAIL draw surface still armed after disable")
+                        if pdfView.boxSelect.isEnabled {
+                            self.log("FAIL box select still enabled after disable")
                             self.dismissPresented { }
                             return
                         }
-                        // Closing must stay near-instant (no invert reshuffle / PDF write).
                         if offMs > 8 {
                             self.log("FAIL close still slow off=\(String(format: "%.1f", offMs))ms")
                             self.dismissPresented { }
@@ -262,41 +244,37 @@ enum StudyFeatureQAHarness {
                             self.dismissPresented { }
                             return
                         }
-                        // Stroke style defaults
-                        let color = PDFHighlightStrokeStyle.inkColor(darkInvertActive: false)
-                        let w = PDFHighlightStrokeStyle.Width.current.pagePoints
-                        guard w > 0, color.cgColor.alpha > 0 else {
-                            self.log("FAIL stroke style missing")
-                            self.dismissPresented { }
-                            return
-                        }
 
-                        // Commit a real ink stroke and verify it stays on the page.
-                        pdfView.highlighter.darkInvertActive = ThemeManager.shared.mode == .dark
+                        // Commit a real square box annotation and verify it stays on the page.
                         let page = pdfView.currentPage ?? pdfView.document?.page(at: 0)
                         let before = page?.annotations.count ?? 0
                         if let page = page {
                             let box = page.bounds(for: .mediaBox)
-                            let p0 = CGPoint(x: box.midX - 40, y: box.midY)
-                            let p1 = CGPoint(x: box.midX + 40, y: box.midY)
-                            let bounds = CGRect(x: p0.x - 8, y: min(p0.y, p1.y) - 8,
-                                                width: 96, height: 16)
-                            let ann = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
-                            ann.color = PDFHighlightStrokeStyle.inkColor(darkInvertActive: pdfView.highlighter.darkInvertActive)
-                            ann.userName = StudyAskSelectionStore.noteAnnotationUserName
-                            let path = UIBezierPath()
-                            path.move(to: CGPoint(x: 8, y: 8))
-                            path.addLine(to: CGPoint(x: 88, y: 8))
-                            ann.add(path)
+                            let bounds = CGRect(
+                                x: box.midX - 40,
+                                y: box.midY - 24,
+                                width: 80,
+                                height: 48
+                            )
+                            let ann = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+                            ann.color = UIColor(
+                                red: ReadingAnnotationStyle.pdfBoxRed.r,
+                                green: ReadingAnnotationStyle.pdfBoxRed.g,
+                                blue: ReadingAnnotationStyle.pdfBoxRed.b,
+                                alpha: ReadingAnnotationStyle.pdfBoxRed.a
+                            )
                             let border = PDFBorder()
-                            border.lineWidth = PDFHighlightStrokeStyle.Width.current.pagePoints
+                            border.lineWidth = 1.6
+                            border.style = .dashed
                             ann.border = border
+                            ann.userName = StudyAskSelectionStore.boxAnnotationUserName
+                            ann.contents = "QA box"
                             page.addAnnotation(ann)
                             pdfView.setNeedsDisplay(pdfView.bounds)
                         }
                         let after = page?.annotations.count ?? 0
                         if after <= before {
-                            self.log("FAIL ink annotation not retained on page")
+                            self.log("FAIL box annotation not retained on page")
                             self.dismissPresented { }
                             return
                         }
@@ -304,8 +282,8 @@ enum StudyFeatureQAHarness {
                         // Note sheet must be Connects-styled (not UIAlertController).
                         let notePage = pdfView.currentPage ?? pdfView.document?.page(at: 0)
                         let box = notePage?.bounds(for: .mediaBox) ?? CGRect(x: 0, y: 0, width: 40, height: 20)
-                        let ann = PDFAnnotation(bounds: box.insetBy(dx: 20, dy: 20), forType: .ink, withProperties: nil)
-                        ann.userName = StudyAskSelectionStore.noteAnnotationUserName
+                        let ann = PDFAnnotation(bounds: box.insetBy(dx: 20, dy: 20), forType: .square, withProperties: nil)
+                        ann.userName = StudyAskSelectionStore.boxAnnotationUserName
                         notePage?.addAnnotation(ann)
 
                         ConnectsNoteSheet.present(
@@ -332,7 +310,7 @@ enum StudyFeatureQAHarness {
                                 return
                             }
                             self.snapshot(hostVC.view.window ?? hostVC.view, name: "highlight_note_sheet")
-                            self.log("PASS highlight QA on=\(String(format: "%.1f", onMs))ms off=\(String(format: "%.1f", offMs))ms note=ConnectsNoteSheet keyboard=ok")
+                            self.log("PASS box-select QA on=\(String(format: "%.1f", onMs))ms off=\(String(format: "%.1f", offMs))ms note=ConnectsNoteSheet (no auto-keyboard)")
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                 ConnectsNoteSheet.dismissIfNeeded()
                                 self.dismissPresented { }
@@ -824,10 +802,10 @@ enum StudyFeatureQAHarness {
                             self.dismissPresented { done(false) }
                             return
                         }
-                        // Highlighter tool present; double-tap note recognizer attached.
+                        // Box-select tool present; double-tap note recognizer attached.
                         studyPDF.suppressNativeTextInteraction()
-                        studyPDF.highlighter.setEnabled(true)
-                        studyPDF.highlighter.setEnabled(false)
+                        studyPDF.boxSelect.setEnabled(true)
+                        studyPDF.boxSelect.setEnabled(false)
                         let overlays = reader.view.subviews.filter { $0 is PassthroughOverlayView }
                         if overlays.isEmpty {
                             self.log("FAIL missing passthrough invert overlays")
@@ -836,11 +814,11 @@ enum StudyFeatureQAHarness {
                         }
                         self.snapshot(hostVC.view, name: "pdf_select")
                         if selected.isEmpty {
-                            self.log("WARN pdf page has no extractable text; highlighter ready")
+                            self.log("WARN pdf page has no extractable text; box-select ready")
                             self.dismissPresented { done(true) }
                             return
                         }
-                        self.log("PASS pdf highlighter/note path (\(selected.count) chars selectable)")
+                        self.log("PASS pdf box-select/note path (\(selected.count) chars selectable)")
                         self.dismissPresented { done(true) }
                     }
                 }
@@ -863,6 +841,7 @@ enum StudyFeatureQAHarness {
         guard let window = UIApplication.connectsKeyWindow else { return false }
         func walk(_ view: UIView) -> Bool {
             if let field = view as? UITextField, field.isFirstResponder { return true }
+            if let tv = view as? UITextView, tv.isFirstResponder { return true }
             for sub in view.subviews where walk(sub) { return true }
             return false
         }

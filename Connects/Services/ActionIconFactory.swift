@@ -47,6 +47,10 @@ enum ActionIconFactory {
         case docContext
         case toc, bookmark
         case clock
+        /// Reader appearance toggle — moon for dark mode (tap → light).
+        case appearanceMoon
+        /// Reader appearance toggle — sun for light mode (tap → dark).
+        case appearanceSun
         /// Selection Ask in the composer (speech-bubble + ?).
         case ask
         /// Import / copy file into workspace.
@@ -76,7 +80,7 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = chromeGlyph, color: UIColor = .black) -> UIImage {
-        let key = "v13-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
+        let key = "v17-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
         let canvas = ceil(pointSize + 8)
@@ -819,6 +823,14 @@ enum ActionIconFactory {
             path.lineWidth = lw
             path.stroke()
 
+        case .appearanceSun:
+            // Pair with moon: SF Symbol reads clearly at chrome size.
+            drawSystemSymbol("sun.max", in: r, color: color)
+
+        case .appearanceMoon:
+            // Hand-drawn arcs looked like an abstract blob; SF `moon.fill` is a clear crescent.
+            drawSystemSymbol("moon.fill", in: r, color: color)
+
         case .ask:
             // Single continuous "?" stroke: bowl → inward curve → stem, then a separate disc.
             let qx = r.midX
@@ -874,6 +886,19 @@ enum ActionIconFactory {
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)
         cache.setObject(img, forKey: key)
         return img
+    }
+
+    /// Draw an SF Symbol centered in `rect` (same canvas as hand-drawn glyphs).
+    private static func drawSystemSymbol(_ name: String, in rect: CGRect, color: UIColor) {
+        let config = UIImage.SymbolConfiguration(pointSize: rect.width * 0.88, weight: .regular)
+        guard let symbol = UIImage(systemName: name, withConfiguration: config) else { return }
+        let tinted = symbol.withTintColor(color, renderingMode: .alwaysOriginal)
+        let s = tinted.size
+        guard s.width > 0, s.height > 0 else { return }
+        let scale = min(rect.width / s.width, rect.height / s.height) * 0.92
+        let w = s.width * scale
+        let h = s.height * scale
+        tinted.draw(in: CGRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h))
     }
 
     private static func strokeWidth(for pointSize: CGFloat, base: CGFloat = 1.55) -> CGFloat {

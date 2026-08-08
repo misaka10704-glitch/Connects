@@ -1636,6 +1636,9 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private func assistantChromeMatches(_ message: ChatMessage) -> Bool {
+        if let cached = cachedThemeColors, cached.isLightAppearance != DSTheme.c.isLightAppearance {
+            return false
+        }
         let think = message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let wantsThinking = !think.isEmpty
         let wantsSearch = message.showsProcessChrome

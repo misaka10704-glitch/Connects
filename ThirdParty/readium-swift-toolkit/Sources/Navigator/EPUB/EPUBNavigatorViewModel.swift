@@ -11,6 +11,8 @@ import UIKit
 protocol EPUBNavigatorViewModelDelegate: AnyObject {
     func epubNavigatorViewModel(_ viewModel: EPUBNavigatorViewModel, runScript script: String, in scope: EPUBScriptScope)
     func epubNavigatorViewModelInvalidatePaginationView(_ viewModel: EPUBNavigatorViewModel)
+    /// Font-size change: reload already-loaded (near) spreads first; distant chapters pick up CSS on demand.
+    func epubNavigatorViewModelReloadLoadedSpreads(_ viewModel: EPUBNavigatorViewModel)
     func epubNavigatorViewModel(_ viewModel: EPUBNavigatorViewModel, didFailToLoadResourceAt href: RelativeURL, withError error: ReadError)
 }
 
@@ -166,6 +168,20 @@ enum EPUBScriptScope {
         }
     }
 
+    private var needsReloadLoadedSpreads = false
+    private func setNeedsReloadLoadedSpreads() {
+        guard !needsReloadLoadedSpreads else {
+            return
+        }
+        needsReloadLoadedSpreads = true
+        DispatchQueue.main.async { [self] in
+            needsReloadLoadedSpreads = false
+            // Full pagination wipe already covers every spread.
+            guard !needsInvalidatePagination else { return }
+            delegate?.epubNavigatorViewModelReloadLoadedSpreads(self)
+        }
+    }
+
     // MARK: - Web View Server
 
     private func serve(href: RelativeURL) async -> (Resource, MediaType)? {
@@ -209,6 +225,74 @@ enum EPUBScriptScope {
         applyPreferences()
     }
 
+    /// Live font preview: update prefs + inject only `--USER__fontSize` (never the full
+    /// user-property bag — nulls would `removeProperty` and strip `readium-advanced-on`).
+    func previewFontSize(_ fontSize: Double) {
+        let clamped = max(0, fontSize)
+        if abs(settings.fontSize - clamped) < 0.0001, preferences.fontSize == clamped {
+            return
+        }
+        adoptFontSize(clamped)
+        fontPreviewDirty = true
+        delegate?.epubNavigatorViewModel(
+            self,
+            runScript: Self.liveFontSizeJavaScript(scale: clamped),
+            in: .currentResource
+        )
+    }
+
+    /// After in-page pinch: prefs already match the visible DOM. Sync neighbors + cache only.
+    func finishFontSizePreview() {
+        fontPreviewDirty = false
+        let scale = settings.fontSize
+        delegate?.epubNavigatorViewModel(
+            self,
+            runScript: Self.liveFontSizeJavaScript(scale: scale),
+            in: .loadedResources
+        )
+        server.clearResourceCache { _, mediaType in mediaType.isHTML }
+    }
+
+    /// Persist pinch result without re-painting the current page (DOM already final).
+    func adoptPinchFontSize(_ fontSize: Double) {
+        let clamped = max(0, fontSize)
+        adoptFontSize(clamped)
+        fontPreviewDirty = false
+        // Neighbors only — current resource already has the same --USER__fontSize.
+        delegate?.epubNavigatorViewModel(
+            self,
+            runScript: Self.liveFontSizeJavaScript(scale: clamped),
+            in: .loadedResources
+        )
+        server.clearResourceCache { _, mediaType in mediaType.isHTML }
+    }
+
+    private func adoptFontSize(_ clamped: Double) {
+        var next = preferences
+        next.fontSize = clamped
+        preferences = next
+        settings.fontSize = clamped
+        css.userProperties.fontSize = CSSPercentLength(clamped)
+    }
+
+    /// Direct DOM write so ReadiumCSS `:root[style*="--USER__fontSize"]` + rem cascade update.
+    private static func liveFontSizeJavaScript(scale: Double) -> String {
+        let percent = String(format: "%.5f%%", scale * 100)
+        // Keep this tiny — runs on every pinch tick. Initial HTML already has
+        // `--USER__fontSize` in the style attribute so the CSS rule stays active.
+        return """
+        (function(p){
+          var r = document.documentElement;
+          if (!r) return;
+          r.style.setProperty('--USER__fontSize', p, 'important');
+          r.style.setProperty('font-size', p, 'important');
+        })('\(percent)');
+        """
+    }
+
+    /// Set when live `previewFontSize` applied CSS without reloading spreads.
+    private var fontPreviewDirty = false
+
     private func applyPreferences() {
         let oldSettings = settings
         let newSettings = EPUBSettings(
@@ -220,6 +304,10 @@ enum EPUBScriptScope {
         settings = newSettings
         updateSpread()
 
+        let fontSizeChanged = oldSettings.fontSize != newSettings.fontSize
+        let shouldReloadFont = fontSizeChanged || fontPreviewDirty
+        fontPreviewDirty = false
+
         let needsInvalidation: Bool =
             oldSettings.readingProgression != newSettings.readingProgression
                 || oldSettings.language != newSettings.language
@@ -228,19 +316,20 @@ enum EPUBScriptScope {
                 || oldSettings.spread != newSettings.spread
                 || oldSettings.fit != newSettings.fit
                 || oldSettings.offsetFirstPage != newSettings.offsetFirstPage
-                // Connects: many CJK EPUBs pin px font sizes; JS setCSSProperties alone
-                // often looks like a no-op. Reloading injects fresh --USER__fontSize into HTML.
-                || oldSettings.fontSize != newSettings.fontSize
                 || oldSettings.pageMargins != newSettings.pageMargins
                 || oldSettings.columnCount != newSettings.columnCount
                 || oldSettings.publisherStyles != newSettings.publisherStyles
 
-        // We don't commit the CSS changes if we invalidate the pagination, as
-        // the resources will be reloaded anyway.
+        // Connects: font-size alone used to wipe the whole pagination (janky on
+        // pinch). Prefer CSS commit + progressive reload of already-loaded
+        // (near) spreads; distant chapters get fresh --USER__fontSize when opened.
+        // We don't commit CSS if we invalidate pagination — resources reload anyway.
         updateCSS(with: settings, commitNow: !needsInvalidation)
 
         if needsInvalidation {
             setNeedsInvalidatePagination()
+        } else if shouldReloadFont {
+            setNeedsReloadLoadedSpreads()
         }
     }
 
@@ -351,7 +440,12 @@ enum EPUBScriptScope {
         }
     }
 
-    private func updateCSS(with settings: EPUBSettings, commitNow: Bool) {
+    private func updateCSS(
+        with settings: EPUBSettings,
+        commitNow: Bool,
+        scriptScope: EPUBScriptScope = .loadedResources,
+        clearResourceCache: Bool = true
+    ) {
         let previous = css
         css.update(with: settings)
 
@@ -360,14 +454,16 @@ enum EPUBScriptScope {
         // (e.g. after a screen rotation) reflects the updated CSS instead of
         // the stale cached version. Non-HTML resources (images, audio, etc.)
         // are not affected by CSS changes and can remain cached.
-        server.clearResourceCache { _, mediaType in mediaType.isHTML }
+        if clearResourceCache {
+            server.clearResourceCache { _, mediaType in mediaType.isHTML }
+        }
 
         if commitNow {
-            commitCSSChange(from: previous, to: css)
+            commitCSSChange(from: previous, to: css, scriptScope: scriptScope)
         }
     }
 
-    private func commitCSSChange(from previous: ReadiumCSS, to new: ReadiumCSS) {
+    private func commitCSSChange(from previous: ReadiumCSS, to new: ReadiumCSS, scriptScope: EPUBScriptScope) {
         var properties: [String: String?] = [:]
         let rsProperties = new.rsProperties.cssProperties()
         if previous.rsProperties.cssProperties() != rsProperties {
@@ -381,21 +477,27 @@ enum EPUBScriptScope {
                 properties[k] = v
             }
         }
-        if !properties.isEmpty {
-            guard
-                let data = try? JSONSerialization.data(withJSONObject: properties),
-                let json = String(data: data, encoding: .utf8)
-            else {
-                log(.error, "Failed to serialize CSS properties to JSON")
-                return
-            }
+        guard !properties.isEmpty else { return }
 
-            delegate?.epubNavigatorViewModel(
-                self,
-                runScript: "readium.setCSSProperties(\(json));",
-                in: .loadedResources
-            )
+        // JSONSerialization rejects Swift `Optional.none`; map removals to NSNull
+        // so `readium.setCSSProperties` can clear those custom properties.
+        var jsonObject: [String: Any] = [:]
+        for (key, value) in properties {
+            jsonObject[key] = value ?? NSNull()
         }
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: jsonObject),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            log(.error, "Failed to serialize CSS properties to JSON")
+            return
+        }
+
+        delegate?.epubNavigatorViewModel(
+            self,
+            runScript: "readium.setCSSProperties(\(json));",
+            in: scriptScope
+        )
     }
 
     // MARK: - Accessibility

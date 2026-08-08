@@ -801,16 +801,62 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         ) {
             changed = true
         }
+        if shrinkPaintedActionRowsAtRest(messages: messages) {
+            changed = true
+        }
         if debugVisibleRowClipCount() > 0 {
             repairVisibleAssistantRowClips(messages: messages)
             changed = true
         }
-        guard changed else { return }
-        remeasureRowsPreservingViewport(
-            anchorPath: anchorPath,
-            preferSavedViewportAnchor: fixedViewportY != nil,
-            fixedViewportY: fixedViewportY
-        )
+        if changed {
+            remeasureRowsPreservingViewport(
+                anchorPath: anchorPath,
+                preferSavedViewportAnchor: fixedViewportY != nil,
+                fixedViewportY: fixedViewportY
+            )
+        }
+        repairTopViewportMidLineClip()
+    }
+
+    /// Collapse small post-action slack once body + 三大按钮 are painted and scrolling is at rest.
+    @discardableResult
+    private func shrinkPaintedActionRowsAtRest(messages: [ChatMessage]) -> Bool {
+        guard !tableView.isDragging,
+              !tableView.isDecelerating,
+              !rowHeights.isScrollHeightFrozen else { return false }
+        return shrinkInflatedVisibleRows(messages: messages, slackThreshold: 10)
+    }
+
+    /// When a row straddles the table top by less than ~one line, snap so the bar edge
+    /// does not cut glyphs in half (looks like the turn-context bar "ate" the text).
+    @discardableResult
+    private func repairTopViewportMidLineClip() -> Bool {
+        guard tableView.window != nil,
+              !tableView.isDragging,
+              !tableView.isDecelerating,
+              !rowHeights.isScrollHeightFrozen else { return false }
+        tableView.layoutIfNeeded()
+        let topY = tableView.contentOffset.y
+        let maxHalfLine = SettingsManager.shared.chatBodyFontSize + 4
+        guard let paths = tableView.indexPathsForVisibleRows, !paths.isEmpty else { return false }
+        for path in paths {
+            let rowRect = tableView.rectForRow(at: path)
+            guard rowRect.minY < topY + 0.5, rowRect.maxY > topY + 0.5 else { continue }
+            let clipped = topY - rowRect.minY
+            guard clipped > 6, clipped < maxHalfLine else { return false }
+            let minOffset = -tableView.adjustedContentInset.top
+            let maxOffset = max(
+                minOffset,
+                tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+            )
+            let target = min(max(rowRect.minY, minOffset), maxOffset)
+            guard abs(tableView.contentOffset.y - target) > 0.5 else { return false }
+            UIView.performWithoutAnimation {
+                tableView.contentOffset.y = target
+            }
+            return true
+        }
+        return false
     }
 
     private func storePersistedHeights(_ map: [String: CGFloat], for conversationID: String) {
@@ -2126,7 +2172,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func setVisibleNativeScrollRasterization(_ enabled: Bool) {
         for case let cell as AssistantMessageCell in tableView.visibleCells {
             cell.setNativeScrollRasterization(enabled)
-            if !enabled, !readingHistory {
+            if !enabled {
                 cell.pinActionRowBelowColumnForScrollFreeze(false)
             }
         }
@@ -3481,10 +3527,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             for case let cell as AssistantMessageCell in tableView.visibleCells {
                 cell.pinActionRowBelowColumnForScrollFreeze(false)
             }
+            repairTopViewportMidLineClip()
         } else {
             stickToBottom = false
             readingHistory = true
             viewportPinnedByUser = true
+            repairTopViewportMidLineClip()
         }
     }
 
@@ -4662,9 +4710,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     override var preferredStatusBarStyle: UIStatusBarStyle { DSTheme.c.statusBarStyle }
 
     @objc private func themeChanged() {
-        applyTheme(reloadMessages: false)
+        ChatViewController.attrCache.removeAllObjects()
+        PlainMarkdown.clearCache()
         NativeMessageLayouter.shared.clear()
         NativeFormulaRenderer.shared.clear()
+        applyTheme(reloadMessages: true)
         prewarmVisibleRichReplies(for: currentRenderWidth())
     }
 
@@ -6904,11 +6954,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyWorkspaceID = workspaceID
             draft.studySessionKind = .workspace
-            if let current = draft.studyDocumentID,
-               StudyWorkspaceStore.shared.containsDocument(current, in: workspaceID) {
-                draft.studyDocumentID = current
-            } else {
-                draft.studyDocumentID = firstDoc
+            let active = StudyWorkspaceStore.shared.lastOpenedDocumentID(in: workspaceID)
+                ?? {
+                    if let current = draft.studyDocumentID,
+                       StudyWorkspaceStore.shared.containsDocument(current, in: workspaceID) {
+                        return current
+                    }
+                    return firstDoc
+                }()
+            draft.studyDocumentID = active
+            if let active {
+                StudyWorkspaceStore.shared.setLastOpenedDocument(active, in: workspaceID)
             }
             draft.studyPageCaptureEnabled = draft.studyDocumentID != nil
             // Keep current Study posture — do not jump into Agent.
@@ -7155,10 +7211,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let list: [Conversation]
         let title: String
         if source.isWorkspaceStudySession {
-            if let docID = source.studyDocumentID {
+            if let wsID = source.activeStudyWorkspaceID {
+                var folderChats = ConversationStore.shared.conversations(inWorkspace: wsID)
+                if folderChats.isEmpty, let docID = source.studyDocumentID {
+                    folderChats = ConversationStore.shared.conversations(sharingParentFolderOfDocument: docID)
+                }
+                list = folderChats
+            } else if let docID = source.studyDocumentID {
                 list = ConversationStore.shared.conversations(sharingParentFolderOfDocument: docID)
-            } else if let wsID = source.activeStudyWorkspaceID {
-                list = ConversationStore.shared.conversations(inWorkspace: wsID)
             } else {
                 ConnectsToast.show("暂无相关对话", in: view, duration: 1.4)
                 return
@@ -7175,6 +7235,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConnectsToast.show("暂无相关对话", in: view, duration: 1.4)
             return
         }
+        let folderWSID = source.activeStudyWorkspaceID
         let items = list.prefix(20).map { conv -> ConnectsMenuItem in
             let mark = conv.id == source.id ? " ✓" : ""
             return ConnectsMenuItem(
@@ -7185,6 +7246,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 }
             ) {
                 ConversationStore.shared.selectConversation(id: conv.id)
+                // Same-folder switch: keep reader on folder lastOpened (not the peer's stale file).
+                if let folderWSID,
+                   let last = StudyWorkspaceStore.shared.lastOpenedDocumentID(in: folderWSID)
+                    ?? source.studyDocumentID {
+                    StudyWorkspaceStore.shared.setLastOpenedDocument(last, in: folderWSID)
+                    ConversationStore.shared.updateConversation(id: conv.id) { draft in
+                        draft.studyWorkspaceID = folderWSID
+                        draft.studySessionKind = .workspace
+                        draft.studyDocumentID = last
+                        draft.studyPageCaptureEnabled = true
+                    }
+                }
             }
         }
         ConnectsMenu.present(
@@ -9886,6 +9959,16 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
         rowHeights.publishCommittedToDisplay()
         setVisibleNativeScrollRasterization(false)
         paintVisibleActionChromeAfterScrollUnfreeze(messages: messages)
+        repairVisibleAssistantRowClips(messages: messages)
+        var heightChanged = shrinkPaintedActionRowsAtRest(messages: messages)
+        if debugVisibleRowClipCount() > 0 {
+            repairVisibleAssistantRowClips(messages: messages)
+            heightChanged = true
+        }
+        if heightChanged {
+            remeasureRowsPreservingViewport(preferSavedViewportAnchor: true)
+        }
+        repairTopViewportMidLineClip()
         hasCompletedFirstHistoryScrollGesture = true
         if hasVisiblePendingDeferredNative() {
             scheduleVisibleDeferredNativeHydration()

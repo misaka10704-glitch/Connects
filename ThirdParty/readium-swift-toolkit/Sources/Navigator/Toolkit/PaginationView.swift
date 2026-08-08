@@ -27,6 +27,18 @@ enum PageLocation: Equatable {
             return false
         }
     }
+
+    /// Cross-chapter previous page / explicit end progression.
+    var needsEndLanding: Bool {
+        switch self {
+        case .end:
+            return true
+        case let .locator(locator):
+            return (locator.locations.progression ?? 0) >= 0.999
+        default:
+            return false
+        }
+    }
 }
 
 protocol PageView {
@@ -184,6 +196,36 @@ final class PaginationView: UIView, Loggable {
         (readingProgression == .rtl)
             ? scrollView.contentSize.width - (CGFloat(index + 1) * scrollView.bounds.width)
             : scrollView.bounds.width * CGFloat(index)
+    }
+
+    /// Reloads already-loaded pages in distance order (current first, then neighbors).
+    /// Unloaded far pages are left alone — they pick up new CSS the next time they open.
+    func reloadLoadedPagesProgressively(currentLocation: PageLocation) {
+        let current = currentIndex
+        var order = loadedViews.keys.sorted { abs($0 - current) < abs($1 - current) }
+        if !order.contains(current), 0 ..< pageCount ~= current {
+            order.insert(current, at: 0)
+        }
+        guard !order.isEmpty else { return }
+
+        for (_, view) in loadedViews {
+            view.removeFromSuperview()
+        }
+        loadedViews.removeAll()
+        loadingIndexQueue.removeAll()
+
+        for index in order {
+            let location: PageLocation
+            if index == current {
+                location = currentLocation
+            } else if index < current {
+                location = .end
+            } else {
+                location = .start
+            }
+            scheduleLoadPage(at: index, location: location)
+        }
+        loadPages()
     }
 
     /// Reloads the pagination with the given total number of pages and current index.
@@ -375,6 +417,11 @@ final class PaginationView: UIView, Loggable {
 
         setCurrentIndex(index, location: location)
 
+        // Pin target location BEFORE revealing the page. Preloaded previous spreads
+        // often sat at progression 0; cross-chapter `.end` must be ready under the
+        // snapshot or the user sees a jump/refresh flash after the slide.
+        await currentView?.go(to: location, animated: false)
+
         scrollView.contentOffset = fromOffset
 
         if animated {
@@ -386,24 +433,26 @@ final class PaginationView: UIView, Loggable {
             scrollView.contentOffset = targetOffset
         }
 
-        // There are visual glitches when scrolling web views into view.
-        // To prevent these, we wait a few ms before removing the snapshot.
-        // See https://github.com/readium/swift-toolkit/issues/737#issuecomment-4090386881
+        // Brief settle so WK finishes layout under the snapshot (issue #737),
+        // then drop the cover — location already applied above.
         if !animated {
-            try? await Task.sleep(seconds: 0.1)
+            try? await Task.sleep(seconds: 0.03)
         }
+        // Re-pin once visible in case layout shifted during the slide.
+        await currentView?.go(to: location, animated: false)
     }
 
     private func fadeToView(at index: Int, location: PageLocation, animated: Bool) async {
-        func fade(to alpha: CGFloat) async {
-            await animate(duration: animated ? 0.15 : 0) {
-                self.alpha = alpha
-            }
+        if animated {
+            await animate(duration: 0.15) { self.alpha = 0 }
+            await scrollToView(at: index, location: location, animated: false)
+            await animate(duration: 0.15) { self.alpha = 1 }
+        } else {
+            // TOC / programmatic jumps: keep the previous page visible while the
+            // target chapter loads (large XHTML can take seconds). Fading to 0
+            // felt like "tap did nothing".
+            await scrollToView(at: index, location: location, animated: false)
         }
-
-        await fade(to: 0)
-        await scrollToView(at: index, location: location, animated: false)
-        await fade(to: 1)
     }
 
     private func scrollToView(at index: Int, location: PageLocation, animated: Bool) async {

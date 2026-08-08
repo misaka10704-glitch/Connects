@@ -8,6 +8,49 @@ final class PassthroughOverlayView: UIView {
     }
 }
 
+/// Colour of the committed highlight ink, which differs on screen and on disk.
+///
+/// In Connects the visible stroke is drawn by `CommittedInkOverlay` (it has to sit
+/// above the dark-mode invert filter), so PDFKit's own paint is kept near-clear to
+/// avoid painting the highlight twice. That near-clear colour used to be what got
+/// written to the file as well, which meant a PDF opened in Preview, Acrobat or any
+/// other reader showed no highlights at all — the annotations were there, just
+/// invisible. Serialization swaps in `inFile` so the marks travel with the document.
+enum ConnectsInk {
+    static let onScreen = UIColor(red: 1.0, green: 0.92, blue: 0.12, alpha: 0.02)
+    static let inFile = UIColor(red: 1.0, green: 0.92, blue: 0.12, alpha: 0.32)
+
+    static func isCommitted(_ annotation: PDFAnnotation) -> Bool {
+        annotation.userName == StudyAskSelectionStore.noteAnnotationUserName
+    }
+
+    /// Runs `body` with every committed ink stroke temporarily coloured for the
+    /// file, then puts the on-screen colour back.
+    static func withFileColors<T>(in document: PDFDocument, _ body: () -> T) -> T {
+        var touched: [PDFAnnotation] = []
+        for index in 0 ..< document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where isCommitted(annotation) {
+                annotation.color = inFile
+                touched.append(annotation)
+            }
+        }
+        defer { for annotation in touched { annotation.color = onScreen } }
+        return body()
+    }
+
+    /// Undo `inFile` colouring for a document just read from disk, so the overlay
+    /// stroke is not doubled by PDFKit's own paint.
+    static func normalizeForDisplay(in document: PDFDocument) {
+        for index in 0 ..< document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where isCommitted(annotation) {
+                annotation.color = onScreen
+            }
+        }
+    }
+}
+
 /// Shared highlighter stroke style (soft translucent yellow + selectable width).
 enum PDFHighlightStrokeStyle {
     /// Live preview on the draw overlay (above invert filters).
@@ -597,7 +640,7 @@ final class PDFHighlighterTool: NSObject, UIGestureRecognizerDelegate {
         // through dataRepresentation / disk reload reliably). Near-clear color keeps PDFKit's
         // own paint invisible; CommittedInkOverlay draws the visible stroke above invert.
         let annotation = PDFAnnotation(bounds: padded, forType: .ink, withProperties: nil)
-        annotation.color = UIColor(red: 1.0, green: 0.92, blue: 0.12, alpha: 0.02)
+        annotation.color = ConnectsInk.onScreen
         annotation.add(path)
         let border = PDFBorder()
         border.lineWidth = lineW
@@ -664,6 +707,181 @@ final class PDFHighlighterTool: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         false
+    }
+}
+
+/// Dashed red square. Note caption is painted outside the box by `BoxNoteCaptionOverlay`
+/// (PDFKit clips annotation drawing to bounds, so in-box draw cannot sit outside).
+final class ConnectsBoxAnnotation: PDFAnnotation {
+    static func make(bounds: CGRect) -> ConnectsBoxAnnotation {
+        let annotation = ConnectsBoxAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+        let red = UIColor(
+            red: ReadingAnnotationStyle.pdfBoxRed.r,
+            green: ReadingAnnotationStyle.pdfBoxRed.g,
+            blue: ReadingAnnotationStyle.pdfBoxRed.b,
+            alpha: ReadingAnnotationStyle.pdfBoxRed.a
+        )
+        annotation.color = red
+        let border = PDFBorder()
+        border.lineWidth = 1.6
+        border.style = .dashed
+        annotation.border = border
+        annotation.interiorColor = UIColor.clear
+        annotation.userName = StudyAskSelectionStore.boxAnnotationUserName
+        annotation.contents = ""
+        annotation.isReadOnly = false
+        return annotation
+    }
+
+    static func migrate(in document: PDFDocument) {
+        for i in 0..<document.pageCount {
+            guard let page = document.page(at: i) else { continue }
+            let stale = page.annotations.filter { ann in
+                !(ann is ConnectsBoxAnnotation)
+                    && ann.userName == StudyAskSelectionStore.boxAnnotationUserName
+            }
+            for ann in stale {
+                let neu = ConnectsBoxAnnotation.make(bounds: ann.bounds)
+                neu.contents = ann.contents
+                neu.color = ann.color
+                if let border = ann.border { neu.border = border }
+                page.removeAnnotation(ann)
+                page.addAnnotation(neu)
+            }
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override init(bounds: CGRect, forType annotationType: PDFAnnotationSubtype, withProperties properties: [AnyHashable: Any]?) {
+        super.init(bounds: bounds, forType: annotationType, withProperties: properties)
+    }
+}
+
+/// Tiny note previews anchored just outside each box (top-left / above the frame).
+/// Scroll locking matches ink: layer translation while flinging, rebuild when idle.
+private final class BoxNoteCaptionOverlay: UIView {
+    private static let captionMaxChars = 18
+    private static let fontSize: CGFloat = 7
+    private let host = UIView()
+    private var anchorOffset: CGPoint = .zero
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        clipsToBounds = false
+        host.backgroundColor = .clear
+        host.isUserInteractionEnabled = false
+        addSubview(host)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if host.transform.isIdentity {
+            host.frame = bounds
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+
+    func resetScrollAnchor(_ offset: CGPoint) {
+        anchorOffset = offset
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        host.transform = .identity
+        host.frame = bounds
+        CATransaction.commit()
+    }
+
+    /// Stick captions to the page by matching the scroller delta (same as ink).
+    func applyScrollTranslation(currentOffset: CGPoint) {
+        let dx = anchorOffset.x - currentOffset.x
+        let dy = anchorOffset.y - currentOffset.y
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        host.transform = CGAffineTransform(translationX: dx, y: dy)
+        CATransaction.commit()
+    }
+
+    func reload(from pdfView: PDFView) {
+        host.subviews.forEach { $0.removeFromSuperview() }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        host.transform = .identity
+        host.frame = bounds
+        CATransaction.commit()
+
+        guard let document = pdfView.document else { return }
+        if let scroll = pdfView.connectsPrimaryDocumentScrollView {
+            anchorOffset = scroll.contentOffset
+        }
+
+        let pages: [PDFPage]
+        if #available(iOS 11.0, *), !pdfView.visiblePages.isEmpty {
+            pages = pdfView.visiblePages
+        } else if let page = pdfView.currentPage {
+            pages = [page]
+        } else {
+            pages = (0..<min(document.pageCount, 3)).compactMap { document.page(at: $0) }
+        }
+
+        let ink = UIColor(
+            red: ReadingAnnotationStyle.pdfBoxRed.r,
+            green: ReadingAnnotationStyle.pdfBoxRed.g,
+            blue: ReadingAnnotationStyle.pdfBoxRed.b,
+            alpha: 0.88
+        )
+        let font = UIFont.systemFont(ofSize: Self.fontSize, weight: .medium)
+
+        for page in pages {
+            for ann in page.annotations {
+                let isBox = ann.userName == StudyAskSelectionStore.boxAnnotationUserName
+                    || ann is ConnectsBoxAnnotation
+                guard isBox else { continue }
+                let raw = (ann.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !raw.isEmpty else { continue }
+
+                let caption = Self.captionPreview(raw)
+                let b = ann.bounds
+                let topLeftPage = CGPoint(x: b.minX, y: b.maxY)
+                let inPdf = pdfView.convert(topLeftPage, from: page)
+                let corner = convert(inPdf, from: pdfView)
+
+                let label = UILabel()
+                label.font = font
+                label.textColor = ink
+                label.text = caption
+                label.numberOfLines = 1
+                label.lineBreakMode = .byTruncatingTail
+                label.sizeToFit()
+                let maxW = max(36, min(label.bounds.width, bounds.width - 8))
+                label.frame.size.width = min(label.bounds.width, maxW)
+
+                var origin = CGPoint(x: corner.x, y: corner.y - label.bounds.height - 1)
+                if origin.y < 1 {
+                    origin = CGPoint(
+                        x: max(2, corner.x - label.bounds.width - 3),
+                        y: corner.y
+                    )
+                }
+                origin.x = min(max(2, origin.x), max(2, bounds.width - label.bounds.width - 2))
+                label.frame.origin = origin
+                host.addSubview(label)
+            }
+        }
+    }
+
+    private static func captionPreview(_ text: String) -> String {
+        let flat = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        if flat.count <= captionMaxChars { return flat }
+        let idx = flat.index(flat.startIndex, offsetBy: captionMaxChars)
+        return String(flat[..<idx]) + "…"
     }
 }
 
@@ -944,7 +1162,450 @@ private final class HighlightDrawOverlay: UIView {
     }
 }
 
-/// Single-tap an existing ink/highlight annotation to open its note editor.
+/// MarginNote-style dashed red rectangle selector for scanned PDFs.
+final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
+    private enum Handle: CaseIterable {
+        case n, s, e, w, ne, nw, se, sw, move
+    }
+
+    private enum DragMode {
+        case none
+        case create
+        case adjust(annotation: PDFAnnotation, page: PDFPage, handle: Handle, startBounds: CGRect, startPagePoint: CGPoint)
+    }
+
+    private weak var pdfView: PDFView?
+    private let pan = UIPanGestureRecognizer()
+    private let rubberBand = BoxRubberBandOverlay()
+    private let captionOverlay = BoxNoteCaptionOverlay()
+    private var overlayConstraints: [NSLayoutConstraint] = []
+    private var captionConstraints: [NSLayoutConstraint] = []
+    private var dragMode: DragMode = .none
+    private var createStartPage = CGPoint.zero
+    private var createPage: PDFPage?
+    /// Large hit target so edges/corners win over accidental new-box gestures.
+    private let handleSlopView: CGFloat = 28
+    private var scrollEnabledBackup: [ObjectIdentifier: (scroll: Bool, pan: Bool)] = [:]
+    private var captionObservers: [NSObjectProtocol] = []
+    private var captionScrollObservation: NSKeyValueObservation?
+    private var captionRefreshWork: DispatchWorkItem?
+
+    private(set) var isEnabled = false
+    private(set) var isActivelySelecting = false
+
+    var onBoxFinished: ((PDFAnnotation, PDFPage) -> Void)?
+    var onBoxAdjusted: ((PDFAnnotation, PDFPage) -> Void)?
+
+    func attach(to pdfView: PDFView) {
+        self.pdfView = pdfView
+        pan.addTarget(self, action: #selector(handlePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.cancelsTouchesInView = true
+        pan.delegate = self
+        pan.isEnabled = false
+        pdfView.addGestureRecognizer(pan)
+
+        rubberBand.isHidden = true
+        rubberBand.isUserInteractionEnabled = false
+        rubberBand.translatesAutoresizingMaskIntoConstraints = false
+        captionOverlay.translatesAutoresizingMaskIntoConstraints = false
+        installCaptionObservers(on: pdfView)
+    }
+
+    deinit {
+        captionObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        captionScrollObservation?.invalidate()
+    }
+
+    func setEnabled(_ on: Bool) {
+        isEnabled = on
+        pan.isEnabled = on
+        setDocumentScrollingEnabled(!on)
+        if !on {
+            cancelSelection()
+        }
+        ensureOverlayInstalled()
+        refreshCaptions()
+    }
+
+    /// Re-assert scroll lock after PDFKit rebuilds scroll views.
+    func refreshScrollLock() {
+        guard isEnabled else { return }
+        setDocumentScrollingEnabled(false)
+    }
+
+    /// Reload tiny note labels outside each box (call after note save / document load).
+    func refreshCaptions() {
+        ensureOverlayInstalled()
+        guard let pdfView else { return }
+        captionOverlay.layoutIfNeeded()
+        captionOverlay.reload(from: pdfView)
+        rebindCaptionScroll(on: pdfView)
+    }
+
+    private func scheduleCaptionRebuild() {
+        captionRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshCaptions()
+        }
+        captionRefreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func installCaptionObservers(on pdfView: PDFView) {
+        captionObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        captionObservers.removeAll()
+        let nc = NotificationCenter.default
+        captionObservers.append(nc.addObserver(forName: .PDFViewScaleChanged, object: pdfView, queue: .main) { [weak self] _ in
+            self?.scheduleCaptionRebuild()
+        })
+        captionObservers.append(nc.addObserver(forName: .PDFViewPageChanged, object: pdfView, queue: .main) { [weak self] _ in
+            self?.scheduleCaptionRebuild()
+        })
+        captionObservers.append(nc.addObserver(forName: .PDFViewVisiblePagesChanged, object: pdfView, queue: .main) { [weak self] _ in
+            self?.scheduleCaptionRebuild()
+        })
+        rebindCaptionScroll(on: pdfView)
+    }
+
+    private func rebindCaptionScroll(on pdfView: PDFView) {
+        captionScrollObservation?.invalidate()
+        captionScrollObservation = nil
+        guard let scroll = pdfView.connectsPrimaryDocumentScrollView else { return }
+        captionOverlay.resetScrollAnchor(scroll.contentOffset)
+        captionScrollObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+            guard let self else { return }
+            // Follow the page instantly — do not rebuild mid-fling (that made labels drift).
+            self.captionOverlay.applyScrollTranslation(currentOffset: scrollView.contentOffset)
+            self.captionRefreshWork?.cancel()
+            let work = DispatchWorkItem { [weak self, weak scrollView] in
+                guard let self, let scrollView else { return }
+                if scrollView.isDragging || scrollView.isDecelerating {
+                    self.captionOverlay.applyScrollTranslation(currentOffset: scrollView.contentOffset)
+                    return
+                }
+                self.refreshCaptions()
+            }
+            self.captionRefreshWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
+        }
+    }
+
+    func ensureOverlayInstalled() {
+        guard let pdfView = pdfView, let host = pdfView.superview else { return }
+        if captionOverlay.superview !== host {
+            captionOverlay.removeFromSuperview()
+            NSLayoutConstraint.deactivate(captionConstraints)
+            host.insertSubview(captionOverlay, aboveSubview: pdfView)
+            captionConstraints = [
+                captionOverlay.topAnchor.constraint(equalTo: pdfView.topAnchor),
+                captionOverlay.bottomAnchor.constraint(equalTo: pdfView.bottomAnchor),
+                captionOverlay.leadingAnchor.constraint(equalTo: pdfView.leadingAnchor),
+                captionOverlay.trailingAnchor.constraint(equalTo: pdfView.trailingAnchor)
+            ]
+            NSLayoutConstraint.activate(captionConstraints)
+        }
+        if rubberBand.superview !== host {
+            rubberBand.removeFromSuperview()
+            NSLayoutConstraint.deactivate(overlayConstraints)
+            host.insertSubview(rubberBand, aboveSubview: captionOverlay.superview == host ? captionOverlay : pdfView)
+            overlayConstraints = [
+                rubberBand.topAnchor.constraint(equalTo: pdfView.topAnchor),
+                rubberBand.bottomAnchor.constraint(equalTo: pdfView.bottomAnchor),
+                rubberBand.leadingAnchor.constraint(equalTo: pdfView.leadingAnchor),
+                rubberBand.trailingAnchor.constraint(equalTo: pdfView.trailingAnchor)
+            ]
+            NSLayoutConstraint.activate(overlayConstraints)
+        } else if captionOverlay.superview == host {
+            host.insertSubview(rubberBand, aboveSubview: captionOverlay)
+        }
+    }
+
+    private func setDocumentScrollingEnabled(_ enabled: Bool) {
+        guard let pdfView else { return }
+        let scrolls = pdfView.connectsEmbeddedScrollViews
+        if !enabled {
+            for sv in scrolls {
+                let id = ObjectIdentifier(sv)
+                if scrollEnabledBackup[id] == nil {
+                    scrollEnabledBackup[id] = (sv.isScrollEnabled, sv.panGestureRecognizer.isEnabled)
+                }
+                sv.isScrollEnabled = false
+                sv.panGestureRecognizer.isEnabled = false
+            }
+        } else {
+            for sv in scrolls {
+                let id = ObjectIdentifier(sv)
+                if let bak = scrollEnabledBackup[id] {
+                    sv.isScrollEnabled = bak.scroll
+                    sv.panGestureRecognizer.isEnabled = bak.pan
+                } else {
+                    sv.isScrollEnabled = true
+                    sv.panGestureRecognizer.isEnabled = true
+                }
+            }
+            scrollEnabledBackup.removeAll()
+        }
+    }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard isEnabled, let pdfView = pdfView else { return }
+        let viewPoint = gesture.location(in: pdfView)
+        let overlayPoint = gesture.location(in: rubberBand)
+
+        switch gesture.state {
+        case .began:
+            ensureOverlayInstalled()
+            refreshScrollLock()
+            if let hit = hitTestExistingBox(at: viewPoint) {
+                isActivelySelecting = true
+                dragMode = .adjust(
+                    annotation: hit.ann,
+                    page: hit.page,
+                    handle: hit.handle,
+                    startBounds: hit.ann.bounds,
+                    startPagePoint: pdfView.convert(viewPoint, to: hit.page)
+                )
+                rubberBand.isHidden = true
+            } else if let hitPage = pdfView.page(for: viewPoint, nearest: true) {
+                isActivelySelecting = true
+                dragMode = .create
+                createPage = hitPage
+                createStartPage = pdfView.convert(viewPoint, to: hitPage)
+                rubberBand.isHidden = false
+                rubberBand.begin(at: overlayPoint)
+            } else {
+                cancelSelection()
+            }
+
+        case .changed:
+            switch dragMode {
+            case .create:
+                rubberBand.update(to: overlayPoint)
+            case .adjust(let ann, let page, let handle, let startBounds, let startPagePoint):
+                let cur = pdfView.convert(viewPoint, to: page)
+                let dx = cur.x - startPagePoint.x
+                let dy = cur.y - startPagePoint.y
+                ann.bounds = resizedBounds(startBounds, handle: handle, dx: dx, dy: dy)
+                pdfView.setNeedsDisplay(pdfView.bounds)
+            case .none:
+                break
+            }
+
+        case .ended:
+            finishDrag(endView: viewPoint)
+        case .cancelled, .failed:
+            cancelSelection()
+        default:
+            break
+        }
+    }
+
+    private func finishDrag(endView: CGPoint) {
+        defer {
+            isActivelySelecting = false
+            dragMode = .none
+            createPage = nil
+            rubberBand.clear()
+            rubberBand.isHidden = true
+        }
+        guard let pdfView else { return }
+
+        switch dragMode {
+        case .create:
+            guard let page = createPage else { return }
+            let endPage = pdfView.convert(endView, to: page)
+            let bounds = CGRect(
+                x: min(createStartPage.x, endPage.x),
+                y: min(createStartPage.y, endPage.y),
+                width: abs(endPage.x - createStartPage.x),
+                height: abs(endPage.y - createStartPage.y)
+            )
+            // Require a deliberate drag so edge-adjust near existing boxes isn't a new frame.
+            guard bounds.width >= 16, bounds.height >= 16 else { return }
+
+            let annotation = makeSquareAnnotation(bounds: bounds)
+            page.addAnnotation(annotation)
+            let ann = annotation
+            let pg = page
+            DispatchQueue.main.async { [weak self] in
+                self?.onBoxFinished?(ann, pg)
+            }
+
+        case .adjust(let ann, let page, _, let startBounds, _):
+            if ann.bounds.width < 12 || ann.bounds.height < 12 {
+                ann.bounds = startBounds
+            }
+            pdfView.setNeedsDisplay(pdfView.bounds)
+            onBoxAdjusted?(ann, page)
+            refreshCaptions()
+
+        case .none:
+            break
+        }
+    }
+
+    private func makeSquareAnnotation(bounds: CGRect) -> PDFAnnotation {
+        ConnectsBoxAnnotation.make(bounds: bounds)
+    }
+
+    private func cancelSelection() {
+        isActivelySelecting = false
+        dragMode = .none
+        createPage = nil
+        rubberBand.clear()
+        rubberBand.isHidden = true
+    }
+
+    private func hitTestExistingBox(at viewPoint: CGPoint) -> (ann: PDFAnnotation, page: PDFPage, handle: Handle)? {
+        guard let pdfView,
+              let page = pdfView.page(for: viewPoint, nearest: true)
+        else { return nil }
+        let pagePoint = pdfView.convert(viewPoint, to: page)
+        let scale = max(pdfView.scaleFactor, 0.2)
+        let slop = handleSlopView / scale
+
+        var best: (ann: PDFAnnotation, handle: Handle, score: CGFloat)?
+        for ann in page.annotations where isConnectsBox(ann) {
+            let b = ann.bounds
+            let expanded = b.insetBy(dx: -slop, dy: -slop)
+            guard expanded.contains(pagePoint) else { continue }
+            let handle = nearestHandle(in: b, point: pagePoint, slop: slop)
+            // Prefer edge/corner over move; prefer tighter hits.
+            let score: CGFloat
+            switch handle {
+            case .move:
+                score = 1000 + hypot(pagePoint.x - b.midX, pagePoint.y - b.midY)
+            default:
+                score = handleDistance(handle, bounds: b, point: pagePoint)
+            }
+            if best == nil || score < best!.score {
+                best = (ann, handle, score)
+            }
+        }
+        guard let best else { return nil }
+        return (best.ann, page, best.handle)
+    }
+
+    private func isConnectsBox(_ ann: PDFAnnotation) -> Bool {
+        if ann.userName == StudyAskSelectionStore.boxAnnotationUserName { return true }
+        let t = (ann.type ?? "").lowercased()
+        return t.contains("square")
+    }
+
+    private func nearestHandle(in bounds: CGRect, point: CGPoint, slop: CGFloat) -> Handle {
+        let corners: [(Handle, CGPoint)] = [
+            (.nw, CGPoint(x: bounds.minX, y: bounds.maxY)),
+            (.ne, CGPoint(x: bounds.maxX, y: bounds.maxY)),
+            (.sw, CGPoint(x: bounds.minX, y: bounds.minY)),
+            (.se, CGPoint(x: bounds.maxX, y: bounds.minY)),
+        ]
+        for (h, p) in corners {
+            if hypot(point.x - p.x, point.y - p.y) <= slop { return h }
+        }
+        // Edges (PDF coords: y grows up)
+        if abs(point.y - bounds.maxY) <= slop, point.x >= bounds.minX - slop, point.x <= bounds.maxX + slop { return .n }
+        if abs(point.y - bounds.minY) <= slop, point.x >= bounds.minX - slop, point.x <= bounds.maxX + slop { return .s }
+        if abs(point.x - bounds.minX) <= slop, point.y >= bounds.minY - slop, point.y <= bounds.maxY + slop { return .w }
+        if abs(point.x - bounds.maxX) <= slop, point.y >= bounds.minY - slop, point.y <= bounds.maxY + slop { return .e }
+        return .move
+    }
+
+    private func handleDistance(_ handle: Handle, bounds: CGRect, point: CGPoint) -> CGFloat {
+        let p: CGPoint
+        switch handle {
+        case .n: p = CGPoint(x: bounds.midX, y: bounds.maxY)
+        case .s: p = CGPoint(x: bounds.midX, y: bounds.minY)
+        case .e: p = CGPoint(x: bounds.maxX, y: bounds.midY)
+        case .w: p = CGPoint(x: bounds.minX, y: bounds.midY)
+        case .ne: p = CGPoint(x: bounds.maxX, y: bounds.maxY)
+        case .nw: p = CGPoint(x: bounds.minX, y: bounds.maxY)
+        case .se: p = CGPoint(x: bounds.maxX, y: bounds.minY)
+        case .sw: p = CGPoint(x: bounds.minX, y: bounds.minY)
+        case .move: p = CGPoint(x: bounds.midX, y: bounds.midY)
+        }
+        return hypot(point.x - p.x, point.y - p.y)
+    }
+
+    private func resizedBounds(_ start: CGRect, handle: Handle, dx: CGFloat, dy: CGFloat) -> CGRect {
+        var minX = start.minX
+        var maxX = start.maxX
+        var minY = start.minY
+        var maxY = start.maxY
+        switch handle {
+        case .move:
+            return start.offsetBy(dx: dx, dy: dy)
+        case .n: maxY += dy
+        case .s: minY += dy
+        case .e: maxX += dx
+        case .w: minX += dx
+        case .ne: maxX += dx; maxY += dy
+        case .nw: minX += dx; maxY += dy
+        case .se: maxX += dx; minY += dy
+        case .sw: minX += dx; minY += dy
+        }
+        let out = CGRect(x: min(minX, maxX), y: min(minY, maxY),
+                         width: abs(maxX - minX), height: abs(maxY - minY))
+        return out
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        isEnabled
+    }
+}
+
+private final class BoxRubberBandOverlay: UIView {
+    private var start = CGPoint.zero
+    private var end = CGPoint.zero
+    private let shape = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        shape.fillColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.08).cgColor
+        shape.strokeColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.95).cgColor
+        shape.lineWidth = 1.5
+        shape.lineDashPattern = [5, 3]
+        layer.addSublayer(shape)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func begin(at point: CGPoint) {
+        start = point
+        end = point
+        redraw()
+    }
+
+    func update(to point: CGPoint) {
+        end = point
+        redraw()
+    }
+
+    func clear() {
+        start = .zero
+        end = .zero
+        shape.path = nil
+    }
+
+    private func redraw() {
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+        shape.path = UIBezierPath(rect: rect).cgPath
+    }
+}
+
+/// Single-tap an existing ink/highlight/box annotation to open its note editor.
 final class PDFHighlightNoteTap: NSObject, UIGestureRecognizerDelegate {
     private weak var pdfView: PDFView?
     private let tap = UITapGestureRecognizer()
@@ -963,33 +1624,37 @@ final class PDFHighlightNoteTap: NSObject, UIGestureRecognizerDelegate {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let pdfView = pdfView else { return }
-        if let study = pdfView as? StudyPDFView, study.highlighter.isEnabled { return }
-        // Hit-test only on tap end — never in shouldReceive (that ran on every touch and felt laggy).
+        if let study = pdfView as? StudyPDFView {
+            if study.highlighter.isEnabled { return }
+            if study.boxSelect.isEnabled, study.boxSelect.isActivelySelecting { return }
+        }
         guard let hit = annotationAt(gesture.location(in: pdfView), in: pdfView) else { return }
         onTapHighlight?(hit.ann, hit.page)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard let pdfView = pdfView else { return false }
-        if let study = pdfView as? StudyPDFView, study.highlighter.isEnabled { return false }
-        // Cheap gate only — full annotation scan happens in handleTap.
-        return true
+        if let study = pdfView as? StudyPDFView {
+            if study.highlighter.isEnabled { return false }
+            if study.boxSelect.isEnabled, study.boxSelect.isActivelySelecting { return false }
+        }
+        // Only steal taps that land on a mark/box.
+        return annotationAt(touch.location(in: pdfView), in: pdfView) != nil
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Don't fight the PDF scroll pan; tap still fires on a clean touch-up.
         true
     }
 
     private func annotationAt(_ point: CGPoint, in pdfView: PDFView) -> (ann: PDFAnnotation, page: PDFPage)? {
         guard let page = pdfView.page(for: point, nearest: true) else { return nil }
         let pagePoint = pdfView.convert(point, to: page)
-        // Prefer our notes; avoid scanning huge annotation lists more than needed.
+        let scale = max(pdfView.scaleFactor, 0.2)
+        let pad = 22 / scale
         for ann in page.annotations.reversed() {
             guard isMarkupAnnotation(ann) else { continue }
-            // Distance-to-segment for ink feels better than fat bounds, but bounds is O(1) and enough.
-            if ann.bounds.insetBy(dx: -12, dy: -12).contains(pagePoint) {
+            if ann.bounds.insetBy(dx: -pad, dy: -pad).contains(pagePoint) {
                 return (ann, page)
             }
         }
@@ -998,9 +1663,44 @@ final class PDFHighlightNoteTap: NSObject, UIGestureRecognizerDelegate {
 
     private func isMarkupAnnotation(_ ann: PDFAnnotation) -> Bool {
         if ann.userName == StudyAskSelectionStore.noteAnnotationUserName { return true }
+        if ann.userName == StudyAskSelectionStore.boxAnnotationUserName { return true }
         let t = (ann.type ?? "").lowercased()
-        return t.contains("ink") || t.contains("highlight")
+        return t.contains("ink") || t.contains("highlight") || t.contains("square")
     }
+}
+
+// MARK: - Shared reader popup chrome (note sheet ↔ EPUB footnote [1])
+
+/// Shared metrics/colors so annotation notes and EPUB index popups match.
+enum ConnectsReaderPopupStyle {
+    static let bodyFont = UIFont.systemFont(ofSize: 16)
+    static let actionFont = UIFont.systemFont(ofSize: 15, weight: .semibold)
+    static let cornerRadius: CGFloat = 16
+    static let textInset = UIEdgeInsets(top: 16, left: 14, bottom: 12, right: 14)
+
+    static func cardWidth(in container: UIView) -> CGFloat {
+        min(380, max(container.bounds.width - 48, 300))
+    }
+
+    static func cardHeight(in container: UIView) -> CGFloat {
+        min(320, max(container.bounds.height * 0.42, 260))
+    }
+
+    static func applyCardChrome(_ card: UIView) {
+        card.backgroundColor = DSTheme.reader.surface.withAlphaComponent(0.88)
+        card.layer.cornerRadius = cornerRadius
+        card.clipsToBounds = true
+        card.layer.borderWidth = 1 / UIScreen.main.scale
+        card.layer.borderColor = DSTheme.reader.border.withAlphaComponent(0.35).cgColor
+        card.layer.shadowOpacity = 0
+    }
+
+    static var dimColor: UIColor {
+        UIColor.black.withAlphaComponent(0.14)
+    }
+
+    static var bodyTextColor: UIColor { DSTheme.reader.textPrimary }
+    static var secondaryTextColor: UIColor { DSTheme.reader.textSecondary }
 }
 
 // MARK: - Connects-styled note overlay (no modal presentation — keeps PDF/pen snappy)
@@ -1019,7 +1719,7 @@ enum ConnectsNoteSheet {
         message: String?,
         initialText: String,
         confirmTitle: String = "保存",
-        deleteTitle: String? = "删除划线",
+        deleteTitle: String? = "删除",
         onSave: @escaping (String) -> Void,
         onDelete: (() -> Void)? = nil,
         onCancel: (() -> Void)? = nil
@@ -1089,7 +1789,10 @@ protocol StudyShellRootViewMarker: AnyObject {}
 /// Marker for note overlays hosted on the study shell (hit-test priority).
 protocol ConnectsNoteOverlayHitMarker: AnyObject {}
 
-private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, ConnectsNoteOverlayHitMarker {
+/// Marker for EPUB highlight color picker overlays (hit-test priority).
+protocol ConnectsHighlightPickerHitMarker: AnyObject {}
+
+private final class ConnectsNoteOverlayView: UIView, UITextViewDelegate, ConnectsNoteOverlayHitMarker {
     private let titleText: String
     private let messageText: String?
     private let initialText: String
@@ -1103,10 +1806,13 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
     private let card = UIView()
     private let titleLabel = UILabel()
     private let messageLabel = UILabel()
-    private let field = UITextField()
+    private let field = UITextView()
+    private let placeholderLabel = UILabel()
     private let buttonRow = UIStackView()
     private var didFinish = false
     private var cardCenterY: NSLayoutConstraint!
+    private var cardWidthConstraint: NSLayoutConstraint!
+    private var cardHeightConstraint: NSLayoutConstraint!
     private var keyboardObserver: NSObjectProtocol?
 
     init(
@@ -1144,17 +1850,22 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         backgroundColor = .clear
 
         dimView.translatesAutoresizingMaskIntoConstraints = false
+        dimView.backgroundColor = ConnectsReaderPopupStyle.dimColor
+        dimView.isUserInteractionEnabled = true
+        // Blank tap dismisses (replaces 取消).
         dimView.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         addSubview(dimView)
 
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.layer.cornerRadius = 14
+        ConnectsReaderPopupStyle.applyCardChrome(card)
         addSubview(card)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         titleLabel.text = titleText
         titleLabel.textAlignment = .center
+        titleLabel.textColor = ConnectsReaderPopupStyle.bodyTextColor
+        titleLabel.isHidden = titleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         card.addSubview(titleLabel)
 
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1162,34 +1873,40 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         messageLabel.numberOfLines = 0
         messageLabel.textAlignment = .center
         messageLabel.text = messageText
+        messageLabel.textColor = ConnectsReaderPopupStyle.secondaryTextColor
         messageLabel.isHidden = (messageText?.isEmpty ?? true)
         card.addSubview(messageLabel)
 
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.font = UIFont.systemFont(ofSize: 15)
-        field.placeholder = "输入注释…"
+        field.font = ConnectsReaderPopupStyle.bodyFont
         field.text = initialText
-        field.clearButtonMode = .whileEditing
-        field.returnKeyType = .done
         field.delegate = self
-        field.layer.cornerRadius = 10
-        field.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
-        field.leftViewMode = .always
-        field.rightView = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 1))
-        field.rightViewMode = .always
+        field.backgroundColor = .clear
+        field.textColor = ConnectsReaderPopupStyle.bodyTextColor
+        field.tintColor = DSTheme.reader.accent
+        field.layer.cornerRadius = 0
+        field.textContainerInset = ConnectsReaderPopupStyle.textInset
+        field.isScrollEnabled = true
+        field.returnKeyType = .default
         card.addSubview(field)
+
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderLabel.font = ConnectsReaderPopupStyle.bodyFont
+        placeholderLabel.text = "标题 / 理解…"
+        placeholderLabel.textColor = ConnectsReaderPopupStyle.secondaryTextColor
+        placeholderLabel.isUserInteractionEnabled = false
+        field.addSubview(placeholderLabel)
+        placeholderLabel.isHidden = !initialText.isEmpty
 
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
         buttonRow.axis = .horizontal
-        buttonRow.spacing = 8
+        buttonRow.spacing = 12
         buttonRow.distribution = .fillEqually
+        buttonRow.alignment = .center
         card.addSubview(buttonRow)
 
-        let cancel = makeButton(title: "取消", style: .secondary)
-        cancel.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
-        buttonRow.addArrangedSubview(cancel)
-
-        if deleteTitle != nil {
+        // No 取消 — blank dim dismisses. Keep 删除 / 保存 as light text actions.
+        if deleteTitle != nil, onDelete != nil {
             let del = makeButton(title: deleteTitle ?? "删除", style: .destructive)
             del.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
             buttonRow.addArrangedSubview(del)
@@ -1199,7 +1916,22 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         save.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         buttonRow.addArrangedSubview(save)
 
-        cardCenterY = card.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -24)
+        cardCenterY = card.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 0)
+
+        let fieldTop: NSLayoutConstraint
+        if !messageLabel.isHidden {
+            fieldTop = field.topAnchor.constraint(equalTo: messageLabel.bottomAnchor, constant: 4)
+        } else if !titleLabel.isHidden {
+            fieldTop = field.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6)
+        } else {
+            fieldTop = field.topAnchor.constraint(equalTo: card.topAnchor, constant: 4)
+        }
+
+        let screen = UIScreen.main.bounds
+        let cardW = min(380, max(screen.width - 48, 300))
+        let cardH = min(320, max(screen.height * 0.42, 260))
+        cardWidthConstraint = card.widthAnchor.constraint(equalToConstant: cardW)
+        cardHeightConstraint = card.heightAnchor.constraint(equalToConstant: cardH)
 
         NSLayoutConstraint.activate([
             dimView.topAnchor.constraint(equalTo: topAnchor),
@@ -1209,32 +1941,45 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
 
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
             cardCenterY,
-            card.widthAnchor.constraint(equalToConstant: 340),
+            cardWidthConstraint,
+            cardHeightConstraint,
 
-            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
-            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
-            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: titleLabel.isHidden ? 0 : 12),
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            titleLabel.heightAnchor.constraint(equalToConstant: titleLabel.isHidden ? 0 : 20),
 
-            messageLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
-            messageLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
-            messageLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            messageLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: titleLabel.isHidden ? 0 : 2),
+            messageLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            messageLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            messageLabel.heightAnchor.constraint(equalToConstant: messageLabel.isHidden ? 0 : 18),
 
-            field.topAnchor.constraint(equalTo: messageLabel.bottomAnchor, constant: 14),
-            field.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            field.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            field.heightAnchor.constraint(equalToConstant: 42),
+            fieldTop,
+            field.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            field.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            field.bottomAnchor.constraint(equalTo: buttonRow.topAnchor, constant: -4),
 
-            buttonRow.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 14),
-            buttonRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            buttonRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            buttonRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16),
+            placeholderLabel.topAnchor.constraint(equalTo: field.topAnchor, constant: ConnectsReaderPopupStyle.textInset.top),
+            placeholderLabel.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: ConnectsReaderPopupStyle.textInset.left + 5),
+
+            buttonRow.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
+            buttonRow.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+            buttonRow.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
             buttonRow.heightAnchor.constraint(equalToConstant: 40)
         ])
 
-        applyTheme()
         card.alpha = 0
         card.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
         dimView.alpha = 0
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        let w = ConnectsReaderPopupStyle.cardWidth(in: self)
+        let h = ConnectsReaderPopupStyle.cardHeight(in: self)
+        if cardWidthConstraint.constant != w { cardWidthConstraint.constant = w }
+        if cardHeightConstraint.constant != h { cardHeightConstraint.constant = h }
     }
 
     private func registerKeyboard() {
@@ -1271,7 +2016,8 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
 
     func presentAnimated() {
         ConnectsNoteSheet.bringToFront()
-        focusNoteField(retries: 4)
+        // Do not auto-focus — opening a note is browse/record first; keyboard only
+        // when the user taps into the text field.
         UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
             self.dimView.alpha = 1
             self.card.alpha = 1
@@ -1279,27 +2025,6 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         } completion: { finished in
             guard finished, !self.didFinish else { return }
             ConnectsNoteSheet.bringToFront()
-            self.focusNoteField(retries: 3)
-        }
-    }
-
-    private func focusNoteField(retries: Int) {
-        guard !didFinish else { return }
-        ConnectsNoteSheet.bringToFront()
-        guard window != nil else {
-            guard retries > 0 else { return }
-            DispatchQueue.main.async { [weak self] in
-                self?.focusNoteField(retries: retries - 1)
-            }
-            return
-        }
-        field.isUserInteractionEnabled = true
-        field.isEnabled = true
-        if field.isFirstResponder { return }
-        if field.becomeFirstResponder() { return }
-        guard retries > 0 else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.focusNoteField(retries: retries - 1)
         }
     }
 
@@ -1318,9 +2043,10 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         ConnectsNoteSheet.clearActive(self)
         resignKeyboardInstantly()
         isUserInteractionEnabled = false
-        removeFromSuperview()
-        // Match `finish()` so pen-toggle dismiss also re-arms study ▲▼.
-        NotificationCenter.default.post(name: ConnectsNoteSheet.didDismissNotification, object: nil)
+        animateOut {
+            self.removeFromSuperview()
+            NotificationCenter.default.post(name: ConnectsNoteSheet.didDismissNotification, object: nil)
+        }
     }
 
     private func resignKeyboardInstantly() {
@@ -1328,60 +2054,23 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         field.resignFirstResponder()
     }
 
-    private enum ButtonStyle { case primary, secondary, destructive }
+    private enum ButtonStyle { case primary, destructive }
 
     private func makeButton(title: String, style: ButtonStyle) -> UIButton {
         let b = UIButton(type: .system)
         b.setTitle(title, for: .normal)
-        b.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        b.layer.cornerRadius = 10
+        b.titleLabel?.font = ConnectsReaderPopupStyle.actionFont
+        b.backgroundColor = .clear
+        b.layer.cornerRadius = 8
         b.clipsToBounds = true
         b.accessibilityIdentifier = "\(style)"
+        switch style {
+        case .primary:
+            b.setTitleColor(DSTheme.reader.accent, for: .normal)
+        case .destructive:
+            b.setTitleColor(UIColor.systemRed.withAlphaComponent(0.90), for: .normal)
+        }
         return b
-    }
-
-    private func applyTheme() {
-        let c = DSTheme.c
-        let dark = ThemeManager.shared.mode == .dark
-        dimView.backgroundColor = UIColor.black.withAlphaComponent(dark ? 0.22 : 0.10)
-        card.backgroundColor = dark
-            ? UIColor(red: 50/255, green: 50/255, blue: 54/255, alpha: 1)
-            : UIColor(red: 255/255, green: 255/255, blue: 255/255, alpha: 1)
-        card.layer.borderWidth = dark ? 0.5 : 1
-        card.layer.borderColor = dark
-            ? UIColor.white.withAlphaComponent(0.10).cgColor
-            : UIColor.black.withAlphaComponent(0.08).cgColor
-        card.layer.shadowColor = UIColor.black.cgColor
-        card.layer.shadowOpacity = dark ? 0.40 : 0.12
-        card.layer.shadowRadius = dark ? 16 : 12
-        card.layer.shadowOffset = CGSize(width: 0, height: 6)
-        titleLabel.textColor = c.textPrimary
-        messageLabel.textColor = c.textSecondary
-        field.textColor = c.textPrimary
-        field.backgroundColor = c.surfaceHover
-        field.tintColor = c.accent
-        field.attributedPlaceholder = NSAttributedString(
-            string: "输入注释…",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        for case let b as UIButton in buttonRow.arrangedSubviews {
-            styleButton(b)
-        }
-    }
-
-    private func styleButton(_ b: UIButton) {
-        let c = DSTheme.c
-        switch b.accessibilityIdentifier ?? "" {
-        case "primary":
-            b.backgroundColor = c.accent
-            b.setTitleColor(.white, for: .normal)
-        case "destructive":
-            b.backgroundColor = UIColor.systemRed.withAlphaComponent(0.16)
-            b.setTitleColor(.systemRed, for: .normal)
-        default:
-            b.backgroundColor = c.surfaceHover
-            b.setTitleColor(c.textPrimary, for: .normal)
-        }
     }
 
     private func finish(_ work: (() -> Void)?) {
@@ -1390,10 +2079,28 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
         ConnectsNoteSheet.clearActive(self)
         resignKeyboardInstantly()
         isUserInteractionEnabled = false
-        // Instant remove — animated dismiss felt sluggish after typing.
-        removeFromSuperview()
-        work?()
-        NotificationCenter.default.post(name: ConnectsNoteSheet.didDismissNotification, object: nil)
+        animateOut {
+            self.removeFromSuperview()
+            NotificationCenter.default.post(name: ConnectsNoteSheet.didDismissNotification, object: nil)
+            if let work {
+                DispatchQueue.main.async(execute: work)
+            }
+        }
+    }
+
+    /// Mirror `presentAnimated` (fade + slight scale) so dismiss doesn't hard-cut.
+    private func animateOut(_ done: @escaping () -> Void) {
+        UIView.animate(
+            withDuration: 0.14,
+            delay: 0,
+            options: [.curveEaseIn, .allowUserInteraction]
+        ) {
+            self.dimView.alpha = 0
+            self.card.alpha = 0
+            self.card.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
+        } completion: { _ in
+            done()
+        }
     }
 
     @objc private func cancelTapped() { finish(onCancel) }
@@ -1403,9 +2110,8 @@ private final class ConnectsNoteOverlayView: UIView, UITextFieldDelegate, Connec
     }
     @objc private func deleteTapped() { finish(onDelete) }
 
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        saveTapped()
-        return true
+    func textViewDidChange(_ textView: UITextView) {
+        placeholderLabel.isHidden = !(textView.text ?? "").isEmpty
     }
 }
 

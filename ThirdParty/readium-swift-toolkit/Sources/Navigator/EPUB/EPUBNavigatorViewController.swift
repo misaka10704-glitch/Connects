@@ -17,10 +17,16 @@ import WebKit
     // MARK: - WebView Customization
 
     func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController)
+
+    /// Called whenever the user text selection appears, updates, or clears.
+    /// Prefer this over relying only on the edit-menu delegate for custom highlight UI.
+    func navigator(_ navigator: EPUBNavigatorViewController, didChangeSelection selection: Selection?)
 }
 
 public extension EPUBNavigatorDelegate {
     func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {}
+
+    func navigator(_ navigator: EPUBNavigatorViewController, didChangeSelection selection: Selection?) {}
 }
 
 public typealias EPUBContentInsets = (top: CGFloat, bottom: CGFloat)
@@ -197,6 +203,8 @@ open class EPUBNavigatorViewController: InputObservableViewController,
                 self = .idle
 
             // Moving or jumping to another locator is not allowed during a pending jump.
+            // (Connects retries TOC go() until idle — replacing mid-jump raced two
+            // scrollToId and landed on the wrong fragment.)
             case (.jumping, .jump),
                  (.jumping, .move):
                 return false
@@ -564,7 +572,7 @@ open class EPUBNavigatorViewController: InputObservableViewController,
             return
         }
 
-        paginationView.isScrollEnabled = isPaginationViewScrollingEnabled
+        paginationView.isScrollEnabled = allowsUserPageTurns && isPaginationViewScrollingEnabled
         reloadSpreads()
     }
 
@@ -916,6 +924,29 @@ open class EPUBNavigatorViewController: InputObservableViewController,
         delegate?.navigator(self, presentationDidChange: presentation)
     }
 
+    /// Live font-size preview using the same CSS as `submitPreferences`, without reloading spreads.
+    public func previewFontSize(_ fontSize: Double) {
+        viewModel.previewFontSize(fontSize)
+    }
+
+    /// Keep pinch-preview font size without progressive spread reload (no loading spinner).
+    public func finishFontSizePreview() {
+        viewModel.finishFontSizePreview()
+    }
+
+    /// After in-page pinch already wrote `--USER__fontSize`: sync prefs + neighbor pages only.
+    public func adoptPinchFontSize(_ fontSize: Double) {
+        viewModel.adoptPinchFontSize(fontSize)
+    }
+
+    /// When false, blocks swipe page turns (e.g. while two fingers are on screen for font pinch).
+    public var allowsUserPageTurns: Bool = true {
+        didSet {
+            guard isViewLoaded else { return }
+            paginationView?.isScrollEnabled = allowsUserPageTurns && isPaginationViewScrollingEnabled
+        }
+    }
+
     public func editor(of preferences: EPUBPreferences) -> EPUBPreferencesEditor {
         viewModel.editor(of: preferences)
     }
@@ -928,7 +959,7 @@ open class EPUBNavigatorViewController: InputObservableViewController,
         }
 
         view.backgroundColor = settings.effectiveBackgroundColor.uiColor
-        paginationView?.isScrollEnabled = isPaginationViewScrollingEnabled
+        paginationView?.isScrollEnabled = allowsUserPageTurns && isPaginationViewScrollingEnabled
     }
 
     // MARK: - EPUB-specific extensions
@@ -974,7 +1005,23 @@ extension EPUBNavigatorViewController: EPUBNavigatorViewModelDelegate {
         invalidatePaginationView()
     }
 
+    func epubNavigatorViewModelReloadLoadedSpreads(_ viewModel: EPUBNavigatorViewModel) {
+        guard let paginationView else { return }
+        let location = PageLocation(currentLocation)
+        paginationView.reloadLoadedPagesProgressively(currentLocation: location)
+        applySettings()
+    }
+
     func epubNavigatorViewModel(_ viewModel: EPUBNavigatorViewModel, runScript script: String, in scope: EPUBScriptScope) {
+        // Pinch font preview must hit the visible WKWebView immediately (no Task hop /
+        // spreadLoaded wait when the page is already on screen).
+        if case .currentResource = scope,
+           let spreadView = paginationView?.currentView as? EPUBSpreadView
+        {
+            spreadView.webView.evaluateJavaScript(script, completionHandler: nil)
+            return
+        }
+
         Task {
             await initialized()
 
@@ -987,12 +1034,9 @@ extension EPUBNavigatorViewController: EPUBNavigatorViewModelDelegate {
                 await (paginationView.currentView as? EPUBSpreadView)?.evaluateScript(script)
 
             case .loadedResources:
-                await withTaskGroup(of: Void.self) { tasks in
-                    for (_, view) in paginationView.loadedViews {
-                        tasks.addTask {
-                            await (view as? EPUBSpreadView)?.evaluateScript(script)
-                        }
-                    }
+                for (_, view) in paginationView.loadedViews {
+                    guard let spreadView = view as? EPUBSpreadView else { continue }
+                    spreadView.webView.evaluateJavaScript(script, completionHandler: nil)
                 }
 
             case let .resource(href):
@@ -1294,17 +1338,54 @@ extension EPUBNavigatorViewController: EPUBSpreadViewDelegate {
     }
 
     func spreadView(_ spreadView: EPUBSpreadView, selectionDidChange text: Locator.Text?, frame: CGRect) {
-        guard
-            let locator = currentLocation,
-            let text = text
-        else {
+        guard let text = text else {
             viewModel.editingActions.selection = nil
+            delegate?.navigator(self, didChangeSelection: nil)
             return
         }
-        viewModel.editingActions.selection = Selection(
-            locator: locator.copy(text: { $0 = text }),
+
+        // Prefer the resource that owns the selection (focusedResource), not only
+        // currentLocation — otherwise selection is dropped when location is briefly nil
+        // and highlight UIs never appear.
+        let locator: Locator
+        if let index = spreadView.focusedResource,
+           viewModel.readingOrder.indices.contains(index) {
+            let link = viewModel.readingOrder[index]
+            let href = link.url()
+            if let current = currentLocation, current.href.isEquivalentTo(href) {
+                locator = current.copy(text: { $0 = text })
+            } else {
+                locator = Locator(
+                    href: href,
+                    mediaType: link.mediaType ?? MediaType.xhtml,
+                    title: link.title,
+                    locations: currentLocation?.locations ?? .init(),
+                    text: text
+                )
+            }
+        } else if let current = currentLocation {
+            locator = current.copy(text: { $0 = text })
+        } else if let first = viewModel.readingOrder.first {
+            // Last-resort locator so selection UI still appears while location warms up.
+            locator = Locator(
+                href: first.url(),
+                mediaType: first.mediaType ?? MediaType.xhtml,
+                title: first.title,
+                locations: .init(),
+                text: text
+            )
+        } else {
+            viewModel.editingActions.selection = nil
+            delegate?.navigator(self, didChangeSelection: nil)
+            return
+        }
+
+        let selection = Selection(
+            locator: locator,
             frame: frame
         )
+        viewModel.editingActions.selection = selection
+        delegate?.navigator(self, didChangeSelection: selection)
     }
 
     func spreadViewPagesDidChange(_ spreadView: EPUBSpreadView) {

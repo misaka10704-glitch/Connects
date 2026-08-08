@@ -159,19 +159,100 @@ final class EPUBReflowableSpreadView: EPUBSpreadView {
             await evaluateScript("readium.link = \(linkJSON);")
         }
 
-        // TODO: Better solution for delaying scrolling to pending location
-        // This delay is used to wait for the web view pagination to settle and give the CSS and webview time to layout
-        // correctly before attempting to scroll to the target progression, otherwise we might end up at the wrong spot.
-        // 0.2 seconds seems like a good value for it to work on an iPhone 5s.
-        try? await Task.sleep(seconds: 0.2)
-
+        // Fragment targets need both the element and column layout (scrollWidth).
+        // Jumping before columns settle lands every #id on page 0 of the chapter.
         let location = pendingLocation
+        if location.location.needsEndLanding {
+            await waitForPaginatedLayoutSettled()
+        } else if case let .locator(locator) = location.location,
+                  let id = locator.locations.fragments.first, !id.isEmpty {
+            await waitForPaginatedLayoutSettled(timeout: 0.6)
+            await waitForFragmentElement(id)
+        } else {
+            await waitForPaginatedLayoutSettled(timeout: 0.2)
+        }
+
         await go(to: location.location, animated: location.animated)
 
-        // The rendering is sometimes very slow. So in case we don't show the first page of the resource, we add
-        // a generous delay before showing the spread again.
-        let delayed = !location.location.isStart
-        try? await Task.sleep(seconds: delayed ? 0.3 : 0)
+        if location.location.needsEndLanding {
+            await scrollToEndWithRetry(animated: location.animated)
+        } else if case let .locator(locator) = location.location,
+                  let id = locator.locations.fragments.first, !id.isEmpty {
+            // Second pass after columns finish expanding on huge XHTML.
+            await waitForPaginatedLayoutSettled(timeout: 0.25)
+            _ = await scroll(toTagID: id, animated: false)
+        }
+    }
+
+    /// Poll until scrollable size is meaningfully larger than the viewport, or timeout.
+    private func waitForPaginatedLayoutSettled(timeout: TimeInterval = 0.4) async {
+        let viewport = max(scrollView.bounds.width, scrollView.bounds.height, 1)
+        var lastExtent: CGFloat = 0
+        var stableTicks = 0
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            scrollView.layoutIfNeeded()
+            let extent: CGFloat = {
+                if viewModel.scroll, !viewModel.verticalText {
+                    return scrollView.contentSize.height
+                }
+                return scrollView.contentSize.width
+            }()
+
+            if extent > viewport * 1.05 {
+                if abs(extent - lastExtent) < 1 {
+                    stableTicks += 1
+                    if stableTicks >= 2 { return }
+                } else {
+                    stableTicks = 0
+                    lastExtent = extent
+                }
+            }
+            try? await Task.sleep(seconds: 0.03)
+        }
+    }
+
+    /// Wait until `id` exists and has a laid-out box (needed for scrollToId).
+    private func waitForFragmentElement(_ id: String) async {
+        let escaped = id
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let deadline = Date().addingTimeInterval(0.5)
+        while Date() < deadline {
+            let result = await evaluateScript("""
+            (function(){
+              var el = document.getElementById('\(escaped)');
+              if (!el) return false;
+              var r = el.getBoundingClientRect();
+              return (r.width + r.height) > 0 || (el.offsetWidth + el.offsetHeight) > 0;
+            })();
+            """)
+            if case let .success(value) = result, (value as? Bool) == true {
+                return
+            }
+            try? await Task.sleep(seconds: 0.03)
+        }
+    }
+
+    private func scrollToEndWithRetry(animated: Bool) async {
+        await scroll(toProgression: 1, animated: animated)
+        scrollView.layoutIfNeeded()
+        let viewport = max(scrollView.bounds.width, 1)
+        let contentW = scrollView.contentSize.width
+        // Still looks like a single page while we expected multi-column end — wait and retry.
+        if !viewModel.scroll, contentW <= viewport * 1.1 {
+            try? await Task.sleep(seconds: 0.05)
+            scrollView.layoutIfNeeded()
+            await scroll(toProgression: 1, animated: false)
+        }
+        // Native fallback if JS left us near the start in paginated mode.
+        if !viewModel.scroll {
+            let maxX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+            if maxX > 1, scrollView.contentOffset.x < maxX * 0.5 {
+                scrollView.contentOffset = CGPoint(x: maxX, y: scrollView.contentOffset.y)
+            }
+        }
     }
 
     override func go(to direction: EPUBSpreadView.Direction, options: NavigatorGoOptions) async -> Bool {
@@ -314,7 +395,13 @@ final class EPUBReflowableSpreadView: EPUBSpreadView {
             return await scroll(toLocator: locator, animated: animated)
             // TODO: find the first fragment matching a tag ID (need a regex)
         } else if let id = locator.locations.fragments.first, !id.isEmpty {
-            return await scroll(toTagID: id, animated: animated)
+            var ok = await scroll(toTagID: id, animated: animated)
+            if !ok {
+                // Fragment often resolves only after column layout settles.
+                await waitForPaginatedLayoutSettled()
+                ok = await scroll(toTagID: id, animated: animated)
+            }
+            return ok
         } else {
             let progression = locator.locations.progression ?? 0
             return await scroll(toProgression: progression, animated: animated)
@@ -340,6 +427,13 @@ final class EPUBReflowableSpreadView: EPUBSpreadView {
         } else {
             let dir = viewModel.readingProgression.rawValue
             await evaluateScript("readium.scrollToPosition(\'\(progression)\', \'\(dir)\', \(animated))")
+            // Paginated end: JS can no-op when columns are not ready — pin native offset.
+            if progression >= 0.999, !viewModel.scroll {
+                let maxX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+                if maxX > 1 {
+                    scrollView.contentOffset = CGPoint(x: maxX, y: scrollView.contentOffset.y)
+                }
+            }
             return true
         }
     }
@@ -347,7 +441,62 @@ final class EPUBReflowableSpreadView: EPUBSpreadView {
     /// Scrolls at the tag with ID `tagID`.
     @discardableResult
     private func scroll(toTagID tagID: String, animated: Bool) async -> Bool {
-        let result = await evaluateScript("readium.scrollToId(\'\(tagID)\', \(animated));")
+        // Robust column-aware scroll — do not rely solely on stock readium.scrollToId
+        // (viewportWidth===0 → NaN snap; pre-layout rect → chapter start).
+        let escaped = tagID
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        let anim = animated ? "true" : "false"
+        let script = """
+        (function(){
+          var id = '\(escaped)';
+          var el = document.getElementById(id);
+          if (!el) {
+            try { el = document.querySelector('#' + CSS.escape(id)); } catch (e) {}
+          }
+          if (!el) return false;
+          var pageW = window.innerWidth || document.documentElement.clientWidth || 1;
+          function snap(offset){
+            if (!isFinite(offset) || pageW < 1) return 0;
+            var v = offset + 1;
+            return v - (v % pageW);
+          }
+          var scrollMode = false;
+          try {
+            scrollMode = getComputedStyle(document.documentElement)
+              .getPropertyValue('--USER__view').trim() === 'readium-scroll-on';
+          } catch (e) {}
+          if (scrollMode) {
+            var r = el.getBoundingClientRect();
+            document.scrollingElement.scrollTo({
+              top: r.top + window.scrollY,
+              behavior: \(anim) ? 'smooth' : 'instant'
+            });
+            return true;
+          }
+          // Wait briefly if columns have not expanded yet (long chapters).
+          var sw = document.scrollingElement.scrollWidth || 0;
+          if (sw < pageW * 1.2) {
+            // still try; caller may retry after layout
+          }
+          var rects = el.getClientRects();
+          var rect = (rects && rects.length) ? rects[0] : el.getBoundingClientRect();
+          var left = snap(rect.left + window.scrollX);
+          document.scrollingElement.scrollTo({
+            left: left,
+            behavior: \(anim) ? 'smooth' : 'instant'
+          });
+          // Verify: element should share the visible page band.
+          var after = el.getBoundingClientRect();
+          var ok = after.left < pageW * 0.95 && after.right > pageW * 0.05;
+          if (!ok && rects && rects.length) {
+            left = snap(rects[0].left + window.scrollX);
+            document.scrollingElement.scrollTo({ left: left, behavior: 'instant' });
+          }
+          return true;
+        })();
+        """
+        let result = await evaluateScript(script)
         switch result {
         case let .success(value):
             return (value as? Bool) ?? false

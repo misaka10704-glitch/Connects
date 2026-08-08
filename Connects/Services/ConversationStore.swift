@@ -187,14 +187,26 @@ final class ConversationStore {
         keepActiveDocument: Bool = true
     ) -> Conversation {
         if source.isWorkspaceStudySession {
+            let wsID = source.studyWorkspaceID
+            let docID: String? = {
+                guard keepActiveDocument else { return nil }
+                if let wsID,
+                   let last = StudyWorkspaceStore.shared.lastOpenedDocumentID(in: wsID) {
+                    return last
+                }
+                return source.studyDocumentID
+            }()
+            if let wsID, let docID {
+                StudyWorkspaceStore.shared.setLastOpenedDocument(docID, in: wsID)
+            }
             return createConversation(
                 model: source.model,
                 projectID: source.projectID,
                 inheritSelectedProjectFilter: false,
-                studyWorkspaceID: source.studyWorkspaceID,
-                studyDocumentID: keepActiveDocument ? source.studyDocumentID : nil,
+                studyWorkspaceID: wsID,
+                studyDocumentID: docID,
                 studySessionKind: .workspace,
-                studyPageCaptureEnabled: source.studyPageCaptureEnabled,
+                studyPageCaptureEnabled: source.studyPageCaptureEnabled || docID != nil,
                 studyAgentMode: source.studyAgentMode
             )
         }

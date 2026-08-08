@@ -1,10 +1,25 @@
 import UIKit
 import PDFKit
 
+/// Side panel with one-tap cycle: 目录 → 书签 → 标注 → …
 final class PDFContentsViewController: UIViewController {
-    enum Tab: Int {
+    enum Tab: Int, CaseIterable {
         case outline = 0
         case bookmarks = 1
+        case annotations = 2
+
+        var title: String {
+            switch self {
+            case .outline: return "目录"
+            case .bookmarks: return "书签"
+            case .annotations: return "标注"
+            }
+        }
+
+        var next: Tab {
+            let all = Tab.allCases
+            return all[(rawValue + 1) % all.count]
+        }
     }
 
     private struct OutlineRow {
@@ -13,8 +28,14 @@ final class PDFContentsViewController: UIViewController {
         let level: Int
     }
 
-    private let titleLabel = UILabel()
-    private let switchButton = UIButton(type: .system)
+    private struct AnnotationRow {
+        let title: String
+        let pageIndex: Int
+        let bounds: CGRect
+        let annotation: PDFAnnotation
+    }
+
+    private let titleButton = UIButton(type: .system)
     private let addBookmarkButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let emptyLabel = UILabel()
@@ -22,27 +43,27 @@ final class PDFContentsViewController: UIViewController {
     private var activeTab: Tab = .outline
     private var outlineRows: [OutlineRow] = []
     private var bookmarkRows: [PDFBookmark] = []
+    private var annotationRows: [AnnotationRow] = []
 
     var document: PDFDocument?
     var documentID: String?
     var onSelectDestination: ((PDFDestination) -> Void)?
     var onSelectPageIndex: ((Int) -> Void)?
+    var onSelectAnnotation: ((PDFAnnotation, Int) -> Void)?
+    var onDeleteAnnotation: ((PDFAnnotation, Int) -> Void)?
     var currentPageIndexProvider: (() -> Int)?
     var currentPageLabelProvider: (() -> String)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = DSTheme.c.background
+        view.backgroundColor = DSTheme.reader.background
 
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.textColor = DSTheme.c.textPrimary
-        view.addSubview(titleLabel)
-
-        switchButton.translatesAutoresizingMaskIntoConstraints = false
-        switchButton.titleLabel?.font = UIFont.systemFont(ofSize: 13)
-        switchButton.addTarget(self, action: #selector(switchTabTapped), for: .touchUpInside)
-        view.addSubview(switchButton)
+        titleButton.translatesAutoresizingMaskIntoConstraints = false
+        titleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        titleButton.contentHorizontalAlignment = .leading
+        titleButton.addTarget(self, action: #selector(switchTabTapped), for: .touchUpInside)
+        titleButton.accessibilityHint = "点按切换目录、书签与标注"
+        view.addSubview(titleButton)
 
         addBookmarkButton.translatesAutoresizingMaskIntoConstraints = false
         addBookmarkButton.setTitle("添加", for: .normal)
@@ -56,7 +77,7 @@ final class PDFContentsViewController: UIViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 34
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
-        tableView.backgroundColor = DSTheme.c.background
+        tableView.backgroundColor = DSTheme.reader.background
         tableView.tableFooterView = UIView()
         if #available(iOS 11.0, *) {
             tableView.contentInsetAdjustmentBehavior = .never
@@ -65,89 +86,83 @@ final class PDFContentsViewController: UIViewController {
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.font = UIFont.systemFont(ofSize: 13)
-        emptyLabel.textColor = DSTheme.c.textSecondary
+        emptyLabel.textColor = DSTheme.reader.textSecondary
         emptyLabel.textAlignment = .center
         emptyLabel.numberOfLines = 0
         view.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
-            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            titleButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            titleButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            titleButton.heightAnchor.constraint(equalToConstant: 32),
 
-            switchButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            switchButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            addBookmarkButton.centerYAnchor.constraint(equalTo: titleButton.centerYAnchor),
+            addBookmarkButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            addBookmarkButton.leadingAnchor.constraint(greaterThanOrEqualTo: titleButton.trailingAnchor, constant: 8),
 
-            addBookmarkButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            addBookmarkButton.trailingAnchor.constraint(equalTo: switchButton.leadingAnchor, constant: -12),
+            titleButton.trailingAnchor.constraint(lessThanOrEqualTo: addBookmarkButton.leadingAnchor, constant: -8),
 
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: addBookmarkButton.leadingAnchor, constant: -8),
-
-            tableView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            tableView.topAnchor.constraint(equalTo: titleButton.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             emptyLabel.centerXAnchor.constraint(equalTo: tableView.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: tableView.centerYAnchor),
-            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 14),
-            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -14)
+            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
         ])
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(themeChanged),
-            name: .themeDidChange,
-            object: nil
-        )
-        reloadData()
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func themeChanged() {
         updateChrome()
-        tableView.reloadData()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyTheme()
+        reloadData()
     }
 
     func reloadData() {
         outlineRows = collectOutlineRows(from: document?.outlineRoot)
-        if let documentID = documentID {
+        if let documentID {
             bookmarkRows = PDFBookmarkStore.shared.bookmarks(for: documentID)
         } else {
             bookmarkRows = []
         }
+        annotationRows = collectBoxAnnotations(from: document)
         updateChrome()
         tableView.reloadData()
     }
 
-    private func updateChrome() {
-        let c = DSTheme.c
+    private func applyTheme() {
+        let c = DSTheme.reader
         view.backgroundColor = c.background
         tableView.backgroundColor = c.background
-        titleLabel.textColor = c.textPrimary
-        switchButton.tintColor = c.textSecondary
+        titleButton.setTitleColor(c.textPrimary, for: .normal)
+        titleButton.tintColor = c.textPrimary
         addBookmarkButton.tintColor = c.accent
         emptyLabel.textColor = c.textSecondary
+    }
 
+    private func updateChrome() {
+        applyTheme()
+        // Title itself is the switch: tap 「目录」→「书签」→「标注」
+        titleButton.setTitle("\(activeTab.title) ▾", for: .normal)
+        titleButton.accessibilityLabel = activeTab.title
+        titleButton.contentHorizontalAlignment = .leading
+        addBookmarkButton.isHidden = activeTab != .bookmarks
         switch activeTab {
         case .outline:
-            titleLabel.text = "目录"
-            switchButton.setTitle("书签", for: .normal)
-            addBookmarkButton.isHidden = true
             emptyLabel.text = outlineRows.isEmpty ? "未找到标题" : nil
         case .bookmarks:
-            titleLabel.text = "书签"
-            switchButton.setTitle("目录", for: .normal)
-            addBookmarkButton.isHidden = false
             emptyLabel.text = bookmarkRows.isEmpty ? "暂无书签" : nil
+        case .annotations:
+            emptyLabel.text = annotationRows.isEmpty ? "暂无标注" : nil
         }
         emptyLabel.isHidden = emptyLabel.text == nil
     }
 
     @objc private func switchTabTapped() {
-        activeTab = (activeTab == .outline) ? .bookmarks : .outline
+        activeTab = activeTab.next
         updateChrome()
         tableView.reloadData()
     }
@@ -195,6 +210,29 @@ final class PDFContentsViewController: UIViewController {
         }
         return rows
     }
+
+    private func collectBoxAnnotations(from document: PDFDocument?) -> [AnnotationRow] {
+        guard let document else { return [] }
+        var rows: [AnnotationRow] = []
+        for pageIndex in 0..<document.pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+            for ann in page.annotations {
+                let named = ann.userName == StudyAskSelectionStore.boxAnnotationUserName
+                let type = (ann.type ?? "").lowercased()
+                guard named || type.contains("square") else { continue }
+                if ann.userName == StudyAskSelectionStore.askAnnotationUserName { continue }
+                let raw = ann.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let title = raw.isEmpty ? "第 \(pageIndex + 1) 页" : raw
+                rows.append(AnnotationRow(
+                    title: title,
+                    pageIndex: pageIndex,
+                    bounds: ann.bounds,
+                    annotation: ann
+                ))
+            }
+        }
+        return rows
+    }
 }
 
 extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate {
@@ -202,19 +240,27 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
         switch activeTab {
         case .outline: return outlineRows.count
         case .bookmarks: return bookmarkRows.count
+        case .annotations: return annotationRows.count
         }
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "row")
             ?? UITableViewCell(style: .subtitle, reuseIdentifier: "row")
-        let c = DSTheme.c
+        let c = DSTheme.reader
         cell.backgroundColor = c.background
         cell.textLabel?.textColor = c.textPrimary
         cell.detailTextLabel?.textColor = c.textSecondary
         cell.detailTextLabel?.font = UIFont.systemFont(ofSize: 11)
         cell.selectionStyle = .default
         cell.accessoryType = .none
+        cell.indentationLevel = 0
+        cell.separatorInset = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
+        cell.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
+        cell.imageView?.image = nil
+        if #available(iOS 11.0, *) {
+            cell.preservesSuperviewLayoutMargins = false
+        }
 
         switch activeTab {
         case .outline:
@@ -223,25 +269,41 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
             cell.textLabel?.numberOfLines = 2
             cell.textLabel?.font = UIFont.systemFont(ofSize: 13, weight: row.level <= 0 ? .semibold : .regular)
             cell.detailTextLabel?.text = nil
-            cell.indentationLevel = 0
             let indent = CGFloat(min(row.level, 6)) * 10
             cell.separatorInset = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
             cell.layoutMargins = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
-            if #available(iOS 11.0, *) {
-                cell.preservesSuperviewLayoutMargins = false
-            }
         case .bookmarks:
             let row = bookmarkRows[indexPath.row]
             cell.textLabel?.text = row.title
             cell.textLabel?.numberOfLines = 2
             cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
             cell.detailTextLabel?.text = "第 \(row.pageIndex + 1) 页"
-            cell.indentationLevel = 0
-            cell.separatorInset = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
-            cell.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
-            if #available(iOS 11.0, *) {
-                cell.preservesSuperviewLayoutMargins = false
-            }
+        case .annotations:
+            let row = annotationRows[indexPath.row]
+            let raw = row.annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            cell.textLabel?.text = row.title
+            cell.textLabel?.numberOfLines = 2
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
+            cell.textLabel?.textColor = raw.isEmpty
+                ? c.textSecondary
+                : UIColor(
+                    red: ReadingAnnotationStyle.pdfBoxRed.r,
+                    green: ReadingAnnotationStyle.pdfBoxRed.g,
+                    blue: ReadingAnnotationStyle.pdfBoxRed.b,
+                    alpha: 1
+                )
+            cell.detailTextLabel?.text = "第 \(row.pageIndex + 1) 页"
+            let cfg = UIImage.SymbolConfiguration(pointSize: 8, weight: .regular)
+            cell.imageView?.image = UIImage(systemName: "circle.fill", withConfiguration: cfg)?
+                .withTintColor(
+                    UIColor(
+                        red: ReadingAnnotationStyle.pdfBoxRed.r,
+                        green: ReadingAnnotationStyle.pdfBoxRed.g,
+                        blue: ReadingAnnotationStyle.pdfBoxRed.b,
+                        alpha: 1
+                    ),
+                    renderingMode: .alwaysOriginal
+                )
         }
         return cell
     }
@@ -253,6 +315,9 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
             onSelectDestination?(outlineRows[indexPath.row].destination)
         case .bookmarks:
             onSelectPageIndex?(bookmarkRows[indexPath.row].pageIndex)
+        case .annotations:
+            let row = annotationRows[indexPath.row]
+            onSelectAnnotation?(row.annotation, row.pageIndex)
         }
     }
 
@@ -260,14 +325,43 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard activeTab == .bookmarks, let documentID = documentID else { return nil }
-        let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
-            if let id = self?.bookmarkRows[indexPath.row].id {
+        switch activeTab {
+        case .bookmarks:
+            guard let documentID else { return nil }
+            guard bookmarkRows.indices.contains(indexPath.row) else { return nil }
+            let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
+                guard let self, self.bookmarkRows.indices.contains(indexPath.row) else {
+                    done(false)
+                    return
+                }
+                let id = self.bookmarkRows[indexPath.row].id
+                self.bookmarkRows.remove(at: indexPath.row)
                 PDFBookmarkStore.shared.remove(id: id, documentID: documentID)
-                self?.reloadData()
+                tableView.deleteRows(at: [indexPath], with: .fade)
+                self.updateChrome()
+                done(true)
             }
-            done(true)
+            let config = UISwipeActionsConfiguration(actions: [delete])
+            config.performsFirstActionWithFullSwipe = true
+            return config
+        case .annotations:
+            guard annotationRows.indices.contains(indexPath.row) else { return nil }
+            let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
+                guard let self, self.annotationRows.indices.contains(indexPath.row) else {
+                    done(false)
+                    return
+                }
+                let row = self.annotationRows.remove(at: indexPath.row)
+                self.onDeleteAnnotation?(row.annotation, row.pageIndex)
+                tableView.deleteRows(at: [indexPath], with: .fade)
+                self.updateChrome()
+                done(true)
+            }
+            let config = UISwipeActionsConfiguration(actions: [delete])
+            config.performsFirstActionWithFullSwipe = true
+            return config
+        case .outline:
+            return nil
         }
-        return UISwipeActionsConfiguration(actions: [delete])
     }
 }

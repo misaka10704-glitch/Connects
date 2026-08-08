@@ -6,6 +6,7 @@ final class PDFReaderViewController: UIViewController {
     private let topBarSeparator = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let highlightPenButton = UIButton(type: .system)
+    private let appearanceButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
     private let pdfView = StudyPDFView()
     private var isHighlightPenOn = false
@@ -63,13 +64,9 @@ final class PDFReaderViewController: UIViewController {
 
         highlightPenButton.translatesAutoresizingMaskIntoConstraints = false
         highlightPenButton.setImage(ActionIconFactory.image(.highlighter, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        highlightPenButton.accessibilityLabel = "高亮笔"
-        highlightPenButton.accessibilityHint = "点按开/关；长按选线宽。划线时停住会自动拉直，按住可调角度"
+        highlightPenButton.accessibilityLabel = "框选标注"
+        highlightPenButton.accessibilityHint = "点按开/关。拖出红色虚线方框后可写标题代称"
         highlightPenButton.addTarget(self, action: #selector(highlightPenTapped), for: .touchUpInside)
-        let penLongPress = UILongPressGestureRecognizer(target: self, action: #selector(highlightPenLongPressed(_:)))
-        penLongPress.minimumPressDuration = 0.35
-        penLongPress.cancelsTouchesInView = false
-        highlightPenButton.addGestureRecognizer(penLongPress)
         topBar.addSubview(highlightPenButton)
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
@@ -79,16 +76,25 @@ final class PDFReaderViewController: UIViewController {
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
         topBar.addSubview(contentsButton)
 
+        appearanceButton.translatesAutoresizingMaskIntoConstraints = false
+        appearanceButton.addTarget(self, action: #selector(appearanceTapped), for: .touchUpInside)
+        topBar.addSubview(appearanceButton)
+        updateAppearanceButton()
+
         pdfView.translatesAutoresizingMaskIntoConstraints = false
         pdfView.autoScales = true
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
-        pdfView.backgroundColor = DSTheme.c.background
-        pdfView.highlighter.strokeWidth = PDFHighlightStrokeStyle.Width.current
-        pdfView.highlighter.onStrokeFinished = { [weak self] annotation, page in
+        pdfView.backgroundColor = DSTheme.reader.background
+        pdfView.boxSelect.onBoxFinished = { [weak self] annotation, page in
             self?.markAnnotationsDirty(persistSoon: false)
             self?.presentNoteEditor(for: annotation, on: page, afterStroke: true)
         }
+        pdfView.boxSelect.onBoxAdjusted = { [weak self] _, _ in
+            self?.markAnnotationsDirty(persistSoon: true)
+            self?.refreshContentsPanel()
+        }
+        // Legacy ink remains visible via overlay; new marks are dashed boxes.
         pdfView.highlighter.onOverlaysReordered = { [weak self] in
             self?.liftReaderChromeAboveInk()
         }
@@ -124,6 +130,7 @@ final class PDFReaderViewController: UIViewController {
         fileTitleButton.accessibilityLabel = "切换文件"
         topBar.addSubview(fileTitleButton)
         topBar.bringSubviewToFront(highlightPenButton)
+        topBar.bringSubviewToFront(appearanceButton)
         topBar.bringSubviewToFront(contentsButton)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -152,7 +159,12 @@ final class PDFReaderViewController: UIViewController {
             contentsButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             contentsButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
-            highlightPenButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
+            appearanceButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
+            appearanceButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            appearanceButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            appearanceButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+
+            highlightPenButton.trailingAnchor.constraint(equalTo: appearanceButton.leadingAnchor, constant: -2),
             highlightPenButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             highlightPenButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             highlightPenButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
@@ -210,6 +222,7 @@ final class PDFReaderViewController: UIViewController {
             object: pdfView
         )
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .readerThemeDidChange, object: nil)
     }
 
     override func viewDidLayoutSubviews() {
@@ -253,6 +266,7 @@ final class PDFReaderViewController: UIViewController {
         if isHighlightPenOn {
             isHighlightPenOn = false
             ConnectsNoteSheet.dismissIfNeeded()
+            pdfView.boxSelect.setEnabled(false)
             pdfView.highlighter.setEnabled(false)
             updateHighlightPenAppearance()
         } else {
@@ -320,56 +334,72 @@ final class PDFReaderViewController: UIViewController {
     }
 
     @objc private func themeChanged() {
-        view.backgroundColor = DSTheme.c.background
-        topBar.backgroundColor = DSTheme.c.background
+        let chrome = DSTheme.c
+        view.backgroundColor = chrome.background
+        topBar.backgroundColor = chrome.background
         topBar.isOpaque = true
-        topBarSeparator.backgroundColor = DSTheme.c.border.withAlphaComponent(0.55)
-        fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
-        sidebarButton.tintColor = DSTheme.c.textSecondary
-        contentsButton.tintColor = DSTheme.c.textSecondary
+        topBarSeparator.backgroundColor = chrome.border.withAlphaComponent(0.55)
+        fileTitleButton.setTitleColor(chrome.textPrimary, for: .normal)
+        sidebarButton.tintColor = chrome.textSecondary
+        contentsButton.tintColor = chrome.textSecondary
+        updateAppearanceButton()
         updateHighlightPenAppearance()
-        contentsPanelHost.backgroundColor = DSTheme.c.background
-        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.backgroundColor = chrome.background
+        contentsPanelHost.layer.borderColor = chrome.border.cgColor
         applyPDFColorInvert()
         bringHighlightChromeToFront()
     }
 
+    @objc private func appearanceTapped() {
+        ReaderThemeManager.shared.toggle()
+    }
+
+    private func updateAppearanceButton() {
+        let dark = ReaderThemeManager.shared.mode == .dark
+        let kind: ActionIconFactory.Kind = dark ? .appearanceMoon : .appearanceSun
+        appearanceButton.setImage(
+            ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
+            for: .normal
+        )
+        appearanceButton.tintColor = DSTheme.c.textSecondary
+        appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
+    }
+
     @objc private func highlightPenTapped() {
-        // Instant chrome feedback first — never block on PDF serialize / hierarchy reshuffles.
         ConnectsNoteSheet.dismissIfNeeded()
         if isHighlightPenOn {
             turnOffHighlightPen(persistIfDirty: true)
         } else {
             isHighlightPenOn = true
             updateHighlightPenAppearance()
-            pdfView.highlighter.strokeWidth = PDFHighlightStrokeStyle.Width.current
-            pdfView.highlighter.setEnabled(true)
-            // Defer chrome lift — sync ensureOverlayZOrder on the tap frame felt laggy.
+            pdfView.highlighter.setEnabled(false)
+            pdfView.boxSelect.setEnabled(true)
+            pdfView.boxSelect.refreshScrollLock()
             DispatchQueue.main.async { [weak self] in
                 self?.bringHighlightChromeToFront()
+                self?.pdfView.boxSelect.refreshScrollLock()
             }
         }
     }
 
-    /// Leave freehand highlight mode (used after stroke+note, and when toggling the pen off).
+    /// Leave box-select mode (used after create+note, and when toggling the tool off).
     private func turnOffHighlightPen(persistIfDirty: Bool) {
         guard isHighlightPenOn else { return }
         isHighlightPenOn = false
         updateHighlightPenAppearance()
+        pdfView.boxSelect.setEnabled(false)
         pdfView.highlighter.setEnabled(false)
         if persistIfDirty, annotationsDirty {
             schedulePersistPDFAnnotations(delay: 1.5)
         }
-        // Same recovery as note dismiss — pen-off alone used to leave ▲▼ dead for a beat.
-        // Defer a beat so the tap frame stays light.
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .connectsStudyStageChromeShouldReassert, object: nil)
         }
     }
 
-    /// Cheap chrome lift used by pen arming. Avoids ensureInvertOverlayOnTopIfNeeded reshuffles.
+    /// Cheap chrome lift used when arming box select.
     private func bringHighlightChromeToFront() {
-        // Only lift draw overlay z-order when armed — skip full invert reshuffle.
+        pdfView.boxSelect.ensureOverlayInstalled()
         pdfView.highlighter.ensureOverlayZOrder()
     }
 
@@ -384,37 +414,8 @@ final class PDFReaderViewController: UIViewController {
         view.bringSubviewToFront(spinner)
     }
 
-    @objc private func highlightPenLongPressed(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        ConnectsNoteSheet.dismissIfNeeded()
-        let current = PDFHighlightStrokeStyle.Width.current
-        let items = PDFHighlightStrokeStyle.Width.allCases.map { width in
-            ConnectsMenuItem(
-                title: "线宽 · \(width.title)",
-                isSelected: width == current
-            ) { [weak self] in
-                PDFHighlightStrokeStyle.Width.current = width
-                self?.pdfView.highlighter.strokeWidth = width
-                if self?.isHighlightPenOn != true {
-                    self?.isHighlightPenOn = true
-                    self?.updateHighlightPenAppearance()
-                    self?.pdfView.highlighter.setEnabled(true)
-                    self?.bringHighlightChromeToFront()
-                }
-            }
-        }
-        ConnectsMenu.present(
-            from: self,
-            title: "高亮线宽",
-            items: items,
-            sourceView: highlightPenButton,
-            preferAbove: false,
-            menuWidth: 200
-        )
-    }
-
     private func updateHighlightPenAppearance() {
-        let c = DSTheme.c
+        let c = DSTheme.reader
         highlightPenButton.tintColor = isHighlightPenOn ? c.accent : c.textSecondary
         highlightPenButton.backgroundColor = isHighlightPenOn ? c.accent.withAlphaComponent(0.16) : .clear
         highlightPenButton.layer.cornerRadius = 20
@@ -423,49 +424,53 @@ final class PDFReaderViewController: UIViewController {
 
     private func presentNoteEditor(for annotation: PDFAnnotation, on page: PDFPage, afterStroke: Bool) {
         if ConnectsNoteSheet.isVisible { return }
-        // Leave draw mode before the sheet — keeps ink overlay from fighting focus.
-        if afterStroke, isHighlightPenOn {
-            turnOffHighlightPen(persistIfDirty: false)
-        }
+        // Stay in box-select mode so the user can keep adjusting frames without re-arming.
         let existing = annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // After a new stroke, leave highlight mode once the note sheet closes
-        // (save / delete / cancel) so scrolling isn't stuck in pen mode.
-        let leaveHighlightAfterNote: () -> Void = { [weak self] in
-            guard afterStroke else { return }
-            // Pen already off when the sheet opened after a new stroke.
-            DispatchQueue.main.async {
-                self?.turnOffHighlightPen(persistIfDirty: true)
-            }
-        }
+        let isBox = annotation.userName == StudyAskSelectionStore.boxAnnotationUserName
+            || (annotation.type ?? "").lowercased().contains("square")
         ConnectsNoteSheet.present(
             from: self,
-            title: afterStroke ? "添加注释" : "编辑注释",
-            message: afterStroke ? "可为这条划线写一句说明，也可直接取消。" : "编辑说明，或删除这段划线。",
+            title: "",
+            message: nil,
             initialText: existing,
             confirmTitle: "保存",
-            deleteTitle: "删除划线",
+            deleteTitle: "删除",
             onSave: { [weak self] note in
                 annotation.contents = note
-                annotation.userName = StudyAskSelectionStore.noteAnnotationUserName
-                // Dirty only — serialize on leave / pen-off, never mid-scroll.
+                if isBox {
+                    annotation.userName = StudyAskSelectionStore.boxAnnotationUserName
+                } else {
+                    annotation.userName = StudyAskSelectionStore.noteAnnotationUserName
+                }
+                // Force PDFKit to keep the annotation; caption sits outside via overlay.
+                if let page = annotation.page {
+                    page.removeAnnotation(annotation)
+                    page.addAnnotation(annotation)
+                }
+                self?.pdfView.boxSelect.refreshCaptions()
                 self?.markAnnotationsDirty(persistSoon: false)
-                leaveHighlightAfterNote()
+                self?.refreshContentsPanel()
+                self?.pdfView.boxSelect.refreshScrollLock()
             },
             onDelete: { [weak self] in
                 page.removeAnnotation(annotation)
                 self?.pdfView.highlighter.removeCommittedStroke(annotation)
+                self?.pdfView.boxSelect.refreshCaptions()
                 self?.markAnnotationsDirty(persistSoon: false)
-                leaveHighlightAfterNote()
+                self?.refreshContentsPanel()
+                self?.pdfView.boxSelect.refreshScrollLock()
             },
             onCancel: { [weak self] in
                 if afterStroke {
+                    page.removeAnnotation(annotation)
+                    self?.pdfView.highlighter.removeCommittedStroke(annotation)
+                    self?.pdfView.boxSelect.refreshCaptions()
                     self?.markAnnotationsDirty(persistSoon: false)
+                    self?.refreshContentsPanel()
                 }
-                leaveHighlightAfterNote()
+                self?.pdfView.boxSelect.refreshScrollLock()
             }
         )
-        // Do not lift PDF chrome here — that layout pass raced the note field's
-        // becomeFirstResponder and often swallowed the soft keyboard.
     }
 
     /// In-memory dirty flag. Optionally schedule a deferred write (never inline with button taps).
@@ -504,6 +509,7 @@ final class PDFReaderViewController: UIViewController {
         }()
         if isHighlightPenOn
             || pdfView.highlighter.isActivelyHighlighting
+            || pdfView.boxSelect.isActivelySelecting
             || ConnectsNoteSheet.isVisible
             || scrolling {
             schedulePersistPDFAnnotations(delay: 2.0)
@@ -515,13 +521,15 @@ final class PDFReaderViewController: UIViewController {
             guard let self = self else { return }
             if self.isHighlightPenOn
                 || self.pdfView.highlighter.isActivelyHighlighting
+                || self.pdfView.boxSelect.isActivelySelecting
                 || ConnectsNoteSheet.isVisible {
                 self.isPersistingAnnotations = false
                 self.annotationsDirty = true
                 self.schedulePersistPDFAnnotations(delay: 2.0)
                 return
             }
-            let data = doc.dataRepresentation()
+            // Highlights are written with a real alpha so other PDF readers show them.
+            let data = ConnectsInk.withFileColors(in: doc) { doc.dataRepresentation() }
             DispatchQueue.global(qos: .utility).async {
                 var errorMessage: String?
                 if let data = data {
@@ -611,7 +619,7 @@ final class PDFReaderViewController: UIViewController {
 
     /// Dark theme: invert pages, then lift pure black paper to app dark-gray background.
     private func applyPDFColorInvert() {
-        let dark = ThemeManager.shared.mode == .dark
+        let dark = ReaderThemeManager.shared.mode == .dark
         pdfView.highlighter.darkInvertActive = dark
         if dark {
             // Difference needs a light backdrop; paperLift then raises #000 → DSTheme dark gray.
@@ -629,7 +637,7 @@ final class PDFReaderViewController: UIViewController {
             paperLiftOverlay.layer.compositingFilter = "lightenBlendMode"
             ensureInvertOverlayOnTopIfNeeded()
         } else {
-            pdfView.backgroundColor = DSTheme.c.background
+            pdfView.backgroundColor = DSTheme.reader.background
             if #available(iOS 12.0, *) {
                 pdfView.pageShadowsEnabled = true
             }
@@ -641,7 +649,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private func ensureInvertOverlayOnTopIfNeeded() {
-        guard ThemeManager.shared.mode == .dark, !invertOverlay.isHidden else {
+        guard ReaderThemeManager.shared.mode == .dark, !invertOverlay.isHidden else {
             pdfView.highlighter.ensureOverlayZOrder()
             return
         }
@@ -666,13 +674,13 @@ final class PDFReaderViewController: UIViewController {
         view.addSubview(contentsDim)
 
         contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
-        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.backgroundColor = DSTheme.reader.background
         contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
         contentsPanelHost.layer.shadowOpacity = 0.12
         contentsPanelHost.layer.shadowRadius = 8
         contentsPanelHost.layer.shadowOffset = CGSize(width: -2, height: 0)
         contentsPanelHost.layer.borderWidth = 1.0 / UIScreen.main.scale
-        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.layer.borderColor = DSTheme.reader.border.cgColor
         contentsPanelHost.isHidden = true
         view.addSubview(contentsPanelHost)
 
@@ -696,6 +704,26 @@ final class PDFReaderViewController: UIViewController {
             self.setContentsPanelVisible(false, animated: true)
             self.updatePageLabel()
             self.scheduleProgressSave()
+        }
+        contentsVC.onSelectAnnotation = { [weak self] annotation, pageIndex in
+            guard let self = self,
+                  let document = self.pdfView.document,
+                  let page = document.page(at: pageIndex) else { return }
+            let point = CGPoint(x: annotation.bounds.midX, y: annotation.bounds.maxY)
+            self.pdfView.go(to: PDFDestination(page: page, at: point))
+            self.setContentsPanelVisible(false, animated: true)
+            self.updatePageLabel()
+            self.scheduleProgressSave()
+        }
+        contentsVC.onDeleteAnnotation = { [weak self] annotation, pageIndex in
+            guard let self = self,
+                  let document = self.pdfView.document,
+                  let page = document.page(at: pageIndex) else { return }
+            page.removeAnnotation(annotation)
+            self.pdfView.highlighter.removeCommittedStroke(annotation)
+            self.pdfView.boxSelect.refreshCaptions()
+            self.pdfView.boxSelect.refreshScrollLock()
+            self.markAnnotationsDirty(persistSoon: true)
         }
         contentsVC.currentPageIndexProvider = { [weak self] in
             guard let self = self, let doc = self.pdfView.document, let page = self.pdfView.currentPage else {
@@ -806,11 +834,17 @@ final class PDFReaderViewController: UIViewController {
                 }
                 self.annotationsDirty = false
                 self.pdfView.document = document
+                // On disk the ink carries a visible alpha; on screen the overlay draws
+                // it, so damp PDFKit's own paint back down or it renders twice.
+                ConnectsInk.normalizeForDisplay(in: document)
+                ConnectsBoxAnnotation.migrate(in: document)
                 // Document swap reinstalls PDFKit recognizers — kill selection again.
                 self.pdfView.suppressNativeTextInteraction()
                 self.applyPDFColorInvert()
                 self.pdfView.highlighter.ensureHostOverlaysInstalled()
                 self.pdfView.highlighter.reloadCommittedInk()
+                self.pdfView.boxSelect.ensureOverlayInstalled()
+                self.pdfView.boxSelect.refreshCaptions()
                 self.updatePageLabel()
                 completion?(true)
             }
@@ -1083,12 +1117,7 @@ final class PDFReaderViewController: UIViewController {
 
     private func updatePageLabel() {
         let file = currentFileDisplayName()
-        let page = currentPageLabel()
-        if file == "无文档" || page == "无文档" {
-            fileTitleButton.setTitle(file, for: .normal)
-        } else {
-            fileTitleButton.setTitle("\(file) ▾ · \(page)", for: .normal)
-        }
+        fileTitleButton.setTitle(file == "无文档" ? file : "\(file) ▾", for: .normal)
     }
 
     private var isZoomedIn: Bool {

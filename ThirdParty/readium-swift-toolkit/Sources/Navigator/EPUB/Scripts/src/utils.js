@@ -170,10 +170,31 @@ export function isRTL() {
 export function scrollToId(id, animated) {
   let element = document.getElementById(id);
   if (!element) {
+    try {
+      element = document.querySelector("#" + CSS.escape(id));
+    } catch (e) {}
+  }
+  if (!element) {
     return false;
   }
 
-  scrollToRect(element.getBoundingClientRect(), animated);
+  // Ensure page width used by snapOffset is current (load/ResizeObserver may not
+  // have run yet — viewportWidth===0 made snapOffset NaN → no movement).
+  if (!viewportWidth || viewportWidth < 8) {
+    viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1;
+  }
+
+  if (isScrollModeEnabled()) {
+    scrollToRect(element.getBoundingClientRect(), animated);
+    return true;
+  }
+
+  // CSS multi-column: prefer the first client rect (actual column box). A lone
+  // getBoundingClientRect() before columns settle often reports near x=0, so
+  // TOC fragments land on the chapter's first page.
+  const rects = element.getClientRects();
+  const rect = rects.length > 0 ? rects[0] : element.getBoundingClientRect();
+  scrollTo({ left: snapOffset(rect.left + window.scrollX), animated });
   return true;
 }
 
@@ -277,9 +298,13 @@ function scrollTo({ left, top, animated } = {}) {
 
 // Snap the offset to the screen width (page width).
 function snapOffset(offset) {
+  const pageWidth = viewportWidth || window.innerWidth || document.documentElement.clientWidth || 1;
+  if (!isFinite(offset) || pageWidth < 1) {
+    return 0;
+  }
   const delta = isRTL() ? -1 : 1;
   const value = offset + delta;
-  return value - (value % viewportWidth);
+  return value - (value % pageWidth);
 }
 
 function snapCurrentPosition() {

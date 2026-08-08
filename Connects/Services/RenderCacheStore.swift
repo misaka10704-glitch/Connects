@@ -3,9 +3,17 @@ import WebKit
 
 /// Persists rich-message row heights across launches.
 enum RenderCacheStore {
-    private static let heightsKey = "connects_web_heights_v1"
+    private static let heightsKey = "connects_web_heights_v2"
+    private static let legacyHeightsKey = "connects_web_heights_v1"
     private static let snapDirName = "connects_web_snaps"
     private static var saveHeightsWork: DispatchWorkItem?
+    private static var didMigrateLegacyHeights = false
+
+    private static func migrateLegacyHeightsIfNeeded() {
+        guard !didMigrateLegacyHeights else { return }
+        didMigrateLegacyHeights = true
+        UserDefaults.standard.removeObject(forKey: legacyHeightsKey)
+    }
 
     static func widthBucket(for layoutWidth: CGFloat) -> Int {
         guard layoutWidth > 1 else { return 0 }
@@ -52,6 +60,7 @@ enum RenderCacheStore {
     // MARK: - Heights
 
     static func loadHeights() -> [String: [String: CGFloat]] {
+        migrateLegacyHeightsIfNeeded()
         guard let raw = UserDefaults.standard.dictionary(forKey: heightsKey) as? [String: [String: Double]] else {
             return [:]
         }
@@ -60,6 +69,7 @@ enum RenderCacheStore {
 
     /// Cold launch: read only buckets for one conversation instead of the full map.
     static func loadHeights(forConversationID conversationID: String) -> [String: [String: CGFloat]] {
+        migrateLegacyHeightsIfNeeded()
         guard let raw = UserDefaults.standard.dictionary(forKey: heightsKey) as? [String: [String: Double]] else {
             return [:]
         }
@@ -119,6 +129,7 @@ enum RenderCacheStore {
     static func clearHeights() {
         saveHeightsWork?.cancel()
         UserDefaults.standard.removeObject(forKey: heightsKey)
+        UserDefaults.standard.removeObject(forKey: legacyHeightsKey)
     }
 
     // MARK: - Legacy snapshot cleanup

@@ -35,6 +35,7 @@ struct ThemeColors {
 
 extension Notification.Name {
     static let themeDidChange = Notification.Name("ConnectsThemeDidChange")
+    static let readerThemeDidChange = Notification.Name("ConnectsReaderThemeDidChange")
 }
 
 final class ThemeManager {
@@ -55,6 +56,42 @@ final class ThemeManager {
 
     var colors: ThemeColors {
         mode == .light ? DSTheme.light : DSTheme.dark
+    }
+}
+
+/// Reader-only appearance. `override == nil` follows the global ThemeManager.
+final class ReaderThemeManager {
+    static let shared = ReaderThemeManager()
+    private let storageKey = "connects_reader_appearance_mode"
+
+    /// Explicit reader override; `nil` means follow global theme.
+    var override: AppearanceMode? {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: storageKey),
+                  let m = AppearanceMode(rawValue: raw) else { return nil }
+            return m
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue.rawValue, forKey: storageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: storageKey)
+            }
+            NotificationCenter.default.post(name: .readerThemeDidChange, object: nil)
+        }
+    }
+
+    var mode: AppearanceMode {
+        override ?? ThemeManager.shared.mode
+    }
+
+    var colors: ThemeColors {
+        mode == .light ? DSTheme.light : DSTheme.dark
+    }
+
+    /// Flip between light/dark, pinning an explicit override (leaves follow-global).
+    func toggle() {
+        override = mode == .dark ? .light : .dark
     }
 }
 
@@ -105,6 +142,7 @@ final class ThemeManager {
     )
 
     static var c: ThemeColors { ThemeManager.shared.colors }
+    static var reader: ThemeColors { ReaderThemeManager.shared.colors }
 
     // iPad Air 1 layout — ChatGPT-like reading width
     static let sidebarWidth: CGFloat = 268

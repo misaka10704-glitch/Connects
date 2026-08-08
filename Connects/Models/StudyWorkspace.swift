@@ -12,6 +12,8 @@ struct StudyWorkspace: Codable, Equatable {
     /// (common after opening a single file — only the file is security-scoped).
     var absoluteRootPath: String?
     var documentIDs: [String]
+    /// Most recently opened study file in this folder (not conversation identity).
+    var lastOpenedDocumentID: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -26,6 +28,7 @@ struct StudyWorkspace: Codable, Equatable {
             relativePath: "Connects",
             absoluteRootPath: nil,
             documentIDs: [],
+            lastOpenedDocumentID: nil,
             createdAt: Date(),
             updatedAt: Date()
         )

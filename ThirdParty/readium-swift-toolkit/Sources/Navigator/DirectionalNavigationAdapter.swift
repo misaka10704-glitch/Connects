@@ -110,6 +110,9 @@ import Foundation
     /// Indicates whether page turns should be animated.
     public var animatedTransition: Bool
 
+    /// When false, edge taps / keys do not turn pages (e.g. during font pinch).
+    public var isEnabled: Bool = true
+
     private let onNavigation: () -> Void
 
     private var observerTokens: Set<InputObservableToken> = []
@@ -195,6 +198,7 @@ import Foundation
     }
 
     private func onTap(at point: CGPoint, in navigator: VisualNavigator) async -> Bool {
+        guard isEnabled else { return false }
         guard !pointerPolicy.ignoreWhileScrolling || !navigator.presentation.scroll else {
             return false
         }
@@ -233,6 +237,7 @@ import Foundation
     }
 
     private func onKey(_ event: KeyEvent, in navigator: VisualNavigator) async -> Bool {
+        guard isEnabled else { return false }
         guard event.modifiers.isEmpty else {
             return false
         }

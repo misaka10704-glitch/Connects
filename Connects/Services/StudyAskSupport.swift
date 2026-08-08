@@ -8,6 +8,8 @@ final class StudyAskSelectionStore {
 
     static let askAnnotationUserName = "connects.ask"
     static let noteAnnotationUserName = "connects.note"
+    /// MarginNote-style dashed box annotations written into the PDF.
+    static let boxAnnotationUserName = "connects.box"
 
     private var pending: [String: String] = [:]
 
@@ -119,9 +121,10 @@ final class StudyAskTextView: UITextView, StudyAskHandling {
     }
 }
 
-/// PDF reader view: scroll + freehand ink pen + tap notes. No Ask / no free text selection.
+/// PDF reader view: scroll + box-select annotations (+ legacy ink display). No Ask / no free text selection.
 final class StudyPDFView: PDFView {
     let highlighter = PDFHighlighterTool()
+    let boxSelect = PDFBoxSelectTool()
     let noteTap = PDFHighlightNoteTap()
     private var selectionObserver: NSObjectProtocol?
 
@@ -143,6 +146,7 @@ final class StudyPDFView: PDFView {
 
     private func commonInit() {
         highlighter.attach(to: self)
+        boxSelect.attach(to: self)
         noteTap.attach(to: self)
         suppressNativeTextInteraction()
         selectionObserver = NotificationCenter.default.addObserver(
@@ -158,17 +162,18 @@ final class StudyPDFView: PDFView {
         super.didMoveToSuperview()
         highlighter.ensureHostOverlaysInstalled()
         highlighter.reloadCommittedInk()
+        boxSelect.ensureOverlayInstalled()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         highlighter.noteHostDidLayout()
+        boxSelect.ensureOverlayInstalled()
     }
 
     override var canBecomeFirstResponder: Bool { false }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        // Block Copy / Look Up / Ask / share menus from text selection.
         false
     }
 
@@ -196,7 +201,7 @@ final class StudyPDFView: PDFView {
     }
 
     private func rejectStraySelection() {
-        guard !highlighter.isActivelyHighlighting else { return }
+        guard !highlighter.isActivelyHighlighting, !boxSelect.isActivelySelecting else { return }
         if currentSelection != nil {
             clearSelection()
         }

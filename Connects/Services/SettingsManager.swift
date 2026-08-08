@@ -208,18 +208,25 @@ final class SettingsManager {
         chatBodyFontSize - 1.5
     }
 
-    /// EPUB / MOBI reader body size (pt). Independent of chat font.
+    /// EPUB / MOBI reader body size (pt). Even steps 14…28 only (no 23↔24).
     var ebookReaderFontSize: CGFloat {
         get {
             let v = UserDefaults.standard.object(forKey: "connects_ebook_font_size") as? Double
             let size = CGFloat(v ?? 18)
-            return min(28, max(14, size))
+            return Self.snapEbookFontSize(size)
         }
         set {
-            let clamped = min(28, max(14, newValue))
-            UserDefaults.standard.set(Double(clamped), forKey: "connects_ebook_font_size")
+            let snapped = Self.snapEbookFontSize(newValue)
+            UserDefaults.standard.set(Double(snapped), forKey: "connects_ebook_font_size")
             NotificationCenter.default.post(name: .ebookReaderFontSizeDidChange, object: nil)
         }
+    }
+
+    /// Coarse EPUB font ladder: 14, 16, …, 28.
+    static func snapEbookFontSize(_ pt: CGFloat) -> CGFloat {
+        let clamped = min(28, max(14, pt))
+        let stepped = (clamped / 2).rounded() * 2
+        return min(28, max(14, stepped))
     }
 
     /// Top bar showing the user question for the reply currently in view.

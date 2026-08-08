@@ -590,7 +590,7 @@ final class NativeMessageLayouter {
         let preview = Array(sourceLines.prefix(previewLineCap))
         let previewLines = preview.isEmpty ? [""] : preview
         let attributedPreview = previewLines.map {
-            attributedFencePreviewLine($0, language: lang, font: mono)
+            attributedFencePreviewLine($0, language: lang, font: mono, appearance: style.appearance)
         }
         let showsFade = totalLines > preview.count
         let previewH = ceilToPixel(CGFloat(max(previewLines.count, 1)) * lineStep)
@@ -633,14 +633,15 @@ final class NativeMessageLayouter {
     /// Highlight at most one preview line (≤96 chars). Full fence highlighting stays in the popup.
     private func attributedFencePreviewLine(_ line: String,
                                             language: StudyTextLanguage,
-                                            font: UIFont) -> NSAttributedString {
+                                            font: UIFont,
+                                            appearance: String) -> NSAttributedString {
         let display: String
         if line.count > 96 {
             display = String(line.prefix(96)) + "…"
         } else {
             display = line.isEmpty ? " " : line
         }
-        let key = "\(language.rawValue)|\(Int(font.pointSize * 10))|\(display)" as NSString
+        let key = "\(appearance)|\(language.rawValue)|\(Int(font.pointSize * 10))|\(display)" as NSString
         if let hit = fencePreviewAttrCache.object(forKey: key) {
             return hit
         }

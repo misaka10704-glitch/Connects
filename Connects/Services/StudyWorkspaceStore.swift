@@ -136,6 +136,7 @@ final class StudyWorkspaceStore {
             relativePath: relative,
             absoluteRootPath: nil,
             documentIDs: [],
+            lastOpenedDocumentID: nil,
             createdAt: Date(),
             updatedAt: Date()
         )
@@ -213,6 +214,7 @@ final class StudyWorkspaceStore {
                 relativePath: nil,
                 absoluteRootPath: openedPath,
                 documentIDs: [],
+                lastOpenedDocumentID: nil,
                 createdAt: Date(),
                 updatedAt: Date()
             )
@@ -464,6 +466,7 @@ final class StudyWorkspaceStore {
             relativePath: nil,
             absoluteRootPath: openedPath,
             documentIDs: [],
+            lastOpenedDocumentID: nil,
             createdAt: Date(),
             updatedAt: Date()
         )
@@ -480,6 +483,47 @@ final class StudyWorkspaceStore {
             ws.updatedAt = Date()
             replace(ws)
         }
+    }
+
+    /// Folder-level recent file pointer (workspace chat identity stays on the folder).
+    func setLastOpenedDocument(_ documentID: String, in workspaceID: String) {
+        guard var ws = workspace(id: workspaceID) else { return }
+        var changed = false
+        if !ws.documentIDs.contains(documentID) {
+            ws.documentIDs.append(documentID)
+            changed = true
+        }
+        if ws.lastOpenedDocumentID != documentID {
+            ws.lastOpenedDocumentID = documentID
+            changed = true
+        }
+        guard changed else { return }
+        ws.updatedAt = Date()
+        replace(ws)
+    }
+
+    /// Validated last-opened document still living under this folder; clears stale ids.
+    func lastOpenedDocumentID(in workspaceID: String) -> String? {
+        guard var ws = workspace(id: workspaceID),
+              let docID = ws.lastOpenedDocumentID else { return nil }
+        if containsDocument(docID, in: workspaceID) {
+            return docID
+        }
+        // Stale pointer — also accept path parent match when not yet in documentIDs.
+        if let parent = parentFolderPath(ofDocumentID: docID),
+           let root = (try? folderURL(for: workspaceID)).map({ Self.normalizedPath($0.path) }),
+           parent == root {
+            if !ws.documentIDs.contains(docID) {
+                ws.documentIDs.append(docID)
+                ws.updatedAt = Date()
+                replace(ws)
+            }
+            return docID
+        }
+        ws.lastOpenedDocumentID = nil
+        ws.updatedAt = Date()
+        replace(ws)
+        return nil
     }
 
     func removeDocument(_ documentID: String, from workspaceID: String) {
@@ -522,7 +566,12 @@ final class StudyWorkspaceStore {
         if !name.contains(".") {
             name += ".md"
         }
+        // Prefer creating directly under the workspace folder (security-scoped when granted).
         let folder = try folderURL(for: workspaceID)
+        if let grant = workspaceWithDirectoryAccess(coveringFilePath: folder.path)
+            ?? primaryGrantedWorkspace() {
+            _ = try? folderURL(for: grant.id)
+        }
         let dest = folder.appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: dest.path) {
             throw StudyWorkspaceError.fileExists

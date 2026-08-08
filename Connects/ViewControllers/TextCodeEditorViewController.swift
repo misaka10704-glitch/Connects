@@ -9,6 +9,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let modeButton = UIButton(type: .system)
     private let buildButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
+    private let appearanceButton = UIButton(type: .system)
     private let fileTitleButton = UIButton(type: .system)
     private let gutterView = UIView()
     private let gutterSeparator = UIView()
@@ -129,7 +130,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = DSTheme.c.background
+        view.backgroundColor = DSTheme.reader.background
         StudyAskMenu.installIfNeeded()
 
         topBar.translatesAutoresizingMaskIntoConstraints = false
@@ -155,8 +156,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         buildButton.translatesAutoresizingMaskIntoConstraints = false
         buildButton.setTitle("Build", for: .normal)
         buildButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
-        buildButton.setTitleColor(DSTheme.c.accent.withAlphaComponent(0.55), for: .highlighted)
+        buildButton.setTitleColor(DSTheme.reader.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.reader.accent.withAlphaComponent(0.55), for: .highlighted)
         buildButton.addTarget(self, action: #selector(buildTapped), for: .touchUpInside)
         buildButton.accessibilityLabel = "按计划 Build"
         buildButton.isHidden = true
@@ -169,6 +170,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
         topBar.addSubview(saveButton)
+
+        appearanceButton.translatesAutoresizingMaskIntoConstraints = false
+        appearanceButton.addTarget(self, action: #selector(appearanceTapped), for: .touchUpInside)
+        topBar.addSubview(appearanceButton)
+        updateAppearanceButton()
 
         tabToggleButton.translatesAutoresizingMaskIntoConstraints = false
         tabToggleButton.setTitle("Tab", for: .normal)
@@ -185,7 +191,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fileTitleButton.titleLabel?.lineBreakMode = .byTruncatingMiddle
         fileTitleButton.titleLabel?.textAlignment = .center
         fileTitleButton.contentHorizontalAlignment = .center
-        fileTitleButton.setTitleColor(DSTheme.c.textPrimary, for: .normal)
+        fileTitleButton.setTitleColor(DSTheme.reader.textPrimary, for: .normal)
         fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
         fileTitleButton.accessibilityLabel = "切换文件"
@@ -195,6 +201,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBar.bringSubviewToFront(modeButton)
         topBar.bringSubviewToFront(buildButton)
         topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(appearanceButton)
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
         gutterView.clipsToBounds = true
@@ -226,7 +233,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.delegate = self
-        textView.backgroundColor = DSTheme.c.background
+        textView.backgroundColor = DSTheme.reader.background
         textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 10)
         textView.textContainer.lineFragmentPadding = 0
         // Soft-wrap to the editor width so long lines are not clipped on the right.
@@ -260,16 +267,16 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         // Caret-trailing Tab accept chip (frame-based; subviews use Auto Layout).
         tabSuggestChip.translatesAutoresizingMaskIntoConstraints = true
         tabSuggestChip.isHidden = true
-        tabSuggestChip.backgroundColor = DSTheme.c.surface
+        tabSuggestChip.backgroundColor = DSTheme.reader.surface
         tabSuggestChip.layer.cornerRadius = 10
         tabSuggestChip.layer.borderWidth = 1 / UIScreen.main.scale
-        tabSuggestChip.layer.borderColor = DSTheme.c.border.cgColor
+        tabSuggestChip.layer.borderColor = DSTheme.reader.border.cgColor
         tabSuggestChip.clipsToBounds = true
         view.addSubview(tabSuggestChip)
 
         tabSuggestLabel.translatesAutoresizingMaskIntoConstraints = false
         tabSuggestLabel.font = CodeSyntaxHighlighter.font(size: fontPointSize)
-        tabSuggestLabel.textColor = DSTheme.c.textTertiary
+        tabSuggestLabel.textColor = DSTheme.reader.textTertiary
         tabSuggestLabel.numberOfLines = 2
         tabSuggestLabel.lineBreakMode = .byTruncatingTail
         tabSuggestChip.addSubview(tabSuggestLabel)
@@ -308,7 +315,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let config = ConnectsWebKit.makeConfiguration()
         previewWebView = WKWebView(frame: .zero, configuration: config)
         previewWebView.translatesAutoresizingMaskIntoConstraints = false
-        ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.c.background)
+        ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.reader.background)
         previewWebView.scrollView.isScrollEnabled = true
         previewWebView.isHidden = true
         previewWebView.navigationDelegate = self
@@ -339,13 +346,18 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
             fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
 
-            // Far-right chrome: [Tab][mode][Build?][save]
+            // Far-right chrome: [Tab][mode][Build?][appearance][save]
             saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             saveButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             saveButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
-            buildButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            appearanceButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: -2),
+            appearanceButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            appearanceButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            appearanceButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+
+            buildButton.trailingAnchor.constraint(equalTo: appearanceButton.leadingAnchor, constant: -2),
             buildButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             buildButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             buildButtonWidthConstraint,
@@ -399,6 +411,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         gutterSepBottomToView.isActive = true
 
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .readerThemeDidChange, object: nil)
         applyChromeColors()
         // Defaults already match read mode; avoid applyEditMode during load (view has no window yet).
         isEditMode = false
@@ -453,7 +466,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        sidebarButton.tintColor = DSTheme.c.textSecondary
+        sidebarButton.tintColor = DSTheme.reader.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
 
@@ -675,8 +688,24 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         flushSaveIfNeeded(force: true, showSuccessToast: true)
     }
 
+    @objc private func appearanceTapped() {
+        ReaderThemeManager.shared.toggle()
+    }
+
+    private func updateAppearanceButton() {
+        let dark = ReaderThemeManager.shared.mode == .dark
+        let kind: ActionIconFactory.Kind = dark ? .appearanceMoon : .appearanceSun
+        appearanceButton.setImage(
+            ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
+            for: .normal
+        )
+        appearanceButton.tintColor = DSTheme.reader.textSecondary
+        appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
+    }
+
     @objc private func themeChanged() {
         applyChromeColors()
+        updateAppearanceButton()
         refreshTextPresentationPreservingDiff()
         updateLineNumbers(force: true)
         syncLineNumberOffset()
@@ -689,7 +718,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func applyChromeColors() {
-        let c = DSTheme.c
+        let c = DSTheme.reader
         view.backgroundColor = c.background
         topBar.backgroundColor = c.background
         textView.backgroundColor = c.background
@@ -979,7 +1008,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func refreshModeChrome() {
-        let c = DSTheme.c
+        let c = DSTheme.reader
         if isDiffSessionActive {
             // During Diff: button means "switch Diff / 阅读预览".
             let showingDiff = readSurface == .diff
@@ -1024,7 +1053,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let show = language == .markdown && isPlanDocument && onBuildPlan != nil && !isDiffSessionActive
         buildButton.isHidden = !show
         buildButtonWidthConstraint.constant = show ? 56 : 0
-        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.reader.accent, for: .normal)
         buildButton.isUserInteractionEnabled = show
         if show {
             topBar.bringSubviewToFront(buildButton)
@@ -1068,9 +1097,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private func loadPreviewShellIfNeeded() {
         guard !previewShellLoaded else { return }
         let html = MarkdownHTMLRenderer.studyShellHTML(
-            textColor: DSTheme.c.textPrimary,
-            backgroundColor: DSTheme.c.background,
-            secondaryColor: DSTheme.c.textSecondary,
+            textColor: DSTheme.reader.textPrimary,
+            backgroundColor: DSTheme.reader.background,
+            secondaryColor: DSTheme.reader.textSecondary,
             fontSize: markdownPreviewFontSize
         )
         previewWebView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)
@@ -1139,7 +1168,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             let length = (text as NSString).length
             let clamped = NSIntersectionRange(pinned, NSRange(location: 0, length: length))
             if clamped.length > 0, let mutable = attributed.mutableCopy() as? NSMutableAttributedString {
-                let tint = DSTheme.c.accent.withAlphaComponent(0.28)
+                let tint = DSTheme.reader.accent.withAlphaComponent(0.28)
                 mutable.addAttribute(.backgroundColor, value: tint, range: clamped)
                 attributed = mutable
             } else {
@@ -1832,7 +1861,7 @@ extension TextCodeEditorViewController {
         let (attr, ranges) = CodeTextDiff.attributedString(
             segments: diffSegments,
             font: font,
-            textColor: DSTheme.c.textPrimary,
+            textColor: DSTheme.reader.textPrimary,
             highlightHunkIndex: highlight
         )
         diffHunkRanges = ranges
@@ -1894,7 +1923,7 @@ extension TextCodeEditorViewController {
             text = "\(i)/\(pending.count)"
         }
         diffNavLabel.text = text
-        let c = DSTheme.c
+        let c = DSTheme.reader
         diffPrevButton.tintColor = c.textSecondary
         diffNextButton.tintColor = c.textSecondary
         diffNavLabel.textColor = c.textPrimary
@@ -2048,7 +2077,7 @@ extension TextCodeEditorViewController {
         let (attr, ranges) = CodeTextDiff.attributedString(
             segments: diffSegments,
             font: font,
-            textColor: DSTheme.c.textPrimary,
+            textColor: DSTheme.reader.textPrimary,
             highlightHunkIndex: highlight
         )
         diffHunkRanges = ranges
@@ -2062,14 +2091,14 @@ extension TextCodeEditorViewController {
     private func makePerHunkActionBar(segIdx: Int) -> UIView {
         let bar = UIView()
         bar.translatesAutoresizingMaskIntoConstraints = true
-        bar.backgroundColor = DSTheme.c.surface.withAlphaComponent(0.82)
+        bar.backgroundColor = DSTheme.reader.surface.withAlphaComponent(0.82)
         bar.layer.cornerRadius = 8
         bar.layer.borderWidth = 1 / UIScreen.main.scale
-        bar.layer.borderColor = DSTheme.c.border.withAlphaComponent(0.55).cgColor
+        bar.layer.borderColor = DSTheme.reader.border.withAlphaComponent(0.55).cgColor
         bar.clipsToBounds = true
         bar.tag = segIdx
 
-        let c = DSTheme.c
+        let c = DSTheme.reader
         var leading: NSLayoutXAxisAnchor = bar.leadingAnchor
         var leadingConstant: CGFloat = 5
 
@@ -2361,7 +2390,7 @@ extension TextCodeEditorViewController {
     }
 
     private func refreshTabToggleChrome() {
-        let c = DSTheme.c
+        let c = DSTheme.reader
         // Diff hunk chrome still refreshes here (shared theme pass).
         tabConfirmButton.setTitleColor(c.accent, for: .normal)
         tabDismissButton.setTitleColor(c.textSecondary, for: .normal)

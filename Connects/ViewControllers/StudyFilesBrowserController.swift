@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 /// First-time project access is a separate folder picker (large-folder grant + bookmark).
 final class StudyFilesBrowserController: UIDocumentBrowserViewController, UIDocumentBrowserViewControllerDelegate {
     var onPick: ((URL) -> Void)?
+    /// When set, New File writes here even if the UI is stuck on Recents.
+    var preferredWorkspaceID: String?
+    /// Fallback create directory when `preferredWorkspaceID` is unavailable.
+    var preferredCreateDirectoryURL: URL?
 
     static func make() -> StudyFilesBrowserController {
         let browser: StudyFilesBrowserController
@@ -112,7 +116,11 @@ final class StudyFilesBrowserController: UIDocumentBrowserViewController, UIDocu
         alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
             importHandler(nil, .none)
         })
-        alert.addAction(UIAlertAction(title: "创建", style: .default) { _ in
+        alert.addAction(UIAlertAction(title: "创建", style: .default) { [weak self] _ in
+            guard let self else {
+                importHandler(nil, .none)
+                return
+            }
             var name = alert.textFields?.first?.text?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if name.isEmpty { name = "Untitled.md" }
@@ -121,6 +129,60 @@ final class StudyFilesBrowserController: UIDocumentBrowserViewController, UIDocu
                 return
             }
             if !name.contains(".") { name += ".md" }
+
+            // Prefer creating directly in the Study workspace so Recents doesn't steal the destination.
+            if let wsID = self.preferredWorkspaceID {
+                do {
+                    let doc = try StudyWorkspaceStore.shared.createEmptyFile(named: name, in: wsID)
+                    let url: URL = {
+                        if let path = doc.displayPath, !path.isEmpty {
+                            return URL(fileURLWithPath: path)
+                        }
+                        return (try? StudyDocumentStore.shared.resolvedURL(forID: doc.id))
+                            ?? FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                    }()
+                    importHandler(nil, .none)
+                    self.finish(with: url)
+                } catch {
+                    let fail = UIAlertController(
+                        title: "New File",
+                        message: error.localizedDescription,
+                        preferredStyle: .alert
+                    )
+                    fail.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                        importHandler(nil, .none)
+                    })
+                    self.present(fail, animated: true)
+                }
+                return
+            }
+
+            if let folder = self.preferredCreateDirectoryURL {
+                do {
+                    let dest = folder.appendingPathComponent(name)
+                    if FileManager.default.fileExists(atPath: dest.path) {
+                        throw StudyWorkspaceError.fileExists
+                    }
+                    let accessing = folder.startAccessingSecurityScopedResource()
+                    defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+                    try Data().write(to: dest, options: .atomic)
+                    importHandler(nil, .none)
+                    self.finish(with: dest)
+                } catch {
+                    let fail = UIAlertController(
+                        title: "New File",
+                        message: error.localizedDescription,
+                        preferredStyle: .alert
+                    )
+                    fail.addAction(UIAlertAction(title: "好", style: .default) { _ in
+                        importHandler(nil, .none)
+                    })
+                    self.present(fail, animated: true)
+                }
+                return
+            }
+
+            // Last resort: let the system import into its default directory.
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             do {

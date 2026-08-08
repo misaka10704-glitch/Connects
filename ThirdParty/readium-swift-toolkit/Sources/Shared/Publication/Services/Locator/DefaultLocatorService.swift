@@ -46,22 +46,50 @@ open class DefaultLocatorService: LocatorService, Loggable {
         let fragment = originalHREF.fragment
         let href = originalHREF.removingFragment()
 
-        guard
-            let resourceLink = publication()?.linkWithHREF(href),
-            let type = resourceLink.mediaType
-        else {
+        guard let publication = publication() else {
             return nil
         }
 
+        // Navigator can only jump to reading-order resources. Prefer spine match
+        // (exact, then path/basename) before falling back to resources/links.
+        let resolved =
+            readingOrderLink(matching: href, in: publication)
+                ?? publication.linkWithHREF(href).flatMap { readingOrderLink(matching: $0.url(), in: publication) }
+
+        guard let resolved else {
+            return nil
+        }
+
+        let type = resolved.mediaType ?? .xhtml
+
         return Locator(
-            href: href,
+            href: resolved.url().removingFragment(),
             mediaType: type,
-            title: resourceLink.title ?? link.title,
+            title: resolved.title ?? link.title,
             locations: Locator.Locations(
                 fragments: Array(ofNotNil: fragment),
                 progression: (fragment == nil) ? 0.0 : nil
             )
         )
+    }
+
+    /// Exact HREF, then path-suffix / basename match within the spine.
+    private func readingOrderLink(matching href: AnyURL, in publication: Publication) -> Link? {
+        let bare = href.removingFragment().removingQuery()
+        if let idx = publication.readingOrder.firstIndexWithHREF(bare) {
+            return publication.readingOrder[idx]
+        }
+        let target = bare.normalized.string
+        let targetPath = bare.path
+        let base = (targetPath as NSString).lastPathComponent
+        return publication.readingOrder.first { link in
+            let u = link.url().removingFragment().removingQuery()
+            let s = u.normalized.string
+            if s == target { return true }
+            if !targetPath.isEmpty, s.hasSuffix(targetPath) || target.hasSuffix(u.path) { return true }
+            let linkBase = (u.path as NSString).lastPathComponent
+            return !base.isEmpty && linkBase == base
+        }
     }
 
     open func locate(progression totalProgression: Double) async -> Locator? {

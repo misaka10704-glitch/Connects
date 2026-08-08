@@ -17,12 +17,12 @@ final class MarkdownContentsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = DSTheme.c.background
+        view.backgroundColor = DSTheme.reader.background
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.text = "目录"
         titleLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.textColor = DSTheme.c.textPrimary
+        titleLabel.textColor = DSTheme.reader.textPrimary
         view.addSubview(titleLabel)
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
@@ -31,7 +31,7 @@ final class MarkdownContentsViewController: UIViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 34
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 10)
-        tableView.backgroundColor = DSTheme.c.background
+        tableView.backgroundColor = DSTheme.reader.background
         tableView.tableFooterView = UIView()
         if #available(iOS 11.0, *) {
             tableView.contentInsetAdjustmentBehavior = .never
@@ -40,7 +40,7 @@ final class MarkdownContentsViewController: UIViewController {
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.font = UIFont.systemFont(ofSize: 13)
-        emptyLabel.textColor = DSTheme.c.textSecondary
+        emptyLabel.textColor = DSTheme.reader.textSecondary
         emptyLabel.textAlignment = .center
         emptyLabel.numberOfLines = 0
         emptyLabel.text = "未找到标题"
@@ -68,6 +68,12 @@ final class MarkdownContentsViewController: UIViewController {
             name: .themeDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeChanged),
+            name: .readerThemeDidChange,
+            object: nil
+        )
         reloadEmptyState()
     }
 
@@ -82,10 +88,10 @@ final class MarkdownContentsViewController: UIViewController {
     }
 
     @objc private func themeChanged() {
-        view.backgroundColor = DSTheme.c.background
-        titleLabel.textColor = DSTheme.c.textPrimary
-        tableView.backgroundColor = DSTheme.c.background
-        emptyLabel.textColor = DSTheme.c.textSecondary
+        view.backgroundColor = DSTheme.reader.background
+        titleLabel.textColor = DSTheme.reader.textPrimary
+        tableView.backgroundColor = DSTheme.reader.background
+        emptyLabel.textColor = DSTheme.reader.textSecondary
         tableView.reloadData()
     }
 
@@ -108,8 +114,8 @@ extension MarkdownContentsViewController: UITableViewDataSource, UITableViewDele
         cell.textLabel?.text = row.title
         cell.textLabel?.numberOfLines = 2
         cell.textLabel?.font = UIFont.systemFont(ofSize: 13, weight: row.level <= 1 ? .semibold : .regular)
-        cell.textLabel?.textColor = DSTheme.c.textPrimary
-        cell.backgroundColor = DSTheme.c.background
+        cell.textLabel?.textColor = DSTheme.reader.textPrimary
+        cell.backgroundColor = DSTheme.reader.background
         cell.selectionStyle = .default
         cell.accessoryType = .none
         let indent = CGFloat(max(row.level - 1, 0)) * 10

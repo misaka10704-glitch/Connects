@@ -124,6 +124,8 @@
 		S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000E /* CodeSyntaxHighlighter.swift */; };
 		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
 		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
+		S10000010000000000000050 /* ReadingAnnotation.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000050 /* ReadingAnnotation.swift */; };
+		S10000010000000000000051 /* EPUBAnnotationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000051 /* EPUBAnnotationStore.swift */; };
 		S10000010000000000000011 /* StudyAskSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000011 /* StudyAskSupport.swift */; };
 		S10000010000000000000012 /* StudyFeatureQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000012 /* StudyFeatureQAHarness.swift */; };
 		S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000013 /* PDFCustomTextSelector.swift */; };
@@ -153,6 +155,8 @@
 		SFB100010000000000000001 /* StudyFilesBrowserController.swift in Sources */ = {isa = PBXBuildFile; fileRef = SFB200010000000000000001 /* StudyFilesBrowserController.swift */; };
 		T10000010000000000000001 /* ConnectsToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000001 /* ConnectsToast.swift */; };
 		T10000010000000000000002 /* ConnectsShimmerLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = T20000010000000000000002 /* ConnectsShimmerLabel.swift */; };
+		TF0000010000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = TF0000010000000000000001 /* Assets.xcassets */; };
+		TF0000010000000000000004 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = TF0000010000000000000003 /* PrivacyInfo.xcprivacy */; };
 		V10000010000000000000001 /* StudyVisualQAHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = V20000010000000000000001 /* StudyVisualQAHarness.swift */; };
 /* End PBXBuildFile section */
 
@@ -285,6 +289,8 @@
 		S2000001000000000000000E /* CodeSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
+		S20000010000000000000050 /* ReadingAnnotation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingAnnotation.swift; sourceTree = "<group>"; };
+		S20000010000000000000051 /* EPUBAnnotationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBAnnotationStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000011 /* StudyAskSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyAskSupport.swift; sourceTree = "<group>"; };
 		S20000010000000000000012 /* StudyFeatureQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFeatureQAHarness.swift; sourceTree = "<group>"; };
 		S20000010000000000000013 /* PDFCustomTextSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFCustomTextSelector.swift; sourceTree = "<group>"; };
@@ -314,6 +320,8 @@
 		SFB200010000000000000001 /* StudyFilesBrowserController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFilesBrowserController.swift; sourceTree = "<group>"; };
 		T20000010000000000000001 /* ConnectsToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsToast.swift; sourceTree = "<group>"; };
 		T20000010000000000000002 /* ConnectsShimmerLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsShimmerLabel.swift; sourceTree = "<group>"; };
+		TF0000010000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		TF0000010000000000000003 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		V20000010000000000000001 /* StudyVisualQAHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyVisualQAHarness.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -375,6 +383,8 @@
 				A50000010000000000000008 /* Theme */,
 				A50000010000000000000009 /* Resources */,
 				A20000010000000000000012 /* Info.plist */,
+				TF0000010000000000000001 /* Assets.xcassets */,
+				TF0000010000000000000003 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Connects;
 			sourceTree = "<group>";
@@ -396,6 +406,7 @@
 				A20000010000000000000004 /* Conversation.swift */,
 				C2000001000000000000000D /* Project.swift */,
 				S20000010000000000000001 /* StudyDocument.swift */,
+				S20000010000000000000050 /* ReadingAnnotation.swift */,
 				S20000010000000000000039 /* StudyPlanDocument.swift */,
 				S20000010000000000000030 /* StudyWorkspace.swift */,
 				B20000010000000000000001 /* NativeMarkdown.swift */,
@@ -451,6 +462,7 @@
 				S20000010000000000000032 /* ConnectsPaths.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
 				S20000010000000000000043 /* ReadiumEbookOpener.swift */,
+				S20000010000000000000051 /* EPUBAnnotationStore.swift */,
 				S20000010000000000000044 /* FoliateEbookEngine.swift */,
 				S20000010000000000000031 /* StudyWorkspaceStore.swift */,
 				S2000001000000000000000D /* MarkdownStudyImporter.swift */,
@@ -667,6 +679,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TF0000010000000000000002 /* Assets.xcassets in Resources */,
+				TF0000010000000000000004 /* PrivacyInfo.xcprivacy in Resources */,
 				A10000010000000000000020 /* Icon-76.png in Resources */,
 				A10000010000000000000021 /* Icon-76@2x.png in Resources */,
 				A10000010000000000000022 /* Icon-83.5@2x.png in Resources */,
@@ -775,6 +789,8 @@
 				S1000001000000000000003C /* StudyAgentSPIE2EHarness.swift in Sources */,
 				S10000010000000000000039 /* StudyPlanDocument.swift in Sources */,
 				S10000010000000000000013 /* PDFCustomTextSelector.swift in Sources */,
+				S10000010000000000000050 /* ReadingAnnotation.swift in Sources */,
+				S10000010000000000000051 /* EPUBAnnotationStore.swift in Sources */,
 				S10000010000000000000014 /* ConnectsKeyboardGeometry.swift in Sources */,
 				B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */,
 				B10000010000000000000009 /* RenderAuditChecks.swift in Sources */,
@@ -914,7 +930,7 @@
 		AA0000010000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -928,6 +944,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -949,7 +966,7 @@
 		AA0000010000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -962,6 +979,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1025,7 +1043,7 @@
 		G10000010000000000000001 /* Debug-iPhone */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -1039,6 +1057,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1060,7 +1079,7 @@
 		G10000010000000000000002 /* Release-iPhone */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Connects/Connects.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -1073,6 +1092,7 @@
 					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

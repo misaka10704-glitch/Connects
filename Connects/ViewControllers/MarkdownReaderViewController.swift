@@ -9,6 +9,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private let topBar = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
+    private let appearanceButton = UIButton(type: .system)
     private let modeButton = UIButton(type: .system)
     private let buildButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
@@ -91,7 +92,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
                 string: plain,
                 attributes: [
                     .font: editorView.font ?? UIFont.systemFont(ofSize: 16),
-                    .foregroundColor: DSTheme.c.textPrimary
+                    .foregroundColor: DSTheme.reader.textPrimary
                 ]
             )
         } else {
@@ -116,7 +117,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let plain = editorView.text ?? ""
         let attrs: [NSAttributedString.Key: Any] = [
             .font: editorView.font ?? UIFont.systemFont(ofSize: 16),
-            .foregroundColor: DSTheme.c.textPrimary
+            .foregroundColor: DSTheme.reader.textPrimary
         ]
         let mutable = NSMutableAttributedString(string: plain, attributes: attrs)
         if let pinned = askPinnedEditorRange {
@@ -124,7 +125,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             if clamped.length > 0 {
                 mutable.addAttribute(
                     .backgroundColor,
-                    value: DSTheme.c.accent.withAlphaComponent(0.28),
+                    value: DSTheme.reader.accent.withAlphaComponent(0.28),
                     range: clamped
                 )
             }
@@ -196,6 +197,11 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
         topBar.addSubview(contentsButton)
 
+        appearanceButton.translatesAutoresizingMaskIntoConstraints = false
+        appearanceButton.addTarget(self, action: #selector(appearanceTapped), for: .touchUpInside)
+        topBar.addSubview(appearanceButton)
+        updateAppearanceButton()
+
         modeButton.translatesAutoresizingMaskIntoConstraints = false
         modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         modeButton.imageView?.contentMode = .scaleAspectFit
@@ -206,8 +212,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         buildButton.translatesAutoresizingMaskIntoConstraints = false
         buildButton.setTitle("Build", for: .normal)
         buildButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
-        buildButton.setTitleColor(DSTheme.c.accent.withAlphaComponent(0.55), for: .highlighted)
+        buildButton.setTitleColor(DSTheme.reader.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.reader.accent.withAlphaComponent(0.55), for: .highlighted)
         buildButton.addTarget(self, action: #selector(buildTapped), for: .touchUpInside)
         buildButton.accessibilityLabel = "按计划 Build"
         buildButton.isHidden = true
@@ -225,7 +231,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
         progressLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-        progressLabel.textColor = DSTheme.c.textPrimary
+        progressLabel.textColor = DSTheme.reader.textPrimary
         progressLabel.textAlignment = .center
         progressLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         progressLabel.isUserInteractionEnabled = true
@@ -235,6 +241,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         topBar.bringSubviewToFront(modeButton)
         topBar.bringSubviewToFront(buildButton)
         topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(appearanceButton)
         topBar.bringSubviewToFront(contentsButton)
 
         let controller = WKUserContentController()
@@ -245,7 +252,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         webView = StudyAskWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.navigationDelegate = self
-        ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.c.background)
+        ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.reader.background)
         webView.scrollView.delegate = self
         webView.onAskSelection = { [weak self] text in
             self?.onAskSelection?(text)
@@ -257,8 +264,8 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
         editorView.translatesAutoresizingMaskIntoConstraints = false
         editorView.font = UIFont(name: "Menlo-Regular", size: 14) ?? UIFont.systemFont(ofSize: 14)
-        editorView.backgroundColor = DSTheme.c.background
-        editorView.textColor = DSTheme.c.textPrimary
+        editorView.backgroundColor = DSTheme.reader.background
+        editorView.textColor = DSTheme.reader.textPrimary
         editorView.autocorrectionType = .no
         editorView.autocapitalizationType = .none
         editorView.smartDashesType = .no
@@ -306,10 +313,15 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             buildButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             buildButtonWidthConstraint,
 
-            saveButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
+            saveButton.trailingAnchor.constraint(equalTo: appearanceButton.leadingAnchor, constant: -2),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             saveButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             saveButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+
+            appearanceButton.trailingAnchor.constraint(equalTo: contentsButton.leadingAnchor, constant: -2),
+            appearanceButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            appearanceButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+            appearanceButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -337,6 +349,12 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             self,
             selector: #selector(themeChanged),
             name: .themeDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeChanged),
+            name: .readerThemeDidChange,
             object: nil
         )
         loadShellIfNeeded()
@@ -409,19 +427,36 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         }
     }
 
+    @objc private func appearanceTapped() {
+        ReaderThemeManager.shared.toggle()
+    }
+
+    private func updateAppearanceButton() {
+        let dark = ReaderThemeManager.shared.mode == .dark
+        let kind: ActionIconFactory.Kind = dark ? .appearanceMoon : .appearanceSun
+        appearanceButton.setImage(
+            ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
+            for: .normal
+        )
+        appearanceButton.tintColor = DSTheme.c.textSecondary
+        appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
+    }
+
     @objc private func themeChanged() {
-        view.backgroundColor = DSTheme.c.background
-        topBar.backgroundColor = DSTheme.c.background
-        ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.c.background)
+        let chrome = DSTheme.c
+        view.backgroundColor = chrome.background
+        topBar.backgroundColor = chrome.background
+        ConnectsWebKit.applyReadingSurfaceTuning(webView, background: DSTheme.reader.background)
         webView.scrollView.delegate = self
-        editorView.backgroundColor = DSTheme.c.background
-        editorView.textColor = DSTheme.c.textPrimary
-        progressLabel.textColor = DSTheme.c.textSecondary
-        sidebarButton.tintColor = DSTheme.c.textSecondary
-        contentsButton.tintColor = DSTheme.c.textSecondary
+        editorView.backgroundColor = DSTheme.reader.background
+        editorView.textColor = DSTheme.reader.textPrimary
+        progressLabel.textColor = chrome.textSecondary
+        sidebarButton.tintColor = chrome.textSecondary
+        contentsButton.tintColor = chrome.textSecondary
+        updateAppearanceButton()
         refreshModeChrome()
-        contentsPanelHost.backgroundColor = DSTheme.c.background
-        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.backgroundColor = chrome.background
+        contentsPanelHost.layer.borderColor = chrome.border.cgColor
         shellLoaded = false
         contentReady = false
         loadShellIfNeeded()
@@ -452,7 +487,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let show = isPlanDocument && onBuildPlan != nil
         buildButton.isHidden = !show
         buildButtonWidthConstraint.constant = show ? 56 : 0
-        buildButton.setTitleColor(DSTheme.c.accent, for: .normal)
+        buildButton.setTitleColor(DSTheme.reader.accent, for: .normal)
         buildButton.isUserInteractionEnabled = show
         if show {
             // Keep Build above sibling chrome so taps aren't swallowed.
@@ -479,7 +514,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     private func refreshModeChrome() {
-        let c = DSTheme.c
+        let c = DSTheme.reader
         let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
         modeButton.setTitle(nil, for: .normal)
         modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
@@ -610,13 +645,13 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         view.addSubview(contentsDim)
 
         contentsPanelHost.translatesAutoresizingMaskIntoConstraints = false
-        contentsPanelHost.backgroundColor = DSTheme.c.background
+        contentsPanelHost.backgroundColor = DSTheme.reader.background
         contentsPanelHost.layer.shadowColor = UIColor.black.cgColor
         contentsPanelHost.layer.shadowOpacity = 0.12
         contentsPanelHost.layer.shadowRadius = 8
         contentsPanelHost.layer.shadowOffset = CGSize(width: -2, height: 0)
         contentsPanelHost.layer.borderWidth = 1.0 / UIScreen.main.scale
-        contentsPanelHost.layer.borderColor = DSTheme.c.border.cgColor
+        contentsPanelHost.layer.borderColor = DSTheme.reader.border.cgColor
         contentsPanelHost.isHidden = true
         view.addSubview(contentsPanelHost)
 
@@ -708,6 +743,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         topBar.bringSubviewToFront(modeButton)
         topBar.bringSubviewToFront(buildButton)
         topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(appearanceButton)
         topBar.bringSubviewToFront(contentsButton)
     }
 
@@ -926,7 +962,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(bounds: bounds, format: format)
         let image = renderer.image { ctx in
-            DSTheme.c.background.setFill()
+            DSTheme.reader.background.setFill()
             ctx.fill(bounds)
             webView.drawHierarchy(in: bounds, afterScreenUpdates: true)
         }
@@ -1078,9 +1114,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private func loadShellIfNeeded() {
         guard !shellLoaded else { return }
         let html = MarkdownHTMLRenderer.studyShellHTML(
-            textColor: DSTheme.c.textPrimary,
-            backgroundColor: DSTheme.c.background,
-            secondaryColor: DSTheme.c.textSecondary,
+            textColor: DSTheme.reader.textPrimary,
+            backgroundColor: DSTheme.reader.background,
+            secondaryColor: DSTheme.reader.textSecondary,
             fontSize: fontPointSize
         )
         webView.loadHTMLString(html, baseURL: MarkdownHTMLRenderer.resourceBaseURL)

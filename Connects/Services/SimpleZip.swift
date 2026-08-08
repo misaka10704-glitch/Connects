@@ -28,6 +28,10 @@ enum SimpleZip {
             guard nameEnd <= data.count else { throw ZipError.invalidArchive }
             let name = String(data: data.subdata(in: nameStart..<nameEnd), encoding: .utf8) ?? "file"
             let dataStart = nameEnd + extraLen
+            // Never let an archive escape the destination directory.
+            guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else {
+                throw ZipError.invalidArchive
+            }
 
             if (flags & 0x8) != 0 && compSize == 0 {
                 throw ZipError.invalidArchive
@@ -60,11 +64,22 @@ enum SimpleZip {
         guard let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else {
             throw ZipError.readFailed
         }
+        // Resolve both sides: the enumerator hands back `/private/var/…` while
+        // `directory.path` is the `/var/…` symlink, so a plain string strip left every
+        // entry named `/privatevar…` and the archive unusable.
+        let base = directory.resolvingSymlinksInPath().standardizedFileURL.path
         for case let fileURL as URL in enumerator {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: fileURL.path, isDirectory: &isDir), !isDir.boolValue else { continue }
-            let rel = fileURL.path.replacingOccurrences(of: directory.path + "/", with: "")
+            let full = fileURL.resolvingSymlinksInPath().standardizedFileURL.path
+            guard full.hasPrefix(base + "/") else { continue }
+            let rel = String(full.dropFirst(base.count + 1))
+            guard !rel.isEmpty else { continue }
             entries.append((rel, try Data(contentsOf: fileURL)))
+        }
+        // `mimetype` must lead an EPUB; harmless for other bundles.
+        if let i = entries.firstIndex(where: { $0.0 == "mimetype" }), i != 0 {
+            entries.insert(entries.remove(at: i), at: 0)
         }
 
         var localParts = Data()
@@ -74,11 +89,15 @@ enum SimpleZip {
             let nameData = Data(name.utf8)
             let payload = fileData
             let method: UInt16 = 0
+            // Bit 11 marks the name as UTF-8. Without it, readers fall back to CP437
+            // and any non-ASCII entry name comes back mojibake — the entry then no
+            // longer matches the path it is referenced by.
+            let flags: UInt16 = name.allSatisfy(\.isASCII) ? 0 : (1 << 11)
             let crc = crc32(fileData)
             var local = Data()
             appendU32(&local, 0x04034b50)
             appendU16(&local, 20)
-            appendU16(&local, 0)
+            appendU16(&local, flags)
             appendU16(&local, method)
             appendU16(&local, 0)
             appendU16(&local, 0)
@@ -94,7 +113,7 @@ enum SimpleZip {
             appendU32(&cen, 0x02014b50)
             appendU16(&cen, 20)
             appendU16(&cen, 20)
-            appendU16(&cen, 0)
+            appendU16(&cen, flags)
             appendU16(&cen, method)
             appendU16(&cen, 0)
             appendU16(&cen, 0)
