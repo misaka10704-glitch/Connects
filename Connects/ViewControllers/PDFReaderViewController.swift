@@ -72,7 +72,7 @@ final class PDFReaderViewController: UIViewController {
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
         contentsButton.tintColor = DSTheme.c.textSecondary
-        contentsButton.accessibilityLabel = "目录与书签"
+        contentsButton.accessibilityLabel = "目录与标注"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
         topBar.addSubview(contentsButton)
 
@@ -86,9 +86,10 @@ final class PDFReaderViewController: UIViewController {
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
         pdfView.backgroundColor = DSTheme.reader.background
-        pdfView.boxSelect.onBoxFinished = { [weak self] annotation, page in
+        pdfView.boxSelect.onBoxFinished = { [weak self] _, _ in
+            // Keep the box; open the note sheet only when the user taps it.
             self?.markAnnotationsDirty(persistSoon: false)
-            self?.presentNoteEditor(for: annotation, on: page, afterStroke: true)
+            self?.refreshContentsPanel()
         }
         pdfView.boxSelect.onBoxAdjusted = { [weak self] _, _ in
             self?.markAnnotationsDirty(persistSoon: true)
@@ -99,7 +100,7 @@ final class PDFReaderViewController: UIViewController {
             self?.liftReaderChromeAboveInk()
         }
         pdfView.noteTap.onTapHighlight = { [weak self] annotation, page in
-            self?.presentNoteEditor(for: annotation, on: page, afterStroke: false)
+            self?.presentNoteEditor(for: annotation, on: page)
         }
         if #available(iOS 11.0, *) {
             pdfView.usePageViewController(false)
@@ -422,7 +423,7 @@ final class PDFReaderViewController: UIViewController {
         highlightPenButton.clipsToBounds = true
     }
 
-    private func presentNoteEditor(for annotation: PDFAnnotation, on page: PDFPage, afterStroke: Bool) {
+    private func presentNoteEditor(for annotation: PDFAnnotation, on page: PDFPage) {
         if ConnectsNoteSheet.isVisible { return }
         // Stay in box-select mode so the user can keep adjusting frames without re-arming.
         let existing = annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -461,13 +462,6 @@ final class PDFReaderViewController: UIViewController {
                 self?.pdfView.boxSelect.refreshScrollLock()
             },
             onCancel: { [weak self] in
-                if afterStroke {
-                    page.removeAnnotation(annotation)
-                    self?.pdfView.highlighter.removeCommittedStroke(annotation)
-                    self?.pdfView.boxSelect.refreshCaptions()
-                    self?.markAnnotationsDirty(persistSoon: false)
-                    self?.refreshContentsPanel()
-                }
                 self?.pdfView.boxSelect.refreshScrollLock()
             }
         )
@@ -696,15 +690,6 @@ final class PDFReaderViewController: UIViewController {
             self.updatePageLabel()
             self.scheduleProgressSave()
         }
-        contentsVC.onSelectPageIndex = { [weak self] pageIndex in
-            guard let self = self,
-                  let document = self.pdfView.document,
-                  let page = document.page(at: pageIndex) else { return }
-            self.pdfView.go(to: page)
-            self.setContentsPanelVisible(false, animated: true)
-            self.updatePageLabel()
-            self.scheduleProgressSave()
-        }
         contentsVC.onSelectAnnotation = { [weak self] annotation, pageIndex in
             guard let self = self,
                   let document = self.pdfView.document,
@@ -724,15 +709,6 @@ final class PDFReaderViewController: UIViewController {
             self.pdfView.boxSelect.refreshCaptions()
             self.pdfView.boxSelect.refreshScrollLock()
             self.markAnnotationsDirty(persistSoon: true)
-        }
-        contentsVC.currentPageIndexProvider = { [weak self] in
-            guard let self = self, let doc = self.pdfView.document, let page = self.pdfView.currentPage else {
-                return 0
-            }
-            return doc.index(for: page)
-        }
-        contentsVC.currentPageLabelProvider = { [weak self] in
-            self?.currentPageLabel() ?? ""
         }
 
         contentsPanelWidth = contentsPanelHost.widthAnchor.constraint(equalToConstant: contentsPanelWidthConstant)

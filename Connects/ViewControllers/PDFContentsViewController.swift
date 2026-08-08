@@ -1,17 +1,15 @@
 import UIKit
 import PDFKit
 
-/// Side panel with one-tap cycle: 目录 → 书签 → 标注 → …
+/// Side panel with one-tap cycle: 目录 → 标注 → …
 final class PDFContentsViewController: UIViewController {
     enum Tab: Int, CaseIterable {
         case outline = 0
-        case bookmarks = 1
-        case annotations = 2
+        case annotations = 1
 
         var title: String {
             switch self {
             case .outline: return "目录"
-            case .bookmarks: return "书签"
             case .annotations: return "标注"
             }
         }
@@ -36,23 +34,18 @@ final class PDFContentsViewController: UIViewController {
     }
 
     private let titleButton = UIButton(type: .system)
-    private let addBookmarkButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let emptyLabel = UILabel()
 
     private var activeTab: Tab = .outline
     private var outlineRows: [OutlineRow] = []
-    private var bookmarkRows: [PDFBookmark] = []
     private var annotationRows: [AnnotationRow] = []
 
     var document: PDFDocument?
     var documentID: String?
     var onSelectDestination: ((PDFDestination) -> Void)?
-    var onSelectPageIndex: ((Int) -> Void)?
     var onSelectAnnotation: ((PDFAnnotation, Int) -> Void)?
     var onDeleteAnnotation: ((PDFAnnotation, Int) -> Void)?
-    var currentPageIndexProvider: (() -> Int)?
-    var currentPageLabelProvider: (() -> String)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -62,14 +55,8 @@ final class PDFContentsViewController: UIViewController {
         titleButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         titleButton.contentHorizontalAlignment = .leading
         titleButton.addTarget(self, action: #selector(switchTabTapped), for: .touchUpInside)
-        titleButton.accessibilityHint = "点按切换目录、书签与标注"
+        titleButton.accessibilityHint = "点按切换目录与标注"
         view.addSubview(titleButton)
-
-        addBookmarkButton.translatesAutoresizingMaskIntoConstraints = false
-        addBookmarkButton.setTitle("添加", for: .normal)
-        addBookmarkButton.titleLabel?.font = UIFont.systemFont(ofSize: 13)
-        addBookmarkButton.addTarget(self, action: #selector(addBookmarkTapped), for: .touchUpInside)
-        view.addSubview(addBookmarkButton)
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
@@ -94,13 +81,8 @@ final class PDFContentsViewController: UIViewController {
         NSLayoutConstraint.activate([
             titleButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
             titleButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            titleButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             titleButton.heightAnchor.constraint(equalToConstant: 32),
-
-            addBookmarkButton.centerYAnchor.constraint(equalTo: titleButton.centerYAnchor),
-            addBookmarkButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            addBookmarkButton.leadingAnchor.constraint(greaterThanOrEqualTo: titleButton.trailingAnchor, constant: 8),
-
-            titleButton.trailingAnchor.constraint(lessThanOrEqualTo: addBookmarkButton.leadingAnchor, constant: -8),
 
             tableView.topAnchor.constraint(equalTo: titleButton.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -123,11 +105,6 @@ final class PDFContentsViewController: UIViewController {
 
     func reloadData() {
         outlineRows = collectOutlineRows(from: document?.outlineRoot)
-        if let documentID {
-            bookmarkRows = PDFBookmarkStore.shared.bookmarks(for: documentID)
-        } else {
-            bookmarkRows = []
-        }
         annotationRows = collectBoxAnnotations(from: document)
         updateChrome()
         tableView.reloadData()
@@ -139,22 +116,18 @@ final class PDFContentsViewController: UIViewController {
         tableView.backgroundColor = c.background
         titleButton.setTitleColor(c.textPrimary, for: .normal)
         titleButton.tintColor = c.textPrimary
-        addBookmarkButton.tintColor = c.accent
         emptyLabel.textColor = c.textSecondary
     }
 
     private func updateChrome() {
         applyTheme()
-        // Title itself is the switch: tap 「目录」→「书签」→「标注」
+        // Title itself is the switch: tap 「目录」→「标注」
         titleButton.setTitle("\(activeTab.title) ▾", for: .normal)
         titleButton.accessibilityLabel = activeTab.title
         titleButton.contentHorizontalAlignment = .leading
-        addBookmarkButton.isHidden = activeTab != .bookmarks
         switch activeTab {
         case .outline:
             emptyLabel.text = outlineRows.isEmpty ? "未找到标题" : nil
-        case .bookmarks:
-            emptyLabel.text = bookmarkRows.isEmpty ? "暂无书签" : nil
         case .annotations:
             emptyLabel.text = annotationRows.isEmpty ? "暂无标注" : nil
         }
@@ -165,35 +138,6 @@ final class PDFContentsViewController: UIViewController {
         activeTab = activeTab.next
         updateChrome()
         tableView.reloadData()
-    }
-
-    @objc private func addBookmarkTapped() {
-        guard let documentID = documentID,
-              let pageIndex = currentPageIndexProvider?() else { return }
-        let defaultTitle = currentPageLabelProvider?() ?? "第 \(pageIndex + 1) 页"
-        promptBookmarkTitle(defaultTitle: defaultTitle) { [weak self] title in
-            guard let self = self,
-                  let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !title.isEmpty else { return }
-            PDFBookmarkStore.shared.add(
-                PDFBookmark(title: title, pageIndex: pageIndex),
-                documentID: documentID
-            )
-            self.reloadData()
-        }
-    }
-
-    private func promptBookmarkTitle(defaultTitle: String, completion: @escaping (String?) -> Void) {
-        let alert = UIAlertController(title: "添加书签", message: nil, preferredStyle: .alert)
-        alert.addTextField { field in
-            field.text = defaultTitle
-            field.clearButtonMode = .whileEditing
-        }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in completion(nil) })
-        alert.addAction(UIAlertAction(title: "添加", style: .default) { _ in
-            completion(alert.textFields?.first?.text)
-        })
-        present(alert, animated: true)
     }
 
     private func collectOutlineRows(from outline: PDFOutline?, level: Int = 0) -> [OutlineRow] {
@@ -239,7 +183,6 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch activeTab {
         case .outline: return outlineRows.count
-        case .bookmarks: return bookmarkRows.count
         case .annotations: return annotationRows.count
         }
     }
@@ -272,12 +215,6 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
             let indent = CGFloat(min(row.level, 6)) * 10
             cell.separatorInset = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
             cell.layoutMargins = UIEdgeInsets(top: 0, left: 12 + indent, bottom: 0, right: 10)
-        case .bookmarks:
-            let row = bookmarkRows[indexPath.row]
-            cell.textLabel?.text = row.title
-            cell.textLabel?.numberOfLines = 2
-            cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
-            cell.detailTextLabel?.text = "第 \(row.pageIndex + 1) 页"
         case .annotations:
             let row = annotationRows[indexPath.row]
             let raw = row.annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -313,8 +250,6 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
         switch activeTab {
         case .outline:
             onSelectDestination?(outlineRows[indexPath.row].destination)
-        case .bookmarks:
-            onSelectPageIndex?(bookmarkRows[indexPath.row].pageIndex)
         case .annotations:
             let row = annotationRows[indexPath.row]
             onSelectAnnotation?(row.annotation, row.pageIndex)
@@ -326,24 +261,6 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         switch activeTab {
-        case .bookmarks:
-            guard let documentID else { return nil }
-            guard bookmarkRows.indices.contains(indexPath.row) else { return nil }
-            let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
-                guard let self, self.bookmarkRows.indices.contains(indexPath.row) else {
-                    done(false)
-                    return
-                }
-                let id = self.bookmarkRows[indexPath.row].id
-                self.bookmarkRows.remove(at: indexPath.row)
-                PDFBookmarkStore.shared.remove(id: id, documentID: documentID)
-                tableView.deleteRows(at: [indexPath], with: .fade)
-                self.updateChrome()
-                done(true)
-            }
-            let config = UISwipeActionsConfiguration(actions: [delete])
-            config.performsFirstActionWithFullSwipe = true
-            return config
         case .annotations:
             guard annotationRows.indices.contains(indexPath.row) else { return nil }
             let delete = UIContextualAction(style: .destructive, title: "删除") { [weak self] _, _, done in
