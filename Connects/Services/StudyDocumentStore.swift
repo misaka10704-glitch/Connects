@@ -488,7 +488,9 @@ final class StudyDocumentStore {
         try writePDFData(data, for: documentID, keepingCached: pdf)
     }
 
-    /// Disk write only — safe off the main thread. Call after `dataRepresentation()` on main.
+    /// Disk write only — safe off the main thread. Pair with
+    /// `dataRepresentation()` performed on a background queue as well; keeping
+    /// serialization on the main thread freezes the reader on large PDFs.
     func writePDFData(_ data: Data, for documentID: String, keepingCached pdf: PDFDocument? = nil) throws {
         let url = try resolvedURL(forID: documentID)
         var writeError: Error?

@@ -1328,13 +1328,9 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
           /// Clean up what WebKit handed us.
           ///
           /// Dragging the handle onto a paragraph's first character makes WebKit
-          /// extend the selection back over the previous paragraph's tail, so a
-          /// highlight meant for one paragraph swallows a stray 。 from the one
-          /// above. When the part sitting in the outer paragraph is only
-          /// whitespace and punctuation, nobody meant to select it — drop it and
-          /// start at the paragraph the selection is really about. Anything with
-          /// real words in it is left alone, so deliberate multi-paragraph
-          /// selections still work.
+          /// extend the selection back over the previous paragraph's tail. Drop a
+          /// leading/trailing fragment that is only punctuation/whitespace, or a
+          /// tiny overshoot (a couple of characters) relative to the main span.
           function tidySelection(ix, start, end){
             if (!ix || !ix.blockIds || !ix.blockRanges) return { start: start, end: end };
             function trimEdges(s, e){
@@ -1350,28 +1346,84 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             if (firstBlock === lastBlock) return r;
 
             var head = ix.blockRanges[firstBlock];
-            if (head && !hasWords(ix.text.slice(r.start, Math.min(head.end, r.end)))) {
-              r = trimEdges(Math.min(head.end, r.end), r.end);
-              if (r.end <= r.start) return null;
-              lastBlock = ix.blockIds[nodeAt(ix, r.end - 1)];
+            if (head) {
+              var headEnd = Math.min(head.end, r.end);
+              var headSlice = ix.text.slice(r.start, headEnd);
+              var headLen = headEnd - r.start;
+              var totalLen = r.end - r.start;
+              // Punctuation-only spill, or a 1–3 char grab of the previous
+              // paragraph while the real selection lives in the next one.
+              if (!hasWords(headSlice) || (headLen <= 3 && totalLen > headLen * 3)) {
+                r = trimEdges(headEnd, r.end);
+                if (r.end <= r.start) return null;
+                lastBlock = ix.blockIds[nodeAt(ix, r.end - 1)];
+              }
             }
             var tail = ix.blockRanges[lastBlock];
-            if (tail && !hasWords(ix.text.slice(Math.max(tail.start, r.start), r.end))) {
-              r = trimEdges(r.start, Math.max(tail.start, r.start));
-              if (r.end <= r.start) return null;
+            if (tail) {
+              var tailStart = Math.max(tail.start, r.start);
+              var tailSlice = ix.text.slice(tailStart, r.end);
+              var tailLen = r.end - tailStart;
+              var leftLen = r.end - r.start;
+              if (!hasWords(tailSlice) || (tailLen <= 3 && leftLen > tailLen * 3)) {
+                r = trimEdges(r.start, tailStart);
+                if (r.end <= r.start) return null;
+              }
             }
             return r;
           }
 
-          /// Offsets first, quote search second — reflow never moves text, but a
-          /// re-exported package might.
+          function offsetOfInIndex(ix, container, offset){
+            if (container && container.nodeType === 3) {
+              var i = ix.nodes.indexOf(container);
+              if (i >= 0) return ix.starts[i] + offset;
+            }
+            try {
+              var probe = document.createRange();
+              probe.setStart(ix.nodes[0], 0);
+              probe.setEnd(container, offset);
+              return probe.toString().length;
+            } catch (e) { return -1; }
+          }
+
+          /// Shrink the live WebKit selection when it has spilled into the
+          /// neighbouring paragraph. Called on finger-up (and coalesced during
+          /// drag) so the handles are not glued to the previous paragraph's tail.
+          function clampSelection(){
+            var sel = window.getSelection && window.getSelection();
+            if (!sel || sel.isCollapsed || sel.rangeCount < 1) return false;
+            var ix = index();
+            if (!ix || !ix.nodes.length) return false;
+            var range = sel.getRangeAt(0);
+            var s = offsetOfInIndex(ix, range.startContainer, range.startOffset);
+            var e2 = offsetOfInIndex(ix, range.endContainer, range.endOffset);
+            if (s < 0 || e2 < 0 || e2 <= s) return false;
+            var t = tidySelection(ix, s, e2);
+            if (!t || (t.start === s && t.end === e2)) return false;
+            var nr = makeRange(t.start, t.end);
+            if (!nr) return false;
+            try {
+              sel.removeAllRanges();
+              sel.addRange(nr);
+              window.__connectsSavedRange = nr.cloneRange();
+              window.__connectsSavedText = normalize(ix.text.slice(t.start, t.end));
+              return true;
+            } catch (err) { return false; }
+          }
+
+          /// Prefer the offsets we just captured. A mismatched quote used to discard
+          /// them and fall through to a search that often failed for new highlights,
+          /// so the underline never appeared even though the sidebar had the row.
           function resolveOffsets(item){
             var ix = index();
             if (!ix) return null;
             var quote = normalize(item.quote);
-            if (typeof item.start === 'number' && typeof item.end === 'number' && item.end > item.start) {
+            if (typeof item.start === 'number' && typeof item.end === 'number'
+                && item.end > item.start && item.start >= 0 && item.end <= ix.len) {
               var got = normalize(ix.text.slice(item.start, item.end));
-              if (!quote || got === quote) return { start: item.start, end: item.end };
+              if (!quote || got === quote || got.length > 0) {
+                return { start: item.start, end: item.end };
+              }
             }
             if (!quote) return null;
             var at = ix.text.indexOf(quote);
@@ -1547,6 +1599,9 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             },
             add: function(raw){
               if (!raw || !raw.id) return false;
+              // Fresh index — a prior page-window restore can leave offsets pointing
+              // at detached nodes, which made brand-new highlights attach as null.
+              idx = null;
               var it = {
                 id: raw.id,
                 start: raw.start,
@@ -1575,30 +1630,21 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
               return true;
             },
             has: function(id){ return !!(items[id] && items[id].range); },
+            clampSelection: clampSelection,
             /// Offsets for the range stashed when the color bar came up.
             capture: function(){
               var ix = index();
               if (!ix || !ix.nodes.length) return null;
+              // Tidy the live selection first so stash + offsets agree.
+              try { clampSelection(); } catch (e) {}
               var range = window.__connectsSavedRange;
               if (!range) {
                 var sel = window.getSelection && window.getSelection();
                 if (sel && !sel.isCollapsed && sel.rangeCount > 0) range = sel.getRangeAt(0);
               }
               if (!range) return null;
-              function offsetOf(container, offset){
-                if (container && container.nodeType === 3) {
-                  var i = ix.nodes.indexOf(container);
-                  if (i >= 0) return ix.starts[i] + offset;
-                }
-                try {
-                  var probe = document.createRange();
-                  probe.setStart(ix.nodes[0], 0);
-                  probe.setEnd(container, offset);
-                  return probe.toString().length;
-                } catch (e) { return -1; }
-              }
-              var s = offsetOf(range.startContainer, range.startOffset);
-              var e2 = offsetOf(range.endContainer, range.endOffset);
+              var s = offsetOfInIndex(ix, range.startContainer, range.startOffset);
+              var e2 = offsetOfInIndex(ix, range.endContainer, range.endOffset);
               if (s < 0 || e2 < 0 || e2 <= s) return null;
               var t = tidySelection(ix, s, e2);
               if (!t) return null;
@@ -1797,6 +1843,13 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
           }
           function emit() {
             try {
+              // Peel a spilled previous-paragraph tail before the color bar reads
+              // the selection, so the handles and the saved range agree.
+              try {
+                if (window.__connectsAnn && window.__connectsAnn.clampSelection) {
+                  window.__connectsAnn.clampSelection();
+                }
+              } catch (ce) {}
               var sel = window.getSelection && window.getSelection();
               if (!sel || sel.isCollapsed || sel.rangeCount < 1) return;
               var t = (sel.toString() || '').replace(/\\s+/g, ' ').trim();
@@ -1837,6 +1890,18 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
                 // Returning false from the native menu often collapses selection while
                 // the bar is up — wiping the stash made every highlight paint fail.
                 return;
+              }
+              // Coalesce: peel a punctuation spill without fighting every micro-move.
+              if (!window.__connectsClampScheduled) {
+                window.__connectsClampScheduled = true;
+                setTimeout(function(){
+                  window.__connectsClampScheduled = false;
+                  try {
+                    if (window.__connectsAnn && window.__connectsAnn.clampSelection) {
+                      window.__connectsAnn.clampSelection();
+                    }
+                  } catch (ce) {}
+                }, 40);
               }
               // Keep stash fresh every time selection exists (menu-suppress clears
               // the live selection before native async stash can run).
@@ -3075,13 +3140,20 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             )
             if ann.quote?.isEmpty != false { ann.quote = highlightText }
 
-            let painted = await self.addAnnotationToPage(ann)
+            // List it before painting. A locationDidChange sync that races the
+            // clearSelection below used to call setAll without this id and wipe
+            // the just-added underline.
+            self.epubAnnotations.append(ann)
+
+            var painted = await self.addAnnotationToPage(ann)
+            if !painted {
+                // One more try via the full-chapter sync path.
+                let sync = await self.syncAnnotationsToPage(alwaysInclude: ann.id)
+                painted = sync.attached > 0
+            }
             nav.clearSelection()
             await self.clearStashedSelectionRange()
 
-            // Persist even when the paint failed: the annotation still lists in the
-            // sidebar and repaints on the next chapter load.
-            self.epubAnnotations.append(ann)
             // Record the page it landed on now, while it is on screen, so a later
             // jump is a single navigator move instead of a search.
             if painted {
@@ -3162,18 +3234,14 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             dismissSelectionChrome(clearNativeSelection: true)
         }
         // If pinch left the chapter DOM truncated, restore before the user notices a
-        // full-chapter rebuild mid page-turn.
-        if !isJumpingToAnnotation {
-            Task { @MainActor in
-                await self.restorePageWindowIfTruncated()
-            }
-        }
-        // Debounced: repaint the chapter now on screen (not the whole book).
+        // full-chapter rebuild mid page-turn — then repaint so CSS highlights are not
+        // left pointing at detached nodes (that is what made brand-new underlines vanish).
         markRestoreTask?.cancel()
         markRestoreTask = Task { @MainActor in
-            // Short: painting the whole chapter measures in single-digit ms, so a
-            // long debounce only made highlights fade in late.
-            try? await Task.sleep(nanoseconds: 60_000_000)
+            if !self.isJumpingToAnnotation {
+                await self.restorePageWindowIfTruncated()
+            }
+            try? await Task.sleep(nanoseconds: 40_000_000)
             guard !Task.isCancelled,
                   !self.isFontPinching,
                   !self.isCommittingHighlight,

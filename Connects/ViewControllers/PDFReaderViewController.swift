@@ -4,6 +4,8 @@ import PDFKit
 final class PDFReaderViewController: UIViewController {
     private let topBar = UIView()
     private let topBarSeparator = UIView()
+    /// Opaque fill for the status-bar band so PDF/overlay pixels cannot show through.
+    private let statusBarCover = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let highlightPenButton = UIButton(type: .system)
     private let appearanceButton = UIButton(type: .system)
@@ -31,6 +33,9 @@ final class PDFReaderViewController: UIViewController {
     private var contentsPanelTrailing: NSLayoutConstraint!
     private var isContentsPanelVisible = false
     private let contentsPanelWidthConstant: CGFloat = 220
+    /// Side panel scans every page; never do that on the box-gesture release path.
+    private var contentsPanelNeedsReload = false
+    private var contentsReloadWork: DispatchWorkItem?
     private var lastLayoutSize: CGSize = .zero
     private var isRestoringViewport = false
     private var isShellRotating = false
@@ -50,6 +55,12 @@ final class PDFReaderViewController: UIViewController {
         topBar.backgroundColor = DSTheme.c.background
         topBar.isOpaque = true
         view.addSubview(topBar)
+
+        statusBarCover.translatesAutoresizingMaskIntoConstraints = false
+        statusBarCover.backgroundColor = DSTheme.c.background
+        statusBarCover.isOpaque = true
+        statusBarCover.isUserInteractionEnabled = false
+        view.addSubview(statusBarCover)
 
         topBarSeparator.translatesAutoresizingMaskIntoConstraints = false
         topBarSeparator.backgroundColor = DSTheme.c.border.withAlphaComponent(0.55)
@@ -86,14 +97,17 @@ final class PDFReaderViewController: UIViewController {
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
         pdfView.backgroundColor = DSTheme.reader.background
+        pdfView.clipsToBounds = true
         pdfView.boxSelect.onBoxFinished = { [weak self] _, _ in
             // Keep the box; open the note sheet only when the user taps it.
+            // Leave annotation mode immediately to avoid accidental extra boxes.
             self?.markAnnotationsDirty(persistSoon: false)
-            self?.refreshContentsPanel()
+            self?.scheduleContentsPanelReload()
+            self?.turnOffHighlightPen(persistIfDirty: true)
         }
         pdfView.boxSelect.onBoxAdjusted = { [weak self] _, _ in
             self?.markAnnotationsDirty(persistSoon: true)
-            self?.refreshContentsPanel()
+            self?.scheduleContentsPanelReload()
         }
         // Legacy ink remains visible via overlay; new marks are dashed boxes.
         pdfView.highlighter.onOverlaysReordered = { [weak self] in
@@ -139,6 +153,11 @@ final class PDFReaderViewController: UIViewController {
         view.addSubview(spinner)
 
         NSLayoutConstraint.activate([
+            statusBarCover.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            statusBarCover.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            statusBarCover.topAnchor.constraint(equalTo: view.topAnchor),
+            statusBarCover.bottomAnchor.constraint(equalTo: topBar.topAnchor),
+
             topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -329,7 +348,7 @@ final class PDFReaderViewController: UIViewController {
         if isContentsPanelVisible {
             setContentsPanelVisible(false, animated: true)
         } else {
-            refreshContentsPanel()
+            refreshContentsPanelNow()
             setContentsPanelVisible(true, animated: true)
         }
     }
@@ -339,6 +358,8 @@ final class PDFReaderViewController: UIViewController {
         view.backgroundColor = chrome.background
         topBar.backgroundColor = chrome.background
         topBar.isOpaque = true
+        statusBarCover.backgroundColor = chrome.background
+        statusBarCover.isOpaque = true
         topBarSeparator.backgroundColor = chrome.border.withAlphaComponent(0.55)
         fileTitleButton.setTitleColor(chrome.textPrimary, for: .normal)
         sidebarButton.tintColor = chrome.textSecondary
@@ -391,7 +412,9 @@ final class PDFReaderViewController: UIViewController {
         pdfView.boxSelect.setEnabled(false)
         pdfView.highlighter.setEnabled(false)
         if persistIfDirty, annotationsDirty {
-            schedulePersistPDFAnnotations(delay: 1.5)
+            // Short settle so the unlock paint finishes first; serialize itself is
+            // off the main thread (see persistPDFAnnotationsNow).
+            schedulePersistPDFAnnotations(delay: 0.35)
         }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .connectsStudyStageChromeShouldReassert, object: nil)
@@ -402,6 +425,7 @@ final class PDFReaderViewController: UIViewController {
     private func bringHighlightChromeToFront() {
         pdfView.boxSelect.ensureOverlayInstalled()
         pdfView.highlighter.ensureOverlayZOrder()
+        liftReaderChromeAboveInk()
     }
 
     /// Top bar / separator / drawer must sit above ink so strokes never paint through chrome.
@@ -410,6 +434,7 @@ final class PDFReaderViewController: UIViewController {
             view.bringSubviewToFront(contentsDim)
         }
         view.bringSubviewToFront(contentsPanelHost)
+        view.bringSubviewToFront(statusBarCover)
         view.bringSubviewToFront(topBar)
         view.bringSubviewToFront(topBarSeparator)
         view.bringSubviewToFront(spinner)
@@ -450,7 +475,7 @@ final class PDFReaderViewController: UIViewController {
                 }
                 self?.pdfView.boxSelect.refreshCaptions()
                 self?.markAnnotationsDirty(persistSoon: false)
-                self?.refreshContentsPanel()
+                self?.scheduleContentsPanelReload()
                 self?.pdfView.boxSelect.refreshScrollLock()
             },
             onDelete: { [weak self] in
@@ -458,7 +483,7 @@ final class PDFReaderViewController: UIViewController {
                 self?.pdfView.highlighter.removeCommittedStroke(annotation)
                 self?.pdfView.boxSelect.refreshCaptions()
                 self?.markAnnotationsDirty(persistSoon: false)
-                self?.refreshContentsPanel()
+                self?.scheduleContentsPanelReload()
                 self?.pdfView.boxSelect.refreshScrollLock()
             },
             onCancel: { [weak self] in
@@ -511,47 +536,43 @@ final class PDFReaderViewController: UIViewController {
         }
         isPersistingAnnotations = true
         annotationsDirty = false
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if self.isHighlightPenOn
-                || self.pdfView.highlighter.isActivelyHighlighting
-                || self.pdfView.boxSelect.isActivelySelecting
-                || ConnectsNoteSheet.isVisible {
-                self.isPersistingAnnotations = false
-                self.annotationsDirty = true
-                self.schedulePersistPDFAnnotations(delay: 2.0)
-                return
-            }
-            // Highlights are written with a real alpha so other PDF readers show them.
+
+        // `dataRepresentation()` on a large PDF used to run on the main thread here,
+        // which made "turn off 框选标注" freeze the reader for seconds after any
+        // new boxes. Keep colour swap + serialize on a utility queue — the flush
+        // path already does the same, and the disk write is documented as
+        // background-safe.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
             let data = ConnectsInk.withFileColors(in: doc) { doc.dataRepresentation() }
-            DispatchQueue.global(qos: .utility).async {
-                var errorMessage: String?
-                if let data = data {
-                    do {
-                        try StudyDocumentStore.shared.writePDFData(data, for: docID, keepingCached: doc)
-                    } catch {
-                        errorMessage = error.localizedDescription
-                    }
-                } else {
-                    errorMessage = StudyDocumentError.writeFailed.localizedDescription
-                    DispatchQueue.main.async { self.annotationsDirty = true }
+            var errorMessage: String?
+            if let data {
+                do {
+                    try StudyDocumentStore.shared.writePDFData(data, for: docID, keepingCached: doc)
+                } catch {
+                    errorMessage = error.localizedDescription
                 }
-                DispatchQueue.main.async {
-                    self.isPersistingAnnotations = false
-                    if let errorMessage = errorMessage {
-                        ConnectsToast.show("保存失败：\(errorMessage)", in: self.view, duration: 2.0)
-                    }
-                    if self.needsAnotherPersist || self.annotationsDirty {
-                        self.needsAnotherPersist = false
-                        self.schedulePersistPDFAnnotations(delay: 2.0)
-                    }
+            } else {
+                errorMessage = StudyDocumentError.writeFailed.localizedDescription
+            }
+            DispatchQueue.main.async {
+                self.isPersistingAnnotations = false
+                if data == nil || errorMessage != nil {
+                    self.annotationsDirty = true
+                }
+                if let errorMessage {
+                    ConnectsToast.show("保存失败：\(errorMessage)", in: self.view, duration: 2.0)
+                }
+                if self.needsAnotherPersist || self.annotationsDirty {
+                    self.needsAnotherPersist = false
+                    self.schedulePersistPDFAnnotations(delay: 2.0)
                 }
             }
         }
     }
 
     /// Flush pending annotation writes. Default is deferred so conversation switches / panel
-    /// ops stay snappy — `dataRepresentation()` on a large PDF blocks the main thread hard.
+    /// ops stay snappy — `dataRepresentation()` on a large PDF is expensive.
     func flushAnnotationPersistIfNeeded(synchronous: Bool = false) {
         persistWorkItem?.cancel()
         persistWorkItem = nil
@@ -559,11 +580,11 @@ final class PDFReaderViewController: UIViewController {
         annotationsDirty = false
 
         let writeBlock = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            // Serialize off the main thread — large PDFs block UI for hundreds of ms.
+            guard let self else { return }
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                guard let self = self else { return }
-                guard let data = doc.dataRepresentation() else {
+                guard let self else { return }
+                let data = ConnectsInk.withFileColors(in: doc) { doc.dataRepresentation() }
+                guard let data else {
                     DispatchQueue.main.async { self.annotationsDirty = true }
                     return
                 }
@@ -615,6 +636,10 @@ final class PDFReaderViewController: UIViewController {
     private func applyPDFColorInvert() {
         let dark = ReaderThemeManager.shared.mode == .dark
         pdfView.highlighter.darkInvertActive = dark
+        pdfView.boxSelect.darkInvertActive = dark
+        if let document = pdfView.document {
+            ConnectsInk.normalizeForDisplay(in: document, darkInvertActive: dark)
+        }
         if dark {
             // Difference needs a light backdrop; paperLift then raises #000 → DSTheme dark gray.
             pdfView.backgroundColor = .white
@@ -709,6 +734,7 @@ final class PDFReaderViewController: UIViewController {
             self.pdfView.boxSelect.refreshCaptions()
             self.pdfView.boxSelect.refreshScrollLock()
             self.markAnnotationsDirty(persistSoon: true)
+            self.scheduleContentsPanelReload()
         }
 
         contentsPanelWidth = contentsPanelHost.widthAnchor.constraint(equalToConstant: contentsPanelWidthConstant)
@@ -739,15 +765,38 @@ final class PDFReaderViewController: UIViewController {
         setContentsPanelVisible(false, animated: true)
     }
 
-    private func refreshContentsPanel() {
+    /// Reload the side panel now (open button / forced). Scans every page — never call
+    /// this from the box-gesture release path.
+    private func refreshContentsPanelNow() {
+        contentsReloadWork?.cancel()
+        contentsReloadWork = nil
         contentsVC.document = pdfView.document
         contentsVC.documentID = currentDocumentID
         contentsVC.reloadData()
+        contentsPanelNeedsReload = false
+    }
+
+    /// Cheap: if the panel is closed, just remember to rebuild when it opens. If it is
+    /// open, debounce so a rapid train of box edits does not re-walk the whole PDF.
+    private func scheduleContentsPanelReload() {
+        guard isContentsPanelVisible else {
+            contentsPanelNeedsReload = true
+            return
+        }
+        contentsReloadWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.refreshContentsPanelNow()
+        }
+        contentsReloadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: work)
     }
 
     private func setContentsPanelVisible(_ visible: Bool, animated: Bool) {
         isContentsPanelVisible = visible
         if visible {
+            if contentsPanelNeedsReload {
+                refreshContentsPanelNow()
+            }
             contentsDim.isHidden = false
             syncContentsOverlayZOrder()
         }
@@ -812,7 +861,10 @@ final class PDFReaderViewController: UIViewController {
                 self.pdfView.document = document
                 // On disk the ink carries a visible alpha; on screen the overlay draws
                 // it, so damp PDFKit's own paint back down or it renders twice.
-                ConnectsInk.normalizeForDisplay(in: document)
+                ConnectsInk.normalizeForDisplay(
+                    in: document,
+                    darkInvertActive: ReaderThemeManager.shared.mode == .dark
+                )
                 ConnectsBoxAnnotation.migrate(in: document)
                 // Document swap reinstalls PDFKit recognizers — kill selection again.
                 self.pdfView.suppressNativeTextInteraction()

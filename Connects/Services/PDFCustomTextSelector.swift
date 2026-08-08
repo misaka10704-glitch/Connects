@@ -20,34 +20,87 @@ enum ConnectsInk {
     static let onScreen = UIColor(red: 1.0, green: 0.92, blue: 0.12, alpha: 0.02)
     static let inFile = UIColor(red: 1.0, green: 0.92, blue: 0.12, alpha: 0.32)
 
+    /// Visible cyan painted by PDFKit so zoom/scroll stay glued to the page.
+    /// (Earlier near-clear + overlay frames caused pinch-zoom drift.)
+    static let boxOnScreen = UIColor(red: 0.18, green: 0.78, blue: 0.86, alpha: 0.95)
+    /// Pre-inverted companion: after white+difference blend ≈ `boxOnScreen` cyan.
+    static let boxOnScreenUnderInvert = UIColor(red: 0.82, green: 0.22, blue: 0.14, alpha: 0.95)
+    static let boxInFile = UIColor(
+        red: ReadingAnnotationStyle.pdfBoxRed.r,
+        green: ReadingAnnotationStyle.pdfBoxRed.g,
+        blue: ReadingAnnotationStyle.pdfBoxRed.b,
+        alpha: ReadingAnnotationStyle.pdfBoxRed.a
+    )
+    /// Same as on-screen cyan (rubber-band / captions / sidebar).
+    static let boxCommitted = boxOnScreen
+    static let boxCommittedFill = UIColor(red: 0.18, green: 0.78, blue: 0.86, alpha: 0.10)
+
+    static func boxDisplayColor(darkInvertActive: Bool) -> UIColor {
+        darkInvertActive ? boxOnScreenUnderInvert : boxOnScreen
+    }
+
     static func isCommitted(_ annotation: PDFAnnotation) -> Bool {
         annotation.userName == StudyAskSelectionStore.noteAnnotationUserName
     }
 
-    /// Runs `body` with every committed ink stroke temporarily coloured for the
+    static func isBox(_ annotation: PDFAnnotation) -> Bool {
+        if annotation.userName == StudyAskSelectionStore.boxAnnotationUserName { return true }
+        return (annotation.type ?? "").lowercased().contains("square")
+    }
+
+    /// Runs `body` with every committed ink / box temporarily coloured for the
     /// file, then puts the on-screen colour back.
     static func withFileColors<T>(in document: PDFDocument, _ body: () -> T) -> T {
-        var touched: [PDFAnnotation] = []
+        var inkTouched: [PDFAnnotation] = []
+        var boxTouched: [(PDFAnnotation, UIColor, PDFBorder?)] = []
         for index in 0 ..< document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            for annotation in page.annotations where isCommitted(annotation) {
-                annotation.color = inFile
-                touched.append(annotation)
+            for annotation in page.annotations {
+                if isCommitted(annotation) {
+                    annotation.color = inFile
+                    inkTouched.append(annotation)
+                } else if isBox(annotation) {
+                    boxTouched.append((annotation, annotation.color, annotation.border))
+                    annotation.color = boxInFile
+                    let border = PDFBorder()
+                    border.lineWidth = 1.6
+                    border.style = .dashed
+                    annotation.border = border
+                }
             }
         }
-        defer { for annotation in touched { annotation.color = onScreen } }
+        defer {
+            for annotation in inkTouched { annotation.color = onScreen }
+            for (annotation, color, border) in boxTouched {
+                annotation.color = color
+                annotation.border = border
+            }
+        }
         return body()
     }
 
-    /// Undo `inFile` colouring for a document just read from disk, so the overlay
-    /// stroke is not doubled by PDFKit's own paint.
-    static func normalizeForDisplay(in document: PDFDocument) {
+    /// Restore on-screen colours after load / theme change. Boxes are painted by
+    /// PDFKit (native zoom); ink stays near-clear (overlay paints the yellow stroke).
+    static func normalizeForDisplay(in document: PDFDocument, darkInvertActive: Bool = false) {
         for index in 0 ..< document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            for annotation in page.annotations where isCommitted(annotation) {
-                annotation.color = onScreen
+            for annotation in page.annotations {
+                if isCommitted(annotation) {
+                    annotation.color = onScreen
+                } else if isBox(annotation) {
+                    applyBoxDisplayStyle(annotation, darkInvertActive: darkInvertActive)
+                }
             }
         }
+    }
+
+    static func applyBoxDisplayStyle(_ annotation: PDFAnnotation, darkInvertActive: Bool) {
+        annotation.color = boxDisplayColor(darkInvertActive: darkInvertActive)
+        let border = PDFBorder()
+        border.lineWidth = 1.6
+        border.style = .dashed
+        annotation.border = border
+        annotation.interiorColor = UIColor.clear
     }
 }
 
@@ -710,23 +763,12 @@ final class PDFHighlighterTool: NSObject, UIGestureRecognizerDelegate {
     }
 }
 
-/// Dashed red square. Note caption is painted outside the box by `BoxNoteCaptionOverlay`
-/// (PDFKit clips annotation drawing to bounds, so in-box draw cannot sit outside).
+/// Dashed square owned by PDFKit (zooms/scrolls with the page). Note captions outside
+/// the box are still painted by `BoxNoteCaptionOverlay` (PDFKit clips draw to bounds).
 final class ConnectsBoxAnnotation: PDFAnnotation {
-    static func make(bounds: CGRect) -> ConnectsBoxAnnotation {
+    static func make(bounds: CGRect, darkInvertActive: Bool = false) -> ConnectsBoxAnnotation {
         let annotation = ConnectsBoxAnnotation(bounds: bounds, forType: .square, withProperties: nil)
-        let red = UIColor(
-            red: ReadingAnnotationStyle.pdfBoxRed.r,
-            green: ReadingAnnotationStyle.pdfBoxRed.g,
-            blue: ReadingAnnotationStyle.pdfBoxRed.b,
-            alpha: ReadingAnnotationStyle.pdfBoxRed.a
-        )
-        annotation.color = red
-        let border = PDFBorder()
-        border.lineWidth = 1.6
-        border.style = .dashed
-        annotation.border = border
-        annotation.interiorColor = UIColor.clear
+        ConnectsInk.applyBoxDisplayStyle(annotation, darkInvertActive: darkInvertActive)
         annotation.userName = StudyAskSelectionStore.boxAnnotationUserName
         annotation.contents = ""
         annotation.isReadOnly = false
@@ -758,8 +800,8 @@ final class ConnectsBoxAnnotation: PDFAnnotation {
     }
 }
 
-/// Tiny note previews anchored just outside each box (top-left / above the frame).
-/// Scroll locking matches ink: layer translation while flinging, rebuild when idle.
+/// Tiny note previews outside each box (frames themselves are PDFKit annotations).
+/// Drawn above the dark-mode invert stack. Scroll-translate while flinging; rebuild on idle/zoom.
 private final class BoxNoteCaptionOverlay: UIView {
     private static let captionMaxChars = 18
     private static let fontSize: CGFloat = 7
@@ -771,7 +813,8 @@ private final class BoxNoteCaptionOverlay: UIView {
         isOpaque = false
         backgroundColor = .clear
         isUserInteractionEnabled = false
-        clipsToBounds = false
+        // Must clip — scroll translation otherwise paints captions into the status bar.
+        clipsToBounds = true
         host.backgroundColor = .clear
         host.isUserInteractionEnabled = false
         addSubview(host)
@@ -820,59 +863,64 @@ private final class BoxNoteCaptionOverlay: UIView {
             anchorOffset = scroll.contentOffset
         }
 
-        let pages: [PDFPage]
-        if #available(iOS 11.0, *), !pdfView.visiblePages.isEmpty {
-            pages = pdfView.visiblePages
-        } else if let page = pdfView.currentPage {
-            pages = [page]
-        } else {
-            pages = (0..<min(document.pageCount, 3)).compactMap { document.page(at: $0) }
-        }
-
-        let ink = UIColor(
-            red: ReadingAnnotationStyle.pdfBoxRed.r,
-            green: ReadingAnnotationStyle.pdfBoxRed.g,
-            blue: ReadingAnnotationStyle.pdfBoxRed.b,
-            alpha: 0.88
-        )
-        let font = UIFont.systemFont(ofSize: Self.fontSize, weight: .medium)
+        let pages: [PDFPage] = {
+            var indices = Set<Int>()
+            let addNeighbors: (PDFPage) -> Void = { page in
+                let i = document.index(for: page)
+                guard i != NSNotFound else { return }
+                indices.insert(i)
+                if i > 0 { indices.insert(i - 1) }
+                if i + 1 < document.pageCount { indices.insert(i + 1) }
+            }
+            if #available(iOS 11.0, *), !pdfView.visiblePages.isEmpty {
+                pdfView.visiblePages.forEach(addNeighbors)
+            } else if let page = pdfView.currentPage {
+                addNeighbors(page)
+            } else {
+                for i in 0..<min(document.pageCount, 3) { indices.insert(i) }
+            }
+            return indices.sorted().compactMap { document.page(at: $0) }
+        }()
 
         for page in pages {
-            for ann in page.annotations {
-                let isBox = ann.userName == StudyAskSelectionStore.boxAnnotationUserName
-                    || ann is ConnectsBoxAnnotation
-                guard isBox else { continue }
-                let raw = (ann.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !raw.isEmpty else { continue }
-
-                let caption = Self.captionPreview(raw)
-                let b = ann.bounds
-                let topLeftPage = CGPoint(x: b.minX, y: b.maxY)
-                let inPdf = pdfView.convert(topLeftPage, from: page)
-                let corner = convert(inPdf, from: pdfView)
-
-                let label = UILabel()
-                label.font = font
-                label.textColor = ink
-                label.text = caption
-                label.numberOfLines = 1
-                label.lineBreakMode = .byTruncatingTail
-                label.sizeToFit()
-                let maxW = max(36, min(label.bounds.width, bounds.width - 8))
-                label.frame.size.width = min(label.bounds.width, maxW)
-
-                var origin = CGPoint(x: corner.x, y: corner.y - label.bounds.height - 1)
-                if origin.y < 1 {
-                    origin = CGPoint(
-                        x: max(2, corner.x - label.bounds.width - 3),
-                        y: corner.y
-                    )
-                }
-                origin.x = min(max(2, origin.x), max(2, bounds.width - label.bounds.width - 2))
-                label.frame.origin = origin
-                host.addSubview(label)
+            for ann in page.annotations where ConnectsInk.isBox(ann) {
+                addCaption(for: ann, page: page, pdfView: pdfView)
             }
         }
+    }
+
+    private func addCaption(for ann: PDFAnnotation, page: PDFPage, pdfView: PDFView) {
+        let raw = (ann.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+
+        let ink = ConnectsInk.boxCommitted
+        let font = UIFont.systemFont(ofSize: Self.fontSize, weight: .medium)
+        let caption = Self.captionPreview(raw)
+        let b = ann.bounds
+        let topLeftPage = CGPoint(x: b.minX, y: b.maxY)
+        let inPdf = pdfView.convert(topLeftPage, from: page)
+        let corner = convert(inPdf, from: pdfView)
+
+        let label = UILabel()
+        label.font = font
+        label.textColor = ink
+        label.text = caption
+        label.numberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        label.sizeToFit()
+        let maxW = max(36, min(label.bounds.width, bounds.width - 8))
+        label.frame.size.width = min(label.bounds.width, maxW)
+
+        var origin = CGPoint(x: corner.x, y: corner.y - label.bounds.height - 1)
+        if origin.y < 1 {
+            origin = CGPoint(
+                x: max(2, corner.x - label.bounds.width - 3),
+                y: corner.y
+            )
+        }
+        origin.x = min(max(2, origin.x), max(2, bounds.width - label.bounds.width - 2))
+        label.frame.origin = origin
+        host.addSubview(label)
     }
 
     private static func captionPreview(_ text: String) -> String {
@@ -1162,10 +1210,11 @@ private final class HighlightDrawOverlay: UIView {
     }
 }
 
-/// MarginNote-style dashed red rectangle selector for scanned PDFs.
+/// MarginNote-style dashed rectangle selector for scanned PDFs.
 final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
-    private enum Handle: CaseIterable {
-        case n, s, e, w, ne, nw, se, sw, move
+    /// Resize only — no whole-box move.
+    private enum Handle {
+        case n, s, e, w, ne, nw, se, sw
     }
 
     private enum DragMode {
@@ -1189,12 +1238,26 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
     private var captionObservers: [NSObjectProtocol] = []
     private var captionScrollObservation: NSKeyValueObservation?
     private var captionRefreshWork: DispatchWorkItem?
+    /// Scale rebuilds must not be cancelled by zoom-driven contentOffset churn.
+    private var captionScaleWork: DispatchWorkItem?
+    private var lastVisiblePageIDs: Set<ObjectIdentifier> = []
+    /// View-space frames are only valid at this scale; scroll-translate is forbidden otherwise.
+    private var lastPaintedScale: CGFloat = 0
+    private var lastScaleRebuildMediaTime: CFTimeInterval = 0
 
     private(set) var isEnabled = false
     private(set) var isActivelySelecting = false
+    /// Mirrors reader dark invert so new boxes use the pre-inverted PDFKit colour.
+    var darkInvertActive = false
+    /// Finger-up after resize/create often also fires the note tap — suppress briefly.
+    private var suppressNoteTapUntil: CFTimeInterval = 0
 
     var onBoxFinished: ((PDFAnnotation, PDFPage) -> Void)?
     var onBoxAdjusted: ((PDFAnnotation, PDFPage) -> Void)?
+
+    var shouldSuppressNoteTap: Bool {
+        CACurrentMediaTime() < suppressNoteTapUntil
+    }
 
     func attach(to pdfView: PDFView) {
         self.pdfView = pdfView
@@ -1222,7 +1285,11 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
         pan.isEnabled = on
         setDocumentScrollingEnabled(!on)
         if !on {
+            // Unlock scroll immediately. Rebuilding captions here used to hitch the
+            // toggle-off path for no reason — labels do not change when the tool
+            // is put away.
             cancelSelection()
+            return
         }
         ensureOverlayInstalled()
         refreshCaptions()
@@ -1238,18 +1305,51 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
     func refreshCaptions() {
         ensureOverlayInstalled()
         guard let pdfView else { return }
+        captionScaleWork?.cancel()
+        captionRefreshWork?.cancel()
         captionOverlay.layoutIfNeeded()
         captionOverlay.reload(from: pdfView)
+        lastPaintedScale = pdfView.scaleFactor
         rebindCaptionScroll(on: pdfView)
     }
 
-    private func scheduleCaptionRebuild() {
+    private func scheduleCaptionRebuild(delay: TimeInterval = 0.12) {
         captionRefreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.refreshCaptions()
         }
         captionRefreshWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Pinch zoom changes scale + offset together; scroll-translate on old geometry flies off-screen.
+    private func handleCaptionScaleChanged() {
+        guard let pdfView else { return }
+        // Drop stale transform immediately so boxes do not "fly" with zoom offset deltas.
+        if let scroll = pdfView.connectsPrimaryDocumentScrollView {
+            captionOverlay.resetScrollAnchor(scroll.contentOffset)
+        } else {
+            captionOverlay.resetScrollAnchor(.zero)
+        }
+        // Throttle live rebuilds during a continuous pinch (~30fps).
+        let now = CACurrentMediaTime()
+        if now - lastScaleRebuildMediaTime >= 0.033 {
+            lastScaleRebuildMediaTime = now
+            refreshCaptions()
+            return
+        }
+        captionScaleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.lastScaleRebuildMediaTime = CACurrentMediaTime()
+            self?.refreshCaptions()
+        }
+        captionScaleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.033, execute: work)
+    }
+
+    private func captionScaleIsStale(for pdfView: PDFView) -> Bool {
+        guard lastPaintedScale > 0 else { return true }
+        return abs(pdfView.scaleFactor - lastPaintedScale) > 0.0005
     }
 
     private func installCaptionObservers(on pdfView: PDFView) {
@@ -1257,13 +1357,19 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
         captionObservers.removeAll()
         let nc = NotificationCenter.default
         captionObservers.append(nc.addObserver(forName: .PDFViewScaleChanged, object: pdfView, queue: .main) { [weak self] _ in
-            self?.scheduleCaptionRebuild()
+            self?.handleCaptionScaleChanged()
         })
         captionObservers.append(nc.addObserver(forName: .PDFViewPageChanged, object: pdfView, queue: .main) { [weak self] _ in
-            self?.scheduleCaptionRebuild()
+            self?.scheduleCaptionRebuild(delay: 0.05)
         })
         captionObservers.append(nc.addObserver(forName: .PDFViewVisiblePagesChanged, object: pdfView, queue: .main) { [weak self] _ in
-            self?.scheduleCaptionRebuild()
+            // Fast flings bring new pages on screen — paint immediately (not during scale).
+            guard let self, let pdfView = self.pdfView else { return }
+            if self.captionScaleIsStale(for: pdfView) {
+                self.handleCaptionScaleChanged()
+                return
+            }
+            self.scheduleCaptionRebuild(delay: 0)
         })
         rebindCaptionScroll(on: pdfView)
     }
@@ -1271,15 +1377,31 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
     private func rebindCaptionScroll(on pdfView: PDFView) {
         captionScrollObservation?.invalidate()
         captionScrollObservation = nil
+        lastVisiblePageIDs = visiblePageIDs(in: pdfView)
         guard let scroll = pdfView.connectsPrimaryDocumentScrollView else { return }
         captionOverlay.resetScrollAnchor(scroll.contentOffset)
         captionScrollObservation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
             guard let self else { return }
+            // Zoom also moves contentOffset — never translate frames painted at another scale.
+            if self.captionScaleIsStale(for: pdfView) {
+                self.handleCaptionScaleChanged()
+                return
+            }
             // Follow the page instantly — do not rebuild mid-fling (that made labels drift).
             self.captionOverlay.applyScrollTranslation(currentOffset: scrollView.contentOffset)
+            let ids = self.visiblePageIDs(in: pdfView)
+            if ids != self.lastVisiblePageIDs {
+                self.lastVisiblePageIDs = ids
+                self.refreshCaptions()
+                return
+            }
             self.captionRefreshWork?.cancel()
             let work = DispatchWorkItem { [weak self, weak scrollView] in
                 guard let self, let scrollView else { return }
+                if self.captionScaleIsStale(for: pdfView) {
+                    self.handleCaptionScaleChanged()
+                    return
+                }
                 if scrollView.isDragging || scrollView.isDecelerating {
                     self.captionOverlay.applyScrollTranslation(currentOffset: scrollView.contentOffset)
                     return
@@ -1287,8 +1409,18 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
                 self.refreshCaptions()
             }
             self.captionRefreshWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
         }
+    }
+
+    private func visiblePageIDs(in pdfView: PDFView) -> Set<ObjectIdentifier> {
+        if #available(iOS 11.0, *) {
+            return Set(pdfView.visiblePages.map { ObjectIdentifier($0) })
+        }
+        if let page = pdfView.currentPage {
+            return [ObjectIdentifier(page)]
+        }
+        return []
     }
 
     func ensureOverlayInstalled() {
@@ -1366,12 +1498,15 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
                     startBounds: hit.ann.bounds,
                     startPagePoint: pdfView.convert(viewPoint, to: hit.page)
                 )
+                // Resize in PDFKit itself — no overlay frame (keeps zoom correct).
+                rubberBand.clear()
                 rubberBand.isHidden = true
             } else if let hitPage = pdfView.page(for: viewPoint, nearest: true) {
                 isActivelySelecting = true
                 dragMode = .create
                 createPage = hitPage
                 createStartPage = pdfView.convert(viewPoint, to: hitPage)
+                rubberBand.setStyle(.creating)
                 rubberBand.isHidden = false
                 rubberBand.begin(at: overlayPoint)
             } else {
@@ -1387,7 +1522,6 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
                 let dx = cur.x - startPagePoint.x
                 let dy = cur.y - startPagePoint.y
                 ann.bounds = resizedBounds(startBounds, handle: handle, dx: dx, dy: dy)
-                pdfView.setNeedsDisplay(pdfView.bounds)
             case .none:
                 break
             }
@@ -1402,18 +1536,26 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func finishDrag(endView: CGPoint) {
+        // Pan end + tap compete; block note sheet until the lift settles.
+        suppressNoteTapUntil = CACurrentMediaTime() + 0.45
         defer {
             isActivelySelecting = false
             dragMode = .none
             createPage = nil
+        }
+        guard let pdfView else {
             rubberBand.clear()
             rubberBand.isHidden = true
+            return
         }
-        guard let pdfView else { return }
 
         switch dragMode {
         case .create:
-            guard let page = createPage else { return }
+            guard let page = createPage else {
+                rubberBand.clear()
+                rubberBand.isHidden = true
+                return
+            }
             let endPage = pdfView.convert(endView, to: page)
             let bounds = CGRect(
                 x: min(createStartPage.x, endPage.x),
@@ -1422,34 +1564,57 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
                 height: abs(endPage.y - createStartPage.y)
             )
             // Require a deliberate drag so edge-adjust near existing boxes isn't a new frame.
-            guard bounds.width >= 16, bounds.height >= 16 else { return }
-
-            let annotation = makeSquareAnnotation(bounds: bounds)
-            page.addAnnotation(annotation)
-            let ann = annotation
-            let pg = page
-            DispatchQueue.main.async { [weak self] in
-                self?.onBoxFinished?(ann, pg)
+            guard bounds.width >= 16, bounds.height >= 16 else {
+                rubberBand.clear()
+                rubberBand.isHidden = true
+                return
             }
 
+            let annotation = makeSquareAnnotation(bounds: bounds)
+            // PDFKit owns the visible frame — add immediately so zoom stays native.
+            page.addAnnotation(annotation)
+            rubberBand.clear()
+            rubberBand.isHidden = true
+            onBoxFinished?(annotation, page)
+            scheduleCaptionRebuild(delay: 0.05)
+
         case .adjust(let ann, let page, _, let startBounds, _):
+            rubberBand.clear()
+            rubberBand.isHidden = true
             if ann.bounds.width < 12 || ann.bounds.height < 12 {
                 ann.bounds = startBounds
             }
-            pdfView.setNeedsDisplay(pdfView.bounds)
             onBoxAdjusted?(ann, page)
-            refreshCaptions()
+            // Captions (if any) need a reproject; the square itself is already in PDFKit.
+            scheduleCaptionRebuild(delay: 0.05)
 
         case .none:
-            break
+            rubberBand.clear()
+            rubberBand.isHidden = true
         }
     }
 
     private func makeSquareAnnotation(bounds: CGRect) -> PDFAnnotation {
-        ConnectsBoxAnnotation.make(bounds: bounds)
+        ConnectsBoxAnnotation.make(bounds: bounds, darkInvertActive: darkInvertActive)
+    }
+
+    private func showRubberBand(for pageBounds: CGRect, on page: PDFPage, pdfView: PDFView) {
+        let topLeft = pdfView.convert(CGPoint(x: pageBounds.minX, y: pageBounds.maxY), from: page)
+        let bottomRight = pdfView.convert(CGPoint(x: pageBounds.maxX, y: pageBounds.minY), from: page)
+        let a = rubberBand.convert(topLeft, from: pdfView)
+        let b = rubberBand.convert(bottomRight, from: pdfView)
+        let rect = CGRect(
+            x: min(a.x, b.x),
+            y: min(a.y, b.y),
+            width: abs(b.x - a.x),
+            height: abs(b.y - a.y)
+        )
+        rubberBand.isHidden = false
+        rubberBand.show(rect)
     }
 
     private func cancelSelection() {
+        suppressNoteTapUntil = CACurrentMediaTime() + 0.45
         isActivelySelecting = false
         dragMode = .none
         createPage = nil
@@ -1470,15 +1635,9 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
             let b = ann.bounds
             let expanded = b.insetBy(dx: -slop, dy: -slop)
             guard expanded.contains(pagePoint) else { continue }
-            let handle = nearestHandle(in: b, point: pagePoint, slop: slop)
-            // Prefer edge/corner over move; prefer tighter hits.
-            let score: CGFloat
-            switch handle {
-            case .move:
-                score = 1000 + hypot(pagePoint.x - b.midX, pagePoint.y - b.midY)
-            default:
-                score = handleDistance(handle, bounds: b, point: pagePoint)
-            }
+            // Edges / corners only — no whole-frame drag.
+            guard let handle = nearestHandle(in: b, point: pagePoint, slop: slop) else { continue }
+            let score = handleDistance(handle, bounds: b, point: pagePoint)
             if best == nil || score < best!.score {
                 best = (ann, handle, score)
             }
@@ -1488,12 +1647,10 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func isConnectsBox(_ ann: PDFAnnotation) -> Bool {
-        if ann.userName == StudyAskSelectionStore.boxAnnotationUserName { return true }
-        let t = (ann.type ?? "").lowercased()
-        return t.contains("square")
+        ConnectsInk.isBox(ann)
     }
 
-    private func nearestHandle(in bounds: CGRect, point: CGPoint, slop: CGFloat) -> Handle {
+    private func nearestHandle(in bounds: CGRect, point: CGPoint, slop: CGFloat) -> Handle? {
         let corners: [(Handle, CGPoint)] = [
             (.nw, CGPoint(x: bounds.minX, y: bounds.maxY)),
             (.ne, CGPoint(x: bounds.maxX, y: bounds.maxY)),
@@ -1508,7 +1665,7 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
         if abs(point.y - bounds.minY) <= slop, point.x >= bounds.minX - slop, point.x <= bounds.maxX + slop { return .s }
         if abs(point.x - bounds.minX) <= slop, point.y >= bounds.minY - slop, point.y <= bounds.maxY + slop { return .w }
         if abs(point.x - bounds.maxX) <= slop, point.y >= bounds.minY - slop, point.y <= bounds.maxY + slop { return .e }
-        return .move
+        return nil
     }
 
     private func handleDistance(_ handle: Handle, bounds: CGRect, point: CGPoint) -> CGFloat {
@@ -1522,7 +1679,6 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
         case .nw: p = CGPoint(x: bounds.minX, y: bounds.maxY)
         case .se: p = CGPoint(x: bounds.maxX, y: bounds.minY)
         case .sw: p = CGPoint(x: bounds.minX, y: bounds.minY)
-        case .move: p = CGPoint(x: bounds.midX, y: bounds.midY)
         }
         return hypot(point.x - p.x, point.y - p.y)
     }
@@ -1533,8 +1689,6 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
         var minY = start.minY
         var maxY = start.maxY
         switch handle {
-        case .move:
-            return start.offsetBy(dx: dx, dy: dy)
         case .n: maxY += dy
         case .s: minY += dy
         case .e: maxX += dx
@@ -1560,6 +1714,11 @@ final class PDFBoxSelectTool: NSObject, UIGestureRecognizerDelegate {
 }
 
 private final class BoxRubberBandOverlay: UIView {
+    enum Style {
+        case creating
+        case committed
+    }
+
     private var start = CGPoint.zero
     private var end = CGPoint.zero
     private let shape = CAShapeLayer()
@@ -1568,14 +1727,25 @@ private final class BoxRubberBandOverlay: UIView {
         super.init(frame: frame)
         isOpaque = false
         backgroundColor = .clear
-        shape.fillColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.08).cgColor
-        shape.strokeColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.95).cgColor
+        clipsToBounds = true
         shape.lineWidth = 1.5
         shape.lineDashPattern = [5, 3]
         layer.addSublayer(shape)
+        setStyle(.creating)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setStyle(_ style: Style) {
+        switch style {
+        case .creating:
+            shape.fillColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.08).cgColor
+            shape.strokeColor = UIColor(red: 0.90, green: 0.18, blue: 0.18, alpha: 0.95).cgColor
+        case .committed:
+            shape.fillColor = ConnectsInk.boxCommittedFill.cgColor
+            shape.strokeColor = ConnectsInk.boxCommitted.cgColor
+        }
+    }
 
     func begin(at point: CGPoint) {
         start = point
@@ -1585,6 +1755,12 @@ private final class BoxRubberBandOverlay: UIView {
 
     func update(to point: CGPoint) {
         end = point
+        redraw()
+    }
+
+    func show(_ rect: CGRect) {
+        start = CGPoint(x: rect.minX, y: rect.minY)
+        end = CGPoint(x: rect.maxX, y: rect.maxY)
         redraw()
     }
 
@@ -1626,7 +1802,7 @@ final class PDFHighlightNoteTap: NSObject, UIGestureRecognizerDelegate {
         guard gesture.state == .ended, let pdfView = pdfView else { return }
         if let study = pdfView as? StudyPDFView {
             if study.highlighter.isEnabled { return }
-            if study.boxSelect.isEnabled, study.boxSelect.isActivelySelecting { return }
+            if study.boxSelect.isActivelySelecting || study.boxSelect.shouldSuppressNoteTap { return }
         }
         guard let hit = annotationAt(gesture.location(in: pdfView), in: pdfView) else { return }
         onTapHighlight?(hit.ann, hit.page)
@@ -1636,7 +1812,7 @@ final class PDFHighlightNoteTap: NSObject, UIGestureRecognizerDelegate {
         guard let pdfView = pdfView else { return false }
         if let study = pdfView as? StudyPDFView {
             if study.highlighter.isEnabled { return false }
-            if study.boxSelect.isEnabled, study.boxSelect.isActivelySelecting { return false }
+            if study.boxSelect.isActivelySelecting || study.boxSelect.shouldSuppressNoteTap { return false }
         }
         // Only steal taps that land on a mark/box.
         return annotationAt(touch.location(in: pdfView), in: pdfView) != nil

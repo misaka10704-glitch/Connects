@@ -221,26 +221,12 @@ extension PDFContentsViewController: UITableViewDataSource, UITableViewDelegate 
             cell.textLabel?.text = row.title
             cell.textLabel?.numberOfLines = 2
             cell.textLabel?.font = UIFont.systemFont(ofSize: 13)
-            cell.textLabel?.textColor = raw.isEmpty
-                ? c.textSecondary
-                : UIColor(
-                    red: ReadingAnnotationStyle.pdfBoxRed.r,
-                    green: ReadingAnnotationStyle.pdfBoxRed.g,
-                    blue: ReadingAnnotationStyle.pdfBoxRed.b,
-                    alpha: 1
-                )
+            let boxInk = ConnectsInk.boxCommitted
+            cell.textLabel?.textColor = raw.isEmpty ? c.textSecondary : boxInk
             cell.detailTextLabel?.text = "第 \(row.pageIndex + 1) 页"
             let cfg = UIImage.SymbolConfiguration(pointSize: 8, weight: .regular)
             cell.imageView?.image = UIImage(systemName: "circle.fill", withConfiguration: cfg)?
-                .withTintColor(
-                    UIColor(
-                        red: ReadingAnnotationStyle.pdfBoxRed.r,
-                        green: ReadingAnnotationStyle.pdfBoxRed.g,
-                        blue: ReadingAnnotationStyle.pdfBoxRed.b,
-                        alpha: 1
-                    ),
-                    renderingMode: .alwaysOriginal
-                )
+                .withTintColor(boxInk, renderingMode: .alwaysOriginal)
         }
         return cell
     }
