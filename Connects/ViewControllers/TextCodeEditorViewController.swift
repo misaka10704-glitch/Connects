@@ -23,6 +23,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var pendingPreviewMarkdown: String?
     /// Markdown edit ↔ preview: pin the source location that was at the viewport top.
     private var pendingModeScrollAnchor: ModeScrollAnchor?
+    /// Restore scroll after theme rebuilds the Markdown preview WK shell.
+    private var pendingThemeViewportProgress: StudyProgress?
+
     /// Avoid re-entrant preview→edit while resolving the top-of-viewport snippet via JS.
     private var isResolvingPreviewScrollAnchor = false
 
@@ -102,17 +105,25 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private static let fontSizeDefaultsKey = "connects.codeEditor.fontSize"
     private static let markdownPreviewFontDefaultsKey = "connects.markdownPreview.fontSize"
     private static let minFontPointSize: CGFloat = 9
-    private static let maxFontPointSize: CGFloat = 28
     private static let minMarkdownPreviewFont: CGFloat = 11
-    private static let maxMarkdownPreviewFont: CGFloat = 32
+    /// iPhone 26 / iPad 32 — shared ceiling for editor + Markdown preview pinch.
+    private static var deviceMaxFontPointSize: CGFloat {
+        UIDevice.current.userInterfaceIdiom == .pad ? 32 : 26
+    }
+    private static var maxFontPointSize: CGFloat { deviceMaxFontPointSize }
+    private static var maxMarkdownPreviewFont: CGFloat { deviceMaxFontPointSize }
     private var fontPointSize: CGFloat = {
+        let max = TextCodeEditorViewController.deviceMaxFontPointSize
         let stored = UserDefaults.standard.double(forKey: TextCodeEditorViewController.fontSizeDefaultsKey)
-        if stored >= 9, stored <= 28 { return CGFloat(stored) }
+        if stored >= 9, stored <= Double(max) { return CGFloat(stored) }
+        if stored > Double(max) { return max }
         return CodeSyntaxHighlighter.defaultPointSize
     }()
     private var markdownPreviewFontSize: CGFloat = {
+        let max = TextCodeEditorViewController.deviceMaxFontPointSize
         let stored = UserDefaults.standard.double(forKey: TextCodeEditorViewController.markdownPreviewFontDefaultsKey)
-        if stored >= 11, stored <= 32 { return CGFloat(stored) }
+        if stored >= 11, stored <= Double(max) { return CGFloat(stored) }
+        if stored > Double(max) { return max }
         return 17
     }()
     private var pinchBaseFontSize: CGFloat = CodeSyntaxHighlighter.defaultPointSize
@@ -719,15 +730,27 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     @objc private func themeChanged() {
+        let savedProgress = captureReadingProgress()
+            ?? StudyProgress(
+                pageIndex: 0,
+                pageOffsetY: (showsMarkdownPreview ? previewWebView.scrollView : textView).contentOffset.y,
+                pageOffsetX: (showsMarkdownPreview ? previewWebView.scrollView : textView).contentOffset.x,
+                scaleFactor: nil,
+                updatedAt: Date()
+            )
         applyChromeColors()
         updateAppearanceButton()
         refreshTextPresentationPreservingDiff()
         updateLineNumbers(force: true)
         syncLineNumberOffset()
-        if language == .markdown {
+        if language == .markdown, showsMarkdownPreview {
+            pendingThemeViewportProgress = savedProgress
             previewShellLoaded = false
-            if showsMarkdownPreview {
-                refreshMarkdownPreview(text: textView.text ?? "")
+            refreshMarkdownPreview(text: textView.text ?? "")
+        } else {
+            // Highlight / chrome refresh can nudge offset — put it back.
+            DispatchQueue.main.async { [weak self] in
+                self?.realignVisibleViewport(using: savedProgress)
             }
         }
     }
@@ -793,7 +816,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func applyFontSize(_ size: CGFloat, persist: Bool) {
-        fontPointSize = size
+        fontPointSize = min(Self.maxFontPointSize, max(Self.minFontPointSize, size))
         lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
         // Diff uses its own attributed paint — never wipe it with plain highlight
@@ -810,7 +833,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func applyMarkdownPreviewFontSize(_ size: CGFloat, persist: Bool) {
-        markdownPreviewFontSize = size
+        markdownPreviewFontSize = min(Self.maxMarkdownPreviewFont, max(Self.minMarkdownPreviewFont, size))
         if persist {
             UserDefaults.standard.set(Double(markdownPreviewFontSize), forKey: Self.markdownPreviewFontDefaultsKey)
         }
@@ -1164,10 +1187,23 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             // Render JS schedules double-rAF before studyReady; wait a beat for contentSize.
             DispatchQueue.main.async {
                 self?.applyPendingModeScrollToPreview(clearPending: false)
+                self?.applyPendingThemeViewportToPreview(clearPending: false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     self?.applyPendingModeScrollToPreview(clearPending: true)
+                    self?.applyPendingThemeViewportToPreview(clearPending: true)
                 }
             }
+        }
+    }
+
+    private func applyPendingThemeViewportToPreview(clearPending: Bool) {
+        guard showsMarkdownPreview, let progress = pendingThemeViewportProgress else { return }
+        let scroll = previewWebView.scrollView
+        scroll.layoutIfNeeded()
+        guard scroll.contentSize.height > 8 else { return }
+        realignVisibleViewport(using: progress)
+        if clearPending {
+            pendingThemeViewportProgress = nil
         }
     }
 

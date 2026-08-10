@@ -48,10 +48,15 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
     private static let fontSizeDefaultsKey = "connects.markdownPreview.fontSize"
     private static let minFontPointSize: CGFloat = 11
-    private static let maxFontPointSize: CGFloat = 32
+    /// iPhone 26 / iPad 32.
+    private static var maxFontPointSize: CGFloat {
+        UIDevice.current.userInterfaceIdiom == .pad ? 32 : 26
+    }
     private var fontPointSize: CGFloat = {
+        let max = MarkdownReaderViewController.maxFontPointSize
         let stored = UserDefaults.standard.double(forKey: MarkdownReaderViewController.fontSizeDefaultsKey)
-        if stored >= 11, stored <= 32 { return CGFloat(stored) }
+        if stored >= 11, stored <= Double(max) { return CGFloat(stored) }
+        if stored > Double(max) { return max }
         return 17
     }()
     private var pinchBaseFontSize: CGFloat = 17
@@ -443,6 +448,33 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     @objc private func themeChanged() {
+        // Preserve reading Y before the WK shell is rebuilt for new colors.
+        if !isEditMode, contentReady || shellLoaded {
+            let offset = webView.scrollView.contentOffset
+            pendingViewportProgress = StudyProgress(
+                pageIndex: 0,
+                pageOffsetY: offset.y,
+                pageOffsetX: offset.x,
+                anchorX: nil,
+                anchorY: nil,
+                scaleFactor: nil,
+                updatedAt: Date()
+            )
+        } else if isEditMode, shellLoaded {
+            // Edit mode: web is hidden but still holds the last read offset until reload.
+            let offset = webView.scrollView.contentOffset
+            if offset.y > 1 || offset.x > 1 {
+                pendingViewportProgress = StudyProgress(
+                    pageIndex: 0,
+                    pageOffsetY: offset.y,
+                    pageOffsetX: offset.x,
+                    anchorX: nil,
+                    anchorY: nil,
+                    scaleFactor: nil,
+                    updatedAt: Date()
+                )
+            }
+        }
         let chrome = DSTheme.c
         view.backgroundColor = chrome.background
         topBar.backgroundColor = chrome.background
@@ -578,7 +610,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     private func applyFontSize(_ size: CGFloat, persist: Bool) {
-        fontPointSize = size
+        fontPointSize = min(Self.maxFontPointSize, max(Self.minFontPointSize, size))
         if persist {
             UserDefaults.standard.set(Double(fontPointSize), forKey: Self.fontSizeDefaultsKey)
         }
@@ -1076,6 +1108,12 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             self.beginViewportRestore(using: pending)
             self.updateProgressLabel()
             self.onPageChanged?()
+            // Theme rebuild / math contain can change contentSize after the first paint.
+            if pending != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.beginViewportRestore(using: pending)
+                }
+            }
         }
     }
 

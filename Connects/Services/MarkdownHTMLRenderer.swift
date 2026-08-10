@@ -12,12 +12,21 @@ import UIKit
 enum MarkdownHTMLRenderer {
     static var resourceBaseURL: URL? { Bundle.main.resourceURL }
 
-    /// Page stays width-locked; overflowing math scrolls horizontally inside its own box
-    /// (vertical scroll inside that box is locked — page still scrolls vertically).
+    /// Page stays width-locked to the viewport; overflowing math scrolls horizontally
+    /// inside its own box (vertical scroll inside that box is locked).
+    /// Critical: pin widths in *CSS pixels* — otherwise wide KaTeX expands the column
+    /// and `overflow-x:auto` never sees an overflow (common at large font sizes).
     private static let mathContainJS = """
           function __connectsContainMath(root) {
             var scope = root || document.getElementById("c") || document.body;
             if (!scope) return;
+            var vw = Math.min(
+              document.documentElement.clientWidth || 0,
+              window.innerWidth || 0
+            );
+            if (!(vw > 0)) return;
+            var vwPx = Math.floor(vw) + "px";
+
             function lockY(scroller) {
               if (!scroller || scroller.__connectsYLock) return;
               scroller.__connectsYLock = true;
@@ -25,49 +34,201 @@ enum MarkdownHTMLRenderer {
                 if (scroller.scrollTop) scroller.scrollTop = 0;
               }, { passive: true });
             }
+
+            function armScroller(el, avail) {
+              if (!el || !(avail > 0)) return;
+              var w = Math.floor(avail);
+              el.style.boxSizing = "border-box";
+              el.style.minWidth = "0";
+              el.style.maxWidth = w + "px";
+              el.style.width = w + "px";
+              el.style.overflowX = "auto";
+              el.style.overflowY = "hidden";
+              el.style.webkitOverflowScrolling = "touch";
+              lockY(el);
+            }
+
+            function contentWidthOf(el) {
+              if (!el) return 0;
+              var pad = 0;
+              try {
+                var cs = window.getComputedStyle(el);
+                pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+              } catch (eW) {}
+              return Math.max(0, (el.clientWidth || 0) - pad);
+            }
+
+            // Available width for a node: nearest blockquote/td/li/#c, capped by page column.
+            function availNear(node) {
+              var el = node ? node.parentElement : null;
+              while (el && el !== document.documentElement) {
+                if (el.classList && (el.classList.contains("connects-math-x")
+                    || el.classList.contains("katex-display"))) {
+                  el = el.parentElement;
+                  continue;
+                }
+                var tag = (el.tagName || "").toLowerCase();
+                if (tag === "blockquote" || tag === "td" || tag === "th"
+                    || tag === "li" || el.id === "c") {
+                  var w = contentWidthOf(el);
+                  if (w > 0) return Math.min(w, col);
+                }
+                el = el.parentElement;
+              }
+              return col;
+            }
+
+            try {
+              document.documentElement.style.width = vwPx;
+              document.documentElement.style.maxWidth = vwPx;
+              document.documentElement.style.overflowX = "hidden";
+              document.body.style.width = vwPx;
+              document.body.style.maxWidth = vwPx;
+              document.body.style.overflowX = "hidden";
+            } catch (e0) {}
+
+            var c = document.getElementById("c");
+            var col = vw;
+            var padL = 0;
+            var padR = 0;
+            var cRect = null;
+            if (c) {
+              var bodyFs = 16;
+              try {
+                bodyFs = parseFloat(window.getComputedStyle(document.body).fontSize) || 16;
+              } catch (e1) {}
+              // Match study shell intent: min(52em, viewport), never wider than screen.
+              var cap = Math.min(52 * bodyFs, vw);
+              c.style.boxSizing = "border-box";
+              c.style.maxWidth = Math.floor(cap) + "px";
+              c.style.width = "100%";
+              c.style.overflowX = "hidden";
+              try {
+                var cs = window.getComputedStyle(c);
+                padL = parseFloat(cs.paddingLeft) || 0;
+                padR = parseFloat(cs.paddingRight) || 0;
+                cRect = c.getBoundingClientRect();
+              } catch (e2) {}
+              col = Math.max(1, (c.clientWidth || cap) - padL - padR);
+            }
+
+            // Pin blockquotes before measuring math (otherwise they grow with KaTeX).
+            var quotes = scope.querySelectorAll("blockquote");
+            for (var qi = 0; qi < quotes.length; qi++) {
+              var q = quotes[qi];
+              q.style.boxSizing = "border-box";
+              q.style.maxWidth = "100%";
+              q.style.minWidth = "0";
+              q.style.width = "auto";
+              q.style.overflowX = "auto";
+              q.style.overflowY = "hidden";
+              lockY(q);
+            }
+
+            var edge = 6; // tiny screen gutter when formula bleeds full-width
             var blocks = scope.querySelectorAll(".katex-display");
             for (var i = 0; i < blocks.length; i++) {
               var b = blocks[i];
-              b.style.maxWidth = "100%";
-              b.style.width = "100%";
-              b.style.boxSizing = "border-box";
-              b.style.overflowX = "auto";
-              b.style.overflowY = "hidden";
-              lockY(b);
+              var k = b.querySelector(".katex");
+              if (k) {
+                k.style.maxWidth = "none";
+                k.style.width = "auto";
+                k.style.display = "";
+              }
+              // Reset prior bleed so measurement is honest.
+              b.style.marginLeft = "";
+              b.style.marginRight = "";
+              b.style.paddingLeft = "";
+              b.style.paddingRight = "";
+              b.style.borderRadius = "";
+              b.style.textAlign = "";
+              b.style.maxWidth = "none";
+              b.style.width = "auto";
+              b.style.overflow = "visible";
+              var localCol = availNear(b);
+              var need = k
+                ? Math.max(k.scrollWidth || 0, k.offsetWidth || 0)
+                : Math.max(b.scrollWidth || 0, b.offsetWidth || 0);
+              var inQuote = false;
+              var qp = b.parentElement;
+              while (qp) {
+                if ((qp.tagName || "").toLowerCase() === "blockquote") { inQuote = true; break; }
+                qp = qp.parentElement;
+              }
+              if (need > localCol + 1) {
+                if (inQuote) {
+                  // Stay inside the quote — do not full-bleed past `>`.
+                  armScroller(b, localCol);
+                } else {
+                  // Overflow: use nearly full viewport — don't leave a fat right gutter.
+                  var contentLeft = cRect ? (cRect.left + padL) : padL;
+                  var pull = contentLeft - edge;
+                  b.style.marginLeft = (-pull) + "px";
+                  b.style.marginRight = "0";
+                  b.style.paddingLeft = edge + "px";
+                  b.style.paddingRight = edge + "px";
+                  b.style.borderRadius = "0";
+                  b.style.textAlign = "left";
+                  armScroller(b, Math.max(1, vw - 2 * edge));
+                }
+              } else {
+                armScroller(b, localCol);
+              }
             }
-            var host = document.getElementById("c") || scope;
-            var col = host.clientWidth || window.innerWidth || 0;
+
+            var existing = scope.querySelectorAll(".connects-math-x");
+            for (var e = 0; e < existing.length; e++) {
+              armScroller(existing[e], availNear(existing[e]));
+            }
+
             var inlines = scope.querySelectorAll(".katex");
             for (var j = 0; j < inlines.length; j++) {
               var node = inlines[j];
               var p = node.parentElement;
-              var skip = false;
+              var inDisplay = false;
               while (p) {
-                if (p.classList && (p.classList.contains("katex-display") || p.classList.contains("connects-math-x"))) {
-                  skip = true; break;
-                }
+                if (p.classList && p.classList.contains("katex-display")) { inDisplay = true; break; }
                 p = p.parentElement;
               }
-              if (skip) continue;
-              var need = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
-              if (!(col > 0) || !(need > col + 1)) continue;
-              if (node.parentElement && node.parentElement.classList
-                  && node.parentElement.classList.contains("connects-math-x")) continue;
-              var wrap = document.createElement("span");
-              wrap.className = "connects-math-x";
-              if (node.parentNode) {
-                node.parentNode.insertBefore(wrap, node);
-                wrap.appendChild(node);
-                lockY(wrap);
+              if (inDisplay) continue;
+
+              var shell = (node.parentElement && node.parentElement.classList
+                && node.parentElement.classList.contains("connects-math-x"))
+                ? node.parentElement : null;
+
+              var local = availNear(node);
+              // Measure natural formula width (unwrap constraints temporarily).
+              var needI = 0;
+              if (shell) {
+                shell.style.maxWidth = "none";
+                shell.style.width = "auto";
+                shell.style.overflow = "visible";
+              }
+              needI = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
+              if (shell) {
+                shell.style.overflow = "";
+              }
+
+              if (needI > local + 1) {
+                if (!shell) {
+                  shell = document.createElement("span");
+                  shell.className = "connects-math-x";
+                  if (node.parentNode) {
+                    node.parentNode.insertBefore(shell, node);
+                    shell.appendChild(node);
+                  }
+                }
+                armScroller(shell, local);
+              } else if (shell) {
+                armScroller(shell, local);
               }
             }
+
             try {
-              document.documentElement.style.overflowX = "hidden";
-              document.body.style.overflowX = "hidden";
               document.documentElement.scrollLeft = 0;
               document.body.scrollLeft = 0;
               if (window.scrollTo) window.scrollTo(0, window.pageYOffset || 0);
-            } catch (e0) {}
+            } catch (e3) {}
           }
           window.__connectsContainMath = __connectsContainMath;
           """
@@ -128,7 +289,7 @@ enum MarkdownHTMLRenderer {
           #c li { margin:0.2em 0; }
           \(chrome)
           .katex-display { margin:0.7em 0; max-width:100%; width:100%; box-sizing:border-box;
-            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            min-width:0; overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
             overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
           .katex-display > .katex { max-width:none; }
           .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
@@ -633,7 +794,7 @@ enum MarkdownHTMLRenderer {
             word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
             -webkit-font-smoothing:antialiased;
             overflow-x:hidden !important; max-width:100%; width:100%; }
-          #c { padding:20px 24px 72px; max-width:min(52em, 100%); width:100%;
+          #c { padding:20px 24px 72px; max-width:min(52em, 100vw); width:100%;
             margin:0 auto; display:flow-root; box-sizing:border-box; overflow-x:hidden; }
           #c h1,#c h2,#c h3,#c h4,#c h5,#c h6 {
             font-weight:600; line-height:1.28; margin:1.15em 0 0.45em; letter-spacing:-0.01em;
@@ -669,7 +830,7 @@ enum MarkdownHTMLRenderer {
           }
           .katex-display { margin:0.85em 0; padding:0.55em 0.75em; border-radius:10px;
             background:\(mathPanel); max-width:100%; width:100%; box-sizing:border-box;
-            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            min-width:0; overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
             overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
           .katex-display > .katex { max-width:none; }
           .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
@@ -913,10 +1074,15 @@ enum MarkdownHTMLRenderer {
             document.documentElement.style.fontSize = n + "px";
             document.body.style.fontSize = n + "px";
             var el = document.getElementById("c");
-            if (typeof __connectsContainMath === "function") {
-              __connectsContainMath(el);
-              requestAnimationFrame(function(){ __connectsContainMath(el); });
+            function refit() {
+              if (typeof __connectsContainMath === "function") { __connectsContainMath(el); }
             }
+            refit();
+            requestAnimationFrame(function(){
+              refit();
+              requestAnimationFrame(refit);
+            });
+            setTimeout(refit, 60);
             return true;
           };
           window.__connectsReady = true;
@@ -978,9 +1144,12 @@ enum MarkdownHTMLRenderer {
           #c pre code { background:transparent; color:inherit; padding:0; \(preWrap) }
           #c blockquote { margin:0.75em 0; padding:\(quotePad);
             border-left:4px solid \(quoteBar); background:\(quoteBg);
-            border-radius:\(quoteRadius); color:\(secondary); }
+            border-radius:\(quoteRadius); color:\(secondary);
+            max-width:100%; box-sizing:border-box; min-width:0;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; }
           #c blockquote > :first-child { margin-top:0; }
           #c blockquote > :last-child { margin-bottom:0; }
+          #c blockquote p, #c li > p { max-width:100%; min-width:0; overflow-wrap:anywhere; }
           #c table { border-collapse:collapse; width:100%; margin:0.85em 0; font-size:0.95em;
             \(tableLayout) display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
             border-radius:8px; }

@@ -58,7 +58,7 @@ enum MathContentDetector {
             font-size:\(Int(fontSize))px; line-height:1.55; word-wrap:break-word; overflow-wrap:break-word;
             -webkit-text-size-adjust:100%; overflow-x:hidden !important; max-width:100%; width:100%; }
           .katex-display { margin: 0.6em 0; max-width:100%; width:100%; box-sizing:border-box;
-            overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling:touch;
+            min-width:0; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling:touch;
             overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
           .katex-display > .katex { max-width:none; }
           .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
@@ -86,6 +86,12 @@ enum MathContentDetector {
           function __connectsContainMath(root) {
             var scope = root || document.getElementById("c") || document.body;
             if (!scope) return;
+            var vw = Math.min(
+              document.documentElement.clientWidth || 0,
+              window.innerWidth || 0
+            );
+            if (!(vw > 0)) return;
+            var vwPx = Math.floor(vw) + "px";
             function lockY(scroller) {
               if (!scroller || scroller.__connectsYLock) return;
               scroller.__connectsYLock = true;
@@ -93,48 +99,169 @@ enum MathContentDetector {
                 if (scroller.scrollTop) scroller.scrollTop = 0;
               }, { passive: true });
             }
+            function armScroller(el, avail) {
+              if (!el || !(avail > 0)) return;
+              var w = Math.floor(avail);
+              el.style.boxSizing = "border-box";
+              el.style.minWidth = "0";
+              el.style.maxWidth = w + "px";
+              el.style.width = w + "px";
+              el.style.overflowX = "auto";
+              el.style.overflowY = "hidden";
+              el.style.webkitOverflowScrolling = "touch";
+              lockY(el);
+            }
+            function contentWidthOf(el) {
+              if (!el) return 0;
+              var pad = 0;
+              try {
+                var cs = window.getComputedStyle(el);
+                pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+              } catch (eW) {}
+              return Math.max(0, (el.clientWidth || 0) - pad);
+            }
+            function availNear(node) {
+              var el = node ? node.parentElement : null;
+              while (el && el !== document.documentElement) {
+                if (el.classList && (el.classList.contains("connects-math-x")
+                    || el.classList.contains("katex-display"))) {
+                  el = el.parentElement;
+                  continue;
+                }
+                var tag = (el.tagName || "").toLowerCase();
+                if (tag === "blockquote" || tag === "td" || tag === "th"
+                    || tag === "li" || el.id === "c") {
+                  var w = contentWidthOf(el);
+                  if (w > 0) return Math.min(w, col);
+                }
+                el = el.parentElement;
+              }
+              return col;
+            }
+            try {
+              document.documentElement.style.width = vwPx;
+              document.documentElement.style.maxWidth = vwPx;
+              document.documentElement.style.overflowX = "hidden";
+              document.body.style.width = vwPx;
+              document.body.style.maxWidth = vwPx;
+              document.body.style.overflowX = "hidden";
+            } catch (e0) {}
+            var c = document.getElementById("c");
+            var col = vw;
+            var padL = 0;
+            var padR = 0;
+            var cRect = null;
+            if (c) {
+              c.style.boxSizing = "border-box";
+              c.style.maxWidth = vwPx;
+              c.style.width = "100%";
+              c.style.overflowX = "hidden";
+              try {
+                var cs = window.getComputedStyle(c);
+                padL = parseFloat(cs.paddingLeft) || 0;
+                padR = parseFloat(cs.paddingRight) || 0;
+                cRect = c.getBoundingClientRect();
+              } catch (e2) {}
+              col = Math.max(1, (c.clientWidth || vw) - padL - padR);
+            }
+            var quotes = scope.querySelectorAll("blockquote");
+            for (var qi = 0; qi < quotes.length; qi++) {
+              var q = quotes[qi];
+              q.style.boxSizing = "border-box";
+              q.style.maxWidth = "100%";
+              q.style.minWidth = "0";
+              q.style.overflowX = "auto";
+              q.style.overflowY = "hidden";
+              lockY(q);
+            }
+            var edge = 6;
             var blocks = scope.querySelectorAll(".katex-display");
             for (var i = 0; i < blocks.length; i++) {
               var b = blocks[i];
-              b.style.maxWidth = "100%";
-              b.style.width = "100%";
-              b.style.boxSizing = "border-box";
-              b.style.overflowX = "auto";
-              b.style.overflowY = "hidden";
-              lockY(b);
+              var k = b.querySelector(".katex");
+              if (k) {
+                k.style.maxWidth = "none";
+                k.style.width = "auto";
+              }
+              b.style.marginLeft = "";
+              b.style.marginRight = "";
+              b.style.paddingLeft = "";
+              b.style.paddingRight = "";
+              b.style.borderRadius = "";
+              b.style.textAlign = "";
+              b.style.maxWidth = "none";
+              b.style.width = "auto";
+              b.style.overflow = "visible";
+              var localCol = availNear(b);
+              var need = k
+                ? Math.max(k.scrollWidth || 0, k.offsetWidth || 0)
+                : Math.max(b.scrollWidth || 0, b.offsetWidth || 0);
+              var inQuote = false;
+              var qp = b.parentElement;
+              while (qp) {
+                if ((qp.tagName || "").toLowerCase() === "blockquote") { inQuote = true; break; }
+                qp = qp.parentElement;
+              }
+              if (need > localCol + 1) {
+                if (inQuote) {
+                  armScroller(b, localCol);
+                } else {
+                  var contentLeft = cRect ? (cRect.left + padL) : padL;
+                  var pull = contentLeft - edge;
+                  b.style.marginLeft = (-pull) + "px";
+                  b.style.marginRight = "0";
+                  b.style.paddingLeft = edge + "px";
+                  b.style.paddingRight = edge + "px";
+                  b.style.borderRadius = "0";
+                  b.style.textAlign = "left";
+                  armScroller(b, Math.max(1, vw - 2 * edge));
+                }
+              } else {
+                armScroller(b, localCol);
+              }
             }
-            var host = document.getElementById("c") || scope;
-            var col = host.clientWidth || window.innerWidth || 0;
+            var existing = scope.querySelectorAll(".connects-math-x");
+            for (var e = 0; e < existing.length; e++) {
+              armScroller(existing[e], availNear(existing[e]));
+            }
             var inlines = scope.querySelectorAll(".katex");
             for (var j = 0; j < inlines.length; j++) {
               var node = inlines[j];
               var p = node.parentElement;
-              var skip = false;
+              var inDisplay = false;
               while (p) {
-                if (p.classList && (p.classList.contains("katex-display") || p.classList.contains("connects-math-x"))) {
-                  skip = true; break;
-                }
+                if (p.classList && p.classList.contains("katex-display")) { inDisplay = true; break; }
                 p = p.parentElement;
               }
-              if (skip) continue;
-              var need = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
-              if (!(col > 0) || !(need > col + 1)) continue;
-              if (node.parentElement && node.parentElement.classList
-                  && node.parentElement.classList.contains("connects-math-x")) continue;
-              var wrap = document.createElement("span");
-              wrap.className = "connects-math-x";
-              if (node.parentNode) {
-                node.parentNode.insertBefore(wrap, node);
-                wrap.appendChild(node);
-                lockY(wrap);
+              if (inDisplay) continue;
+              var shell = (node.parentElement && node.parentElement.classList
+                && node.parentElement.classList.contains("connects-math-x"))
+                ? node.parentElement : null;
+              var local = availNear(node);
+              if (shell) {
+                shell.style.maxWidth = "none";
+                shell.style.width = "auto";
+                shell.style.overflow = "visible";
               }
-            }
-            try {
-              document.documentElement.style.overflowX = "hidden";
-              document.body.style.overflowX = "hidden";
+              var needI = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
+              if (shell) shell.style.overflow = "";
+              if (needI > local + 1) {
+                if (!shell) {
+                  shell = document.createElement("span");
+                  shell.className = "connects-math-x";
+                  if (node.parentNode) {
+                    node.parentNode.insertBefore(shell, node);
+                    shell.appendChild(node);
+                  }
+                }
+                armScroller(shell, local);
+              } else if (shell) {
+                armScroller(shell, local);
+              }
+            }            try {
               document.documentElement.scrollLeft = 0;
               document.body.scrollLeft = 0;
-            } catch (e0) {}
+            } catch (e3) {}
           }
           function run() {
             try {
