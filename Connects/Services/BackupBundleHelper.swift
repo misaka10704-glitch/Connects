@@ -1,9 +1,11 @@
 import Foundation
 
 enum BackupBundleHelper {
-    static func temporaryFolder(prefix: String) -> URL {
-        FileManager.default.temporaryDirectory
+    static func temporaryFolder(prefix: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     static func removeIfExists(_ url: URL) {
@@ -33,7 +35,11 @@ enum BackupBundleHelper {
             format: .binary,
             options: 0
         )
-        try data.write(to: url)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
     }
 
     static func importUserDefaults(from url: URL) throws {

@@ -29,7 +29,7 @@ enum ConnectsBackupService {
     private static let preferencesPrefix = "connects_"
 
     static func export(to archiveURL: URL) throws -> ConnectsBackupSummary {
-        let staging = BackupBundleHelper.temporaryFolder(prefix: "connects-backup-export")
+        let staging = try BackupBundleHelper.temporaryFolder(prefix: "connects-backup-export")
         defer { BackupBundleHelper.removeIfExists(staging) }
 
         try BackupBundleHelper.exportUserDefaults(
@@ -108,7 +108,7 @@ enum ConnectsBackupService {
     }
 
     static func importBackup(from archiveURL: URL) throws -> ConnectsBackupSummary {
-        let staging = BackupBundleHelper.temporaryFolder(prefix: "connects-backup-import")
+        let staging = try BackupBundleHelper.temporaryFolder(prefix: "connects-backup-import")
         defer { BackupBundleHelper.removeIfExists(staging) }
 
         try SimpleZip.unzip(archiveURL: archiveURL, to: staging)

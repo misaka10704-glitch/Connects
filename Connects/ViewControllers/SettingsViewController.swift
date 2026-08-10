@@ -377,16 +377,16 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         contentStack.addArrangedSubview(makeSectionTitle("开发者"))
         let debugRow = makeSwitchRow(
             label: renderDebugLabel,
-            text: "聊天布局调试框（红=列，绿=原生回复，蓝=用户气泡）",
+            text: "聊天布局调试框",
             sw: renderDebugSwitch,
             isOn: SettingsManager.shared.renderDebugOverlayEnabled,
             action: #selector(renderDebugChanged)
         )
-        contentStack.addArrangedSubview(debugRow)
+        contentStack.addArrangedSubview(makeCard(embedding: debugRow, height: 44, inset: 12))
         let debugTip = UILabel()
         debugTip.numberOfLines = 0
         debugTip.font = DSTheme.bodyFont(size: 13)
-        debugTip.text = "用于排查气泡空白、高度异常等问题。开启后返回聊天页即可看到描边。"
+        debugTip.text = "红=列，绿=原生回复，蓝=用户气泡。用于排查气泡空白、高度异常；开启后返回聊天页即可看到描边。"
         footerLabels.append(debugTip)
         contentStack.addArrangedSubview(debugTip)
         contentStack.setCustomSpacing(22, after: debugTip)
@@ -434,16 +434,22 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = text
         label.font = DSTheme.bodyFont(size: 14)
-        label.numberOfLines = 2
+        label.numberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sw.translatesAutoresizingMaskIntoConstraints = false
         sw.isOn = isOn
         sw.addTarget(self, action: action, for: .valueChanged)
+        sw.setContentCompressionResistancePriority(.required, for: .horizontal)
+        sw.setContentHuggingPriority(.required, for: .horizontal)
         row.addSubview(label)
         row.addSubview(sw)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: sw.leadingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -2),
+            label.trailingAnchor.constraint(equalTo: sw.leadingAnchor, constant: -10),
             sw.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             sw.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40)
