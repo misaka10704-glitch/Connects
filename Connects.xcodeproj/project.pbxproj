@@ -99,6 +99,8 @@
 		F10000010000000000000001 /* BackupBundleHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000001 /* BackupBundleHelper.swift */; };
 		F10000010000000000000002 /* SimpleZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000002 /* SimpleZip.swift */; };
 		F10000010000000000000003 /* ConnectsBackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000003 /* ConnectsBackupService.swift */; };
+		F10000010000000000000006 /* ConnectsChatTransferService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000006 /* ConnectsChatTransferService.swift */; };
+		F10000010000000000000007 /* ConnectsKeysTransferService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000007 /* ConnectsKeysTransferService.swift */; };
 		F10000010000000000000004 /* ContextUsageRingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000004 /* ContextUsageRingView.swift */; };
 		F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000010000000000000005 /* ContextUsageDetailViewController.swift */; };
 		F100000100000000000000C1 /* ChatCodeFencePopupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */; };
@@ -267,6 +269,8 @@
 		F20000010000000000000001 /* BackupBundleHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupBundleHelper.swift; sourceTree = "<group>"; };
 		F20000010000000000000002 /* SimpleZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleZip.swift; sourceTree = "<group>"; };
 		F20000010000000000000003 /* ConnectsBackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsBackupService.swift; sourceTree = "<group>"; };
+		F20000010000000000000006 /* ConnectsChatTransferService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsChatTransferService.swift; sourceTree = "<group>"; };
+		F20000010000000000000007 /* ConnectsKeysTransferService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsKeysTransferService.swift; sourceTree = "<group>"; };
 		F20000010000000000000004 /* ContextUsageRingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageRingView.swift; sourceTree = "<group>"; };
 		F20000010000000000000005 /* ContextUsageDetailViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextUsageDetailViewController.swift; sourceTree = "<group>"; };
 		F200000100000000000000C1 /* ChatCodeFencePopupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCodeFencePopupViewController.swift; sourceTree = "<group>"; };
@@ -459,6 +463,8 @@
 				F20000010000000000000001 /* BackupBundleHelper.swift */,
 				F20000010000000000000002 /* SimpleZip.swift */,
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
+				F20000010000000000000006 /* ConnectsChatTransferService.swift */,
+				F20000010000000000000007 /* ConnectsKeysTransferService.swift */,
 				S20000010000000000000032 /* ConnectsPaths.swift */,
 				S20000010000000000000002 /* StudyDocumentStore.swift */,
 				S20000010000000000000043 /* ReadiumEbookOpener.swift */,
@@ -819,6 +825,8 @@
 				F10000010000000000000001 /* BackupBundleHelper.swift in Sources */,
 				F10000010000000000000002 /* SimpleZip.swift in Sources */,
 				F10000010000000000000003 /* ConnectsBackupService.swift in Sources */,
+				F10000010000000000000006 /* ConnectsChatTransferService.swift in Sources */,
+				F10000010000000000000007 /* ConnectsKeysTransferService.swift in Sources */,
 				S10000010000000000000001 /* StudyDocument.swift in Sources */,
 				S10000010000000000000030 /* StudyWorkspace.swift in Sources */,
 				S10000010000000000000002 /* StudyDocumentStore.swift in Sources */,

@@ -746,4 +746,84 @@ final class ConversationStore {
         reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: loaded.allowBootstrap)
         NotificationCenter.default.post(name: .conversationStoreDidUpdate, object: nil)
     }
+
+    struct ChatMergeResult: Equatable {
+        var replaced: Int
+        var added: Int
+    }
+
+    /// Merge imported conversations by id: same id replaces local; new ids append.
+    @discardableResult
+    func mergeImportedConversations(_ imported: [Conversation]) -> ChatMergeResult {
+        guard !imported.isEmpty else { return ChatMergeResult(replaced: 0, added: 0) }
+
+        var replaced = 0
+        var added = 0
+        var byID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+
+        for raw in imported {
+            let next = sanitizeImportedConversation(raw)
+            if byID[next.id] != nil {
+                replaced += 1
+            } else {
+                added += 1
+            }
+            byID[next.id] = next
+        }
+
+        conversations = Array(byID.values)
+        save(synchronously: true)
+        if let id = currentConversationID, byID[id] == nil {
+            currentConversationID = visibleConversations.first?.id ?? conversations.first?.id
+            persistCurrentConversationID()
+        }
+        notify(userInfo: ["source": "chatTransferImport"])
+        return ChatMergeResult(replaced: replaced, added: added)
+    }
+
+    private func sanitizeImportedConversation(_ conversation: Conversation) -> Conversation {
+        var next = conversation
+        for i in next.messages.indices {
+            var msg = next.messages[i]
+            var changed = false
+            if msg.isStreaming {
+                msg.isStreaming = false
+                changed = true
+            }
+            if msg.agentProcessPhase == .running {
+                msg.agentProcessPhase = .done
+                changed = true
+            }
+            if msg.searchProcessPhase != .idle && msg.searchProcessPhase != .done {
+                msg.searchProcessPhase = .done
+                changed = true
+            }
+            if changed {
+                if msg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !msg.hasReasoning,
+                   !msg.hasSearchProcess,
+                   !msg.hasAgentProcess {
+                    msg.content = "导入时该条生成未完成。"
+                }
+                msg.commitActiveVersion()
+                next.messages[i] = msg
+            }
+        }
+
+        if let pid = next.projectID, ProjectStore.shared.project(id: pid) == nil {
+            next.projectID = nil
+        }
+        if let docID = next.studyDocumentID,
+           StudyDocumentStore.shared.document(id: docID) == nil {
+            next.studyDocumentID = nil
+        }
+        if let wsID = next.studyWorkspaceID,
+           StudyWorkspaceStore.shared.workspace(id: wsID) == nil {
+            next.studyWorkspaceID = nil
+            if next.studySessionKind == .workspace {
+                next.studySessionKind = .document
+            }
+        }
+        return next
+    }
 }

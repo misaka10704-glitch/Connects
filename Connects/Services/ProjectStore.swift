@@ -81,4 +81,27 @@ final class ProjectStore {
         load()
         NotificationCenter.default.post(name: .projectsDidChange, object: nil)
     }
+
+    /// Projects matching the given ids (order undefined).
+    func projects(withIDs ids: Set<String>) -> [Project] {
+        guard !ids.isEmpty else { return [] }
+        return projects.filter { ids.contains($0.id) }
+    }
+
+    /// Merge imported project snapshots. Existing same-id projects are left unchanged.
+    func mergeImportedProjects(_ imported: [Project]) {
+        guard !imported.isEmpty else { return }
+        var changed = false
+        for project in imported {
+            if projects.contains(where: { $0.id == project.id }) { continue }
+            var next = project
+            next.name = String(next.name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24))
+            next.colorPreset = max(0, min(19, next.colorPreset))
+            guard !next.name.isEmpty else { continue }
+            next.sortOrder = (projects.map(\.sortOrder).max() ?? -1) + 1
+            projects.append(next)
+            changed = true
+        }
+        if changed { saveAndNotify() }
+    }
 }

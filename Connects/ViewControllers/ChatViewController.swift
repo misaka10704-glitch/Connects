@@ -6796,6 +6796,39 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         present(activity, animated: true)
     }
 
+    func shareCurrentChatTransfer() {
+        guard let conv = ConversationStore.shared.currentConversation else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("connects-chat-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let stamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "")
+                let url = folder.appendingPathComponent(
+                    "ConnectsChat_\(stamp).\(ConnectsChatTransferService.fileExtension)"
+                )
+                _ = try ConnectsChatTransferService.exportConversation(id: conv.id, to: url)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    activity.completionWithItemsHandler = { _, _, _, _ in
+                        try? FileManager.default.removeItem(at: folder)
+                    }
+                    if let pop = activity.popoverPresentationController {
+                        pop.barButtonItem = self.studyBarButtonItem(matching: #selector(self.moreTapped))
+                            ?? self.navigationItem.rightBarButtonItem
+                    }
+                    self.present(activity, animated: true)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showAlert(title: "导出失败", message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
     @objc private func toggleChatSidebar() { onToggleSidebar?() }
 
     /// Prefer matching by action — `rightBarButtonItems` order is rightmost-first and fragile.
@@ -6849,6 +6882,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         items.append(contentsOf: [
                 ConnectsMenuItem(title: "分享 / 导出 Markdown", icon: .share) { [weak self] in
                     self?.shareCurrentMarkdown()
+                },
+                ConnectsMenuItem(title: "导出可迁移包", icon: .share) { [weak self] in
+                    self?.shareCurrentChatTransfer()
                 },
                 ConnectsMenuItem(title: "复制全部对话", icon: .copy) { [weak self] in
                     self?.copyEntireConversation()

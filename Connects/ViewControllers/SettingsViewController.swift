@@ -28,7 +28,18 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let modelVisibility = ModelVisibilityView()
     private let exportBackupButton = UIButton(type: .system)
     private let importBackupButton = UIButton(type: .system)
+    private let exportChatTransferButton = UIButton(type: .system)
+    private let importChatTransferButton = UIButton(type: .system)
+    private let exportKeysButton = UIButton(type: .system)
+    private let importKeysButton = UIButton(type: .system)
     private var backupBusy = false
+    private var pendingImportKind: BackupImportKind = .fullBackup
+
+    private enum BackupImportKind {
+        case fullBackup
+        case chatTransfer
+        case keysTransfer
+    }
 
     private var sectionLabels: [UILabel] = []
     private var cards: [UIView] = []
@@ -139,6 +150,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         qwenCNSwitch.onTintColor = c.accent
         modelVisibility.applyTheme()
         exportBackupButton.setTitleColor(c.accent, for: .normal)
+        exportChatTransferButton.setTitleColor(c.accent, for: .normal)
+        exportKeysButton.setTitleColor(c.accent, for: .normal)
+        importChatTransferButton.setTitleColor(c.accent, for: .normal)
+        importKeysButton.setTitleColor(c.accent, for: .normal)
         if #available(iOS 13.0, *) {
             importBackupButton.setTitleColor(.systemRed, for: .normal)
         } else {
@@ -365,10 +380,38 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         importBackupButton.addTarget(self, action: #selector(importBackupTapped), for: .touchUpInside)
         contentStack.addArrangedSubview(makeCard(embedding: importBackupButton, height: 42, inset: 0))
 
+        exportChatTransferButton.setTitle("导出聊天迁移包", for: .normal)
+        exportChatTransferButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        exportChatTransferButton.contentHorizontalAlignment = .left
+        exportChatTransferButton.addTarget(self, action: #selector(exportChatTransferTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: exportChatTransferButton, height: 42, inset: 0))
+
+        importChatTransferButton.setTitle("导入聊天迁移包", for: .normal)
+        importChatTransferButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        importChatTransferButton.contentHorizontalAlignment = .left
+        importChatTransferButton.addTarget(self, action: #selector(importChatTransferTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: importChatTransferButton, height: 42, inset: 0))
+
+        exportKeysButton.setTitle("导出 Key 设置", for: .normal)
+        exportKeysButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        exportKeysButton.contentHorizontalAlignment = .left
+        exportKeysButton.addTarget(self, action: #selector(exportKeysTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: exportKeysButton, height: 42, inset: 0))
+
+        importKeysButton.setTitle("导入 Key 设置", for: .normal)
+        importKeysButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        importKeysButton.contentHorizontalAlignment = .left
+        importKeysButton.addTarget(self, action: #selector(importKeysTapped), for: .touchUpInside)
+        contentStack.addArrangedSubview(makeCard(embedding: importKeysButton, height: 42, inset: 0))
+
         let backupTip = UILabel()
         backupTip.numberOfLines = 0
         backupTip.font = DSTheme.bodyFont(size: 13)
-        backupTip.text = "完整备份包含对话、项目、设置与 API Key（不含可重建的渲染缓存）。恢复将覆盖本机现有数据。"
+        backupTip.text = """
+        · 完整备份：对话 + Study + 设置 + API Key；恢复会覆盖本机现有数据。
+        · 聊天迁移包：仅对话（可含图片）；合并导入，同 ID 覆盖，不含 API Key。
+        · Key 设置：API Key、节点与可见模型等；合并写入，不含聊天。含密钥，勿发公共频道。
+        """
         footerLabels.append(backupTip)
         contentStack.addArrangedSubview(backupTip)
         contentStack.setCustomSpacing(22, after: backupTip)
@@ -515,18 +558,81 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     }
 
     @objc private func exportBackupTapped() {
+        exportPackage(
+            fileStem: "ConnectsBackup",
+            fileExtension: ConnectsBackupService.fileExtension
+        ) { url in
+            _ = try ConnectsBackupService.export(to: url)
+        }
+    }
+
+    @objc private func importBackupTapped() {
+        pendingImportKind = .fullBackup
+        presentImportPicker()
+    }
+
+    @objc private func exportChatTransferTapped() {
+        exportPackage(
+            fileStem: "ConnectsChats",
+            fileExtension: ConnectsChatTransferService.fileExtension
+        ) { url in
+            _ = try ConnectsChatTransferService.exportAll(to: url)
+        }
+    }
+
+    @objc private func importChatTransferTapped() {
+        pendingImportKind = .chatTransfer
+        presentImportPicker()
+    }
+
+    @objc private func exportKeysTapped() {
+        let alert = UIAlertController(
+            title: "导出 Key 设置？",
+            message: "文件含 API Key 明文，请勿发到公共频道。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "导出", style: .default) { [weak self] _ in
+            self?.exportPackage(
+                fileStem: "ConnectsKeys",
+                fileExtension: ConnectsKeysTransferService.fileExtension
+            ) { url in
+                _ = try ConnectsKeysTransferService.export(to: url)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    @objc private func importKeysTapped() {
+        pendingImportKind = .keysTransfer
+        presentImportPicker()
+    }
+
+    private func presentImportPicker() {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.data, .archive],
+            asCopy: true
+        )
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private func exportPackage(
+        fileStem: String,
+        fileExtension: String,
+        work: @escaping (URL) throws -> Void
+    ) {
         guard !backupBusy else { return }
         setBackupBusy(true)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let folder = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("connects-backup-\(UUID().uuidString)", isDirectory: true)
+                    .appendingPathComponent("connects-export-\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 let stamp = Self.backupStampFormatter.string(from: Date())
-                let url = folder.appendingPathComponent(
-                    "ConnectsBackup_\(stamp).\(ConnectsBackupService.fileExtension)"
-                )
-                _ = try ConnectsBackupService.export(to: url)
+                let url = folder.appendingPathComponent("\(fileStem)_\(stamp).\(fileExtension)")
+                try work(url)
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     self.setBackupBusy(false)
@@ -555,16 +661,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         }
     }
 
-    @objc private func importBackupTapped() {
-        let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.data, .archive],
-            asCopy: true
-        )
-        picker.delegate = self
-        picker.allowsMultipleSelection = false
-        present(picker, animated: true)
-    }
-
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let source = urls.first else { return }
         let accessing = source.startAccessingSecurityScopedResource()
@@ -577,7 +673,14 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let localURL = folder.appendingPathComponent(source.lastPathComponent)
             try FileManager.default.copyItem(at: source, to: localURL)
-            beginBackupRestore(from: localURL, stagingFolder: folder)
+            switch pendingImportKind {
+            case .fullBackup:
+                beginBackupRestore(from: localURL, stagingFolder: folder)
+            case .chatTransfer:
+                beginChatTransferImport(from: localURL, stagingFolder: folder)
+            case .keysTransfer:
+                beginKeysImport(from: localURL, stagingFolder: folder)
+            }
         } catch {
             showBackupMessage(error.localizedDescription)
         }
@@ -594,6 +697,77 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         })
         alert.addAction(UIAlertAction(title: "继续", style: .destructive) { [weak self] _ in
             self?.confirmBackupRestore(from: url, stagingFolder: stagingFolder)
+        })
+        present(alert, animated: true)
+    }
+
+    private func beginChatTransferImport(from url: URL, stagingFolder: URL) {
+        let alert = UIAlertController(
+            title: "导入聊天迁移包？",
+            message: "将合并导入对话：同 ID 覆盖本地，新对话追加。不含 API Key。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: stagingFolder)
+        })
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            self.setBackupBusy(true)
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Heavy unzip/decode off main; apply merge on main.
+                let result: Result<ConnectsChatTransferSummary, Error>
+                do {
+                    let summary = try ConnectsChatTransferService.importPackage(from: url)
+                    result = .success(summary)
+                } catch {
+                    result = .failure(error)
+                }
+                DispatchQueue.main.async {
+                    self.setBackupBusy(false)
+                    try? FileManager.default.removeItem(at: stagingFolder)
+                    switch result {
+                    case .success(let summary):
+                        self.showBackupMessage(
+                            "已导入 \(summary.conversationCount) 条对话（新增 \(summary.addedCount)，覆盖 \(summary.mergedCount)）。"
+                        )
+                    case .failure(let error):
+                        self.showBackupMessage(error.localizedDescription)
+                    }
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func beginKeysImport(from url: URL, stagingFolder: URL) {
+        let alert = UIAlertController(
+            title: "导入 Key 设置？",
+            message: "将写入 API Key 与相关设置（非空 Key 覆盖本地）。不含聊天记录。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: stagingFolder)
+        })
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+            guard let self = self else { return }
+            self.setBackupBusy(true)
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let summary = try ConnectsKeysTransferService.importPackage(from: url)
+                    DispatchQueue.main.async {
+                        self.setBackupBusy(false)
+                        try? FileManager.default.removeItem(at: stagingFolder)
+                        self.applyImportedSettingsToForm()
+                        self.showBackupMessage("已导入 \(summary.keyCount) 个 API Key 及相关设置。")
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.setBackupBusy(false)
+                        try? FileManager.default.removeItem(at: stagingFolder)
+                        self.showBackupMessage(error.localizedDescription)
+                    }
+                }
+            }
         })
         present(alert, animated: true)
     }
@@ -655,12 +829,17 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         kimiCNSwitch.isOn = SettingsManager.shared.kimiUseChinaEndpoint
         qwenCNSwitch.isOn = SettingsManager.shared.qwenUseChinaEndpoint
         modelVisibility.reload()
+        ProjectStore.shared.reloadAfterBackupImport()
     }
 
     private func setBackupBusy(_ busy: Bool) {
         backupBusy = busy
-        exportBackupButton.isEnabled = !busy
-        importBackupButton.isEnabled = !busy
+        let buttons = [
+            exportBackupButton, importBackupButton,
+            exportChatTransferButton, importChatTransferButton,
+            exportKeysButton, importKeysButton,
+        ]
+        for button in buttons { button.isEnabled = !busy }
         if busy {
             let indicator = UIActivityIndicatorView(style: .medium)
             indicator.startAnimating()
