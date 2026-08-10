@@ -44,8 +44,10 @@ final class NativeMathParseTests: XCTestCase {
 
     private func hasFormulaImage(_ layout: NativeMessageLayout) -> Bool {
         if layout.commands.contains(where: {
-            if case .image = $0 { return true }
-            return false
+            switch $0 {
+            case .image, .mathScroll: return true
+            default: return false
+            }
         }) {
             return true
         }
@@ -181,18 +183,149 @@ final class NativeMathParseTests: XCTestCase {
         }), describe(doc.blocks))
     }
 
-    func testBoldWrappedConvolutionMathKeepsAsteriskInsideTeX() {
+    func testSoleTallInlineFracPromotesToDisplayImage() {
         NativeMarkdownParser.shared.clear()
-        let raw = "**$x(t)*h(t)$**"
-        let doc = NativeMarkdownParser.shared.parse(raw)
-        guard case .paragraph(let inlines) = doc.blocks.first else {
-            return XCTFail(describe(doc.blocks))
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
+        // Models often emit a lone `$…$` line; that must not paint as a clipped attachment.
+        let doc = NativeMarkdownParser.shared.parse(
+            "示波器内部电路也有上升时间：\n\n$tr_{scope} \\approx \\frac{0.35}{\\mathrm{BW}}$\n\n如果测到的边沿"
+        )
+        let layout = NativeMessageLayouter.shared.layout(
+            document: doc,
+            style: style(),
+            renderMissingFormulas: true
+        )
+        let hasDisplayImage = layout.commands.contains {
+            switch $0 {
+            case .image, .mathScroll: return true
+            default: return false
+            }
         }
-        XCTAssertTrue(inlines.contains {
+        XCTAssertTrue(
+            hasDisplayImage,
+            "tall sole inline frac should promote to display image: \(describe(doc.blocks))"
+        )
+    }
+
+    func testFracArtifactHasOpaquePixelsInLowerHalf() {
+        NativeFormulaRenderer.shared.clear()
+        guard let artifact = NativeFormulaRenderer.shared.artifact(
+            tex: #"tr_{scope} \approx \frac{0.35}{\mathrm{BW}}"#,
+            fontSize: 17,
+            color: .white,
+            display: true
+        ) else {
+            return XCTFail("iosMath failed to render frac")
+        }
+        guard let cg = artifact.image.cgImage else {
+            return XCTFail("missing cgImage")
+        }
+        let width = cg.width
+        let height = cg.height
+        XCTAssertGreaterThan(height, 20)
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        let ok = data.withUnsafeMutableBytes { ptr -> Bool in
+            guard let ctx = CGContext(
+                data: ptr.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(ok)
+        // Lower third of the bitmap must contain the denominator (not an empty clip).
+        let y0 = (height * 2) / 3
+        var opaque = 0
+        for y in y0..<height {
+            for x in 0..<width {
+                let a = Int(data[(y * width + x) * 4 + 3])
+                if a > 20 { opaque += 1 }
+            }
+        }
+        XCTAssertGreaterThan(
+            opaque,
+            30,
+            "denominator region empty — formula bitmap likely clipped"
+        )
+    }
+
+    func testCJKTextInDisplayMathExpandsToProse() {
+        NativeMarkdownParser.shared.clear()
+        let raw = #"""
+        傅里叶变换做的事情：
+        \[
+        \text{对每个频率 }\omega，\text{ 用基函数 } e^{-j\omega t} \text{ 去"探测"信号 } f(t) \text{ 中该频率成分的多少}
+        \]
+        """#
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertFalse(
+            doc.blocks.contains(where: {
+                if case .displayMath = $0 { return true }
+                return false
+            }),
+            "CJK prose math must not stay as displayMath: \(describe(doc.blocks))"
+        )
+        guard let paragraph = doc.blocks.compactMap({ block -> [NativeInline]? in
+            if case .paragraph(let inlines) = block { return inlines }
+            return nil
+        }).first(where: { inlines in
+            inlines.contains {
+                if case .text(let t) = $0 { return t.contains("探测") }
+                return false
+            }
+        }) else {
+            return XCTFail("expected expanded Chinese prose: \(describe(doc.blocks))")
+        }
+        let joinedText = paragraph.compactMap { inline -> String? in
+            if case .text(let t) = inline { return t }
+            return nil
+        }.joined()
+        XCTAssertTrue(joinedText.contains("对每个频率"))
+        XCTAssertTrue(joinedText.contains("探测"))
+        XCTAssertTrue(paragraph.contains {
+            if case .inlineMath(let tex) = $0 { return tex.contains("\\omega") || tex == "\\omega" }
+            return false
+        })
+        XCTAssertTrue(paragraph.contains {
             if case .inlineMath(let tex) = $0 {
-                return tex.contains("x(t)") && tex.contains("h(t)")
+                return tex.contains("e^{-j")
             }
             return false
-        }, describe(doc.blocks))
+        })
+    }
+
+    func testProseTextCommandTriggersExpansion() {
+        NativeMarkdownParser.shared.clear()
+        let raw = #"$$\text{subject to } x+y=1$$"#
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertFalse(doc.blocks.contains(where: {
+            if case .displayMath = $0 { return true }
+            return false
+        }), describe(doc.blocks))
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .paragraph(let inlines) = $0 {
+                return inlines.contains {
+                    if case .text(let t) = $0 { return t.contains("subject to") }
+                    return false
+                }
+            }
+            return false
+        }), describe(doc.blocks))
+    }
+
+    func testShortTextUnitStaysDisplayMath() {
+        NativeMarkdownParser.shared.clear()
+        let raw = #"$$tr \approx 0.35\text{ns}$$"#
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .displayMath = $0 { return true }
+            return false
+        }), describe(doc.blocks))
     }
 }

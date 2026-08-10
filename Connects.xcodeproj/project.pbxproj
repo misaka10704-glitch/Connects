@@ -58,6 +58,7 @@
 		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
 		B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* NativeFormulaRenderer.swift */; };
 		B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* NativeMessageLayouter.swift */; };
+		B1000001000000000000000C /* NativeMathProse.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000C /* NativeMathProse.swift */; };
 		B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* NativeMessageRenderView.swift */; };
 		B10000010000000000000006 /* ScrollStressHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ScrollStressHarness.swift */; };
 		B10000010000000000000007 /* RenderAuditHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000007 /* RenderAuditHarness.swift */; };
@@ -227,6 +228,7 @@
 		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
 		B20000010000000000000003 /* NativeFormulaRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFormulaRenderer.swift; sourceTree = "<group>"; };
 		B20000010000000000000004 /* NativeMessageLayouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageLayouter.swift; sourceTree = "<group>"; };
+		B2000001000000000000000C /* NativeMathProse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMathProse.swift; sourceTree = "<group>"; };
 		B20000010000000000000005 /* NativeMessageRenderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessageRenderView.swift; sourceTree = "<group>"; };
 		B20000010000000000000006 /* ScrollStressHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollStressHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000007 /* RenderAuditHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditHarness.swift; sourceTree = "<group>"; };
@@ -460,6 +462,7 @@
 				B2000001000000000000000B /* WebSearchDebugHarness.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
+				B2000001000000000000000C /* NativeMathProse.swift */,
 				F20000010000000000000001 /* BackupBundleHelper.swift */,
 				F20000010000000000000002 /* SimpleZip.swift */,
 				F20000010000000000000003 /* ConnectsBackupService.swift */,
@@ -804,6 +807,7 @@
 				B1000001000000000000000B /* WebSearchDebugHarness.swift in Sources */,
 				B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */,
 				B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */,
+				B1000001000000000000000C /* NativeMathProse.swift in Sources */,
 				B10000010000000000000005 /* NativeMessageRenderView.swift in Sources */,
 				B10000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m in Sources */,
 				B10000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m in Sources */,

@@ -81,10 +81,20 @@ struct NativeCodeFenceHit {
     let title: String
 }
 
+/// Wide display formula: viewport stays in the bubble; content scrolls horizontally.
+struct NativeMathScrollFragment {
+    let image: UIImage
+    /// Visible band inside the message column.
+    let viewportFrame: CGRect
+    /// Natural formula size (width may exceed the viewport).
+    let contentSize: CGSize
+}
+
 enum NativeDrawCommand {
     case text(NativeTextFragment)
     case codeFence(NativeCodeFenceFragment)
     case image(UIImage, CGRect)
+    case mathScroll(NativeMathScrollFragment)
     case fill(CGRect, UIColor, CGFloat)
     case stroke(CGRect, UIColor, CGFloat)
     case line(CGPoint, CGPoint, UIColor, CGFloat)

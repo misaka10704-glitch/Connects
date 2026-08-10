@@ -16,7 +16,7 @@ final class NativeMessageLayouter {
     static let shared = NativeMessageLayouter()
 
     /// Bump together with layout shape changes so store/lookup never diverge.
-    private static let layoutCacheVersion = "v15"
+    private static let layoutCacheVersion = "v18"
 
     private final class Box: NSObject {
         let layout: NativeMessageLayout
@@ -75,35 +75,7 @@ final class NativeMessageLayouter {
 
     private func allFormulaSyntaxRenderable(_ document: NativeMarkdownDocument,
                                             style: NativeLayoutStyle) -> Bool {
-        var formulas = [(String, Bool)]()
-        func scan(_ inlines: [NativeInline]) {
-            for inline in inlines {
-                switch inline {
-                case .inlineMath(let tex):
-                    formulas.append((tex, false))
-                case .bold(let children), .italic(let children), .link(let children, _):
-                    scan(children)
-                default:
-                    break
-                }
-            }
-        }
-        for block in document.blocks {
-            switch block {
-            case .displayMath(let tex):
-                formulas.append((tex, true))
-            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
-                scan(inlines)
-            case .list(_, let items):
-                items.forEach(scan)
-            case .table(let table):
-                table.header.forEach(scan)
-                table.rows.flatMap { $0 }.forEach(scan)
-            default:
-                break
-            }
-        }
-        return formulas.allSatisfy { tex, display in
+        Self.formulaWarmRequests(document: document).allSatisfy { tex, display in
             NativeFormulaRenderer.shared.hasMemoryArtifact(
                 tex: tex,
                 fontSize: style.bodyFontSize * (display ? 1.08 : 1),
@@ -116,6 +88,66 @@ final class NativeMessageLayouter {
                 display: display
             )
         }
+    }
+
+    /// Formulas that layout will ask iosMath for — includes tall sole-line `$…$` promoted to display.
+    static func formulaWarmRequests(document: NativeMarkdownDocument) -> [(tex: String, display: Bool)] {
+        var result = [(tex: String, display: Bool)]()
+        var seen = Set<String>()
+        func append(_ tex: String, _ display: Bool) {
+            let key = "\(display ? "d" : "i")|\(tex)"
+            if seen.insert(key).inserted {
+                result.append((tex, display))
+            }
+        }
+        func scan(_ inlines: [NativeInline]) {
+            for inline in inlines {
+                switch inline {
+                case .inlineMath(let tex):
+                    append(tex, false)
+                case .bold(let children), .italic(let children), .link(let children, _):
+                    scan(children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in document.blocks {
+            switch block {
+            case .displayMath(let tex):
+                append(tex, true)
+            case .paragraph(let inlines):
+                if let tall = soleTallInlineMathTeX(inlines) {
+                    append(tall, true)
+                } else {
+                    scan(inlines)
+                }
+            case .heading(_, let inlines), .blockquote(let inlines):
+                scan(inlines)
+            case .list(_, let items):
+                items.forEach(scan)
+            case .table(let table):
+                table.header.forEach(scan)
+                table.rows.flatMap { $0 }.forEach(scan)
+            default:
+                break
+            }
+        }
+        return result
+    }
+
+    private static func soleTallInlineMathTeX(_ inlines: [NativeInline]) -> String? {
+        let meaningful = inlines.filter {
+            if case .text(let t) = $0 {
+                return !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            if case .lineBreak = $0 { return false }
+            return true
+        }
+        guard meaningful.count == 1,
+              case .inlineMath(let tex) = meaningful[0],
+              isTallMathTeX(tex) else { return nil }
+        return tex
     }
 
     private func build(document: NativeMarkdownDocument,
@@ -131,15 +163,29 @@ final class NativeMessageLayouter {
             switch block {
             case .paragraph(let inlines):
                 expectReferencesList = false
-                let attributed = attributedString(
+                // Lone `$…$` / `\(...\)` lines with tall TeX (frac/sqrt/…) were laid out as
+                // NSTextAttachment inside a short text fragment; UIKit then clipped the
+                // denominator under the fraction bar. Promote those to display images.
+                if let promoted = layoutSoleTallInlineMath(
                     inlines,
+                    originY: y,
+                    width: width,
                     style: style,
-                    font: bodyFont(style),
                     renderMissingFormulas: renderMissingFormulas
-                )
-                let height = textHeight(attributed, width: width)
-                commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
-                y += height + 9
+                ) {
+                    commands.append(contentsOf: promoted.commands)
+                    y += promoted.height
+                } else {
+                    let attributed = attributedString(
+                        inlines,
+                        style: style,
+                        font: bodyFont(style),
+                        renderMissingFormulas: renderMissingFormulas
+                    )
+                    let height = textHeight(attributed, width: width)
+                    commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
+                    y += height + 9
+                }
 
             case .heading(let level, let inlines):
                 let headingText = plainText(inlines).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -281,12 +327,25 @@ final class NativeMessageLayouter {
                     color: style.colors.textPrimary,
                     display: true
                 ) {
-                    let drawWidth = min(formula.size.width, width)
-                    let scale = drawWidth / max(formula.size.width, 1)
-                    let drawHeight = formula.size.height * scale
-                    let frame = CGRect(x: (width - drawWidth) / 2, y: y + 6, width: drawWidth, height: drawHeight)
-                    commands.append(.image(formula.image, frame))
-                    y += drawHeight + 18
+                    y += appendDisplayFormula(
+                        formula,
+                        originY: y,
+                        width: width,
+                        commands: &commands
+                    )
+                } else if NativeMathProse.needsExpansion(tex) {
+                    let attributed = attributedString(
+                        NativeMathProse.expandToInlines(tex),
+                        style: style,
+                        font: bodyFont(style),
+                        renderMissingFormulas: renderMissingFormulas
+                    )
+                    let height = textHeight(attributed, width: width)
+                    commands.append(.text(fragment(
+                        attributed,
+                        frame: CGRect(x: 0, y: y, width: width, height: height)
+                    )))
+                    y += height + 10
                 } else {
                     let placeholder = renderMissingFormulas ? tex : " "
                     let fallback = NSAttributedString(
@@ -344,6 +403,8 @@ final class NativeMessageLayouter {
             case .codeFence(let fence): commandBottom = fence.cardFrame.maxY
             case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                 commandBottom = frame.maxY
+            case .mathScroll(let band):
+                commandBottom = band.viewportFrame.maxY
             case .line(let start, let end, _, let width):
                 commandBottom = max(start.y, end.y) + width
             }
@@ -366,14 +427,14 @@ final class NativeMessageLayouter {
                              renderMissingFormulas: Bool) -> (commands: [NativeDrawCommand], height: CGFloat) {
         let rows = [table.header] + table.rows
         let columnCount = max(rows.map(\.count).max() ?? 1, 1)
-        let columnWidth = width / CGFloat(columnCount)
-        var commands = [NativeDrawCommand]()
-        var y = originY
         let padding: CGFloat = 7
+        let minColumn = max(64, width / CGFloat(columnCount))
 
+        // Preferred column widths from content (formulas/attachments included).
+        var columnWidths = Array(repeating: minColumn, count: columnCount)
+        var rowCells = [[NSAttributedString]]()
         for (rowIndex, row) in rows.enumerated() {
             var cellTexts = [NSAttributedString]()
-            var rowHeight: CGFloat = 34
             for column in 0..<columnCount {
                 let inlines = column < row.count ? row[column] : []
                 let font = UIFont.systemFont(
@@ -387,29 +448,133 @@ final class NativeMessageLayouter {
                     renderMissingFormulas: renderMissingFormulas
                 )
                 cellTexts.append(text)
-                rowHeight = max(rowHeight, textHeight(text, width: columnWidth - padding * 2) + padding * 2)
+                let ideal = textIntrinsicWidth(text) + padding * 2
+                // Cap a single column so one monster cell cannot force multi-screen width.
+                columnWidths[column] = max(columnWidths[column], min(ideal, width * 2.4))
             }
+            rowCells.append(cellTexts)
+        }
+
+        let tableWidth = columnWidths.reduce(CGFloat(0), +)
+        let useScroll = tableWidth > width + 1
+        let layoutWidth = useScroll ? tableWidth : width
+        if !useScroll {
+            // Equal columns when everything fits — matches prior compact look.
+            let equal = width / CGFloat(columnCount)
+            columnWidths = Array(repeating: equal, count: columnCount)
+        }
+
+        var localCommands = [NativeDrawCommand]()
+        var y: CGFloat = 0
+        for (rowIndex, cellTexts) in rowCells.enumerated() {
+            var rowHeight: CGFloat = 34
+            var x: CGFloat = 0
             for column in 0..<columnCount {
-                let cell = CGRect(
-                    x: CGFloat(column) * columnWidth,
-                    y: y,
-                    width: columnWidth,
-                    height: rowHeight
+                let colW = columnWidths[column]
+                rowHeight = max(
+                    rowHeight,
+                    textHeight(cellTexts[column], width: colW - padding * 2) + padding * 2
                 )
+                x += colW
+            }
+            x = 0
+            for column in 0..<columnCount {
+                let colW = columnWidths[column]
+                let cell = CGRect(x: x, y: y, width: colW, height: rowHeight)
                 if rowIndex == 0 {
-                    commands.append(.fill(cell, style.colors.mdTableHeaderFill, 0))
+                    localCommands.append(.fill(cell, style.colors.mdTableHeaderFill, 0))
                 } else if rowIndex % 2 == 0 {
-                    commands.append(.fill(cell, style.colors.mdTableStripeFill, 0))
+                    localCommands.append(.fill(cell, style.colors.mdTableStripeFill, 0))
                 }
-                commands.append(.stroke(cell, style.colors.border.withAlphaComponent(0.85), 1 / UIScreen.main.scale))
-                commands.append(.text(fragment(
+                localCommands.append(.stroke(
+                    cell,
+                    style.colors.border.withAlphaComponent(0.85),
+                    1 / UIScreen.main.scale
+                ))
+                localCommands.append(.text(fragment(
                     cellTexts[column],
                     frame: cell.insetBy(dx: padding, dy: padding)
                 )))
+                x += colW
             }
             y += rowHeight
         }
-        return (commands, y - originY)
+
+        let tableHeight = y
+        if !useScroll {
+            // Offset into the message column.
+            let shifted = localCommands.map { command -> NativeDrawCommand in
+                shiftDrawCommand(command, dy: originY)
+            }
+            return (shifted, tableHeight)
+        }
+
+        let bandSize = CGSize(width: layoutWidth, height: max(tableHeight, 1))
+        guard let image = NativeMessagePainter.rasterize(
+            commands: localCommands,
+            size: bandSize,
+            scale: UIScreen.main.scale
+        ) else {
+            let shifted = localCommands.map { shiftDrawCommand($0, dy: originY) }
+            return (shifted, tableHeight)
+        }
+        let viewport = CGRect(x: 0, y: originY, width: width, height: bandSize.height)
+        return ([
+            .mathScroll(NativeMathScrollFragment(
+                image: image,
+                viewportFrame: viewport,
+                contentSize: bandSize
+            ))
+        ], bandSize.height)
+    }
+
+    private func shiftDrawCommand(_ command: NativeDrawCommand, dy: CGFloat) -> NativeDrawCommand {
+        switch command {
+        case .text(let fragment):
+            return .text(NativeTextFragment(
+                attributedText: fragment.attributedText,
+                frame: fragment.frame.offsetBy(dx: 0, dy: dy),
+                lines: fragment.lines,
+                lineOrigins: fragment.lineOrigins,
+                linkRects: fragment.linkRects.map { ($0.0.offsetBy(dx: 0, dy: dy), $0.1) }
+            ))
+        case .codeFence(let fence):
+            return .codeFence(fence)
+        case .image(let image, let frame):
+            return .image(image, frame.offsetBy(dx: 0, dy: dy))
+        case .mathScroll(let band):
+            return .mathScroll(NativeMathScrollFragment(
+                image: band.image,
+                viewportFrame: band.viewportFrame.offsetBy(dx: 0, dy: dy),
+                contentSize: band.contentSize
+            ))
+        case .fill(let frame, let color, let radius):
+            return .fill(frame.offsetBy(dx: 0, dy: dy), color, radius)
+        case .stroke(let frame, let color, let width):
+            return .stroke(frame.offsetBy(dx: 0, dy: dy), color, width)
+        case .line(let start, let end, let color, let width):
+            return .line(
+                CGPoint(x: start.x, y: start.y + dy),
+                CGPoint(x: end.x, y: end.y + dy),
+                color,
+                width
+            )
+        }
+    }
+
+    private func textIntrinsicWidth(_ text: NSAttributedString) -> CGFloat {
+        let storage = NSTextStorage(attributedString: text)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        ))
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        return ceilToPixel(max(manager.usedRect(for: container).width, 1))
     }
 
     private enum LinkStyle {
@@ -505,7 +670,9 @@ final class NativeMessageLayouter {
                 ) {
                     let attachment = NSTextAttachment()
                     attachment.image = formula.image
-                    let maxHeight = font.lineHeight * 1.32
+                    // Tall constructs need room for denominators / radical depth.
+                    // The old 1.32× lineHeight cap crushed fracs so TextKit clipped them.
+                    let maxHeight = font.lineHeight * (Self.isTallMathTeX(mathTex) ? 2.9 : 1.55)
                     let heightScale = maxHeight / max(formula.size.height, 1)
                     let widthScale = (style.width * 0.92) / max(formula.size.width, 1)
                     let scale = min(min(1, heightScale), widthScale)
@@ -664,12 +831,94 @@ final class NativeMessageLayouter {
     }
 
     private func textHeight(_ text: NSAttributedString, width: CGFloat) -> CGFloat {
-        let bounds = text.boundingRect(
-            with: CGSize(width: max(width, 1), height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            context: nil
+        // `boundingRect` under-counts NSTextAttachment descent (fraction denominators).
+        // NSLayoutManager.usedRect includes attachment bounds used when painting.
+        let storage = NSTextStorage(attributedString: text)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: max(width, 1), height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        let used = manager.usedRect(for: container)
+        return ceilToPixel(max(used.height + 4, 1))
+    }
+
+    private static func isTallMathTeX(_ tex: String) -> Bool {
+        let markers = [
+            "\\frac", "\\dfrac", "\\tfrac", "\\sqrt", "\\sum", "\\prod",
+            "\\int", "\\iint", "\\iiint", "\\oint", "\\lim", "\\binom",
+            "\\begin{", "\\overset", "\\underset", "\\stackrel"
+        ]
+        return markers.contains { tex.contains($0) }
+    }
+
+    /// Paragraph that is only one tall inline formula → paint as a display math image.
+    private func layoutSoleTallInlineMath(
+        _ inlines: [NativeInline],
+        originY: CGFloat,
+        width: CGFloat,
+        style: NativeLayoutStyle,
+        renderMissingFormulas: Bool
+    ) -> (commands: [NativeDrawCommand], height: CGFloat)? {
+        guard let tex = Self.soleTallInlineMathTeX(inlines) else { return nil }
+
+        let mathTex = boldMathTeXIfNeeded(tex, mathBold: false)
+        if !renderMissingFormulas {
+            var commands = [NativeDrawCommand]()
+            let reserved = reserveDisplayMathPreviewHeight(
+                tex: mathTex,
+                y: originY,
+                width: width,
+                style: style,
+                commands: &commands
+            )
+            return (commands, reserved)
+        }
+        guard let formula = NativeFormulaRenderer.shared.artifact(
+            tex: mathTex,
+            fontSize: style.bodyFontSize * 1.08,
+            color: style.colors.textPrimary,
+            display: true
+        ) else { return nil }
+
+        var commands = [NativeDrawCommand]()
+        let height = appendDisplayFormula(
+            formula,
+            originY: originY,
+            width: width,
+            commands: &commands
         )
-        return ceilToPixel(max(bounds.height + 4, 1))
+        return (commands, height)
+    }
+
+    /// Keep natural formula size; when wider than the column, expose a horizontal scroller.
+    @discardableResult
+    private func appendDisplayFormula(
+        _ formula: NativeFormulaArtifact,
+        originY: CGFloat,
+        width: CGFloat,
+        commands: inout [NativeDrawCommand]
+    ) -> CGFloat {
+        let natural = formula.size
+        if natural.width <= width + 0.5 {
+            let frame = CGRect(
+                x: (width - natural.width) / 2,
+                y: originY + 6,
+                width: natural.width,
+                height: natural.height
+            )
+            commands.append(.image(formula.image, frame))
+            return natural.height + 18
+        }
+        let viewport = CGRect(x: 0, y: originY + 6, width: width, height: natural.height)
+        commands.append(.mathScroll(NativeMathScrollFragment(
+            image: formula.image,
+            viewportFrame: viewport,
+            contentSize: natural
+        )))
+        return natural.height + 18
     }
 
     private func fragment(_ text: NSAttributedString, frame: CGRect) -> NativeTextFragment {
@@ -724,9 +973,7 @@ final class NativeMessageLayouter {
             color: color,
             display: true
         ) {
-            let drawWidth = min(known.width, width)
-            let scale = drawWidth / max(known.width, 1)
-            drawHeight = known.height * scale
+            drawHeight = known.height
         } else {
             drawHeight = NativeFormulaRenderer.estimatedRenderSize(
                 tex: tex,
@@ -769,7 +1016,7 @@ final class NativeMessageLayouter {
             color: foreground,
             display: false
         ) {
-            let maxHeight = font.lineHeight * 1.32
+            let maxHeight = font.lineHeight * (Self.isTallMathTeX(tex) ? 2.9 : 1.55)
             let heightScale = maxHeight / max(known.height, 1)
             let widthScale = (style.width * 0.92) / max(known.width, 1)
             let scale = min(min(1, heightScale), widthScale)
@@ -778,7 +1025,7 @@ final class NativeMessageLayouter {
             size = NativeFormulaRenderer.estimatedRenderSize(
                 tex: tex,
                 fontSize: fontSize,
-                display: false,
+                display: Self.isTallMathTeX(tex),
                 maxWidth: style.width
             )
         }

@@ -26,7 +26,7 @@ final class NativeFormulaRenderer {
         if let hit = cache.object(forKey: key as NSString) {
             return hit.artifact
         }
-        if let disk = loadFromDisk(key: key) {
+        if let disk = loadFromDisk(key: key, scale: scale) {
             let cost = Int(disk.size.width * scale * disk.size.height * scale * 4)
             cache.setObject(Box(disk), forKey: key as NSString, cost: cost)
             return disk
@@ -36,6 +36,10 @@ final class NativeFormulaRenderer {
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
         let trimmedTeX = normalizedTeX.trimmingCharacters(in: .whitespacesAndNewlines)
+        // XITS has no CJK glyphs — refuse so callers can expand via NativeMathProse.
+        if NativeMathProse.containsCJK(trimmedTeX) {
+            return nil
+        }
         let (innerTeX, isBoxed) = unwrapLeadingBoxed(trimmedTeX)
         let renderTeX = innerTeX
         let boxPadding: CGFloat = isBoxed ? max(5, fontSize * 0.3) : 0
@@ -46,10 +50,12 @@ final class NativeFormulaRenderer {
         label.font = fontManager.xitsFont(withSize: fontSize)
         label.labelMode = display ? .display : .text
         label.textAlignment = display ? .center : .left
+        // Extra bottom inset: fraction denominators / radical depth sit below the baseline.
+        // Undersized canvases clip exactly the empty-denominator symptom seen in chat.
         label.contentInsets = UIEdgeInsets(
             top: max(3, fontSize * 0.18),
             left: 3,
-            bottom: max(4, fontSize * 0.26),
+            bottom: max(8, fontSize * 0.42),
             right: 3
         )
         label.displayErrorInline = false
@@ -120,7 +126,8 @@ final class NativeFormulaRenderer {
             (#"\\mathrm\{flat\}"#, #"\\flat"#),
             (#"\\mathrm\{sharp\}"#, #"\\sharp"#),
             (#"\\tag\{([^{}]*)\}"#, #"\\qquad\\mathrm{($1)}"#),
-            (#"\\text\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
+            // Only map short Latin `\text{label}` → `\mathrm`; prose/CJK stays for expansion.
+            (#"\\text\{([A-Za-z0-9.,\-]+)\}"#, #"\\mathrm{$1}"#),
             (#"\\textbf\{([^{}]*)\}"#, #"\\mathbf{$1}"#),
             (#"\\boldsymbol\{"#, #"\\mathbf{"#),
             (#"\\bm\{"#, #"\\mathbf{"#),
@@ -322,7 +329,7 @@ final class NativeFormulaRenderer {
         var alpha: CGFloat = 0
         color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return [
-            "native_tex_xits_padded_v3",
+            "native_tex_xits_padded_v5",
             RenderCacheStore.stamp(tex),
             String(Int((fontSize * 10).rounded())),
             display ? "d" : "i",
@@ -331,7 +338,7 @@ final class NativeFormulaRenderer {
         ].joined(separator: "|")
     }
 
-    private func loadFromDisk(key: String) -> NativeFormulaArtifact? {
+    private func loadFromDisk(key: String, scale: CGFloat) -> NativeFormulaArtifact? {
         let stamp = RenderCacheStore.stamp(key)
         guard let raw = UserDefaults.standard.dictionary(forKey: Self.metadataKey) as? [String: [String: Double]],
               let item = raw[stamp],
@@ -339,7 +346,9 @@ final class NativeFormulaRenderer {
               let height = item["height"],
               let baseline = item["baseline"],
               let data = try? Data(contentsOf: cacheDirectory().appendingPathComponent(stamp + ".png")),
-              let image = UIImage(data: data) else { return nil }
+              // PNG bytes are device-scaled; without an explicit scale, UIImage treats
+              // pixels as points and mathScroll UIImageViews blow up ~3×.
+              let image = UIImage(data: data, scale: max(scale, 1)) else { return nil }
         return NativeFormulaArtifact(
             image: image,
             size: CGSize(width: width, height: height),

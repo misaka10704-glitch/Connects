@@ -16,6 +16,7 @@ final class NativeMessageRenderView: UIView {
     var onCodeFenceTap: ((NativeCodeFenceHit) -> Void)?
 
     private let bitmapView = UIImageView()
+    private var mathScrollViews: [UIScrollView] = []
     private(set) var layout: NativeMessageLayout?
     private var layoutKey: String?
     private var requestKey: String?
@@ -136,6 +137,7 @@ final class NativeMessageRenderView: UIView {
         rasterKey = nil
         layout = nil
         bitmapView.image = nil
+        clearMathScrollers()
         invalidateIntrinsicContentSize()
     }
 
@@ -193,6 +195,7 @@ final class NativeMessageRenderView: UIView {
         layout = result
         invalidateIntrinsicContentSize()
         publishRasterizedBitmap()
+        syncMathScrollers(for: result)
     }
 
     /// One UIImage per layout key. Cache hits make back-and-forth scroll free of re-paint.
@@ -281,9 +284,57 @@ final class NativeMessageRenderView: UIView {
         super.layoutSubviews()
         guard let layout = layout else {
             bitmapView.frame = .zero
+            clearMathScrollers()
             return
         }
         bitmapView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: layout.size.height)
+        for (scroll, band) in zip(mathScrollViews, mathScrollBands(in: layout)) {
+            scroll.frame = band.viewportFrame
+            if let imageView = scroll.subviews.first as? UIImageView {
+                imageView.contentMode = .scaleToFill
+                imageView.frame = CGRect(origin: .zero, size: band.contentSize)
+            }
+            scroll.contentSize = band.contentSize
+        }
+    }
+
+    private func mathScrollBands(in layout: NativeMessageLayout) -> [NativeMathScrollFragment] {
+        layout.commands.compactMap {
+            if case .mathScroll(let band) = $0 { return band }
+            return nil
+        }
+    }
+
+    private func clearMathScrollers() {
+        mathScrollViews.forEach { $0.removeFromSuperview() }
+        mathScrollViews.removeAll()
+    }
+
+    private func syncMathScrollers(for layout: NativeMessageLayout) {
+        clearMathScrollers()
+        for band in mathScrollBands(in: layout) {
+            let scroll = MathBandScrollView(frame: band.viewportFrame)
+            scroll.backgroundColor = .clear
+            scroll.isOpaque = false
+            scroll.clipsToBounds = true
+            scroll.showsHorizontalScrollIndicator = true
+            scroll.showsVerticalScrollIndicator = false
+            scroll.alwaysBounceVertical = false
+            scroll.alwaysBounceHorizontal = true
+            scroll.isDirectionalLockEnabled = true
+            scroll.bounces = true
+            scroll.decelerationRate = .fast
+            scroll.contentInsetAdjustmentBehavior = .never
+            scroll.contentSize = band.contentSize
+            let imageView = UIImageView(image: band.image)
+            // Fill the point-size frame exactly (image may come from disk @3x).
+            imageView.contentMode = .scaleToFill
+            imageView.clipsToBounds = true
+            imageView.frame = CGRect(origin: .zero, size: band.contentSize)
+            scroll.addSubview(imageView)
+            addSubview(scroll)
+            mathScrollViews.append(scroll)
+        }
     }
 
     private func warm(formulas: [(tex: String, display: Bool)],
@@ -338,38 +389,7 @@ final class NativeMessageRenderView: UIView {
     }
 
     private func formulaRequests(_ document: NativeMarkdownDocument) -> [(tex: String, display: Bool)] {
-        var result = [(tex: String, display: Bool)]()
-        var seen = Set<String>()
-        func append(_ tex: String, _ display: Bool) {
-            let key = "\(display ? "d" : "i")|\(tex)"
-            if seen.insert(key).inserted {
-                result.append((tex, display))
-            }
-        }
-        func scan(_ inlines: [NativeInline]) {
-            for inline in inlines {
-                switch inline {
-                case .inlineMath(let tex): append(tex, false)
-                case .bold(let children), .italic(let children), .link(let children, _):
-                    scan(children)
-                default: break
-                }
-            }
-        }
-        for block in document.blocks {
-            switch block {
-            case .displayMath(let tex): append(tex, true)
-            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
-                scan(inlines)
-            case .list(_, let items):
-                items.forEach(scan)
-            case .table(let table):
-                table.header.forEach(scan)
-                table.rows.flatMap { $0 }.forEach(scan)
-            default: break
-            }
-        }
-        return result
+        NativeMessageLayouter.formulaWarmRequests(document: document)
     }
 
     var paintedLayoutHeight: CGFloat? {
@@ -404,9 +424,48 @@ final class NativeMessageRenderView: UIView {
     }
 }
 
+/// Horizontal math band: claim pans that are mostly sideways so the chat table keeps vertical scroll.
+private final class MathBandScrollView: UIScrollView, UIGestureRecognizerDelegate {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        panGestureRecognizer.delegate = self
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        panGestureRecognizer.delegate = self
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer == panGestureRecognizer else {
+            return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        }
+        let velocity = panGestureRecognizer.velocity(in: self)
+        return abs(velocity.x) >= abs(velocity.y)
+    }
+}
+
 // MARK: - Painter
 
 enum NativeMessagePainter {
+    static func rasterize(commands: [NativeDrawCommand],
+                          size: CGSize,
+                          scale: CGFloat) -> UIImage? {
+        guard size.width > 0.5, size.height > 0.5 else { return nil }
+        let layout = NativeMessageLayout(
+            key: "raster-\(size.width)x\(size.height)",
+            size: size,
+            commands: commands,
+            linkRects: [],
+            codeFenceHits: []
+        )
+        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        defer { UIGraphicsEndImageContext() }
+        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+        draw(layout: layout, in: context, clipRect: CGRect(origin: .zero, size: size))
+        return UIGraphicsGetImageFromCurrentImageContext()
+    }
+
     static func draw(layout: NativeMessageLayout, in context: CGContext, clipRect: CGRect) {
         context.saveGState()
         context.clip(to: clipRect)
@@ -427,6 +486,10 @@ enum NativeMessagePainter {
             case .image(let image, let frame):
                 guard frame.intersects(clipRect) else { continue }
                 image.draw(in: frame)
+            case .mathScroll:
+                // Interactive MathBandScrollView paints this band; keep the bitmap empty here
+                // so horizontal scrolling does not reveal a stale left-edge preview underneath.
+                continue
             case .fill(let frame, let color, let radius):
                 guard frame.intersects(clipRect) else { continue }
                 color.setFill()

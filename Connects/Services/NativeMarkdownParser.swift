@@ -311,7 +311,11 @@ final class NativeMarkdownParser {
 
             if let math = displayMathStarting(at: index, lines: lines) {
                 flushParagraph()
-                blocks.append(.displayMath(math.source))
+                if NativeMathProse.needsExpansion(math.source) {
+                    blocks.append(.paragraph(NativeMathProse.expandToInlines(math.source)))
+                } else {
+                    blocks.append(.displayMath(math.source))
+                }
                 index = math.next
                 continue
             }
@@ -397,7 +401,7 @@ final class NativeMarkdownParser {
             let tail = source[cursor...]
             if tail.hasPrefix("\\("), let end = source.range(of: "\\)", range: source.index(cursor, offsetBy: 2)..<source.endIndex) {
                 flush()
-                result.append(.inlineMath(String(source[source.index(cursor, offsetBy: 2)..<end.lowerBound])))
+                appendMathBody(String(source[source.index(cursor, offsetBy: 2)..<end.lowerBound]), to: &result)
                 cursor = end.upperBound
                 continue
             }
@@ -407,9 +411,9 @@ final class NativeMarkdownParser {
                    range: source.index(cursor, offsetBy: 2)..<source.endIndex
                ) {
                 flush()
-                result.append(.inlineMath(String(
+                appendMathBody(String(
                     source[source.index(cursor, offsetBy: 2)..<end.lowerBound]
-                )))
+                ), to: &result)
                 cursor = end.upperBound
                 continue
             }
@@ -419,9 +423,9 @@ final class NativeMarkdownParser {
                    range: source.index(cursor, offsetBy: 2)..<source.endIndex
                ) {
                 flush()
-                result.append(.inlineMath(String(
+                appendMathBody(String(
                     source[source.index(cursor, offsetBy: 2)..<end.lowerBound]
-                )))
+                ), to: &result)
                 cursor = end.upperBound
                 continue
             }
@@ -430,14 +434,14 @@ final class NativeMarkdownParser {
                 let body = String(source[source.index(after: cursor)..<end])
                 if shouldParseDollarMath(body) {
                     flush()
-                    result.append(.inlineMath(body))
+                    appendMathBody(body, to: &result)
                     cursor = source.index(after: end)
                     continue
                 }
             }
             if let bareMath = bareInlineMathPrefix(tail) {
                 flush()
-                result.append(.inlineMath(bareMath))
+                appendMathBody(bareMath, to: &result)
                 cursor = source.index(cursor, offsetBy: bareMath.count)
                 continue
             }
@@ -531,6 +535,16 @@ final class NativeMarkdownParser {
             cursor = source.index(after: cursor)
         }
         return nil
+    }
+
+    private func appendMathBody(_ body: String, to result: inout [NativeInline]) {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if NativeMathProse.needsExpansion(trimmed) {
+            result.append(contentsOf: NativeMathProse.expandToInlines(trimmed))
+        } else {
+            result.append(.inlineMath(trimmed))
+        }
     }
 
     private func shouldParseDollarMath(_ body: String) -> Bool {
@@ -1016,6 +1030,8 @@ enum NativeRendererSelfTest {
             case .codeFence(let fence): maxX = fence.cardFrame.maxX
             case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                 maxX = frame.maxX
+            case .mathScroll(let band):
+                maxX = band.viewportFrame.maxX
             case .line(let start, let end, _, let width):
                 maxX = max(start.x, end.x) + width
             }
@@ -1081,6 +1097,8 @@ enum NativeRendererSelfTest {
                     case .codeFence(let fence): maxY = fence.cardFrame.maxY
                     case .image(_, let frame), .fill(let frame, _, _), .stroke(let frame, _, _):
                         maxY = frame.maxY
+                    case .mathScroll(let band):
+                        maxY = band.viewportFrame.maxY
                     case .line(let start, let end, _, let lineWidth):
                         maxY = max(start.y, end.y) + lineWidth
                     }
