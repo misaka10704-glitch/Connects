@@ -55,9 +55,16 @@ enum MathContentDetector {
         <style>
           html, body { margin:0; padding:0; background:\(bg); color:\(fg);
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-            font-size:\(Int(fontSize))px; line-height:1.55; word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%; }
-          .katex-display { margin: 0.6em 0; overflow-x: auto; overflow-y: hidden; }
-          #c { padding: 0; }
+            font-size:\(Int(fontSize))px; line-height:1.55; word-wrap:break-word; overflow-wrap:break-word;
+            -webkit-text-size-adjust:100%; overflow-x:hidden !important; max-width:100%; width:100%; }
+          .katex-display { margin: 0.6em 0; max-width:100%; width:100%; box-sizing:border-box;
+            overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
+          .katex-display > .katex { max-width:none; }
+          .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
+          #c { padding: 0; max-width:100%; overflow-x:hidden; box-sizing:border-box; }
         </style>
         <script>\(katexJS)</script>
         <script>\(autoJS)</script>
@@ -76,6 +83,59 @@ enum MathContentDetector {
               window.webkit.messageHandlers.height.postMessage(h);
             }
           }
+          function __connectsContainMath(root) {
+            var scope = root || document.getElementById("c") || document.body;
+            if (!scope) return;
+            function lockY(scroller) {
+              if (!scroller || scroller.__connectsYLock) return;
+              scroller.__connectsYLock = true;
+              scroller.addEventListener("scroll", function() {
+                if (scroller.scrollTop) scroller.scrollTop = 0;
+              }, { passive: true });
+            }
+            var blocks = scope.querySelectorAll(".katex-display");
+            for (var i = 0; i < blocks.length; i++) {
+              var b = blocks[i];
+              b.style.maxWidth = "100%";
+              b.style.width = "100%";
+              b.style.boxSizing = "border-box";
+              b.style.overflowX = "auto";
+              b.style.overflowY = "hidden";
+              lockY(b);
+            }
+            var host = document.getElementById("c") || scope;
+            var col = host.clientWidth || window.innerWidth || 0;
+            var inlines = scope.querySelectorAll(".katex");
+            for (var j = 0; j < inlines.length; j++) {
+              var node = inlines[j];
+              var p = node.parentElement;
+              var skip = false;
+              while (p) {
+                if (p.classList && (p.classList.contains("katex-display") || p.classList.contains("connects-math-x"))) {
+                  skip = true; break;
+                }
+                p = p.parentElement;
+              }
+              if (skip) continue;
+              var need = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
+              if (!(col > 0) || !(need > col + 1)) continue;
+              if (node.parentElement && node.parentElement.classList
+                  && node.parentElement.classList.contains("connects-math-x")) continue;
+              var wrap = document.createElement("span");
+              wrap.className = "connects-math-x";
+              if (node.parentNode) {
+                node.parentNode.insertBefore(wrap, node);
+                wrap.appendChild(node);
+                lockY(wrap);
+              }
+            }
+            try {
+              document.documentElement.style.overflowX = "hidden";
+              document.body.style.overflowX = "hidden";
+              document.documentElement.scrollLeft = 0;
+              document.body.scrollLeft = 0;
+            } catch (e0) {}
+          }
           function run() {
             try {
               if (typeof renderMathInElement === "function") {
@@ -91,8 +151,9 @@ enum MathContentDetector {
                 });
               }
             } catch (e) {}
+            __connectsContainMath(document.getElementById("c"));
             reportHeight();
-            setTimeout(reportHeight, 50);
+            setTimeout(function(){ __connectsContainMath(document.getElementById("c")); reportHeight(); }, 50);
             setTimeout(reportHeight, 200);
             setTimeout(reportHeight, 600);
           }

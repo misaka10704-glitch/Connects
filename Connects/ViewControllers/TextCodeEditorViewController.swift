@@ -21,6 +21,17 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var previewWebView: WKWebView!
     private var previewShellLoaded = false
     private var pendingPreviewMarkdown: String?
+    /// Markdown edit ↔ preview: pin the source location that was at the viewport top.
+    private var pendingModeScrollAnchor: ModeScrollAnchor?
+    /// Avoid re-entrant preview→edit while resolving the top-of-viewport snippet via JS.
+    private var isResolvingPreviewScrollAnchor = false
+
+    private struct ModeScrollAnchor {
+        /// UTF-16 index in source to place at the visual top.
+        var sourceUTF16Index: Int
+        /// Visible text near that spot (helps find the matching rendered node).
+        var snippet: String
+    }
 
     private var currentDocumentID: String?
     private var language: StudyTextLanguage = .plain
@@ -317,6 +328,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         previewWebView.translatesAutoresizingMaskIntoConstraints = false
         ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.reader.background)
         previewWebView.scrollView.isScrollEnabled = true
+        previewWebView.scrollView.alwaysBounceHorizontal = false
+        previewWebView.scrollView.showsHorizontalScrollIndicator = false
+        previewWebView.scrollView.isDirectionalLockEnabled = true
+        previewWebView.scrollView.delegate = self
         previewWebView.isHidden = true
         previewWebView.navigationDelegate = self
         let previewPinch = UIPinchGestureRecognizer(target: self, action: #selector(handleFontPinch(_:)))
@@ -987,6 +1002,34 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             if editing { return }
             // Allow leaving edit if somehow stuck (should not happen).
         }
+
+        let wasShowingMarkdownPreview = showsMarkdownPreview
+        let willShowMarkdownPreview = language == .markdown && !editing && readSurface == .plain
+        let switchingMarkdownSurface = language == .markdown && !isDiffSessionActive
+            && wasShowingMarkdownPreview != willShowMarkdownPreview
+
+        if switchingMarkdownSurface {
+            if wasShowingMarkdownPreview {
+                // Preview → edit: resolve top-of-viewport text first (async JS).
+                if pendingModeScrollAnchor == nil {
+                    if isResolvingPreviewScrollAnchor { return }
+                    isResolvingPreviewScrollAnchor = true
+                    capturePreviewTopAnchor { [weak self] anchor in
+                        guard let self else { return }
+                        self.isResolvingPreviewScrollAnchor = false
+                        self.pendingModeScrollAnchor = anchor
+                        self.applyEditMode(true)
+                    }
+                    return
+                }
+            } else {
+                // Edit → preview: pin whatever is under the editor's top edge.
+                pendingModeScrollAnchor = captureTextViewTopAnchor()
+            }
+        } else {
+            pendingModeScrollAnchor = nil
+        }
+
         if !editing {
             // Avoid flush/resign during viewDidLoad (view not in a window yet).
             if isViewLoaded, view.window != nil {
@@ -1004,6 +1047,14 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         syncSurfaceVisibility()
         if showsMarkdownPreview {
             refreshMarkdownPreview(text: textView.text ?? "")
+            // Scroll restore waits for inject completion (contentSize not ready yet).
+        } else if switchingMarkdownSurface, let anchor = pendingModeScrollAnchor {
+            pendingModeScrollAnchor = nil
+            // Layout may still be settling after un-hiding textView.
+            applyScrollAnchorToTextView(anchor)
+            DispatchQueue.main.async { [weak self] in
+                self?.applyScrollAnchorToTextView(anchor)
+            }
         }
     }
 
@@ -1109,7 +1160,200 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         guard previewShellLoaded, let md = pendingPreviewMarkdown else { return }
         pendingPreviewMarkdown = nil
         let js = MarkdownHTMLRenderer.renderJavaScript(content: md)
+        previewWebView.evaluateJavaScript(js) { [weak self] _, _ in
+            // Render JS schedules double-rAF before studyReady; wait a beat for contentSize.
+            DispatchQueue.main.async {
+                self?.applyPendingModeScrollToPreview(clearPending: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    self?.applyPendingModeScrollToPreview(clearPending: true)
+                }
+            }
+        }
+    }
+
+    // MARK: - Markdown edit ↔ preview scroll anchor (viewport top)
+
+    /// Source index + snippet for the line under the editor's top edge.
+    private func captureTextViewTopAnchor() -> ModeScrollAnchor {
+        let text = textView.text ?? ""
+        let ns = text as NSString
+        let length = ns.length
+        guard length > 0 else {
+            return ModeScrollAnchor(sourceUTF16Index: 0, snippet: "")
+        }
+        textView.layoutIfNeeded()
+        let index = sourceUTF16IndexAtTextViewTop(length: length)
+        let snippet = snippetNearSourceIndex(index, in: ns)
+        return ModeScrollAnchor(sourceUTF16Index: index, snippet: snippet)
+    }
+
+    private func sourceUTF16IndexAtTextViewTop(length: Int) -> Int {
+        // `characterRange(at:)` expects text-view bounds coordinates (visible top).
+        let topPad = textView.adjustedContentInset.top
+        let point = CGPoint(
+            x: textView.bounds.minX
+                + textView.textContainerInset.left
+                + textView.textContainer.lineFragmentPadding
+                + 1,
+            y: textView.bounds.minY + topPad + 1
+        )
+        if let range = textView.characterRange(at: point) {
+            let loc = textView.offset(from: textView.beginningOfDocument, to: range.start)
+            return min(max(0, loc), length)
+        }
+        let glyphCount = textView.layoutManager.numberOfGlyphs
+        guard glyphCount > 0 else { return 0 }
+        // Fallback: text-container coordinates for the first visible line.
+        var fraction: CGFloat = 0
+        let containerY = max(0, textView.contentOffset.y + topPad - textView.textContainerInset.top)
+        let containerPoint = CGPoint(
+            x: textView.textContainerInset.left + textView.textContainer.lineFragmentPadding + 1,
+            y: containerY + 1
+        )
+        let glyphIndex = textView.layoutManager.glyphIndex(
+            for: containerPoint,
+            in: textView.textContainer,
+            fractionOfDistanceThroughGlyph: &fraction
+        )
+        let safeGlyph = min(max(0, glyphIndex), glyphCount - 1)
+        let charIndex = textView.layoutManager.characterIndexForGlyph(at: safeGlyph)
+        return min(max(0, charIndex), length)
+    }
+
+    private func snippetNearSourceIndex(_ index: Int, in ns: NSString) -> String {
+        guard ns.length > 0 else { return "" }
+        let lineRange = ns.lineRange(for: NSRange(location: min(index, max(0, ns.length - 1)), length: 0))
+        var line = ns.substring(with: lineRange)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip common Markdown markers so preview plain text can match.
+        while line.hasPrefix("#") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+        if line.hasPrefix(">") { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+            line = String(line.dropFirst(2))
+        }
+        line = line.replacingOccurrences(of: "**", with: "")
+        line = line.replacingOccurrences(of: "__", with: "")
+        line = line.replacingOccurrences(of: "*", with: "")
+        line = line.replacingOccurrences(of: "`", with: "")
+        if line.count > 64 {
+            line = String(line.prefix(64))
+        }
+        return line
+    }
+
+    private func capturePreviewTopAnchor(completion: @escaping (ModeScrollAnchor) -> Void) {
+        let js = "window.__connectsTopViewportSnippet ? window.__connectsTopViewportSnippet(80) : ''"
+        previewWebView.evaluateJavaScript(js) { [weak self] result, _ in
+            guard let self else {
+                completion(ModeScrollAnchor(sourceUTF16Index: 0, snippet: ""))
+                return
+            }
+            let snippet = ((result as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = self.textView.text ?? ""
+            let ns = text as NSString
+            let index: Int
+            if let found = self.sourceUTF16Index(matching: snippet, in: ns) {
+                index = found
+            } else {
+                // Fallback: map viewport top through document height → source index.
+                index = self.approximateSourceIndexFromPreviewScrollTop(length: ns.length)
+            }
+            completion(ModeScrollAnchor(sourceUTF16Index: index, snippet: snippet))
+        }
+    }
+
+    private func sourceUTF16Index(matching snippet: String, in ns: NSString) -> Int? {
+        let trimmed = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, ns.length > 0 else { return nil }
+        var needles: [String] = [trimmed]
+        if trimmed.count > 24 {
+            needles.append(String(trimmed.prefix(24)))
+        }
+        if trimmed.count > 12 {
+            needles.append(String(trimmed.prefix(12)))
+        }
+        for needle in needles where needle.count >= 2 {
+            let range = ns.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])
+            if range.location != NSNotFound {
+                return range.location
+            }
+        }
+        return nil
+    }
+
+    private func approximateSourceIndexFromPreviewScrollTop(length: Int) -> Int {
+        guard length > 0 else { return 0 }
+        let scroll = previewWebView.scrollView
+        let contentH = max(1, scroll.contentSize.height)
+        let top = max(0, scroll.contentOffset.y + scroll.adjustedContentInset.top)
+        let fraction = min(max(0, top / contentH), 1)
+        return min(max(0, Int((fraction * CGFloat(length)).rounded(.down))), length - 1)
+    }
+
+    private func applyScrollAnchorToTextView(_ anchor: ModeScrollAnchor) {
+        let text = textView.text ?? ""
+        let length = (text as NSString).length
+        guard length > 0 else { return }
+        textView.layoutIfNeeded()
+        let glyphCount = textView.layoutManager.numberOfGlyphs
+        guard glyphCount > 0 else { return }
+        let charIndex = min(max(0, anchor.sourceUTF16Index), length - 1)
+        let glyphIndex = min(
+            textView.layoutManager.glyphIndexForCharacter(at: charIndex),
+            glyphCount - 1
+        )
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let lineRect = textView.layoutManager.lineFragmentRect(
+            forGlyphAt: glyphIndex,
+            effectiveRange: &effectiveRange
+        )
+        // Pin that line to the visual top of the text view.
+        let docY = lineRect.minY + textView.textContainerInset.top
+        let targetY = docY - textView.adjustedContentInset.top
+        let maxY = max(0, textView.contentSize.height - textView.bounds.height)
+        let y = min(max(0, targetY), maxY)
+        if abs(textView.contentOffset.y - y) > 0.5 {
+            textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
+        }
+        syncLineNumberOffset()
+    }
+
+    private func applyScrollAnchorToPreview(_ anchor: ModeScrollAnchor) {
+        let scroll = previewWebView.scrollView
+        scroll.layoutIfNeeded()
+        let snippetJSON = MarkdownHTMLRenderer.jsonString(anchor.snippet)
+        let sourceLen = max(((textView.text ?? "") as NSString).length, 1)
+        let js = """
+        (function(){
+          var snip = \(snippetJSON);
+          if (window.__connectsScrollSnippetToTop && snip && snip.length > 0) {
+            if (window.__connectsScrollSnippetToTop(snip)) return true;
+          }
+          var len = \(sourceLen);
+          var idx = \(anchor.sourceUTF16Index);
+          var frac = len > 0 ? Math.min(1, Math.max(0, idx / len)) : 0;
+          var el = document.getElementById("c") || document.body;
+          var h = Math.max(el.scrollHeight || 0, document.documentElement.scrollHeight || 0);
+          var viewH = window.innerHeight || document.documentElement.clientHeight || 0;
+          var y = Math.max(0, Math.min(h - viewH, frac * h));
+          if (window.scrollTo) window.scrollTo(0, y);
+          return false;
+        })();
+        """
         previewWebView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func applyPendingModeScrollToPreview(clearPending: Bool) {
+        guard showsMarkdownPreview, let anchor = pendingModeScrollAnchor else { return }
+        let scroll = previewWebView.scrollView
+        scroll.layoutIfNeeded()
+        // Content not measured yet — keep pending for a later retry.
+        guard scroll.contentSize.height > 8 else { return }
+        applyScrollAnchorToPreview(anchor)
+        if clearPending {
+            pendingModeScrollAnchor = nil
+        }
     }
 
     private var isIMEComposing: Bool {
@@ -1409,6 +1653,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Page stays left/right locked; formula boxes handle their own horizontal pan in-DOM.
+        if previewWebView != nil, scrollView === previewWebView.scrollView {
+            if abs(scrollView.contentOffset.x) > 0.5 {
+                scrollView.contentOffset.x = 0
+            }
+            return
+        }
         guard scrollView === textView else { return }
         syncLineNumberOffset()
         if !tabSuggestChip.isHidden {

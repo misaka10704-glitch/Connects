@@ -12,6 +12,66 @@ import UIKit
 enum MarkdownHTMLRenderer {
     static var resourceBaseURL: URL? { Bundle.main.resourceURL }
 
+    /// Page stays width-locked; overflowing math scrolls horizontally inside its own box
+    /// (vertical scroll inside that box is locked — page still scrolls vertically).
+    private static let mathContainJS = """
+          function __connectsContainMath(root) {
+            var scope = root || document.getElementById("c") || document.body;
+            if (!scope) return;
+            function lockY(scroller) {
+              if (!scroller || scroller.__connectsYLock) return;
+              scroller.__connectsYLock = true;
+              scroller.addEventListener("scroll", function() {
+                if (scroller.scrollTop) scroller.scrollTop = 0;
+              }, { passive: true });
+            }
+            var blocks = scope.querySelectorAll(".katex-display");
+            for (var i = 0; i < blocks.length; i++) {
+              var b = blocks[i];
+              b.style.maxWidth = "100%";
+              b.style.width = "100%";
+              b.style.boxSizing = "border-box";
+              b.style.overflowX = "auto";
+              b.style.overflowY = "hidden";
+              lockY(b);
+            }
+            var host = document.getElementById("c") || scope;
+            var col = host.clientWidth || window.innerWidth || 0;
+            var inlines = scope.querySelectorAll(".katex");
+            for (var j = 0; j < inlines.length; j++) {
+              var node = inlines[j];
+              var p = node.parentElement;
+              var skip = false;
+              while (p) {
+                if (p.classList && (p.classList.contains("katex-display") || p.classList.contains("connects-math-x"))) {
+                  skip = true; break;
+                }
+                p = p.parentElement;
+              }
+              if (skip) continue;
+              var need = Math.max(node.scrollWidth || 0, node.offsetWidth || 0);
+              if (!(col > 0) || !(need > col + 1)) continue;
+              if (node.parentElement && node.parentElement.classList
+                  && node.parentElement.classList.contains("connects-math-x")) continue;
+              var wrap = document.createElement("span");
+              wrap.className = "connects-math-x";
+              if (node.parentNode) {
+                node.parentNode.insertBefore(wrap, node);
+                wrap.appendChild(node);
+                lockY(wrap);
+              }
+            }
+            try {
+              document.documentElement.style.overflowX = "hidden";
+              document.body.style.overflowX = "hidden";
+              document.documentElement.scrollLeft = 0;
+              document.body.scrollLeft = 0;
+              if (window.scrollTo) window.scrollTo(0, window.pageYOffset || 0);
+            } catch (e0) {}
+          }
+          window.__connectsContainMath = __connectsContainMath;
+          """
+
     /// Empty document with scripts + `window.__connectsRender(md)`.
     /// `includeMath: false` skips KaTeX (~270KB JS + fonts) — much faster on A7.
     static func shellHTML(textColor: UIColor,
@@ -42,6 +102,7 @@ enum MarkdownHTMLRenderer {
                   throwOnError: false
                 });
               }
+              if (typeof __connectsContainMath === "function") { __connectsContainMath(el); }
               """
             : ""
 
@@ -57,15 +118,22 @@ enum MarkdownHTMLRenderer {
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
             font-size:\(String(format: "%.1f", fontSize))px; line-height:1.65;
             word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
-            height:auto !important; min-height:0 !important; overflow:hidden; }
-          #c { padding:0; display:flow-root; }
+            height:auto !important; min-height:0 !important; overflow:hidden;
+            overflow-x:hidden !important; max-width:100%; width:100%; }
+          #c { padding:0; display:flow-root; max-width:100%; overflow-x:hidden; box-sizing:border-box; }
           #c h1,#c h2,#c h3 { font-weight:600; line-height:1.3; margin:0.85em 0 0.35em; }
           #c h1 { font-size:1.35em; } #c h2 { font-size:1.2em; } #c h3 { font-size:1.08em; }
           #c p { margin:0.5em 0; }
           #c ul, #c ol { margin:0.4em 0; padding-left:1.35em; }
           #c li { margin:0.2em 0; }
           \(chrome)
-          .katex-display { margin:0.7em 0; overflow-x:auto; overflow-y:hidden; }
+          .katex-display { margin:0.7em 0; max-width:100%; width:100%; box-sizing:border-box;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
+          .katex-display > .katex { max-width:none; }
+          .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
           \(ConnectsWebKit.scrollPerformanceCSS)
         </style>
         <script src="markdown/marked.min.js"></script>
@@ -74,6 +142,7 @@ enum MarkdownHTMLRenderer {
         <body>
         <div id="c"></div>
         <script>
+          \(includeMath ? mathContainJS : "")
           function __measure() {
             var el = document.getElementById("c");
             if (!el) return 0;
@@ -562,8 +631,10 @@ enum MarkdownHTMLRenderer {
             font-family:-apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
             font-size:\(String(format: "%.1f", fontSize))px; line-height:1.75;
             word-wrap:break-word; overflow-wrap:break-word; -webkit-text-size-adjust:100%;
-            -webkit-font-smoothing:antialiased; }
-          #c { padding:20px 24px 72px; max-width:52em; margin:0 auto; display:flow-root; }
+            -webkit-font-smoothing:antialiased;
+            overflow-x:hidden !important; max-width:100%; width:100%; }
+          #c { padding:20px 24px 72px; max-width:min(52em, 100%); width:100%;
+            margin:0 auto; display:flow-root; box-sizing:border-box; overflow-x:hidden; }
           #c h1,#c h2,#c h3,#c h4,#c h5,#c h6 {
             font-weight:600; line-height:1.28; margin:1.15em 0 0.45em; letter-spacing:-0.01em;
           }
@@ -597,7 +668,13 @@ enum MarkdownHTMLRenderer {
             font-size:0.92em; line-height:1.4; color:\(mdLink);
           }
           .katex-display { margin:0.85em 0; padding:0.55em 0.75em; border-radius:10px;
-            background:\(mathPanel); overflow-x:auto; overflow-y:hidden; }
+            background:\(mathPanel); max-width:100%; width:100%; box-sizing:border-box;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
+          .katex-display > .katex { max-width:none; }
+          .connects-math-x { display:inline-block; max-width:100%; vertical-align:middle;
+            overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+            overscroll-behavior-x:contain; overscroll-behavior-y:none; touch-action:pan-x; }
           ::selection { background:\(mdLink); color:\(bg); }
           img, video { max-width:100%; height:auto; }
         </style>
@@ -608,6 +685,7 @@ enum MarkdownHTMLRenderer {
         <body>
         <div id="c"></div>
         <script>
+          \(mathContainJS)
           function __protectMath(src) {
             var map = [];
             var i = 0;
@@ -677,6 +755,7 @@ enum MarkdownHTMLRenderer {
                   throwOnError: false
                 });
               }
+              if (typeof __connectsContainMath === "function") { __connectsContainMath(el); }
               // Turn leftover <img> into 〔图〕 links (no inline images).
               var imgs = el.querySelectorAll("img");
               for (var ii = 0; ii < imgs.length; ii++) {
@@ -725,6 +804,7 @@ enum MarkdownHTMLRenderer {
               requestAnimationFrame(function() {
                 requestAnimationFrame(function() {
                   try { void el.offsetHeight; } catch (e2) {}
+                  if (typeof __connectsContainMath === "function") { __connectsContainMath(el); }
                   window.webkit.messageHandlers.studyReady.postMessage(1);
                 });
               });
@@ -762,11 +842,81 @@ enum MarkdownHTMLRenderer {
             el.scrollIntoView(true);
             return true;
           };
+          // Text under the viewport top (Markdown edit ↔ preview pin).
+          window.__connectsTopViewportSnippet = function(maxLen) {
+            maxLen = maxLen || 80;
+            var x = Math.max(12, Math.floor((window.innerWidth || 0) * 0.5));
+            var y = 10;
+            var text = "";
+            try {
+              if (document.caretRangeFromPoint) {
+                var r = document.caretRangeFromPoint(x, y);
+                if (r && r.startContainer) {
+                  var node = r.startContainer;
+                  if (node.nodeType === 3) {
+                    var full = String(node.nodeValue || "");
+                    var start = Math.max(0, r.startOffset || 0);
+                    var lineStart = full.lastIndexOf("\\n", Math.max(0, start - 1)) + 1;
+                    text = full.substring(lineStart).replace(/^\\s+/, "");
+                  } else if (node.nodeType === 1) {
+                    text = String(node.innerText || node.textContent || "").replace(/\\s+/g, " ").trim();
+                  }
+                }
+              }
+            } catch (e0) {}
+            if (!text) {
+              var hit = document.elementFromPoint(x, y);
+              var root = document.getElementById("c");
+              while (hit && root && !root.contains(hit)) hit = hit.parentElement;
+              if (hit) text = String(hit.innerText || hit.textContent || "").replace(/\\s+/g, " ").trim();
+            }
+            if (text.length > maxLen) text = text.substring(0, maxLen);
+            return text;
+          };
+          // Pin a rendered text match to the top of the viewport.
+          window.__connectsScrollSnippetToTop = function(snippet) {
+            if (!snippet) return false;
+            var root = document.getElementById("c") || document.body;
+            if (!root) return false;
+            var needles = [String(snippet)];
+            if (snippet.length > 24) needles.push(snippet.substring(0, 24));
+            if (snippet.length > 12) needles.push(snippet.substring(0, 12));
+            function scrollRangeToTop(range) {
+              var rect = range.getBoundingClientRect();
+              var absoluteTop = rect.top + (window.pageYOffset || document.documentElement.scrollTop || 0);
+              if (window.scrollTo) window.scrollTo(0, Math.max(0, absoluteTop - 2));
+              return true;
+            }
+            for (var n = 0; n < needles.length; n++) {
+              var needle = needles[n];
+              if (!needle || needle.length < 2) continue;
+              var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+              var node;
+              while ((node = walker.nextNode())) {
+                var value = String(node.nodeValue || "");
+                var idx = value.indexOf(needle);
+                if (idx < 0) idx = value.toLowerCase().indexOf(needle.toLowerCase());
+                if (idx < 0) continue;
+                try {
+                  var range = document.createRange();
+                  range.setStart(node, idx);
+                  range.setEnd(node, Math.min(idx + Math.max(1, Math.min(8, needle.length)), value.length));
+                  return scrollRangeToTop(range);
+                } catch (e1) {}
+              }
+            }
+            return false;
+          };
           window.__connectsSetFontSize = function(px) {
             var n = Number(px);
             if (!(n > 0)) return false;
             document.documentElement.style.fontSize = n + "px";
             document.body.style.fontSize = n + "px";
+            var el = document.getElementById("c");
+            if (typeof __connectsContainMath === "function") {
+              __connectsContainMath(el);
+              requestAnimationFrame(function(){ __connectsContainMath(el); });
+            }
             return true;
           };
           window.__connectsReady = true;
