@@ -2,7 +2,7 @@ import UIKit
 import WebKit
 
 /// Study-mode code / plain-text editor with syntax highlighting.
-final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, UIScrollViewDelegate, UIGestureRecognizerDelegate, WKScriptMessageHandler {
     private let topBar = UIView()
     private let topBarSeparator = UIView()
     private let sidebarButton = UIButton(type: .system)
@@ -21,6 +21,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var previewWebView: WKWebView!
     private var previewShellLoaded = false
     private var pendingPreviewMarkdown: String?
+    private let previewAssetHandler = MarkdownPreviewAssetSchemeHandler()
     /// Markdown edit ↔ preview: pin the source location that was at the viewport top.
     private var pendingModeScrollAnchor: ModeScrollAnchor?
     /// Restore scroll after theme rebuilds the Markdown preview WK shell.
@@ -335,6 +336,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         diffNextButton.addTarget(self, action: #selector(diffNextHunk), for: .touchUpInside)
 
         let config = ConnectsWebKit.makeConfiguration()
+        config.setURLSchemeHandler(previewAssetHandler, forURLScheme: MarkdownPreviewAssetIndex.scheme)
+        config.userContentController.add(WeakScriptMessageHandler(delegate: self), name: "studyAsset")
         previewWebView = WKWebView(frame: .zero, configuration: config)
         previewWebView.translatesAutoresizingMaskIntoConstraints = false
         ConnectsWebKit.applyReadingSurfaceTuning(previewWebView, background: DSTheme.reader.background)
@@ -1161,11 +1164,50 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func refreshMarkdownPreview(text: String) {
+        refreshPreviewAssetCatalog()
         loadPreviewShellIfNeeded()
-        pendingPreviewMarkdown = text
+        pendingPreviewMarkdown = MarkdownPreviewAssetIndex.rewriteForPreview(
+            text,
+            catalog: previewAssetHandler.catalog
+        )
         tryInjectPendingPreview()
         // Ensure WK scroll is live after shell (re)load / theme.
         previewWebView.scrollView.isScrollEnabled = true
+    }
+
+    private func refreshPreviewAssetCatalog() {
+        guard let id = currentDocumentID,
+              let folder = StudyDocumentStore.shared.documentFolderURL(forID: id) else {
+            previewAssetHandler.catalog = nil
+            return
+        }
+        previewAssetHandler.catalog = MarkdownPreviewAssetIndex.catalog(documentFolder: folder)
+    }
+
+    private func presentPreviewAsset(href: String) {
+        if let loaded = MarkdownPreviewAssetIndex.loadImage(href: href, catalog: previewAssetHandler.catalog) {
+            let vc = StudyAssetImageViewController(image: loaded.image, title: loaded.title)
+            present(vc, animated: true)
+            return
+        }
+        let alert = UIAlertController(
+            title: "无法打开图片",
+            message: "未在同目录 ./assets（或 ./asset）中找到该文件。\n\(href)",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "studyAsset" else { return }
+        let href: String
+        if let s = message.body as? String {
+            href = s
+        } else {
+            href = "\(message.body)"
+        }
+        presentPreviewAsset(href: href)
     }
 
     private func loadPreviewShellIfNeeded() {
@@ -2934,12 +2976,23 @@ extension TextCodeEditorViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if navigationAction.navigationType == .linkActivated {
-            if let url = navigationAction.request.url {
-                UIApplication.shared.open(url)
+        if let url = navigationAction.request.url {
+            let href = url.absoluteString
+            if MarkdownPreviewAssetIndex.isPreviewAssetHref(href)
+                || MarkdownStudyImporter.isStudyAssetHref(href) {
+                if navigationAction.navigationType == .linkActivated {
+                    decisionHandler(.cancel)
+                    presentPreviewAsset(href: href)
+                    return
+                }
+                decisionHandler(.allow)
+                return
             }
-            decisionHandler(.cancel)
-            return
+            if navigationAction.navigationType == .linkActivated {
+                UIApplication.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
         }
         decisionHandler(.allow)
     }

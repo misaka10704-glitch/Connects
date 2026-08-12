@@ -2,7 +2,7 @@ import Foundation
 
 enum MarkdownNormalizer {
     static func normalize(_ raw: String) -> String {
-        normalizeReferenceLinks(MarkdownHTMLRenderer.normalizeForRender(raw))
+        normalizeReferenceLinks(MarkdownHTMLRenderer.normalizeForNative(raw))
     }
 
     private struct RefItem {

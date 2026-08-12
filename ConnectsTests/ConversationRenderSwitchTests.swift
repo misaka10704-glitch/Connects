@@ -204,6 +204,71 @@ final class ConversationRenderSwitchTests: XCTestCase {
         XCTAssertFalse(normalized.contains("$$\\documentclass"))
     }
 
+    func testBoldWrappedInlineMathNormalizesToHtmlStrong() {
+        let raw = "**$x[n]=x_c(nT),\\quad-\\infin<n<\\infin$**"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("<strong>"))
+        XCTAssertTrue(normalized.contains("$x[n]=x_c(nT)"))
+        XCTAssertTrue(normalized.contains("\\infty"))
+        XCTAssertFalse(normalized.contains("\\infin<"))
+        XCTAssertFalse(normalized.contains("**$"))
+    }
+
+    func testBoldWrappedIntegralKeepsBody() {
+        let raw = "**$X(s)=\\int_{-\\infin}^{+\\infin}x(t)e^{-st}dt$**"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("\\int"), normalized)
+        XCTAssertTrue(normalized.contains("\\infty"), normalized)
+        XCTAssertTrue(normalized.contains("<strong>$X(s)="), normalized)
+        XCTAssertFalse(normalized.contains("<strong>$$</strong>"), normalized)
+        XCTAssertFalse(normalized.contains("**$"), normalized)
+    }
+
+    func testBoldWrappedDisplayMathKeepsSumAndFrac() {
+        let raw = "**$$X_p(j\\omega)=\\frac{1}{T}\\sum_k X_c(j(\\omega-k\\omega_s)) \\quad \\omega_s=2\\pi/T$$**"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("<strong>$$"), normalized)
+        XCTAssertTrue(normalized.contains("\\frac{1}{T}"), normalized)
+        XCTAssertTrue(normalized.contains("\\sum_k"), normalized)
+        XCTAssertTrue(normalized.hasSuffix("$$</strong>") || normalized.contains("$$</strong>"), normalized)
+        XCTAssertFalse(normalized.contains("**$$"), normalized)
+    }
+
+    func testCJKParenBoldBecomesHtmlStrong() {
+        let raw = "对此可以得到以下信息**(注意T是一个定值)**："
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(
+            normalized.contains("<strong>（注意T是一个定值）</strong>"),
+            normalized
+        )
+        XCTAssertFalse(normalized.contains("**（"), normalized)
+    }
+
+    func testHanInsideMathBecomesText() {
+        let raw = "$p(t)=\\sum c_k e^{jk\\omega_s t}\\quad其中c_k=\\frac{1}{T}$"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains("\\text{其中}"), normalized)
+        XCTAssertFalse(normalized.contains("\\quad其中"), normalized)
+    }
+
+    func testNativeBoldWrappedInlineMathNormalizesToBoldsymbol() {
+        let raw = "使得**$y(t)=H(j\\omega)e^{j\\omega t}$**恒成立"
+        let normalized = MarkdownHTMLRenderer.normalizeForNative(raw)
+        XCTAssertTrue(
+            normalized.contains("\\boldsymbol{"),
+            "Native bold-wrapped math should become boldsymbol: \(normalized)"
+        )
+    }
+
+    func testCJKBoldDelimitersGainZWSPForMarked() {
+        let raw = "**（注意T是一个定值）**"
+        let normalized = MarkdownHTMLRenderer.normalizeForNative(raw)
+        XCTAssertTrue(
+            normalized.contains("\u{200B}（"),
+            "Native CJK paren bold should insert ZWSP: \(normalized.debugDescription)"
+        )
+    }
+
     func testShortFencedLatexBecomesDisplayMath() {
         let raw = """
         ```latex
@@ -212,5 +277,48 @@ final class ConversationRenderSwitchTests: XCTestCase {
         """
         let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
         XCTAssertTrue(normalized.contains("$$\\frac{a}{b}$$"))
+    }
+
+    func testTyporaAssetsImageRewritesToPreviewScheme() {
+        let raw = "![image-20260812160055978](./assets/image-20260812160055978.png)"
+        let rewritten = MarkdownPreviewAssetIndex.rewriteForPreview(raw, catalog: nil)
+        XCTAssertTrue(
+            rewritten.contains("connects-mdasset://preview/assets/image-20260812160055978.png"),
+            "Typora ./assets image should become preview scheme: \(rewritten)"
+        )
+        XCTAssertTrue(rewritten.hasPrefix("!["))
+        XCTAssertFalse(rewritten.contains("〔图〕"))
+    }
+
+    func testAssetFolderImageRewritesToPreviewScheme() {
+        let raw = "![plot](./asset/plot.png)"
+        let rewritten = MarkdownPreviewAssetIndex.rewriteForPreview(raw, catalog: nil)
+        XCTAssertTrue(rewritten.contains("connects-mdasset://preview/asset/plot.png"), rewritten)
+    }
+
+    func testPreviewIndexesAssetsFolderByBasename() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("md-asset-\(UUID().uuidString)", isDirectory: true)
+        let assets = root.appendingPathComponent("assets", isDirectory: true)
+        try fm.createDirectory(at: assets, withIntermediateDirectories: true)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        let file = assets.appendingPathComponent("image-20260812160055978.png")
+        try png.write(to: file)
+        defer { try? fm.removeItem(at: root) }
+
+        let catalog = MarkdownPreviewAssetIndex.catalog(documentFolder: root)
+        let raw = "![image-20260812160055978](./assets/image-20260812160055978.png)"
+        let rewritten = MarkdownPreviewAssetIndex.rewriteForPreview(raw, catalog: catalog)
+        XCTAssertTrue(rewritten.contains("connects-mdasset://preview/assets/image-20260812160055978.png"), rewritten)
+        let href = "connects-mdasset://preview/assets/image-20260812160055978.png"
+        let resolved = MarkdownPreviewAssetIndex.fileURL(for: href, catalog: catalog)
+        XCTAssertEqual(resolved?.standardizedFileURL.path, file.standardizedFileURL.path)
+    }
+
+    func testFigureChipLinkBecomesInlineImage() {
+        let raw = "[〔图〕scope](https://connects.local/assets/scope.png)"
+        let rewritten = MarkdownPreviewAssetIndex.rewriteForPreview(raw, catalog: nil)
+        XCTAssertTrue(rewritten.contains("![scope](connects-mdasset://preview/assets/scope.png)"), rewritten)
+        XCTAssertFalse(rewritten.contains("〔图〕"))
     }
 }

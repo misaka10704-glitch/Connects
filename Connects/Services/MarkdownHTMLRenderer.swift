@@ -339,13 +339,17 @@ enum MarkdownHTMLRenderer {
             stash(/\\$\\$[\\s\\S]+?\\$\\$/g);
             stash(/\\\\\\[[\\s\\S]+?\\\\\\]/g);
             stash(/\\\\\\([\\s\\S]+?\\\\\\)/g);
-            stash(/\\$[^$\\n]+\\$/g);
+            stash(/\\$((?:\\\\.|[^$\\n])+)\\$/g);
             stash(/\\\\begin\\{[a-zA-Z*]+\\}[\\s\\S]+?\\\\end\\{[a-zA-Z*]+\\}/g);
             return { src: src, map: map };
           }
           function __restoreMath(html, map) {
             for (var k = 0; k < map.length; k++) {
-              html = html.split(map[k][0]).join(map[k][1]);
+              var math = String(map[k][1])
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+              html = html.split(map[k][0]).join(math);
             }
             return html;
           }
@@ -446,9 +450,27 @@ enum MarkdownHTMLRenderer {
     }
 
     /// Render-time normalize (does not mutate stored conversation text).
+    /// WK Study / preview path: bold-wrapped math becomes `<strong>$…$</strong>` so KaTeX
+    /// inherits Everforest green on `\int`, `\sum`, `\frac`, not only `\boldsymbol` atoms.
     static func normalizeForRender(_ raw: String) -> String {
+        normalizeShared(raw, emphasisStyle: .htmlStrong)
+    }
+
+    /// Native chat path: keep `\boldsymbol{…}` (iosMath has no `<strong>` pass).
+    static func normalizeForNative(_ raw: String) -> String {
+        normalizeShared(raw, emphasisStyle: .boldsymbol)
+    }
+
+    private enum EmphasisMathStyle {
+        case htmlStrong
+        case boldsymbol
+    }
+
+    private static func normalizeShared(_ raw: String, emphasisStyle: EmphasisMathStyle) -> String {
         var s = normalizeMathDelimiters(raw)
-        s = normalizeEmphasisWrappedMath(s)
+        s = normalizeEmphasisWrappedMath(s, style: emphasisStyle)
+        s = normalizeCJKBold(s, style: emphasisStyle)
+        s = normalizeMathTypos(s)
         s = s.replacingOccurrences(of: "\r\n", with: "\n")
         s = s.replacingOccurrences(of: "\r", with: "\n")
         // Old / CN model fullwidth table punctuation → GFM
@@ -462,29 +484,141 @@ enum MarkdownHTMLRenderer {
         return s
     }
 
+    /// Inline `$…$` body: escaped token or any char except `$` / newline.
+    /// Must be a regular string so `\\n` is a newline in the regex (raw `[^$\\n]` excludes the letter `n`).
+    private static let inlineMathBody = "(?:\\\\.|[^$\\n])+"
+
+    /// Replace group 1 without NSRegularExpression `$` templates (`$$` vs `$1` eats math).
+    private static func replaceCaptured(
+        _ source: String,
+        pattern: String,
+        with transform: (String) -> String
+    ) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return source }
+        let ns = source as NSString
+        let matches = re.matches(in: source, range: NSRange(location: 0, length: ns.length))
+        var result = source
+        for match in matches.reversed() {
+            guard match.numberOfRanges >= 2,
+                  match.range(at: 1).location != NSNotFound,
+                  let full = Range(match.range, in: result),
+                  let body = Range(match.range(at: 1), in: result) else { continue }
+            result.replaceSubrange(full, with: transform(String(result[body])))
+        }
+        return result
+    }
+
+    /// CommonMark treats `**` next to `（` as non-flanking.
+    /// WK: emit `<strong>` directly. Native: ZWSP so iosMath/markdown still sees `**`.
+    private static func normalizeCJKBold(_ raw: String, style: EmphasisMathStyle) -> String {
+        switch style {
+        case .htmlStrong:
+            return replaceCaptured(
+                raw,
+                pattern: #"\*\*([（【「『《〈\(][\s\S]*?[）】」』》〉\)])\*\*"#
+            ) { "<strong>\($0)</strong>" }
+        case .boldsymbol:
+            let zwsp = "\u{200B}"
+            var s = raw
+            let openAfterStars = "（【「『《〈("
+            let closeBeforeStars = "）】」』》〉)"
+            for ch in openAfterStars {
+                s = s.replacingOccurrences(of: "**\(ch)", with: "**\(zwsp)\(ch)")
+            }
+            for ch in closeBeforeStars {
+                s = s.replacingOccurrences(of: "\(ch)**", with: "\(ch)\(zwsp)**")
+            }
+            return s
+        }
+    }
+
+    /// Model typos + CJK prose inside math so KaTeX does not abort mid-formula.
+    private static func normalizeMathTypos(_ source: String) -> String {
+        var result = source
+        let spanPatterns = [
+            #"(?s)\\\((.*?)\\\)"#,
+            #"(?s)\\\[(.*?)\\\]"#,
+            #"(?s)\$\$(.*?)\$\$"#,
+            "(?s)(?<!\\$)\\$(?!\\$)(" + inlineMathBody + "?)(?<!\\$)\\$(?!\\$)"
+        ]
+        for pattern in spanPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let fullRange = NSRange(location: 0, length: (result as NSString).length)
+            let matches = regex.matches(in: result, options: [], range: fullRange)
+            for match in matches.reversed() {
+                guard match.numberOfRanges > 1,
+                      match.range(at: 1).location != NSNotFound else { continue }
+                let ns = result as NSString
+                let bodyRange = match.range(at: 1)
+                let original = ns.substring(with: bodyRange)
+                let body = sanitizeMathBody(original)
+                if body != original {
+                    result = ns.replacingCharacters(in: bodyRange, with: body)
+                }
+            }
+        }
+        return result
+    }
+
+    private static func sanitizeMathBody(_ raw: String) -> String {
+        var body = raw
+        if let infin = try? NSRegularExpression(pattern: #"\\infin(?!\w)"#) {
+            let nsBody = body as NSString
+            let matches = infin.matches(in: body, range: NSRange(location: 0, length: nsBody.length))
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: body) else { continue }
+                body.replaceSubrange(range, with: "\\infty")
+            }
+        }
+        return wrapCJKAsText(body)
+    }
+
+    /// `\quad其中c_k` → `\quad\text{其中}c_k` so KaTeX does not fail on Han inside math.
+    private static func wrapCJKAsText(_ body: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: #"\\text\{[^}]*\}|[\p{Han}]+"#) else {
+            return body
+        }
+        let ns = body as NSString
+        let matches = re.matches(in: body, range: NSRange(location: 0, length: ns.length))
+        var result = body
+        for match in matches.reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            let piece = String(result[range])
+            if piece.hasPrefix("\\text{") { continue }
+            result.replaceSubrange(range, with: "\\text{\(piece)}")
+        }
+        return result
+    }
+
     /// Typora-style bold/italic around a lone math span: `**$x$**`, `*$x$*`, `**\(x\)**`.
     /// CommonMark treats `$` as punctuation, so `中文**$x$**中文` never becomes <strong>;
-    /// rewrite to `\boldsymbol` / keep math so both Native and KaTeX render a bold formula.
-    private static func normalizeEmphasisWrappedMath(_ raw: String) -> String {
+    /// WK preview wraps `<strong>$…$</strong>`; Native keeps `\boldsymbol{…}` for iosMath.
+    private static func normalizeEmphasisWrappedMath(_ raw: String, style: EmphasisMathStyle) -> String {
         var s = raw
-        // NSRegularExpression templates: `$$` or `\$` → literal `$`; `\\` → `\`.
-        let rules: [(pattern: String, template: String)] = [
-            (#"(?s)\*\*\$\$(.+?)\$\$\*\*"#, #"\$\$\\boldsymbol{$1}\$\$"#),
-            (#"(?s)\*\$\$(.+?)\$\$\*"#, #"\$\$\\boldsymbol{$1}\$\$"#),
-            (#"\*\*\\\((.+?)\\\)\*\*"#, #"\\(\\boldsymbol{$1}\\)"#),
-            (#"\*\\\((.+?)\\\)\*"#, #"\\(\\boldsymbol{$1}\\)"#),
-            (#"\*\*\$([^$\n]+)\$\*\*"#, #"\$\\boldsymbol{$1}\$"#),
-            (#"\*\$([^$\n]+)\$\*"#, #"\$\\boldsymbol{$1}\$"#)
-        ]
-        for rule in rules {
-            guard let re = try? NSRegularExpression(pattern: rule.pattern) else { continue }
-            let range = NSRange(location: 0, length: (s as NSString).length)
-            s = re.stringByReplacingMatches(
-                in: s,
-                options: [],
-                range: range,
-                withTemplate: rule.template
-            )
+        let body = inlineMathBody
+        let specs: [(pattern: String, wrap: (String) -> String)]
+        switch style {
+        case .htmlStrong:
+            specs = [
+                (#"(?s)\*\*\$\$(.+?)\$\$\*\*"#, { "<strong>$$\($0)$$</strong>" }),
+                (#"(?s)\*\$\$(.+?)\$\$\*"#, { "<strong>$$\($0)$$</strong>" }),
+                (#"\*\*\\\((.+?)\\\)\*\*"#, { "<strong>\\(\($0)\\)</strong>" }),
+                (#"\*\\\((.+?)\\\)\*"#, { "<em>\\(\($0)\\)</em>" }),
+                ("\\*\\*\\$(" + body + ")\\$\\*\\*", { "<strong>$\($0)$</strong>" }),
+                ("\\*\\$(" + body + ")\\$\\*", { "<em>$\($0)$</em>" })
+            ]
+        case .boldsymbol:
+            specs = [
+                (#"(?s)\*\*\$\$(.+?)\$\$\*\*"#, { "$$\\boldsymbol{\($0)}$$" }),
+                (#"(?s)\*\$\$(.+?)\$\$\*"#, { "$$\\boldsymbol{\($0)}$$" }),
+                (#"\*\*\\\((.+?)\\\)\*\*"#, { "\\(\\boldsymbol{\($0)}\\)" }),
+                (#"\*\\\((.+?)\\\)\*"#, { "\\(\\boldsymbol{\($0)}\\)" }),
+                ("\\*\\*\\$(" + body + ")\\$\\*\\*", { "$\\boldsymbol{\($0)}$" }),
+                ("\\*\\$(" + body + ")\\$\\*", { "$\\boldsymbol{\($0)}$" })
+            ]
+        }
+        for spec in specs {
+            s = replaceCaptured(s, pattern: spec.pattern, with: spec.wrap)
         }
         return s
     }
@@ -818,7 +952,7 @@ enum MarkdownHTMLRenderer {
             background:rgba(127,127,127,0.10); box-shadow:inset 0 -1px 0 rgba(0,0,0,0.08); }
           #c input[type="checkbox"] { accent-color:\(mdLink); margin-right:0.35em; }
           \(chrome)
-          #c img { max-width:100%; height:auto; border-radius:8px; }
+          #c img { max-width:100%; height:auto; border-radius:8px; margin:0.55em 0; display:block; }
           #c a[href^="https://connects.local/"],
           #c a[href^="connects-asset:"],
           #c a[href$=".png"], #c a[href$=".jpg"], #c a[href$=".jpeg"],
@@ -862,13 +996,17 @@ enum MarkdownHTMLRenderer {
             stash(/\\$\\$[\\s\\S]+?\\$\\$/g);
             stash(/\\\\\\[[\\s\\S]+?\\\\\\]/g);
             stash(/\\\\\\([\\s\\S]+?\\\\\\)/g);
-            stash(/\\$[^$\\n]+\\$/g);
+            stash(/\\$((?:\\\\.|[^$\\n])+)\\$/g);
             stash(/\\\\begin\\{[a-zA-Z*]+\\}[\\s\\S]+?\\\\end\\{[a-zA-Z*]+\\}/g);
             return { src: src, map: map };
           }
           function __restoreMath(html, map) {
             for (var k = 0; k < map.length; k++) {
-              html = html.split(map[k][0]).join(map[k][1]);
+              var math = String(map[k][1])
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+              html = html.split(map[k][0]).join(math);
             }
             return html;
           }
@@ -917,39 +1055,35 @@ enum MarkdownHTMLRenderer {
                 });
               }
               if (typeof __connectsContainMath === "function") { __connectsContainMath(el); }
-              // Turn leftover <img> into 〔图〕 links (no inline images).
-              var imgs = el.querySelectorAll("img");
-              for (var ii = 0; ii < imgs.length; ii++) {
-                var img = imgs[ii];
-                var src = img.getAttribute("src") || "";
-                if (!src || src.indexOf("data:") === 0) continue;
-                var aImg = document.createElement("a");
-                aImg.setAttribute("href", src);
-                var label = (img.getAttribute("alt") || "").trim();
-                if (!label) {
-                  var parts = src.split("/");
-                  label = parts[parts.length - 1] || "图";
-                }
-                aImg.textContent = "〔图〕" + label;
-                if (img.parentNode) img.parentNode.replaceChild(aImg, img);
+              function isImageHref(h) {
+                if (!h) return false;
+                if (h.indexOf("connects-mdasset:") === 0) return true;
+                if (h.indexOf("https://connects.local/") === 0) return true;
+                if (h.indexOf("http://connects.local/") === 0) return true;
+                if (h.indexOf("connects-asset:") === 0) return true;
+                if (h.indexOf("data:") === 0) return true;
+                if (/^https?:\\/\\//i.test(h) && h.indexOf("connects.local") < 0) return false;
+                return /\\.(png|jpe?g|gif|webp|bmp|svg)(\\?.*)?$/i.test(h);
               }
               if (!el.__connectsAssetClickBound) {
                 el.__connectsAssetClickBound = true;
                 el.addEventListener("click", function(ev) {
                   var node = ev.target;
+                  if (node && node.tagName && node.tagName.toUpperCase() === "IMG") {
+                    var src = node.getAttribute("src") || "";
+                    if (!isImageHref(src)) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.studyAsset) {
+                      window.webkit.messageHandlers.studyAsset.postMessage(String(src));
+                    }
+                    return;
+                  }
                   while (node && node !== el && (!node.tagName || node.tagName.toUpperCase() !== "A")) {
                     node = node.parentNode;
                   }
                   if (!node || node === el) return;
                   var href = node.getAttribute("href") || "";
-                  function isImageHref(h) {
-                    if (!h) return false;
-                    if (h.indexOf("https://connects.local/") === 0) return true;
-                    if (h.indexOf("http://connects.local/") === 0) return true;
-                    if (h.indexOf("connects-asset:") === 0) return true;
-                    if (/^https?:\\/\\//i.test(h) && h.indexOf("connects.local") < 0) return false;
-                    return /\\.(png|jpe?g|gif|webp|bmp|svg)(\\?.*)?$/i.test(h);
-                  }
                   if (!isImageHref(href)) return;
                   ev.preventDefault();
                   ev.stopPropagation();
@@ -1158,7 +1292,8 @@ enum MarkdownHTMLRenderer {
           #c tr:nth-child(even) td { background:\(stripe); }
           #c hr { border:none; height:0; border-top:1px solid \(hrColor); margin:1.15em 0; }
           #c strong, #c b { color:\(boldFg); font-weight:650; }
-          #c strong .katex, #c b .katex { color:inherit; }
+          #c strong .katex, #c b .katex { color:\(boldFg); }
+          #c strong .katex *, #c b .katex * { color:inherit; }
           #c .katex .mathbf, #c .katex .boldsymbol, #c .katex .bm { color:\(boldFg); }
         """
     }

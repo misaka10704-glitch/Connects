@@ -71,7 +71,7 @@ final class NativeMathParseTests: XCTestCase {
     func testMultiLineDollarFracParsesAsSingleDisplayMath() {
         NativeMarkdownParser.shared.clear()
         let raw = "$$\n\\frac{a}{b}\n$$"
-        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        let normalized = MarkdownHTMLRenderer.normalizeForNative(raw)
         XCTAssertFalse(
             normalized.contains("$$\n$$"),
             "must not nest bare-wrap inside an open $$ fence: \(normalized.debugDescription)"
@@ -160,7 +160,7 @@ final class NativeMathParseTests: XCTestCase {
     func testBoldWrappedInlineMathNormalizesAndParses() {
         NativeMarkdownParser.shared.clear()
         let raw = "使得**$y(t)=H(j\\omega)e^{j\\omega t}$**恒成立"
-        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        let normalized = MarkdownHTMLRenderer.normalizeForNative(raw)
         XCTAssertTrue(
             normalized.contains("\\boldsymbol{"),
             "bold-wrapped math should become boldsymbol: \(normalized)"

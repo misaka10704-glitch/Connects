@@ -124,6 +124,7 @@
 		S1000001000000000000000B /* PDFBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000B /* PDFBookmarkStore.swift */; };
 		S1000001000000000000000C /* MarkdownContentsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000C /* MarkdownContentsViewController.swift */; };
 		S1000001000000000000000D /* MarkdownStudyImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000D /* MarkdownStudyImporter.swift */; };
+		S10000010000000000000052 /* MarkdownPreviewAssetIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000052 /* MarkdownPreviewAssetIndex.swift */; };
 		S1000001000000000000000E /* CodeSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000E /* CodeSyntaxHighlighter.swift */; };
 		S1000001000000000000000F /* StudyFileContextStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = S2000001000000000000000F /* StudyFileContextStore.swift */; };
 		S10000010000000000000010 /* TextCodeEditorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = S20000010000000000000010 /* TextCodeEditorViewController.swift */; };
@@ -292,6 +293,7 @@
 		S2000001000000000000000B /* PDFBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFBookmarkStore.swift; sourceTree = "<group>"; };
 		S2000001000000000000000C /* MarkdownContentsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentsViewController.swift; sourceTree = "<group>"; };
 		S2000001000000000000000D /* MarkdownStudyImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownStudyImporter.swift; sourceTree = "<group>"; };
+		S20000010000000000000052 /* MarkdownPreviewAssetIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreviewAssetIndex.swift; sourceTree = "<group>"; };
 		S2000001000000000000000E /* CodeSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		S2000001000000000000000F /* StudyFileContextStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudyFileContextStore.swift; sourceTree = "<group>"; };
 		S20000010000000000000010 /* TextCodeEditorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCodeEditorViewController.swift; sourceTree = "<group>"; };
@@ -475,6 +477,7 @@
 				S20000010000000000000044 /* FoliateEbookEngine.swift */,
 				S20000010000000000000031 /* StudyWorkspaceStore.swift */,
 				S2000001000000000000000D /* MarkdownStudyImporter.swift */,
+				S20000010000000000000052 /* MarkdownPreviewAssetIndex.swift */,
 				S20000010000000000000003 /* StudyProgressStore.swift */,
 				S20000010000000000000008 /* StudyPageOCRExtractor.swift */,
 				S20000010000000000000004 /* StudyReadingContext.swift */,
@@ -837,6 +840,7 @@
 				S10000010000000000000032 /* ConnectsPaths.swift in Sources */,
 				S10000010000000000000031 /* StudyWorkspaceStore.swift in Sources */,
 				S1000001000000000000000D /* MarkdownStudyImporter.swift in Sources */,
+				S10000010000000000000052 /* MarkdownPreviewAssetIndex.swift in Sources */,
 				S10000010000000000000003 /* StudyProgressStore.swift in Sources */,
 				S10000010000000000000008 /* StudyPageOCRExtractor.swift in Sources */,
 				S10000010000000000000004 /* StudyReadingContext.swift in Sources */,

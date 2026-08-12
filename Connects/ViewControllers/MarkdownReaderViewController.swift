@@ -35,6 +35,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private let contentsPanelWidthConstant: CGFloat = 220
     private var shellLoaded = false
     private var pendingMarkdown: String?
+    private let previewAssetHandler = MarkdownPreviewAssetSchemeHandler()
     private var pendingViewportProgress: StudyProgress?
     private var isRestoringViewport = false
     private var isShellRotating = false
@@ -253,6 +254,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         controller.add(WeakScriptMessageHandler(delegate: self), name: "studyReady")
         controller.add(WeakScriptMessageHandler(delegate: self), name: "studyAsset")
         let config = ConnectsWebKit.makeConfiguration(userContentController: controller)
+        config.setURLSchemeHandler(previewAssetHandler, forURLScheme: MarkdownPreviewAssetIndex.scheme)
 
         webView = StudyAskWebView(frame: .zero, configuration: config)
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -1011,12 +1013,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             return
         }
         let href = url.absoluteString
-        // Any Study image target (connects.local / relative png / file URL ending in image).
-        if MarkdownStudyImporter.isStudyAssetHref(href)
-            || MarkdownStudyImporter.relativeLocalImagePath(from: href) != nil {
-            decisionHandler(.cancel)
-            let pass = MarkdownStudyImporter.relativeLocalImagePath(from: href) ?? href
-            presentStudyAsset(href: pass)
+        let isLocalImage = MarkdownPreviewAssetIndex.isPreviewAssetHref(href)
+            || MarkdownStudyImporter.isStudyAssetHref(href)
+            || MarkdownStudyImporter.relativeLocalImagePath(from: href) != nil
+        if isLocalImage {
+            if navigationAction.navigationType == .linkActivated {
+                decisionHandler(.cancel)
+                presentStudyAsset(href: href)
+                return
+            }
+            decisionHandler(.allow)
             return
         }
         if navigationAction.navigationType == .linkActivated {
@@ -1041,6 +1047,13 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     }
 
     private func presentStudyAsset(href: String) {
+        refreshPreviewAssetCatalog()
+        if let loaded = MarkdownPreviewAssetIndex.loadImage(href: href, catalog: previewAssetHandler.catalog) {
+            let vc = StudyAssetImageViewController(image: loaded.image, title: loaded.title)
+            present(vc, animated: true)
+            return
+        }
+
         guard let docID = currentDocumentID,
               let folder = StudyDocumentStore.shared.documentFolderURL(forID: docID) else {
             let alert = UIAlertController(title: "无法打开图片", message: "当前没有打开的文档。", preferredStyle: .alert)
@@ -1055,10 +1068,10 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         }
         if let rel = MarkdownStudyImporter.relativeLocalImagePath(from: href) {
             candidates.append(folder.appendingPathComponent(rel))
-            // Also try basename-only under assets/
             let base = (rel as NSString).lastPathComponent
             if !base.isEmpty {
                 candidates.append(folder.appendingPathComponent("assets").appendingPathComponent(base))
+                candidates.append(folder.appendingPathComponent("asset").appendingPathComponent(base))
             }
         }
 
@@ -1075,7 +1088,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         guard let fileURL, let data, let image = UIImage(data: data) else {
             let alert = UIAlertController(
                 title: "无法打开图片",
-                message: "资源不在文档目录中。\n\(href)\n\n请删除后重新导入 Markdown（需能读到旁路图片文件）。",
+                message: "未在同目录 ./assets 中找到该文件。\n\(href)",
                 preferredStyle: .alert
             )
             alert.addAction(UIAlertAction(title: "好", style: .default))
@@ -1085,6 +1098,15 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let title = fileURL.deletingPathExtension().lastPathComponent
         let vc = StudyAssetImageViewController(image: image, title: title)
         present(vc, animated: true)
+    }
+
+    private func refreshPreviewAssetCatalog() {
+        guard let docID = currentDocumentID,
+              let folder = StudyDocumentStore.shared.documentFolderURL(forID: docID) else {
+            previewAssetHandler.catalog = nil
+            return
+        }
+        previewAssetHandler.catalog = MarkdownPreviewAssetIndex.catalog(documentFolder: folder)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -1163,7 +1185,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     private func tryInjectPendingMarkdown() {
         guard shellLoaded, let md = pendingMarkdown else { return }
         pendingMarkdown = nil
-        let js = MarkdownHTMLRenderer.renderJavaScript(content: md)
+        refreshPreviewAssetCatalog()
+        let rewritten = MarkdownPreviewAssetIndex.rewriteForPreview(md, catalog: previewAssetHandler.catalog)
+        let js = MarkdownHTMLRenderer.renderJavaScript(content: rewritten)
         // study shell uses the same __connectsRender name
         webView.evaluateJavaScript(js) { [weak self] _, error in
             guard let self = self else { return }
