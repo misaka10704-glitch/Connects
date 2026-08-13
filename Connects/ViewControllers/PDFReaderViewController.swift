@@ -12,9 +12,11 @@ final class PDFReaderViewController: UIViewController {
     private let contentsButton = UIButton(type: .system)
     private let pdfView = StudyPDFView()
     private var isHighlightPenOn = false
-    /// White + difference blend → invert PDF page colors in dark mode.
+    /// White + difference blend → true invert (255 − x). Linear, so anti-aliased
+    /// edges do not collapse into dark rings the way difference(#DEDEDE) did.
     private let invertOverlay = PassthroughOverlayView()
-    /// After invert, lift pure black paper to app dark-gray (softer than #000).
+    /// After invert: screen with `#212121` so paper matches chrome and gray ink
+    /// lifts toward white. (`plusLighter` is not a CA blend and covered the page.)
     private let paperLiftOverlay = PassthroughOverlayView()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let fileTitleButton = UIButton(type: .system)
@@ -632,7 +634,7 @@ final class PDFReaderViewController: UIViewController {
         return (text, noteLines.joined(separator: "\n"))
     }
 
-    /// Dark theme: invert pages, then lift pure black paper to app dark-gray background.
+    /// Dark theme: invert, then screen-lift paper to app gray while keeping type bright.
     private func applyPDFColorInvert() {
         let dark = ReaderThemeManager.shared.mode == .dark
         pdfView.highlighter.darkInvertActive = dark
@@ -641,7 +643,7 @@ final class PDFReaderViewController: UIViewController {
             ConnectsInk.normalizeForDisplay(in: document, darkInvertActive: dark)
         }
         if dark {
-            // Difference needs a light backdrop; paperLift then raises #000 → DSTheme dark gray.
+            // Backdrop must be white: difference(white, page) == true invert.
             pdfView.backgroundColor = .white
             if #available(iOS 12.0, *) {
                 pdfView.pageShadowsEnabled = false
@@ -652,8 +654,9 @@ final class PDFReaderViewController: UIViewController {
 
             paperLiftOverlay.isHidden = false
             paperLiftOverlay.backgroundColor = DSTheme.dark.background
-            // lighten(black, darkGray)=darkGray; lighten(white, darkGray)=white → soft paper, keep text.
-            paperLiftOverlay.layer.compositingFilter = "lightenBlendMode"
+            // screen is a real CA blend (plusLighter is ignored → opaque #212121, blank pages).
+            // screen(x, #212121): paper 0→#212121, white stays white, gray ink lifts toward white.
+            paperLiftOverlay.layer.compositingFilter = "screenBlendMode"
             ensureInvertOverlayOnTopIfNeeded()
         } else {
             pdfView.backgroundColor = DSTheme.reader.background
