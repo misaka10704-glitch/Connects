@@ -235,6 +235,8 @@ enum RenderAuditHarness {
                 switch inline {
                 case .inlineMath(let tex):
                     formulas.append((tex, false))
+                case .mathWithScript(let base, _, _):
+                    formulas.append((base, false))
                 case .bold(let children), .italic(let children), .link(let children, _):
                     scan(children)
                 default:
@@ -246,6 +248,8 @@ enum RenderAuditHarness {
             switch block {
             case .displayMath(let tex):
                 formulas.append((tex, true))
+            case .displayMathComposite(let inlines):
+                scan(inlines)
             case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
                 scan(inlines)
             case .list(_, let items):

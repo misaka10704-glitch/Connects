@@ -1,6 +1,11 @@
 import UIKit
 import CoreText
 
+enum NativeMathScriptKind {
+    case sub
+    case sup
+}
+
 enum NativeInline {
     case text(String)
     case bold([NativeInline])
@@ -8,6 +13,8 @@ enum NativeInline {
     case inlineCode(String)
     case link([NativeInline], URL?)
     case inlineMath(String)
+    /// Latin/math base via iosMath + CJK script drawn with UIKit (XITS has no Han glyphs).
+    case mathWithScript(base: String, script: String, kind: NativeMathScriptKind)
     case lineBreak
 }
 
@@ -31,6 +38,8 @@ enum NativeMessageBlock {
     case codeBlock(language: String?, code: String)
     case table(NativeTable)
     case displayMath(String)
+    /// Centered display row mixing iosMath fragments and CJK sub/superscripts.
+    case displayMathComposite([NativeInline])
     case horizontalRule
 }
 

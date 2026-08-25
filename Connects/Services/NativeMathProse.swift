@@ -13,72 +13,192 @@ enum NativeMathProse {
         text.unicodeScalars.contains { isCJKScalar($0) }
     }
 
-    static func expandToInlines(_ tex: String) -> [NativeInline] {
+    /// Split TeX into iosMath fragments, CJK script hybrids, and prose text.
+    static func decompose(_ tex: String) -> [NativeInline] {
         let source = tex
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else { return [] }
 
-        var segments = [(isMath: Bool, text: String)]()
+        var result = [NativeInline]()
+        var mathStart = source.startIndex
         var index = source.startIndex
-        var mathBuffer = ""
 
-        func flushMath() {
-            let trimmed = mathBuffer.trimmingCharacters(in: .whitespaces)
-            mathBuffer = ""
-            guard !trimmed.isEmpty else { return }
-            if let last = segments.last, last.isMath {
-                segments[segments.count - 1] = (true, last.text + " " + trimmed)
-            } else {
-                segments.append((true, trimmed))
+        func flushMath(upTo end: String.Index) {
+            guard end > mathStart else { return }
+            let chunk = String(source[mathStart..<end])
+            if !chunk.isEmpty {
+                result.append(.inlineMath(chunk))
             }
-        }
-
-        func appendText(_ raw: String) {
-            guard !raw.isEmpty else { return }
-            flushMath()
-            if let last = segments.last, !last.isMath {
-                segments[segments.count - 1] = (false, last.text + raw)
-            } else {
-                segments.append((false, raw))
-            }
+            mathStart = end
         }
 
         while index < source.endIndex {
+            if let match = cjkScriptGroup(at: index, in: source) {
+                let base = extractScriptHost(before: match.scriptStart, in: source)
+                let baseStart = baseStartIndex(before: match.scriptStart, base: base, in: source)
+                flushMath(upTo: baseStart)
+                result.append(.mathWithScript(
+                    base: base,
+                    script: match.script,
+                    kind: match.kind
+                ))
+                index = match.end
+                mathStart = index
+                continue
+            }
+
             if let command = textCommand(at: index, in: source, proseOnly: false) {
-                appendText(command.content)
+                flushMath(upTo: index)
+                result.append(.text(command.content))
                 index = command.end
+                mathStart = index
                 continue
             }
 
             let ch = source[index]
             if let scalar = ch.unicodeScalars.first, isCJKScalar(scalar) {
-                flushMath()
+                flushMath(upTo: index)
                 var end = source.index(after: index)
                 while end < source.endIndex {
                     guard let next = source[end].unicodeScalars.first, isCJKScalar(next) else { break }
                     end = source.index(after: end)
                 }
-                appendText(String(source[index..<end]))
+                result.append(.text(String(source[index..<end])))
                 index = end
+                mathStart = index
                 continue
             }
 
-            mathBuffer.append(ch)
             index = source.index(after: index)
         }
-        flushMath()
-
-        return segments.compactMap { seg in
-            if seg.isMath {
-                return .inlineMath(seg.text)
-            }
-            return .text(seg.text)
-        }
+        flushMath(upTo: source.endIndex)
+        return coalesceAdjacentMath(result)
     }
 
-    /// True when TeX embeds prose-oriented text commands (not a lone Latin `\mathrm{d}`).
+    static func expandToInlines(_ tex: String) -> [NativeInline] {
+        decompose(tex)
+    }
+
+    private static func coalesceAdjacentMath(_ inlines: [NativeInline]) -> [NativeInline] {
+        var merged = [NativeInline]()
+        for inline in inlines {
+            switch inline {
+            case .inlineMath(let tex):
+                if case .inlineMath(let prior)? = merged.last {
+                    merged[merged.count - 1] = .inlineMath(prior + tex)
+                } else {
+                    merged.append(inline)
+                }
+            default:
+                merged.append(inline)
+            }
+        }
+        return merged
+    }
+
+    private struct CJKScriptMatch {
+        let scriptStart: String.Index
+        let end: String.Index
+        let script: String
+        let kind: NativeMathScriptKind
+    }
+
+    private static func cjkScriptGroup(at index: String.Index,
+                                       in source: String) -> CJKScriptMatch? {
+        guard index < source.endIndex else { return nil }
+        let marker = source[index]
+        guard marker == "_" || marker == "^" else { return nil }
+        let kind: NativeMathScriptKind = marker == "_" ? .sub : .sup
+        let contentStart = source.index(after: index)
+        guard contentStart < source.endIndex else { return nil }
+
+        let content: String
+        let end: String.Index
+        if source[contentStart] == "{" {
+            guard let close = closingBrace(from: source.index(after: contentStart), in: source) else {
+                return nil
+            }
+            content = String(source[source.index(after: contentStart)..<close])
+            end = source.index(after: close)
+        } else {
+            content = String(source[contentStart])
+            end = source.index(after: contentStart)
+        }
+
+        let script = unwrapTextCommand(content)
+        guard containsCJK(script) else { return nil }
+        return CJKScriptMatch(
+            scriptStart: index,
+            end: end,
+            script: script,
+            kind: kind
+        )
+    }
+
+    private static func baseStartIndex(before scriptStart: String.Index,
+                                       base: String,
+                                       in source: String) -> String.Index {
+        guard !base.isEmpty else { return scriptStart }
+        return source.index(scriptStart, offsetBy: -base.count, limitedBy: source.startIndex)
+            ?? source.startIndex
+    }
+
+    private static func extractScriptHost(before scriptStart: String.Index,
+                                          in source: String) -> String {
+        guard scriptStart > source.startIndex else { return "" }
+        var index = source.index(before: scriptStart)
+        while index > source.startIndex, source[index].isWhitespace {
+            index = source.index(before: index)
+        }
+        guard index >= source.startIndex else { return "" }
+
+        if source[index] == "}" {
+            var depth = 1
+            var cursor = source.index(before: index)
+            while cursor > source.startIndex {
+                switch source[cursor] {
+                case "}":
+                    depth += 1
+                case "{":
+                    depth -= 1
+                    if depth == 0 {
+                        return String(source[cursor...index])
+                    }
+                default:
+                    break
+                }
+                cursor = source.index(before: cursor)
+            }
+            return ""
+        }
+
+        var start = index
+        while start > source.startIndex {
+            let prev = source.index(before: start)
+            let ch = source[prev]
+            if ch.isLetter || ch.isNumber || ch == "\\" || ch == "'" || ch == ")" {
+                start = prev
+            } else {
+                break
+            }
+        }
+        return String(source[start...index])
+    }
+
+    private static func unwrapTextCommand(_ content: String) -> String {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["\\text{", "\\mbox{", "\\textrm{", "\\mathrm{"]
+        for prefix in prefixes {
+            guard trimmed.hasPrefix(prefix), trimmed.hasSuffix("}") else { continue }
+            let start = trimmed.index(trimmed.startIndex, offsetBy: prefix.count)
+            let end = trimmed.index(before: trimmed.endIndex)
+            return String(trimmed[start..<end])
+        }
+        return trimmed
+    }
+
     private static func hasExpandableTextCommand(_ tex: String) -> Bool {
         var index = tex.startIndex
         while index < tex.endIndex {
@@ -106,7 +226,6 @@ enum NativeMathProse {
         }
     }
 
-    /// Body looks like prose (spaces, CJK, quotes) rather than a short math label.
     private static func isProseTextBody(_ content: String) -> Bool {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return false }
@@ -117,20 +236,16 @@ enum NativeMathProse {
         }) {
             return true
         }
-        // Multi-word punctuation prose without spaces — long runs still peel.
         if trimmed.count >= 12 { return true }
         return false
     }
 
-    /// - Parameter proseOnly: when true (needsExpansion scan), only hit prose bodies.
-    ///   when false (expand pass), peel every `\text`/`\mbox`/… command.
     private static func textCommand(
         at start: String.Index,
         in source: String,
         proseOnly: Bool
     ) -> (content: String, end: String.Index, forceExpand: Bool)? {
         let tail = source[start...]
-        // Longer prefixes first (`textbf` before `text`).
         let commands: [(prefix: String, alwaysPeel: Bool)] = [
             ("\\textbf{", true),
             ("\\textit{", true),
@@ -149,11 +264,9 @@ enum NativeMathProse {
             let content = String(source[contentStart..<close])
             let prose = isProseTextBody(content)
             if proseOnly {
-                // Trigger whole-formula expansion only for real prose / CJK.
                 guard prose || (command.alwaysPeel && containsCJK(content)) else { return nil }
-            } else {
-                // Expanding: peel all `\text` family; `\mathrm` only when prose/CJK.
-                if !command.alwaysPeel, !prose { return nil }
+            } else if !command.alwaysPeel, !prose {
+                return nil
             }
             let end = source.index(after: close)
             return (content, end, true)

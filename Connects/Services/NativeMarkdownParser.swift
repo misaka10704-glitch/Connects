@@ -312,7 +312,7 @@ final class NativeMarkdownParser {
             if let math = displayMathStarting(at: index, lines: lines) {
                 flushParagraph()
                 if NativeMathProse.needsExpansion(math.source) {
-                    blocks.append(.paragraph(NativeMathProse.expandToInlines(math.source)))
+                    blocks.append(.displayMathComposite(NativeMathProse.decompose(math.source)))
                 } else {
                     blocks.append(.displayMath(math.source))
                 }
@@ -541,7 +541,7 @@ final class NativeMarkdownParser {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if NativeMathProse.needsExpansion(trimmed) {
-            result.append(contentsOf: NativeMathProse.expandToInlines(trimmed))
+            result.append(contentsOf: NativeMathProse.decompose(trimmed))
         } else {
             result.append(.inlineMath(trimmed))
         }
@@ -735,8 +735,58 @@ final class NativeMarkdownParser {
         var text = row.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("|") { text.removeFirst() }
         if text.hasSuffix("|") { text.removeLast() }
-        return text.split(separator: "|", omittingEmptySubsequences: false)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
+        return splitTableRowRespectingMath(text)
+    }
+
+    /// Split GFM table cells on `|` but never inside `$…$` or `\(...\)`.
+    private func splitTableRowRespectingMath(_ text: String) -> [String] {
+        var cells = [String]()
+        var current = ""
+        var index = text.startIndex
+        var inInlineMath = false
+        var inParenMath = false
+
+        while index < text.endIndex {
+            let tail = text[index...]
+
+            if inParenMath, tail.hasPrefix("\\)") {
+                current.append("\\)")
+                index = text.index(index, offsetBy: 2)
+                inParenMath = false
+                continue
+            }
+            if !inInlineMath, !inParenMath, tail.hasPrefix("\\(") {
+                current.append("\\(")
+                index = text.index(index, offsetBy: 2)
+                inParenMath = true
+                continue
+            }
+
+            if !inParenMath, text[index] == "$", !isEscaped(index, in: text) {
+                let next = text.index(after: index)
+                if next < text.endIndex, text[next] == "$" {
+                    current.append("$$")
+                    index = text.index(after: next)
+                    continue
+                }
+                inInlineMath.toggle()
+                current.append("$")
+                index = next
+                continue
+            }
+
+            if text[index] == "|", !inInlineMath, !inParenMath, !isEscaped(index, in: text) {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+                index = text.index(after: index)
+                continue
+            }
+
+            current.append(text[index])
+            index = text.index(after: index)
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
     }
 
     private func isTableSeparator(_ row: String) -> Bool {
@@ -1051,10 +1101,77 @@ enum NativeRendererSelfTest {
         // height need not match the final formula image; the render view
         // invalidates its intrinsic size when the final layout arrives.
         assert(compactPreview.size.height > 0)
+        runMathRenderingRegressionTests()
         #endif
     }
 
     #if DEBUG
+    private static func runMathRenderingRegressionTests() {
+        let fourierTable = """
+        | 时域 $x(t)$ | 频域 $X(j\\omega)$ | 求法 |
+        |---|---|---|
+        | $\\delta(t)$ | $1$ | 直接代定义 |
+        | $e^{-at}u(t),\\ a>0$ | $\\dfrac{1}{a+j\\omega}$ | 直接积分 |
+        | $e^{-a|t|},\\ a>0$ | $\\dfrac{2a}{a^2+\\omega^2}$ | 拆成两段 |
+        | $\\dfrac{\\sin Wt}{\\pi t}$ | 频域矩形：$|\\omega|<W$ 时为 1 | 对偶性 |
+        """
+        let fourierDoc = NativeMarkdownParser.shared.parse(fourierTable)
+        guard case .table(let table) = fourierDoc.blocks.first else {
+            assertionFailure("Fourier fixture should parse as table")
+            return
+        }
+        assert(table.rows.count == 4, "Fourier table row count")
+        assert(table.header.count == 3, "Fourier table column count")
+        assert(table.rows.allSatisfy { $0.count == 3 }, "Fourier table column alignment")
+
+        let controlRules = """
+        | 结构 | 等效 |
+        |------|------|
+        | 反馈 | $\\dfrac{G}{1+GH}$ |
+        """
+        let controlDoc = NativeMarkdownParser.shared.parse(controlRules)
+        guard case .table(let controlTable) = controlDoc.blocks.first else {
+            assertionFailure("Control rules should parse as table")
+            return
+        }
+        assert(controlTable.rows.count == 1)
+        assert(controlTable.rows[0].count == 2)
+
+        let cjkDisplay = NativeMarkdownParser.shared.parse(
+            "$$\\frac{Y(s)}{R(s)} = \\frac{C(s)G(s)}{1 + C(s)G(s)H(s)} = \\frac{G_{前向}}{1 + L(s)}$$"
+        )
+        assert(cjkDisplay.blocks.contains {
+            if case .displayMathComposite(let inlines) = $0 {
+                return inlines.contains {
+                    if case .mathWithScript(_, let script, _) = $0 { return script == "前向" }
+                    return false
+                }
+            }
+            return false
+        })
+
+        let style = NativeLayoutStyle(
+            width: 520,
+            bodyFontSize: 16,
+            appearance: SettingsManager.shared.appearanceMode.rawValue,
+            colors: DSTheme.c
+        )
+        let fourierLayout = NativeMessageLayouter.shared.layout(document: fourierDoc, style: style)
+        assert(fourierLayout.size.height > 120, "Fourier table layout height")
+        assert(!fourierLayout.commands.contains {
+            if case .mathScroll = $0 { return true }
+            return false
+        }, "Tables must paint into the main bitmap")
+
+        let preview = NativeMessageLayouter.shared.layout(
+            document: fourierDoc,
+            style: style,
+            renderMissingFormulas: false
+        )
+        assert(preview.size.height > 80)
+        assert(preview.size.height <= fourierLayout.size.height + 80)
+    }
+
     private static func runDeviceCorpusIfRequested() {
         guard ProcessInfo.processInfo.arguments.contains("-NativeRendererCorpus") else { return }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

@@ -71,6 +71,7 @@ enum RenderAuditChecks {
             for inline in inlines {
                 switch inline {
                 case .inlineMath(let tex): formulas.append((tex, false))
+                case .mathWithScript(let base, _, _): formulas.append((base, false))
                 case .bold(let c), .italic(let c), .link(let c, _): scan(c)
                 default: break
                 }
@@ -79,6 +80,7 @@ enum RenderAuditChecks {
         for block in document.blocks {
             switch block {
             case .displayMath(let tex): formulas.append((tex, true))
+            case .displayMathComposite(let inlines): scan(inlines)
             case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines): scan(inlines)
             case .list(_, let items): items.forEach(scan)
             case .table(let table):

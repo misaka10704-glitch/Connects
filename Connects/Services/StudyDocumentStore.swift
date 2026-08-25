@@ -43,7 +43,7 @@ final class StudyDocumentStore {
 
     private(set) var documents: [StudyDocument] = []
     private let pdfCache = NSCache<NSString, PDFDocument>()
-    private let maxPDFBytes: Int64 = 160 * 1024 * 1024
+    private let maxPDFBytes: Int64 = 1024 * 1024 * 1024
     private let maxTextBytes: Int64 = 8 * 1024 * 1024
     private let maxEbookBytes: Int64 = 80 * 1024 * 1024
     private let registryName = "registry.json"
