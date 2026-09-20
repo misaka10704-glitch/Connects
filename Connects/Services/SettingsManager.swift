@@ -25,6 +25,7 @@ extension Notification.Name {
     static let keepScreenOnDidChange = Notification.Name("ConnectsKeepScreenOnDidChange")
     static let reasoningEffortDidChange = Notification.Name("ConnectsReasoningEffortDidChange")
     static let imageTranscriptionDidChange = Notification.Name("ConnectsImageTranscriptionDidChange")
+    static let nativeFormulaDidRender = Notification.Name("ConnectsNativeFormulaDidRender")
 }
 
 final class SettingsManager {

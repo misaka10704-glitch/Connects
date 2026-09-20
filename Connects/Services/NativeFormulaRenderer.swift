@@ -2,7 +2,7 @@ import UIKit
 
 final class NativeFormulaRenderer {
     static let shared = NativeFormulaRenderer()
-    private static let metadataKey = "connects_native_formula_meta_v1"
+    private static let metadataKey = "connects_native_formula_meta_v2"
 
     private final class Box: NSObject {
         let artifact: NativeFormulaArtifact
@@ -32,16 +32,24 @@ final class NativeFormulaRenderer {
             return disk
         }
         guard Thread.isMainThread else { return nil }
-        let normalizedTeX = normalizeLegacyCommands(stripOuterMathDelimiters(tex))
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-        let trimmedTeX = normalizedTeX.trimmingCharacters(in: .whitespacesAndNewlines)
-        // XITS has no CJK glyphs — refuse so callers can expand via NativeMathProse.
-        if NativeMathProse.containsCJK(trimmedTeX) {
+        KaTeXFormulaSnapshot.shared.prepare()
+        let prepared = prepareTeX(tex)
+        // XITS / KaTeX default fonts have no CJK glyphs — refuse so callers expand via NativeMathProse.
+        if NativeMathProse.containsCJK(prepared) {
             return nil
         }
-        let (innerTeX, isBoxed) = unwrapLeadingBoxed(trimmedTeX)
-        let renderTeX = innerTeX
+        if !KaTeXFormulaSnapshot.shared.hasFailed(cacheKey: key) {
+            KaTeXFormulaSnapshot.shared.enqueue(
+                tex: prepared,
+                fontSize: fontSize,
+                color: color,
+                display: display,
+                scale: scale,
+                cacheKey: key
+            )
+        }
+        let (innerTeX, isBoxed) = unwrapLeadingBoxed(prepared)
+        let renderTeX = normalizeLegacyCommands(innerTeX)
         let boxPadding: CGFloat = isBoxed ? max(5, fontSize * 0.3) : 0
         let label = MTMathUILabel()
         label.backgroundColor = .clear
@@ -118,8 +126,44 @@ final class NativeFormulaRenderer {
         return artifact
     }
 
+    func storeExternalArtifact(_ artifact: NativeFormulaArtifact, cacheKey: String) {
+        let cost = Int(artifact.size.width * artifact.size.height * 16)
+        cache.setObject(Box(artifact), forKey: cacheKey as NSString, cost: max(cost, 1))
+        storeToDisk(artifact, key: cacheKey)
+        NativeMessageLayouter.shared.clear()
+        NotificationCenter.default.post(name: .nativeFormulaDidRender, object: nil)
+    }
+
+    /// Shared by tests: delimiter peel + equation unwrap, no iosMath-only remaps.
+    func prepareTeX(_ tex: String) -> String {
+        unwrapDisplayEnvironments(stripOuterMathDelimiters(tex))
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// iosMath-only remaps. Tests can assert `\\big` never becomes `\\mathrm{big}`.
+    func normalizedIosMathTeX(_ tex: String) -> String {
+        normalizeLegacyCommands(prepareTeX(tex))
+    }
+
+    private func unwrapDisplayEnvironments(_ tex: String) -> String {
+        var result = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let names = ["equation*", "equation", "gather*", "gather", "displaymath"]
+        for name in names {
+            let open = "\\begin{\(name)}"
+            let close = "\\end{\(name)}"
+            if result.hasPrefix(open), result.hasSuffix(close) {
+                result = String(result.dropFirst(open.count).dropLast(close.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+        return result
+    }
+
     private func normalizeLegacyCommands(_ tex: String) -> String {
-        var result = tex
+        var result = stripSizingDelimiters(tex)
         let replacements: [(String, String)] = [
             (#"\\operatorname\{([^{}]*)\}"#, #"\\mathrm{$1}"#),
             (#"\\xrightarrow\{([^{}]*)\}"#, #"\\longrightarrow^{$1}"#),
@@ -134,7 +178,18 @@ final class NativeFormulaRenderer {
             (#"\\begin\{aligned\}"#, #"\\begin{matrix}"#),
             (#"\\end\{aligned\}"#, #"\\end{matrix}"#),
             (#"\\begin\{align\*?\}"#, #"\\begin{matrix}"#),
-            (#"\\end\{align\*?\}"#, #"\\end{matrix}"#)
+            (#"\\end\{align\*?\}"#, #"\\end{matrix}"#),
+            (#"\\begin\{pmatrix\}"#, #"\\left(\\begin{matrix}"#),
+            (#"\\end\{pmatrix\}"#, #"\\end{matrix}\\right)"#),
+            (#"\\begin\{bmatrix\}"#, #"\\left[\\begin{matrix}"#),
+            (#"\\end\{bmatrix\}"#, #"\\end{matrix}\\right]"#),
+            (#"\\begin\{cases\}"#, #"\\left\\{\\begin{matrix}"#),
+            (#"\\end\{cases\}"#, #"\\end{matrix}\\right."#),
+            (#"\\dfrac\{"#, #"\\frac{"#),
+            (#"\\tfrac\{"#, #"\\frac{"#),
+            (#"\\lvert"#, #"\\left|"#),
+            (#"\\rvert"#, #"\\right|"#),
+            (#"\\colon"#, ":")
         ]
         for (pattern, template) in replacements {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -146,13 +201,25 @@ final class NativeFormulaRenderer {
             )
         }
         return result
-            .replacingOccurrences(of: "\\Bigl", with: "\\left")
-            .replacingOccurrences(of: "\\bigl", with: "\\left")
-            .replacingOccurrences(of: "\\Bigr", with: "\\right")
-            .replacingOccurrences(of: "\\bigr", with: "\\right")
+            .replacingOccurrences(of: "\\displaystyle", with: "")
             .replacingOccurrences(of: "\\dots", with: "\\cdots")
             // `aligned` / `align` use `&` as a tab; iosMath matrix is happier with `=`.
             .replacingOccurrences(of: "&=", with: "=")
+    }
+
+    /// Drop TeX delimiter-sizing commands. iosMath has no `\\big`; mapping them
+    /// to `\\mathrm{big}` painted "Pbig" in chat.
+    private func stripSizingDelimiters(_ tex: String) -> String {
+        var result = tex
+        let commands = [
+            "\\Biggl", "\\Biggr", "\\biggl", "\\biggr",
+            "\\Bigl", "\\Bigr", "\\bigl", "\\bigr",
+            "\\Bigg", "\\bigg", "\\Big", "\\big"
+        ]
+        for command in commands {
+            result = result.replacingOccurrences(of: command, with: "")
+        }
+        return result
     }
 
     /// Models / broken normalize passes sometimes leave outer `$$` / `\[\]` on the TeX body.
@@ -205,6 +272,11 @@ final class NativeFormulaRenderer {
               ),
               match.numberOfRanges > 1 else { return nil }
         let command = (message as NSString).substring(with: match.range(at: 1))
+        let sizing = Set(["big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr",
+                          "biggl", "biggr", "Biggl", "Biggr"])
+        if sizing.contains(command) {
+            return stripSizingDelimiters(tex)
+        }
         let nonRecoverable: Set<String> = [
             "multicolumn", "multirow", "hline", "color",
             "fbox", "boxed", "begin", "end", "array"
@@ -329,7 +401,7 @@ final class NativeFormulaRenderer {
         var alpha: CGFloat = 0
         color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return [
-            "native_tex_xits_padded_v5",
+            "native_tex_katex_v2",
             RenderCacheStore.stamp(tex),
             String(Int((fontSize * 10).rounded())),
             display ? "d" : "i",

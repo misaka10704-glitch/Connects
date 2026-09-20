@@ -7,6 +7,8 @@ final class NativeMathParseTests: XCTestCase {
             switch block {
             case .displayMath(let tex):
                 return "displayMath:\(tex.debugDescription)"
+            case .displayMathComposite(let inlines):
+                return "displayMathComposite:\(describeInlines(inlines))"
             case .paragraph(let inlines):
                 return "paragraph:\(describeInlines(inlines))"
             case .heading(let level, let inlines):
@@ -24,6 +26,8 @@ final class NativeMathParseTests: XCTestCase {
             switch inline {
             case .text(let t): return "text:\(t.debugDescription)"
             case .inlineMath(let t): return "inlineMath:\(t.debugDescription)"
+            case .mathWithScript(let base, let script, let kind):
+                return "mathWithScript(\(kind)):\(base.debugDescription)|\(script.debugDescription)"
             case .lineBreak: return "br"
             case .bold(let kids): return "bold:\(describeInlines(kids))"
             case .italic(let kids): return "italic:\(describeInlines(kids))"
@@ -271,10 +275,15 @@ final class NativeMathParseTests: XCTestCase {
             }),
             "CJK prose math must not stay as displayMath: \(describe(doc.blocks))"
         )
-        guard let paragraph = doc.blocks.compactMap({ block -> [NativeInline]? in
-            if case .paragraph(let inlines) = block { return inlines }
-            return nil
-        }).first(where: { inlines in
+        func inlinesFrom(_ block: NativeMessageBlock) -> [NativeInline]? {
+            switch block {
+            case .paragraph(let inlines), .displayMathComposite(let inlines):
+                return inlines
+            default:
+                return nil
+            }
+        }
+        guard let paragraph = doc.blocks.compactMap(inlinesFrom).first(where: { inlines in
             inlines.contains {
                 if case .text(let t) = $0 { return t.contains("探测") }
                 return false
@@ -309,13 +318,15 @@ final class NativeMathParseTests: XCTestCase {
             return false
         }), describe(doc.blocks))
         XCTAssertTrue(doc.blocks.contains(where: {
-            if case .paragraph(let inlines) = $0 {
+            switch $0 {
+            case .paragraph(let inlines), .displayMathComposite(let inlines):
                 return inlines.contains {
                     if case .text(let t) = $0 { return t.contains("subject to") }
                     return false
                 }
+            default:
+                return false
             }
-            return false
         }), describe(doc.blocks))
     }
 
@@ -327,5 +338,84 @@ final class NativeMathParseTests: XCTestCase {
             if case .displayMath = $0 { return true }
             return false
         }), describe(doc.blocks))
+    }
+
+    func testBigDelimitersAreNotWrappedAsMathrm() {
+        let tex = #"P\big(|\bar{X}_n - \mu| \ge \varepsilon\big)"#
+        let normalized = NativeFormulaRenderer.shared.normalizedIosMathTeX(tex)
+        XCTAssertFalse(normalized.contains("mathrm{big}"), normalized)
+        XCTAssertFalse(normalized.contains("\\big"), normalized)
+        NativeFormulaRenderer.shared.clear()
+        NativeMessageLayouter.shared.clear()
+        let doc = NativeMarkdownParser.shared.parse("$\(tex)$")
+        let layout = NativeMessageLayouter.shared.layout(
+            document: doc,
+            style: style(),
+            renderMissingFormulas: true
+        )
+        XCTAssertTrue(hasFormulaImage(layout), describe(doc.blocks))
+    }
+
+    func testLawOfLargeNumbersDelimitersParseAndRender() {
+        NativeMarkdownParser.shared.clear()
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
+        let raw = #"""
+        设 $X_1, X_2, \dots, X_n$ 是独立同分布的随机变量
+
+        $$
+        \bar{X}_n = \frac{1}{n}\sum_{i=1}^{n} X_i
+        $$
+
+        \(\bar{X}_n \xrightarrow{P} \mu\)
+
+        \[
+        P\big(|\bar{X}_n - \mu| \ge \varepsilon\big) \le \frac{\sigma^2}{n\varepsilon^2}
+        \]
+
+        \begin{equation}
+        \operatorname{Var}(\bar{X}_n)=\frac{\sigma^2}{n}
+        \end{equation}
+        """#
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .paragraph(let inlines) = $0 {
+                return inlines.contains {
+                    if case .inlineMath(let tex) = $0 { return tex.contains("X_1") }
+                    return false
+                }
+            }
+            return false
+        }), describe(doc.blocks))
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .displayMath(let tex) = $0 { return tex.contains("bar{X}") }
+            return false
+        }), describe(doc.blocks))
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .displayMath(let tex) = $0 { return tex.contains("operatorname") || tex.contains("sigma") }
+            return false
+        }), describe(doc.blocks))
+        let layout = NativeMessageLayouter.shared.layout(
+            document: doc,
+            style: style(),
+            renderMissingFormulas: true
+        )
+        XCTAssertTrue(hasFormulaImage(layout), describe(doc.blocks))
+        XCTAssertNotNil(
+            NativeFormulaRenderer.shared.artifact(
+                tex: #"\bar{X}_n \xrightarrow{P} \mu"#,
+                fontSize: 17,
+                color: .black,
+                display: false
+            )
+        )
+        XCTAssertNotNil(
+            NativeFormulaRenderer.shared.artifact(
+                tex: #"\operatorname{Var}(\bar{X}_n)=\frac{\sigma^2}{n}"#,
+                fontSize: 17,
+                color: .black,
+                display: true
+            )
+        )
     }
 }

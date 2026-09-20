@@ -209,6 +209,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(renderDebugChanged), name: .renderDebugDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(turnContextBarChanged), name: .turnContextBarDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(imageTranscriptionSettingChanged), name: .imageTranscriptionDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(nativeFormulaDidRender), name: .nativeFormulaDidRender, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextUsageChanged(_:)), name: .contextUsageDidChange, object: nil)
@@ -4853,6 +4854,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         inputBar.syncToolTogglesFromSettings()
         if SettingsManager.shared.imageTranscriptionEnabled {
             queueLegacyImageTranscriptionIfNeeded()
+        }
+    }
+
+    @objc private func nativeFormulaDidRender() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(applyNativeFormulaRerender), object: nil)
+        perform(#selector(applyNativeFormulaRerender), with: nil, afterDelay: 0.05)
+    }
+
+    @objc private func applyNativeFormulaRerender() {
+        NativeMessageLayouter.shared.clear()
+        guard let messages = renderedConversationMessages() else { return }
+        let width = currentRenderWidth()
+        for path in tableView.indexPathsForVisibleRows ?? [] {
+            guard path.row < messages.count,
+                  let cell = tableView.cellForRow(at: path) as? MessageCellType else { continue }
+            reconfigureVisibleCell(cell, at: path, messages: messages, layoutWidth: width)
         }
     }
 

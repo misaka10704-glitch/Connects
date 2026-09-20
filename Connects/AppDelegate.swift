@@ -22,6 +22,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window.rootViewController = RootSplitViewController()
         window.makeKeyAndVisible()
         self.window = window
+        KaTeXFormulaSnapshot.shared.prepare()
         NativeRendererSelfTest.run()
         #if DEBUG
         StudyVisualQAHarness.runIfRequested()
