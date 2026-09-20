@@ -208,6 +208,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(renderDebugChanged), name: .renderDebugDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(turnContextBarChanged), name: .turnContextBarDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(imageTranscriptionSettingChanged), name: .imageTranscriptionDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibleModelsChanged), name: .visibleModelsDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamTTFT(_:)), name: Notification.Name("ConnectsStreamTTFT"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(contextUsageChanged(_:)), name: .contextUsageDidChange, object: nil)
@@ -4848,6 +4849,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         scheduleUpdateTurnContextBar()
     }
 
+    @objc private func imageTranscriptionSettingChanged() {
+        inputBar.syncToolTogglesFromSettings()
+        if SettingsManager.shared.imageTranscriptionEnabled {
+            queueLegacyImageTranscriptionIfNeeded()
+        }
+    }
+
     @objc private func visibleModelsChanged() {
         // If current model was hidden, fall back to first visible.
         guard let id = ConversationStore.shared.currentConversationID,
@@ -4918,6 +4926,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     @objc private func retryImageTranscription(_ note: Notification) {
+        guard SettingsManager.shared.imageTranscriptionEnabled else {
+            showAlert(title: "图片转写已关闭", message: "可在设置或输入栏取景框图标重新开启。")
+            return
+        }
         guard let assistantID = note.userInfo?["messageID"] as? String,
               let conversation = ConversationStore.shared.currentConversation,
               let assistantIndex = conversation.messages.firstIndex(where: { $0.id == assistantID }),
@@ -6749,6 +6761,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// Older conversations can still contain an image-only turn. Migrate one
     /// at a time after opening the chat, never in the send path.
     private func queueLegacyImageTranscriptionIfNeeded() {
+        guard SettingsManager.shared.imageTranscriptionEnabled else { return }
         guard let conversation = ConversationStore.shared.currentConversation,
               !ImageTranscriptionCoordinator.shared.isTranscribing(conversation.id) else { return }
         for (index, message) in conversation.messages.enumerated()
@@ -8070,7 +8083,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         // Only keep JPEG when this turn still needs vision and no durable text exists.
         // Rich text pages and already-transcribed turns must not re-inject screenshots.
-        let attachJPEG = capture.needsImageTranscription && !hasDescription
+        let attachJPEG = SettingsManager.shared.imageTranscriptionEnabled
+            && capture.needsImageTranscription
+            && !hasDescription
         let jpeg = attachJPEG ? capture.imageJPEGBase64 : nil
         let hideBubble = attachJPEG ? capture.hidesImageInChatBubble : msg.hidesAttachedImageInChat
         let changed = msg.apiContextPrefix != prefix
@@ -8864,7 +8879,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             return
         }
-        let needsImageTranscription = hasImageAttachment
+        let needsImageTranscription = SettingsManager.shared.imageTranscriptionEnabled
+            && hasImageAttachment
             && (resolvedStudyCapture?.needsImageTranscription ?? true)
         // Non-vision models must wait for Kimi K2.5 Vision transcription before the reply.
         let gateReplyOnTranscription = needsImageTranscription && !conv.model.supportsVision

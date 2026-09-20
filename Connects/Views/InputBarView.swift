@@ -73,6 +73,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let attachButton = UIButton(type: .system)
     private let webSearchButton = UIButton(type: .system)
     private let thinkingButton = UIButton(type: .system)
+    private let imageTranscriptionButton = UIButton(type: .system)
     /// Study code/text: grants the model permission to propose file edits (not forced).
     private let codeAIEditButton = UIButton(type: .system)
     private let studyCaptureButton = UIButton(type: .system)
@@ -167,6 +168,14 @@ final class InputBarView: UIView, ThemeRefreshable {
         }
     }
 
+    var imageTranscriptionEnabled: Bool {
+        get { SettingsManager.shared.imageTranscriptionEnabled }
+        set {
+            SettingsManager.shared.imageTranscriptionEnabled = newValue
+            updateImageTranscriptionAppearance()
+        }
+    }
+
     /// When true, Study chat may inject edit-authorization and honor CONNECTS_EDIT proposals.
     private(set) var codeAIEditEnabled = false
 
@@ -234,6 +243,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateSendEnabled()
         updateWebSearchAppearance()
         updateThinkingAppearance()
+        updateImageTranscriptionAppearance()
         updateCodeAIEditAppearance()
         updateAgentModeAppearance()
         updateStudyCaptureAppearance()
@@ -562,6 +572,13 @@ final class InputBarView: UIView, ThemeRefreshable {
         let thinkingLong = UILongPressGestureRecognizer(target: self, action: #selector(thinkingLongPressed(_:)))
         thinkingButton.addGestureRecognizer(thinkingLong)
 
+        imageTranscriptionButton.translatesAutoresizingMaskIntoConstraints = false
+        imageTranscriptionButton.setImage(ActionIconFactory.image(.imageTranscribe, pointSize: ActionIconFactory.toolGlyph), for: .normal)
+        imageTranscriptionButton.accessibilityLabel = "图片转写"
+        imageTranscriptionButton.accessibilityHint = "关闭后发送含图消息不再 OCR / 视觉转写"
+        imageTranscriptionButton.addTarget(self, action: #selector(imageTranscriptionTapped), for: .touchUpInside)
+        containerView.addSubview(imageTranscriptionButton)
+
         codeAIEditButton.translatesAutoresizingMaskIntoConstraints = false
         codeAIEditButton.setImage(ActionIconFactory.image(.aiEdit, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         codeAIEditButton.accessibilityLabel = "AI 编辑"
@@ -599,7 +616,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionButton.isHidden = true
         containerView.addSubview(askSelectionButton)
 
-        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, codeAIEditButton, askSelectionButton] {
+        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, imageTranscriptionButton, codeAIEditButton, askSelectionButton] {
             styleIconToolButton(tool)
         }
 
@@ -768,8 +785,13 @@ final class InputBarView: UIView, ThemeRefreshable {
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            // AI 编辑 sits right of 深度思考; grants optional file-edit permission.
-            codeAIEditButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
+            imageTranscriptionButton.leadingAnchor.constraint(equalTo: thinkingButton.trailingAnchor, constant: 2),
+            imageTranscriptionButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            imageTranscriptionButton.widthAnchor.constraint(equalToConstant: btnSize),
+            imageTranscriptionButton.heightAnchor.constraint(equalToConstant: btnSize),
+
+            // AI 编辑 sits right of 图片转写; grants optional file-edit permission.
+            codeAIEditButton.leadingAnchor.constraint(equalTo: imageTranscriptionButton.trailingAnchor, constant: 2),
             codeAIEditButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             codeAIEditWidthConstraint!,
             codeAIEditButton.heightAnchor.constraint(equalToConstant: btnSize),
@@ -840,6 +862,8 @@ final class InputBarView: UIView, ThemeRefreshable {
         webSearchButton.alpha = isStreaming ? 0.35 : 1
         thinkingButton.isEnabled = !isStreaming
         thinkingButton.alpha = isStreaming ? 0.35 : 1
+        imageTranscriptionButton.isEnabled = !isStreaming
+        imageTranscriptionButton.alpha = isStreaming ? 0.35 : 1
         codeAIEditButton.isEnabled = !isStreaming && codeAIEditVisible
         codeAIEditButton.alpha = (!codeAIEditVisible || isStreaming) ? 0.35 : 1
         agentModeButton.isEnabled = !isStreaming && studyAgentModeVisible
@@ -932,6 +956,10 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateToggleAppearance(thinkingButton, on: thinkingEnabled)
     }
 
+    private func updateImageTranscriptionAppearance() {
+        updateToggleAppearance(imageTranscriptionButton, on: imageTranscriptionEnabled)
+    }
+
     private func updateCodeAIEditAppearance() {
         updateToggleAppearance(codeAIEditButton, on: codeAIEditEnabled)
     }
@@ -1018,6 +1046,10 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    @objc private func imageTranscriptionTapped() {
+        imageTranscriptionEnabled.toggle()
     }
 
     @objc private func codeAIEditTapped() {
@@ -1158,6 +1190,11 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     @objc private func removePreview() {
         clearAttachment()
+    }
+    func syncToolTogglesFromSettings() {
+        updateWebSearchAppearance()
+        updateThinkingAppearance()
+        updateImageTranscriptionAppearance()
     }
 }
 

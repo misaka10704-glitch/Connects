@@ -30,6 +30,8 @@ enum ActionIconFactory {
         case archive, settings, search
         case globe
         case think
+        /// Image OCR / vision transcription toggle.
+        case imageTranscribe
         case ai
         case aiEdit
         case brain, memory, vinyl, tshirt
@@ -343,6 +345,9 @@ enum ActionIconFactory {
             filament.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.42))
             filament.lineWidth = lwThin
             filament.stroke()
+
+        case .imageTranscribe:
+            drawSystemSymbol("text.viewfinder", in: r, color: color)
 
         case .ai:
             let cx = r.midX
