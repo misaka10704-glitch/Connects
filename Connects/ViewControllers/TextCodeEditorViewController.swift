@@ -19,8 +19,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let pinchScaleHost = UIView()
     private let gutterView = UIView()
     private let gutterSeparator = UIView()
-    /// Non-interactive twin of the editor; contentOffset stays locked to `textView`.
-    private let lineNumberView = UITextView()
+    /// Drawn from `textView.layoutManager` fragments so wrap/pinch/scroll stay aligned.
+    private let lineNumberView = CodeLineNumberGutterView()
     private let textView = StudyAskTextView(fullLineBackgrounds: true)
     private let spinner = UIActivityIndicatorView(style: .medium)
     /// Markdown preview only (`language == .markdown`). Transitional WK shell — see markdown-render-engine rule.
@@ -101,9 +101,11 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private var askPinnedRange: NSRange?
     private var saveWorkItem: DispatchWorkItem?
     private var isApplyingHighlight = false
-    private var isSyncingLineNumbers = false
     private var readerSurfaceActive = true
     private var pendingViewportProgress: StudyProgress?
+    /// Character at the visual top — wrap/rotation must restore this, not a raw Y offset.
+    private var pendingViewportUTF16: Int?
+    private var wrapRestoreGeneration: UInt = 0
     private var conversationIDForDirty: String?
 
     // MARK: - AI edit / Tab / inline diff (CodeEditorAIBridge)
@@ -259,22 +261,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         pinchScaleHost.addSubview(gutterView)
 
         lineNumberView.translatesAutoresizingMaskIntoConstraints = false
-        lineNumberView.isEditable = false
-        lineNumberView.isSelectable = false
-        lineNumberView.isScrollEnabled = true
-        lineNumberView.isUserInteractionEnabled = false
-        lineNumberView.backgroundColor = .clear
-        lineNumberView.textAlignment = .right
-        lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
-        lineNumberView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 8)
-        lineNumberView.textContainer.lineFragmentPadding = 0
-        lineNumberView.textContainer.widthTracksTextView = true
-        lineNumberView.textContainer.lineBreakMode = .byClipping
-        lineNumberView.showsVerticalScrollIndicator = false
-        lineNumberView.showsHorizontalScrollIndicator = false
-        if #available(iOS 11.0, *) {
-            lineNumberView.contentInsetAdjustmentBehavior = .never
-        }
+        lineNumberView.sourceTextView = textView
+        lineNumberView.fontSize = fontPointSize
         gutterView.addSubview(lineNumberView)
 
         gutterSeparator.translatesAutoresizingMaskIntoConstraints = false
@@ -509,11 +497,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         liftTopChrome()
-        let w = textView.bounds.width
-        if abs(w - lastWrapLayoutWidth) > 0.5 {
-            lastWrapLayoutWidth = w
-            updateLineNumbers(force: true)
-        }
+        lastWrapLayoutWidth = textView.bounds.width
         syncLineNumberOffset()
         if readSurface == .diff {
             layoutPerHunkActionBarsInContent()
@@ -628,7 +612,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         language = .plain
         isPlanDocument = false
         textView.text = ""
-        lineNumberView.text = ""
+        lineNumberView.setNeedsDisplay()
         fileTitleButton.setTitle(nil, for: .normal)
         isDirty = false
         pendingPreviewMarkdown = nil
@@ -644,14 +628,54 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     func prepareForShellLayoutChange() {}
     func beginShellRotation(keeping progress: StudyProgress?) {
+        wrapRestoreGeneration &+= 1
         isLivePinching = false
         pinchAttributedSnapshot = nil
         pendingViewportProgress = progress ?? captureReadingProgress()
+        if !showsMarkdownPreview {
+            let length = (textView.text as NSString?)?.length ?? 0
+            pendingViewportUTF16 = sourceUTF16IndexAtTextViewTop(length: max(length, 1))
+        }
     }
     func updateDuringShellRotation() {}
     func finishShellRotation(using progress: StudyProgress?) {
-        realignVisibleViewport(using: progress ?? pendingViewportProgress)
+        if let progress {
+            pendingViewportProgress = progress
+        }
+        view.layoutIfNeeded()
+        lastWrapLayoutWidth = textView.bounds.width
+        let pinned = pendingViewportUTF16
+        pendingViewportUTF16 = nil
+        restoreViewportAfterWrapChange(pinnedUTF16: pinned)
         pendingViewportProgress = nil
+        let gen = wrapRestoreGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self, self.wrapRestoreGeneration == gen else { return }
+            guard !self.textView.isDragging, !self.textView.isTracking, !self.textView.isDecelerating else { return }
+            self.view.layoutIfNeeded()
+            self.restoreViewportAfterWrapChange(pinnedUTF16: pinned)
+            self.updateLineNumbers(force: true)
+            self.syncLineNumberOffset()
+        }
+    }
+
+    private func restoreViewportAfterWrapChange(pinnedUTF16: Int?) {
+        if let idx = pinnedUTF16, !showsMarkdownPreview {
+            reflowTextKitForCurrentWidth()
+            applyScrollAnchorToTextView(ModeScrollAnchor(sourceUTF16Index: idx, snippet: ""))
+            updateLineNumbers(force: true)
+            return
+        }
+        realignVisibleViewport(using: pendingViewportProgress)
+    }
+
+    private func reflowTextKitForCurrentWidth() {
+        textView.layoutIfNeeded()
+        let storageLength = textView.textStorage.length
+        guard storageLength > 0 else { return }
+        let range = NSRange(location: 0, length: storageLength)
+        textView.layoutManager.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
     }
     func resumeAfterConversationSwitch() {
         syncLineNumberOffset()
@@ -863,8 +887,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         gutterView.backgroundColor = c.sidebarBackground
         gutterSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
         topBarSeparator.backgroundColor = c.border.withAlphaComponent(0.55)
-        lineNumberView.textColor = c.textTertiary
-        lineNumberView.backgroundColor = .clear
+        lineNumberView.setNeedsDisplay()
         fileTitleButton.setTitleColor(c.textPrimary, for: .normal)
         modeButton.tintColor = c.textSecondary
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
@@ -955,7 +978,6 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         let ratio = next / max(pinchBaseFontSize, 0.1)
         UIView.performWithoutAnimation {
             textView.textStorage.setAttributedString(painted)
-            lineNumberView.font = CodeSyntaxHighlighter.font(size: next)
             let digits = max(2, "\(max((textView.text ?? "").components(separatedBy: "\n").count, 1))".count)
             gutterWidthConstraint.constant = CodeSyntaxHighlighter.lineNumberGutterWidth(
                 digits: digits,
@@ -970,6 +992,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             offset.x = min(max(offset.x, 0), maxX)
             offset.y = min(max(offset.y, 0), maxY)
             textView.setContentOffset(offset, animated: false)
+            lineNumberView.fontSize = next
+            updateLineNumbers(force: true, allowImmediateLayout: false)
         }
     }
 
@@ -980,7 +1004,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     private func applyFontSize(_ size: CGFloat, persist: Bool) {
         fontPointSize = min(Self.maxFontPointSize, max(Self.minFontPointSize, size))
-        lineNumberView.font = CodeSyntaxHighlighter.font(size: fontPointSize)
+        lineNumberView.fontSize = fontPointSize
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
         // Diff uses its own attributed paint — never wipe it with plain highlight
         // (that left readSurface=.diff, mode toggle locked, and no way back to edit).
@@ -1426,36 +1450,24 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }
 
     private func sourceUTF16IndexAtTextViewTop(length: Int) -> Int {
-        // `characterRange(at:)` expects text-view bounds coordinates (visible top).
-        let topPad = textView.adjustedContentInset.top
-        let point = CGPoint(
-            x: textView.bounds.minX
-                + textView.textContainerInset.left
-                + textView.textContainer.lineFragmentPadding
-                + 1,
-            y: textView.bounds.minY + topPad + 1
-        )
-        if let range = textView.characterRange(at: point) {
-            let loc = textView.offset(from: textView.beginningOfDocument, to: range.start)
-            return min(max(0, loc), length)
-        }
-        let glyphCount = textView.layoutManager.numberOfGlyphs
-        guard glyphCount > 0 else { return 0 }
-        // Fallback: text-container coordinates for the first visible line.
+        let layoutManager = textView.layoutManager
+        layoutManager.ensureLayout(for: textView.textContainer)
+        let glyphCount = layoutManager.numberOfGlyphs
+        guard glyphCount > 0, length > 0 else { return 0 }
         var fraction: CGFloat = 0
-        let containerY = max(0, textView.contentOffset.y + topPad - textView.textContainerInset.top)
-        let containerPoint = CGPoint(
-            x: textView.textContainerInset.left + textView.textContainer.lineFragmentPadding + 1,
-            y: containerY + 1
+        let containerY = max(
+            0,
+            textView.contentOffset.y
+                + textView.adjustedContentInset.top
+                - textView.textContainerInset.top
         )
-        let glyphIndex = textView.layoutManager.glyphIndex(
-            for: containerPoint,
+        let glyphIndex = layoutManager.glyphIndex(
+            for: CGPoint(x: textView.textContainer.lineFragmentPadding + 1, y: containerY + 1),
             in: textView.textContainer,
             fractionOfDistanceThroughGlyph: &fraction
         )
-        let safeGlyph = min(max(0, glyphIndex), glyphCount - 1)
-        let charIndex = textView.layoutManager.characterIndexForGlyph(at: safeGlyph)
-        return min(max(0, charIndex), length)
+        let charIndex = layoutManager.characterIndexForGlyph(at: min(max(0, glyphIndex), glyphCount - 1))
+        return min(max(0, charIndex), length - 1)
     }
 
     private func snippetNearSourceIndex(_ index: Int, in ns: NSString) -> String {
@@ -1532,28 +1544,29 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private func applyScrollAnchorToTextView(_ anchor: ModeScrollAnchor) {
         let text = textView.text ?? ""
         let length = (text as NSString).length
-        guard length > 0 else { return }
+        guard length > 0, textView.bounds.width > 8, textView.bounds.height > 8 else { return }
         textView.layoutIfNeeded()
-        let glyphCount = textView.layoutManager.numberOfGlyphs
+        let layoutManager = textView.layoutManager
+        layoutManager.ensureLayout(for: textView.textContainer)
+        let glyphCount = layoutManager.numberOfGlyphs
         guard glyphCount > 0 else { return }
         let charIndex = min(max(0, anchor.sourceUTF16Index), length - 1)
-        let glyphIndex = min(
-            textView.layoutManager.glyphIndexForCharacter(at: charIndex),
-            glyphCount - 1
-        )
+        let glyphIndex = min(layoutManager.glyphIndexForCharacter(at: charIndex), glyphCount - 1)
         var effectiveRange = NSRange(location: 0, length: 0)
-        let lineRect = textView.layoutManager.lineFragmentRect(
+        let lineRect = layoutManager.lineFragmentRect(
             forGlyphAt: glyphIndex,
             effectiveRange: &effectiveRange
         )
-        // Pin that line to the visual top of the text view.
-        let docY = lineRect.minY + textView.textContainerInset.top
-        let targetY = docY - textView.adjustedContentInset.top
-        let maxY = max(0, textView.contentSize.height - textView.bounds.height)
+        let used = layoutManager.usedRect(for: textView.textContainer)
+        let inset = textView.textContainerInset
+        let contentH = max(
+            textView.contentSize.height,
+            ceil(used.maxY + inset.top + inset.bottom)
+        )
+        let maxY = max(0, contentH - textView.bounds.height)
+        let targetY = lineRect.minY + inset.top - textView.adjustedContentInset.top
         let y = min(max(0, targetY), maxY)
-        if abs(textView.contentOffset.y - y) > 0.5 {
-            textView.setContentOffset(CGPoint(x: textView.contentOffset.x, y: y), animated: false)
-        }
+        textView.setContentOffset(CGPoint(x: 0, y: y), animated: false)
         syncLineNumberOffset()
     }
 
@@ -1754,40 +1767,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     private func updateLineNumbers(force: Bool = false, allowImmediateLayout: Bool = true) {
         textView.layoutManager.ensureLayout(for: textView.textContainer)
-
-        let layout = textView.layoutManager
-        let ns = (textView.text ?? "") as NSString
-        var rows: [String] = []
-        var logicalLine = 1
-        let glyphCount = layout.numberOfGlyphs
-
-        if glyphCount == 0 {
-            rows = ["1"]
-        } else {
-            var glyphIndex = 0
-            while glyphIndex < glyphCount {
-                var fragmentRange = NSRange()
-                _ = layout.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &fragmentRange)
-                let charRange = layout.characterRange(forGlyphRange: fragmentRange, actualGlyphRange: nil)
-                let isFirstFragment: Bool
-                if charRange.location == 0 {
-                    isFirstFragment = true
-                } else if charRange.location < ns.length {
-                    isFirstFragment = ns.character(at: charRange.location - 1) == 10 // \n
-                } else {
-                    isFirstFragment = false
-                }
-                rows.append(isFirstFragment ? "\(logicalLine)" : "")
-                if isFirstFragment { logicalLine += 1 }
-                glyphIndex = NSMaxRange(fragmentRange)
-            }
-            if ns.length > 0, ns.character(at: ns.length - 1) == 10 {
-                rows.append("\(logicalLine)")
-            }
-        }
-
-        let numbers = rows.joined(separator: "\n")
-        let digits = "\(max(logicalLine - 1, 1))".count
+        let text = textView.text ?? ""
+        let lineCount = max(1, text.components(separatedBy: "\n").count)
+        let digits = "\(lineCount)".count
         let targetGutter = CodeSyntaxHighlighter.lineNumberGutterWidth(
             digits: digits,
             fontSize: fontPointSize
@@ -1801,31 +1783,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                 view.layoutIfNeeded()
             }
         }
-        if force || gutterChanged || lineNumberView.text != numbers {
-            let attrs = CodeSyntaxHighlighter.lineNumberAttributes(fontSize: fontPointSize)
-            lineNumberView.attributedText = NSAttributedString(string: numbers, attributes: attrs)
-            lineNumberView.textAlignment = .right
-        }
-        syncLineNumberOffset()
+        lineNumberView.fontSize = fontPointSize
+        lineNumberView.setNeedsDisplay()
+        _ = force
     }
 
     private func syncLineNumberOffset() {
-        guard !isSyncingLineNumbers else { return }
-        isSyncingLineNumbers = true
-        let y = textView.contentOffset.y
-        let target = CGPoint(x: 0, y: y)
-        if abs(lineNumberView.contentOffset.y - y) > 0.5 {
-            lineNumberView.setContentOffset(target, animated: false)
-        }
-        // Keep contentSize tall enough so twin scroll does not clamp early.
-        if lineNumberView.contentSize.height + 1 < textView.contentSize.height {
-            lineNumberView.contentSize = CGSize(
-                width: max(lineNumberView.bounds.width, 1),
-                height: textView.contentSize.height
-            )
-            lineNumberView.setContentOffset(target, animated: false)
-        }
-        isSyncingLineNumbers = false
+        lineNumberView.setNeedsDisplay()
     }
 
     private func updateProgressLabel() {
@@ -1922,7 +1886,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
 #if DEBUG
     func debugEditorContentOffsetY() -> CGFloat { textView.contentOffset.y }
-    func debugLineNumberContentOffsetY() -> CGFloat { lineNumberView.contentOffset.y }
+    func debugLineNumberContentOffsetY() -> CGFloat { textView.contentOffset.y }
     func debugScrollEditor(by dy: CGFloat) {
         let y = min(max(0, textView.contentOffset.y + dy),
                     max(0, textView.contentSize.height - textView.bounds.height))
@@ -3103,13 +3067,6 @@ extension TextCodeEditorViewController {
             textView.verticalScrollIndicatorInsets = insets
             textView.horizontalScrollIndicatorInsets = insets
         }
-        var gutterInsets = lineNumberView.contentInset
-        if gutterInsets.bottom != 0 {
-            gutterInsets.bottom = 0
-            lineNumberView.contentInset = gutterInsets
-            lineNumberView.verticalScrollIndicatorInsets = gutterInsets
-            lineNumberView.horizontalScrollIndicatorInsets = gutterInsets
-        }
         if !tabSuggestChip.isHidden {
             repositionTabSuggestChip()
         }
@@ -3155,5 +3112,90 @@ extension TextCodeEditorViewController: WKNavigationDelegate {
             }
         }
         decisionHandler(.allow)
+    }
+}
+
+/// Paints logical line numbers at the editor’s TextKit fragment origins.
+private final class CodeLineNumberGutterView: UIView {
+    weak var sourceTextView: UITextView?
+    var fontSize: CGFloat = CodeSyntaxHighlighter.defaultPointSize {
+        didSet {
+            if abs(oldValue - fontSize) > 0.05 { setNeedsDisplay() }
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        contentMode = .redraw
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isOpaque = false
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        contentMode = .redraw
+        clipsToBounds = true
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let tv = sourceTextView else { return }
+        let layout = tv.layoutManager
+        let container = tv.textContainer
+        layout.ensureLayout(for: container)
+        let inset = tv.textContainerInset
+        let offsetY = tv.contentOffset.y
+        let attrs = CodeSyntaxHighlighter.lineNumberAttributes(fontSize: fontSize)
+        let ns = (tv.text ?? "") as NSString
+        let visible = bounds.insetBy(dx: 0, dy: -fontSize)
+        let labelWidth = max(8, bounds.width - 12)
+
+        func drawNumber(_ number: Int, fragment: CGRect) {
+            let y = fragment.minY + inset.top - offsetY
+            let box = CGRect(x: 4, y: y, width: labelWidth, height: max(fragment.height, 1))
+            guard box.maxY >= visible.minY, box.minY <= visible.maxY else { return }
+            ("\(number)" as NSString).draw(
+                with: box,
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attrs,
+                context: nil
+            )
+        }
+
+        let glyphCount = layout.numberOfGlyphs
+        if glyphCount == 0 {
+            drawNumber(1, fragment: CGRect(x: 0, y: 0, width: 1, height: CodeSyntaxHighlighter.font(size: fontSize).lineHeight))
+            return
+        }
+
+        var logicalLine = 1
+        var glyphIndex = 0
+        while glyphIndex < glyphCount {
+            var fragmentRange = NSRange()
+            let fragment = layout.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &fragmentRange)
+            let charRange = layout.characterRange(forGlyphRange: fragmentRange, actualGlyphRange: nil)
+            let isFirstFragment: Bool
+            if charRange.location == 0 {
+                isFirstFragment = true
+            } else if charRange.location < ns.length {
+                isFirstFragment = ns.character(at: charRange.location - 1) == 10
+            } else {
+                isFirstFragment = false
+            }
+            if isFirstFragment {
+                drawNumber(logicalLine, fragment: fragment)
+                logicalLine += 1
+            }
+            glyphIndex = NSMaxRange(fragmentRange)
+        }
+
+        let extra = layout.extraLineFragmentRect
+        if extra.height > 0, ns.length > 0, ns.character(at: ns.length - 1) == 10 {
+            drawNumber(logicalLine, fragment: extra)
+        }
     }
 }
