@@ -57,6 +57,8 @@ enum ActionIconFactory {
         case ask
         /// Import / copy file into workspace.
         case importFile
+        /// iPhone reader: rotate to landscape / back to portrait.
+        case rotate
     }
 
     static func barItem(kind: Kind, target: Any?, action: Selector, accessibility: String) -> UIBarButtonItem {
@@ -886,6 +888,42 @@ enum ActionIconFactory {
             arrow.addLine(to: CGPoint(x: r.midX + pointSize * 0.20, y: r.midY + pointSize * 0.04))
             arrow.lineWidth = lwThick
             arrow.stroke()
+
+        case .rotate:
+            let c = CGPoint(x: r.midX, y: r.midY)
+            let rad = pointSize * 0.32
+            let top = UIBezierPath(
+                arcCenter: c,
+                radius: rad,
+                startAngle: .pi * 0.15,
+                endAngle: .pi * 1.05,
+                clockwise: true
+            )
+            top.lineWidth = lw
+            top.stroke()
+            let bot = UIBezierPath(
+                arcCenter: c,
+                radius: rad,
+                startAngle: .pi * 1.15,
+                endAngle: .pi * 0.05,
+                clockwise: true
+            )
+            bot.lineWidth = lw
+            bot.stroke()
+            let t1 = CGPoint(x: c.x + rad * cos(.pi * 0.15), y: c.y + rad * sin(.pi * 0.15))
+            let tHead = UIBezierPath()
+            tHead.move(to: CGPoint(x: t1.x - 2.4, y: t1.y + 2.6))
+            tHead.addLine(to: t1)
+            tHead.addLine(to: CGPoint(x: t1.x + 3.2, y: t1.y + 1.4))
+            tHead.lineWidth = lw
+            tHead.stroke()
+            let t2 = CGPoint(x: c.x + rad * cos(.pi * 1.15), y: c.y + rad * sin(.pi * 1.15))
+            let bHead = UIBezierPath()
+            bHead.move(to: CGPoint(x: t2.x + 2.4, y: t2.y - 2.6))
+            bHead.addLine(to: t2)
+            bHead.addLine(to: CGPoint(x: t2.x - 3.2, y: t2.y - 1.4))
+            bHead.lineWidth = lw
+            bHead.stroke()
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)

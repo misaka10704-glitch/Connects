@@ -991,7 +991,7 @@ final class NativeMessageLayouter {
         return ceil(value * scale) / scale
     }
 
-    /// Preview-phase block math: reserve final-like height without iosMath on the hot path.
+    /// Preview-phase block math: reserve final-like height without waiting for KaTeX.
     private func reserveDisplayMathPreviewHeight(tex: String,
                                                  y: CGFloat,
                                                  width: CGFloat,

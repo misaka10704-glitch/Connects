@@ -14,9 +14,24 @@ struct ConnectsMenuItem {
 }
 
 struct ConnectsMenuHeaderAction {
-    let icon: ActionIconFactory.Kind
+    var icon: ActionIconFactory.Kind? = nil
+    var title: String? = nil
     let accessibilityLabel: String
     let handler: () -> Void
+
+    init(icon: ActionIconFactory.Kind, accessibilityLabel: String, handler: @escaping () -> Void) {
+        self.icon = icon
+        self.title = nil
+        self.accessibilityLabel = accessibilityLabel
+        self.handler = handler
+    }
+
+    init(title: String, accessibilityLabel: String? = nil, handler: @escaping () -> Void) {
+        self.icon = nil
+        self.title = title
+        self.accessibilityLabel = accessibilityLabel ?? title
+        self.handler = handler
+    }
 }
 
 /// ChatGPT-style floating menu — light/dark, icon rows, soft elevation.
@@ -32,9 +47,10 @@ enum ConnectsMenu {
                         maxHeight: CGFloat? = nil,
                         menuWidth: CGFloat? = nil,
                         titleTap: (() -> Void)? = nil,
+                        headerLeadingActions: [ConnectsMenuHeaderAction] = [],
                         headerTrailingActions: [ConnectsMenuHeaderAction] = []) {
         // Allow empty file list when header actions are present (empty workspace).
-        guard !items.isEmpty || title != nil || !headerTrailingActions.isEmpty else { return }
+        guard !items.isEmpty || title != nil || !headerLeadingActions.isEmpty || !headerTrailingActions.isEmpty else { return }
 
         // Capture in window space *before* the modal covers the hierarchy.
         let windowRect = resolveAnchorWindowRect(
@@ -48,6 +64,7 @@ enum ConnectsMenu {
             titleText: title,
             items: items,
             titleTap: titleTap,
+            headerLeadingActions: headerLeadingActions,
             headerTrailingActions: headerTrailingActions
         )
         menu.modalPresentationStyle = .overFullScreen
@@ -146,6 +163,7 @@ private final class ConnectsMenuController: UIViewController {
     private let titleText: String?
     private let items: [ConnectsMenuItem]
     private let titleTap: (() -> Void)?
+    private let headerLeadingActions: [ConnectsMenuHeaderAction]
     private let headerTrailingActions: [ConnectsMenuHeaderAction]
     var anchorWindowRect: CGRect?
     var preferAbove = false
@@ -171,10 +189,12 @@ private final class ConnectsMenuController: UIViewController {
     init(titleText: String?,
          items: [ConnectsMenuItem],
          titleTap: (() -> Void)? = nil,
+         headerLeadingActions: [ConnectsMenuHeaderAction] = [],
          headerTrailingActions: [ConnectsMenuHeaderAction] = []) {
         self.titleText = titleText
         self.items = items
         self.titleTap = titleTap
+        self.headerLeadingActions = headerLeadingActions
         self.headerTrailingActions = headerTrailingActions
         super.init(nibName: nil, bundle: nil)
     }
@@ -331,6 +351,7 @@ private final class ConnectsMenuController: UIViewController {
         titleLabel?.textColor = c.textTertiary
         for btn in headerActionButtons {
             btn.tintColor = c.textPrimary
+            btn.setTitleColor(c.textPrimary, for: .normal)
         }
         for line in sectionLines {
             line.backgroundColor = dark
@@ -360,6 +381,13 @@ private final class ConnectsMenuController: UIViewController {
             wrap.translatesAutoresizingMaskIntoConstraints = false
             wrap.addSubview(label)
 
+            let leadingStack = UIStackView()
+            leadingStack.axis = .horizontal
+            leadingStack.spacing = 2
+            leadingStack.alignment = .center
+            leadingStack.translatesAutoresizingMaskIntoConstraints = false
+            wrap.addSubview(leadingStack)
+
             let trailingStack = UIStackView()
             trailingStack.axis = .horizontal
             trailingStack.spacing = 2
@@ -367,18 +395,14 @@ private final class ConnectsMenuController: UIViewController {
             trailingStack.translatesAutoresizingMaskIntoConstraints = false
             wrap.addSubview(trailingStack)
 
+            for (idx, action) in headerLeadingActions.enumerated() {
+                let btn = makeHeaderActionButton(action, tag: 1000 + idx)
+                leadingStack.addArrangedSubview(btn)
+                headerActionButtons.append(btn)
+            }
             for (idx, action) in headerTrailingActions.enumerated() {
-                let btn = UIButton(type: .system)
-                btn.translatesAutoresizingMaskIntoConstraints = false
-                btn.setImage(ActionIconFactory.image(action.icon, pointSize: ActionIconFactory.menuGlyph), for: .normal)
-                btn.accessibilityLabel = action.accessibilityLabel
-                btn.tag = idx
-                btn.addTarget(self, action: #selector(headerActionTapped(_:)), for: .touchUpInside)
+                let btn = makeHeaderActionButton(action, tag: idx)
                 trailingStack.addArrangedSubview(btn)
-                NSLayoutConstraint.activate([
-                    btn.widthAnchor.constraint(equalToConstant: 32),
-                    btn.heightAnchor.constraint(equalToConstant: 32)
-                ])
                 headerActionButtons.append(btn)
             }
 
@@ -389,9 +413,12 @@ private final class ConnectsMenuController: UIViewController {
             }
 
             NSLayoutConstraint.activate([
+                leadingStack.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 6),
+                leadingStack.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+                leadingStack.heightAnchor.constraint(equalToConstant: 32),
                 label.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 6),
                 label.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -6),
-                label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 14),
+                label.leadingAnchor.constraint(equalTo: leadingStack.trailingAnchor, constant: 6),
                 trailingStack.centerYAnchor.constraint(equalTo: label.centerYAnchor),
                 trailingStack.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -8),
                 label.trailingAnchor.constraint(lessThanOrEqualTo: trailingStack.leadingAnchor, constant: -8),
@@ -399,7 +426,7 @@ private final class ConnectsMenuController: UIViewController {
             ])
             stack.addArrangedSubview(wrap)
             titleLabel = label
-            if !items.isEmpty || !headerTrailingActions.isEmpty {
+            if !items.isEmpty || !headerTrailingActions.isEmpty || !headerLeadingActions.isEmpty {
                 stack.addArrangedSubview(makeSectionLine())
             }
         }
@@ -424,10 +451,39 @@ private final class ConnectsMenuController: UIViewController {
         dismissThen(titleTap)
     }
 
+    private func makeHeaderActionButton(_ action: ConnectsMenuHeaderAction, tag: Int) -> UIButton {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.accessibilityLabel = action.accessibilityLabel
+        btn.tag = tag
+        btn.addTarget(self, action: #selector(headerActionTapped(_:)), for: .touchUpInside)
+        if let title = action.title, !title.isEmpty {
+            btn.setTitle(title, for: .normal)
+            btn.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            btn.contentEdgeInsets = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+            NSLayoutConstraint.activate([
+                btn.heightAnchor.constraint(equalToConstant: 32)
+            ])
+        } else if let icon = action.icon {
+            btn.setImage(ActionIconFactory.image(icon, pointSize: ActionIconFactory.menuGlyph), for: .normal)
+            NSLayoutConstraint.activate([
+                btn.widthAnchor.constraint(equalToConstant: 32),
+                btn.heightAnchor.constraint(equalToConstant: 32)
+            ])
+        }
+        return btn
+    }
+
     @objc private func headerActionTapped(_ sender: UIButton) {
-        guard headerTrailingActions.indices.contains(sender.tag) else { return }
-        let handler = headerTrailingActions[sender.tag].handler
-        dismissThen(handler)
+        let action: ConnectsMenuHeaderAction?
+        if sender.tag >= 1000 {
+            let idx = sender.tag - 1000
+            action = headerLeadingActions.indices.contains(idx) ? headerLeadingActions[idx] : nil
+        } else {
+            action = headerTrailingActions.indices.contains(sender.tag) ? headerTrailingActions[sender.tag] : nil
+        }
+        guard let action else { return }
+        dismissThen(action.handler)
     }
 
     private func dismissThen(_ handler: @escaping () -> Void) {

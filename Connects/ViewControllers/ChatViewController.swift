@@ -6775,34 +6775,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         delegate?.chatDidFinishInitialLaunch()
     }
 
-    /// Older conversations can still contain an image-only turn. Migrate one
-    /// at a time after opening the chat, never in the send path.
-    private func queueLegacyImageTranscriptionIfNeeded() {
-        guard SettingsManager.shared.imageTranscriptionEnabled else { return }
-        guard let conversation = ConversationStore.shared.currentConversation,
-              !ImageTranscriptionCoordinator.shared.isTranscribing(conversation.id) else { return }
-        for (index, message) in conversation.messages.enumerated()
-            where message.role == .user
-                && message.hasImage
-                && (message.imageDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
-            // Reading-context turns keep the screenshot for vision; text is already durable.
-            if message.apiContextPrefix?.contains("[阅读上下文") == true { continue }
-            guard let base64 = message.imageJPEGBase64,
-                  index + 1 < conversation.messages.count,
-                  conversation.messages[index + 1].role == .assistant else { continue }
-            let assistant = conversation.messages[index + 1]
-            guard assistant.imageTranscriptionPhase != .failed else { return }
-            let model = AIModelOption.preferredImageTranscription
-            ImageTranscriptionCoordinator.shared.start(
-                conversationID: conversation.id,
-                userMessageID: message.id,
-                assistantMessageID: assistant.id,
-                base64: base64,
-                model: model
-            )
-            return
-        }
-    }
+    /// Older conversations can still contain an image-only turn. Transcribe-on-open is retired.
+    private func queueLegacyImageTranscriptionIfNeeded() {}
 
     private func clearNavigationPrompt() {
         if navigationItem.prompt != nil {
@@ -7645,6 +7619,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
         // Single source of truth: input-bar AI 选项. Do not also mount a nav model chip.
         inputBar.setModelChip(title: model.displayName)
+        inputBar.modelSupportsVision = model.supportsVision
+        if !model.supportsVision, let id = ConversationStore.shared.currentConversationID {
+            let kind = ConversationStore.shared.conversation(id: id).flatMap { conv in
+                conv.studyDocumentID.flatMap { StudyDocumentStore.shared.document(id: $0)?.kind }
+            }
+            if kind == .pdf || kind == .ebook, inputBar.studyPageCaptureEnabled {
+                ConversationStore.shared.updateConversation(id: id) { draft in
+                    draft.studyPageCaptureEnabled = false
+                }
+                inputBar.studyPageCaptureEnabled = false
+            }
+        }
         modelButton.setTitle("\(model.displayName)  ▾", for: .normal)
         syncStudyPanelStageControl()
         if (ConversationStore.shared.currentConversation?.messages.count ?? 0) == 0 {
@@ -7908,41 +7894,39 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         studyCapture: StudyPageCapture? = nil
     ) -> [ChatMessage] {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
-        let built = Self.buildContextResult(from: conv, model: model)
-        // Keep the extractive rolling summary so the next request never has to
-        // rebuild (and accidentally truncate) its older context from scratch.
-        // The dedicated compactor can still replace this with a richer LLM
-        // summary once the soft budget is reached.
-        if built.summary != conv.contextSummary || built.summaryThroughMessageID != conv.contextSummaryThroughMessageID {
-            ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
-                draft.contextSummary = built.summary
-                draft.contextSummaryThroughMessageID = built.summaryThroughMessageID
-            }
-        }
+        var working = conv
+        applyStudyCaptureToLastUserMessage(
+            in: &working.messages,
+            conversationID: conversationID,
+            persist: false,
+            capture: studyCapture
+        )
+        applyCodeAIEditAuthorization(
+            in: &working.messages,
+            conversationID: conversationID,
+            persist: false
+        )
+        applyWorkspaceAgentAuthorization(
+            in: &working.messages,
+            conversationID: conversationID,
+            persist: false
+        )
+        let built = Self.buildContextResult(from: working, model: model)
         if conversationID == currentConversationID {
             DispatchQueue.main.async { [weak self] in
                 self?.refreshContextUsage()
             }
         }
-        var messages = built.messages
-        applyStudyCaptureToLastUserMessage(
-            in: &messages,
-            conversationID: conversationID,
-            persist: true,
-            capture: studyCapture
-        )
-        return messages
+        return built.messages
     }
 
     /// Pick keep-recent window once via a cheap estimate, then build a single context.
+    /// `conv.messages` should already include study/JPEG/auth for this request (memory copy).
     private static func buildContextResult(
         from conv: Conversation,
         model: AIModelOption
     ) -> ContextBuilder.BuildResult {
-        let quick = ContextBuilder.quickUsageEstimate(for: conv)
-        let keep = quick.shouldAutoCompact
-            ? ContextBuilder.compactKeepRecentTurns
-            : ContextBuilder.keepRecentTurns
+        let keep = ContextBuilder.keepRecentTurns(for: conv)
         return ContextBuilder.build(
             from: conv.messages,
             model: model,
@@ -7963,44 +7947,32 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             completion([])
             return
         }
-        // Value-type copy so background work does not touch the store.
-        let snapshot = conv
+        // Inject study/JPEG/auth on a value copy *before* budget so fill math matches the request.
+        // persist:false — first send already wrote the user bubble; retry/rebuild must not mutate history.
+        var snapshot = conv
+        applyStudyCaptureToLastUserMessage(
+            in: &snapshot.messages,
+            conversationID: conversationID,
+            persist: false,
+            capture: studyCapture
+        )
+        applyCodeAIEditAuthorization(
+            in: &snapshot.messages,
+            conversationID: conversationID,
+            persist: false
+        )
+        applyWorkspaceAgentAuthorization(
+            in: &snapshot.messages,
+            conversationID: conversationID,
+            persist: false
+        )
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Self.buildContextResult(from: snapshot, model: model)
             DispatchQueue.main.async {
-                guard let self = self else {
-                    completion(result.messages)
-                    return
+                if conversationID == self?.currentConversationID {
+                    self?.refreshContextUsage()
                 }
-                if let live = ConversationStore.shared.conversation(id: conversationID),
-                   result.summary != live.contextSummary
-                    || result.summaryThroughMessageID != live.contextSummaryThroughMessageID {
-                    ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
-                        draft.contextSummary = result.summary
-                        draft.contextSummaryThroughMessageID = result.summaryThroughMessageID
-                    }
-                }
-                if conversationID == self.currentConversationID {
-                    self.refreshContextUsage()
-                }
-                var messages = result.messages
-                self.applyStudyCaptureToLastUserMessage(
-                    in: &messages,
-                    conversationID: conversationID,
-                    persist: true,
-                    capture: studyCapture
-                )
-                self.applyCodeAIEditAuthorization(
-                    in: &messages,
-                    conversationID: conversationID,
-                    persist: true
-                )
-                self.applyWorkspaceAgentAuthorization(
-                    in: &messages,
-                    conversationID: conversationID,
-                    persist: true
-                )
-                completion(messages)
+                completion(result.messages)
             }
         }
     }
@@ -8075,6 +8047,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         studyContextProvider?.captureCurrentStudyPage()
     }
 
+    /// Inject study prefix/JPEG onto the last user turn of a *working copy*.
+    /// `persist` should be true only if the caller has not already written the bubble
+    /// (normal send writes it in `performSend`; API rebuilds pass false).
     private func applyStudyCaptureToLastUserMessage(
         in messages: inout [ChatMessage],
         conversationID: String,
@@ -8100,8 +8075,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         // Only keep JPEG when this turn still needs vision and no durable text exists.
         // Rich text pages and already-transcribed turns must not re-inject screenshots.
-        let attachJPEG = SettingsManager.shared.imageTranscriptionEnabled
-            && capture.needsImageTranscription
+        let attachJPEG = convModelSupportsVision(conversationID: conversationID)
+            && capture.imageJPEGBase64 != nil
+            && !capture.prefersTextOnly
             && !hasDescription
         let jpeg = attachJPEG ? capture.imageJPEGBase64 : nil
         let hideBubble = attachJPEG ? capture.hidesImageInChatBubble : msg.hidesAttachedImageInChat
@@ -8126,6 +8102,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 draft.messages[i].hidesAttachedImageInChat = hideBubble
             }
         }
+    }
+
+    private func convModelSupportsVision(conversationID: String) -> Bool {
+        ConversationStore.shared.conversation(id: conversationID)?.model.supportsVision ?? false
+    }
+
+    private func notifyUnsupportedImageSend() {
+        ConnectsToast.show(AIModelOption.unsupportedImageSendMessage, in: view, duration: 1.8)
     }
 
     private func notifyStudyCaptureFailure(for conversationID: String) {
@@ -8567,18 +8551,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func streamModelMissingKeyMessage(for conversationModel: AIModelOption, hasImages: Bool) -> String {
-        if hasImages, !conversationModel.supportsVision {
-            let vision = AIModelOption.preferredImageTranscription
-            if !SettingsManager.shared.hasAPIKey(for: conversationModel.provider) {
-                return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
-            }
-            if !SettingsManager.shared.hasAPIKey(for: vision.provider) {
-                return """
-                当前模型 \(conversationModel.displayName) 不支持图片。
-                请先填写 \(vision.provider.displayName) API Key，以便用 \(vision.displayName) 快速转写后再发送。
-                """
-            }
-        }
+        _ = hasImages
         return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
     }
 
@@ -8751,6 +8724,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func sendMessage(_ text: String, imageBase64: String?) {
         guard let conv = ConversationStore.shared.currentConversation else { return }
 
+        if let imageBase64, !imageBase64.isEmpty, !conv.model.supportsVision {
+            notifyUnsupportedImageSend()
+            return
+        }
+
         if StreamManager.shared.isRunning(conv.id) {
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先点停止或等待完成。")
             return
@@ -8826,7 +8804,20 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             studyContextProvider?.clearAskSelectionHighlightInReader()
         }
 
-        let finalImage = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64
+        let finalImage: String?
+        if let jpeg = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64, !jpeg.isEmpty {
+            if conv.model.supportsVision {
+                finalImage = jpeg
+            } else if resolvedStudyCapture?.prefersTextOnly == true
+                        || resolvedStudyCapture?.hasRichExtractableText == true {
+                finalImage = nil
+            } else {
+                notifyUnsupportedImageSend()
+                return
+            }
+        } else {
+            finalImage = nil
+        }
         var studyPrefix = resolvedStudyCapture?.apiContextPrefix()
         // Auth is also re-applied in buildAPIContextAsync (covers retry). Keep here for
         // the persisted user message on first send.
@@ -8896,40 +8887,12 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
             return
         }
-        let needsImageTranscription = SettingsManager.shared.imageTranscriptionEnabled
-            && hasImageAttachment
-            && (resolvedStudyCapture?.needsImageTranscription ?? true)
-        // Non-vision models must wait for Kimi K2.5 Vision transcription before the reply.
-        let gateReplyOnTranscription = needsImageTranscription && !conv.model.supportsVision
-        if gateReplyOnTranscription, imageTranscriptionModel() == nil {
-            if currentConversationID == conversationID {
-                showAlert(
-                    title: "缺少转写 Key",
-                    message: streamModelMissingKeyMessage(for: conv.model, hasImages: true),
-                    offerSettings: true
-                )
-            }
+        if hasImageAttachment, !conv.model.supportsVision {
+            notifyUnsupportedImageSend()
             return
         }
 
         let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
-        // Rich study text already travels as apiContextPrefix — same as a normal
-        // text turn. Running OCR/vision would dump page source into「图片转写」.
-        let imageTranscriptionStatus: String
-        if needsImageTranscription {
-            if gateReplyOnTranscription {
-                imageTranscriptionStatus =
-                    "正在转写图片，完成后发给 \(model.displayName)…"
-            } else if resolvedStudyCapture != nil {
-                imageTranscriptionStatus =
-                    "正在提取页面文字并转写…"
-            } else {
-                imageTranscriptionStatus =
-                    "正在转写图片…"
-            }
-        } else {
-            imageTranscriptionStatus = ""
-        }
         let useAgentChrome = conv.usesWorkspaceAgentChrome
         let assistantMsg = ChatMessage(
             role: .assistant,
@@ -8938,8 +8901,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             searchProcessContent: searchOn ? "正在结合对话上下文规划检索词…" : "",
             searchProcessPhase: searchOn ? .planning : .idle,
             isStreaming: true,
-            imageTranscriptionContent: imageTranscriptionStatus,
-            imageTranscriptionPhase: needsImageTranscription ? .transcribing : .idle,
             agentProcessSteps: [],
             agentProcessPhase: useAgentChrome ? .running : .idle,
             agentProcessStartedAt: useAgentChrome ? Date() : nil
@@ -9082,7 +9043,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         // Phase B: start the reply. Vision models stream immediately (image uploaded).
-        // Non-vision models wait for Kimi K2.5 Vision transcription first.
         let captureForAPI = resolvedStudyCapture
         let startReply = { [weak self] in
             guard let self = self else { return }
@@ -9110,47 +9070,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             }
         }
 
-        if needsImageTranscription, let imageBase64 = finalImage, !imageBase64.isEmpty {
-            let captionModel = AIModelOption.preferredImageTranscription
-            if gateReplyOnTranscription {
-                ImageTranscriptionCoordinator.shared.start(
-                    conversationID: convID,
-                    userMessageID: userMsg.id,
-                    assistantMessageID: assistantMsg.id,
-                    base64: imageBase64,
-                    model: captionModel,
-                    studyPagePDFText: resolvedStudyCapture.map { $0.text }
-                ) { [weak self] success in
-                    guard self != nil else { return }
-                    guard success else {
-                        ConversationStore.shared.updateConversationQuietly(id: convID) { draft in
-                            if let i = draft.messages.firstIndex(where: { $0.id == assistantMsg.id }) {
-                                draft.messages[i].isStreaming = false
-                            }
-                        }
-                        NotificationCenter.default.post(
-                            name: .imageTranscriptionDidUpdate,
-                            object: nil,
-                            userInfo: ["conversationID": convID]
-                        )
-                        return
-                    }
-                    DispatchQueue.main.async(execute: startReply)
-                }
-            } else {
-                DispatchQueue.main.async(execute: startReply)
-                ImageTranscriptionCoordinator.shared.start(
-                    conversationID: convID,
-                    userMessageID: userMsg.id,
-                    assistantMessageID: assistantMsg.id,
-                    base64: imageBase64,
-                    model: captionModel,
-                    studyPagePDFText: resolvedStudyCapture.map { $0.text }
-                )
-            }
-        } else {
-            DispatchQueue.main.async(execute: startReply)
-        }
+        DispatchQueue.main.async(execute: startReply)
     }
 
     private func showAlert(title: String, message: String, offerSettings: Bool = false) {
@@ -10614,14 +10534,23 @@ extension ChatViewController: MessageCellDelegate {
 extension ChatViewController: InputBarViewDelegate {
     func inputBarDidToggleStudyCapture(_ enabled: Bool) {
         guard let id = currentConversationID else { return }
+        let model = ConversationStore.shared.conversation(id: id)?.model
+        let kind = ConversationStore.shared.conversation(id: id).flatMap { conv in
+            conv.studyDocumentID.flatMap { StudyDocumentStore.shared.document(id: $0)?.kind }
+        }
+        if enabled, model?.supportsVision == false, kind == .pdf || kind == .ebook {
+            ConversationStore.shared.updateConversation(id: id) { draft in
+                draft.studyPageCaptureEnabled = false
+            }
+            inputBar.studyPageCaptureEnabled = false
+            notifyUnsupportedImageSend()
+            return
+        }
         ConversationStore.shared.updateConversation(id: id) { draft in
             draft.studyPageCaptureEnabled = enabled
         }
         inputBar.studyPageCaptureEnabled = enabled
         if enabled {
-            let kind = ConversationStore.shared.conversation(id: id).flatMap { conv in
-                conv.studyDocumentID.flatMap { StudyDocumentStore.shared.document(id: $0)?.kind }
-            }
             let tip: String
             switch kind {
             case .text?: tip = "发送时将附带代码全文上下文（无截图）"
@@ -10787,6 +10716,10 @@ extension ChatViewController: InputBarViewDelegate {
 
     func inputBarDidTapSend(text: String, imageBase64: String?) {
         sendMessage(text, imageBase64: imageBase64)
+    }
+
+    func inputBarDidRejectUnsupportedImage() {
+        notifyUnsupportedImageSend()
     }
 
     func inputBarDidTapStop() {

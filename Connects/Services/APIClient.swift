@@ -31,7 +31,7 @@ enum APIClientError: LocalizedError, Equatable {
         case .cancelled:
             return "已取消"
         case .visionNotSupported:
-            return "当前模型不支持图片。无视觉模型会先用 Kimi K2.5 Vision 转写再发送；请填写 Kimi API Key，或改用支持视觉的模型。"
+            return AIModelOption.unsupportedImageSendMessage
         }
     }
 }
@@ -355,8 +355,8 @@ final class APIClient: NSObject {
         return SettingsManager.shared.userRulesPrefixedContent(text)
     }
 
-    /// Drop image payloads once a durable text description exists, and from all
-    /// but the last user message that still needs a JPEG for vision.
+    /// Image transcription is gone: vision turns keep JPEG; older JPEGs drop.
+    /// Keep at most the last user image that still has no durable `imageDescription`.
     static func slimMessagesForAPI(_ messages: [ChatMessage]) -> [ChatMessage] {
         var lastImageIndex: Int?
         for (i, m) in messages.enumerated() where m.role == .user && m.hasImage {

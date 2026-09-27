@@ -2,7 +2,7 @@ import UIKit
 
 final class NativeFormulaRenderer {
     static let shared = NativeFormulaRenderer()
-    private static let metadataKey = "connects_native_formula_meta_v2"
+    private static let metadataKey = "connects_native_formula_meta_v4"
 
     private final class Box: NSObject {
         let artifact: NativeFormulaArtifact
@@ -31,10 +31,10 @@ final class NativeFormulaRenderer {
             cache.setObject(Box(disk), forKey: key as NSString, cost: cost)
             return disk
         }
+        // KaTeX is the only bitmap source. iosMath must not occupy this cache key.
         guard Thread.isMainThread else { return nil }
-        KaTeXFormulaSnapshot.shared.prepare()
         let prepared = prepareTeX(tex)
-        // XITS / KaTeX default fonts have no CJK glyphs — refuse so callers expand via NativeMathProse.
+        // KaTeX default fonts have no CJK glyphs — refuse so callers expand via NativeMathProse.
         if NativeMathProse.containsCJK(prepared) {
             return nil
         }
@@ -48,6 +48,27 @@ final class NativeFormulaRenderer {
                 cacheKey: key
             )
         }
+        // Immediate paint so chat is not empty while KaTeX fonts/snapshot catch up.
+        // Memory-only: disk stays reserved for KaTeX so a later snapshot can replace this.
+        if let preview = renderIosMath(
+            prepared: prepared,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            scale: scale
+        ) {
+            let cost = Int(preview.size.width * scale * preview.size.height * scale * 4)
+            cache.setObject(Box(preview), forKey: key as NSString, cost: cost)
+            return preview
+        }
+        return nil
+    }
+
+    private func renderIosMath(prepared: String,
+                               fontSize: CGFloat,
+                               color: UIColor,
+                               display: Bool,
+                               scale: CGFloat) -> NativeFormulaArtifact? {
         let (innerTeX, isBoxed) = unwrapLeadingBoxed(prepared)
         let renderTeX = normalizeLegacyCommands(innerTeX)
         let boxPadding: CGFloat = isBoxed ? max(5, fontSize * 0.3) : 0
@@ -58,8 +79,6 @@ final class NativeFormulaRenderer {
         label.font = fontManager.xitsFont(withSize: fontSize)
         label.labelMode = display ? .display : .text
         label.textAlignment = display ? .center : .left
-        // Extra bottom inset: fraction denominators / radical depth sit below the baseline.
-        // Undersized canvases clip exactly the empty-denominator symptom seen in chat.
         label.contentInsets = UIEdgeInsets(
             top: max(3, fontSize * 0.18),
             left: 3,
@@ -77,12 +96,7 @@ final class NativeFormulaRenderer {
             ), recovered != compatibleTeX else { break }
             compatibleTeX = recovered
         }
-        if let error = label.error {
-            #if DEBUG
-            print("NativeFormulaRenderer iosMath error: \(error) | \(compatibleTeX)")
-            #endif
-            return nil
-        }
+        if label.error != nil { return nil }
         var labelSize = label.sizeThatFits(CGSize(width: 10_000, height: 10_000))
         labelSize.width = ceil(max(labelSize.width, 1))
         labelSize.height = ceil(max(labelSize.height, fontSize))
@@ -93,7 +107,6 @@ final class NativeFormulaRenderer {
         label.frame = CGRect(origin: .zero, size: labelSize)
         label.setNeedsLayout()
         label.layoutIfNeeded()
-
         UIGraphicsBeginImageContextWithOptions(size, false, scale)
         defer { UIGraphicsEndImageContext() }
         guard let context = UIGraphicsGetCurrentContext(),
@@ -101,13 +114,8 @@ final class NativeFormulaRenderer {
         if isBoxed {
             context.setStrokeColor(color.cgColor)
             context.setLineWidth(max(1, 1 / scale))
-            context.stroke(
-                CGRect(x: 1, y: 1, width: size.width - 2, height: size.height - 2)
-            )
+            context.stroke(CGRect(x: 1, y: 1, width: size.width - 2, height: size.height - 2))
         }
-        // iosMath positions glyphs in CoreText's bottom-left coordinate space.
-        // A UIKit image context is top-left based, so drawing without this
-        // transform vertically mirrors radicals, integrals and delimiters.
         context.saveGState()
         context.translateBy(x: 0, y: size.height)
         context.scaleBy(x: 1, y: -1)
@@ -115,15 +123,11 @@ final class NativeFormulaRenderer {
         displayList.draw(context)
         context.restoreGState()
         guard let image = UIGraphicsGetImageFromCurrentImageContext() else { return nil }
-        let artifact = NativeFormulaArtifact(
+        return NativeFormulaArtifact(
             image: image,
             size: size,
             baseline: min(size.height, fontSize * (display ? 1.0 : 0.82))
         )
-        let cost = Int(size.width * scale * size.height * scale * 4)
-        cache.setObject(Box(artifact), forKey: key as NSString, cost: cost)
-        storeToDisk(artifact, key: key)
-        return artifact
     }
 
     func storeExternalArtifact(_ artifact: NativeFormulaArtifact, cacheKey: String) {
@@ -187,8 +191,13 @@ final class NativeFormulaRenderer {
             (#"\\end\{cases\}"#, #"\\end{matrix}\\right."#),
             (#"\\dfrac\{"#, #"\\frac{"#),
             (#"\\tfrac\{"#, #"\\frac{"#),
+            (#"\\blacksquare"#, "■"),
+            (#"\\limits"#, ""),
+            (#"\\nolimits"#, ""),
             (#"\\lvert"#, #"\\left|"#),
             (#"\\rvert"#, #"\\right|"#),
+            (#"\\longleftrightarrow"#, #"\\leftrightarrow"#),
+            (#"\\longrightarrow"#, #"\\rightarrow"#),
             (#"\\colon"#, ":")
         ]
         for (pattern, template) in replacements {
@@ -235,7 +244,6 @@ final class NativeFormulaRenderer {
         return result
     }
 
-    /// Strips a leading `\boxed{…}` even when the inner expression contains nested braces.
     private func unwrapLeadingBoxed(_ tex: String) -> (String, Bool) {
         let prefix = "\\boxed{"
         guard tex.hasPrefix(prefix) else { return (tex, false) }
@@ -282,9 +290,15 @@ final class NativeFormulaRenderer {
             "fbox", "boxed", "begin", "end", "array"
         ]
         if nonRecoverable.contains(command) { return nil }
-        let token = "\\\(command)"
-        guard let range = tex.range(of: token) else { return nil }
-        let symbolReplacements = ["flat": "\\flat", "sharp": "\\sharp"]
+        guard let range = rangeOfTeXCommand(command, in: tex) else { return nil }
+        let symbolReplacements = [
+            "flat": "\\flat",
+            "sharp": "\\sharp",
+            "blacksquare": "■",
+            "limits": "",
+            "nolimits": "",
+            "displaystyle": ""
+        ]
         if let replacement = symbolReplacements[command] {
             var recovered = tex
             recovered.replaceSubrange(range, with: replacement)
@@ -295,6 +309,17 @@ final class NativeFormulaRenderer {
         var recovered = tex
         recovered.replaceSubrange(range, with: replacement)
         return recovered
+    }
+
+    /// `\in` must not match the prefix of `\int` / `\infty`.
+    private func rangeOfTeXCommand(_ command: String, in tex: String) -> Range<String.Index>? {
+        guard let regex = try? NSRegularExpression(pattern: "\\\\\(NSRegularExpression.escapedPattern(for: command))(?![A-Za-z])") else {
+            return nil
+        }
+        let ns = tex as NSString
+        guard let match = regex.firstMatch(in: tex, range: NSRange(location: 0, length: ns.length)),
+              let range = Range(match.range, in: tex) else { return nil }
+        return range
     }
 
     func clear() {
@@ -363,7 +388,7 @@ final class NativeFormulaRenderer {
         return CGSize(width: CGFloat(width), height: CGFloat(height))
     }
 
-    /// Cheap formula footprint when iosMath has not run yet (iPad Air 1 / preview layout).
+    /// Cheap formula footprint while KaTeX snapshot is still queued.
     static func estimatedRenderSize(tex: String,
                                     fontSize: CGFloat,
                                     display: Bool,
@@ -401,7 +426,7 @@ final class NativeFormulaRenderer {
         var alpha: CGFloat = 0
         color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return [
-            "native_tex_katex_v2",
+            "native_tex_katex_v4",
             RenderCacheStore.stamp(tex),
             String(Int((fontSize * 10).rounded())),
             display ? "d" : "i",

@@ -73,9 +73,16 @@ struct AIModelOption: Equatable {
         return supportsThinkingToggle && SettingsManager.shared.thinkingEnabled
     }
 
+    /// Current DeepSeek Flash API id (`deepseek-flash` → V4.1-Flash, native multimodal).
+    static let deepseekV41Flash = AIModelOption(
+        provider: .deepseek, modelId: "deepseek-flash", displayName: "DeepSeek V4.1 Flash",
+        baseURL: "https://api.deepseek.com", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
+    )
+    /// Legacy id; currently routed to V4.1-Flash.
     static let deepseekV4Flash = AIModelOption(
         provider: .deepseek, modelId: "deepseek-v4-flash", displayName: "DeepSeek V4 Flash",
-        baseURL: "https://api.deepseek.com", supportsVision: false,
+        baseURL: "https://api.deepseek.com", supportsVision: true,
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .thinkingType
     )
     static let deepseekV4Pro = AIModelOption(
@@ -117,6 +124,18 @@ struct AIModelOption: Equatable {
         supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
     )
 
+    static let qwen38Max = AIModelOption(
+        provider: .qwen, modelId: "qwen3.8-max", displayName: "Qwen 3.8 Max",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .enableThinking
+    )
+
+    static let qwen38Flash = AIModelOption(
+        provider: .qwen, modelId: "qwen3.8-flash", displayName: "Qwen 3.8 Flash",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
+        supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .enableThinking
+    )
+
     static let qwen37Plus = AIModelOption(
         provider: .qwen, modelId: "qwen3.7-plus", displayName: "Qwen 3.7 Plus",
         baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
@@ -128,6 +147,20 @@ struct AIModelOption: Equatable {
         provider: .qwen, modelId: "qwen3.7-flash", displayName: "Qwen 3.7 Flash",
         baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", supportsVision: true,
         supportsThinkingToggle: true, forcesThinking: false, thinkingStyle: .enableThinking
+    )
+
+    /// 智谱旗舰：强制思考；文本为主。
+    static let glm53 = AIModelOption(
+        provider: .zhipu, modelId: "glm-5.3", displayName: "GLM-5.3",
+        baseURL: "https://open.bigmodel.cn/api/paas/v4", supportsVision: false,
+        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
+    )
+
+    /// 智谱原生多模态高速档。
+    static let glm53Flash = AIModelOption(
+        provider: .zhipu, modelId: "glm-5.3-flash", displayName: "GLM-5.3 Flash",
+        baseURL: "https://open.bigmodel.cn/api/paas/v4", supportsVision: true,
+        supportsThinkingToggle: false, forcesThinking: true, thinkingStyle: .thinkingType
     )
 
     /// 智谱旗舰：推理强，OpenAI 兼容，思考开关与 DeepSeek 同形。
@@ -159,20 +192,22 @@ struct AIModelOption: Equatable {
     )
 
     static let all: [AIModelOption] = [
-        .deepseekV4Flash, .deepseekV4Pro,
+        .deepseekV41Flash, .deepseekV4Flash, .deepseekV4Pro,
         .kimiK27Highspeed, .kimiK3, .kimi26, .kimiK27,
-        .qwen37Flash, .qwen37Plus,
-        .glm47Flash, .glm52,
+        .qwen38Flash, .qwen38Max, .qwen37Flash, .qwen37Plus,
+        .glm53Flash, .glm53, .glm47Flash, .glm52,
         .doubaoSeed2Mini, .doubaoSeed16
     ]
 
     static let defaultEnabled: [AIModelOption] = [
-        .deepseekV4Flash, .deepseekV4Pro,
+        .deepseekV41Flash, .deepseekV4Pro,
         .kimiK27Highspeed, .kimiK3,
-        .qwen37Flash, .qwen37Plus,
-        .glm47Flash, .glm52,
+        .qwen38Flash, .qwen38Max,
+        .glm53Flash, .glm53,
         .doubaoSeed2Mini, .doubaoSeed16
     ]
+
+    static let unsupportedImageSendMessage = "该模型不支持上传图片"
 
     static var visible: [AIModelOption] {
         SettingsManager.shared.ensureModelCatalogSynced()

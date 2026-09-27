@@ -60,11 +60,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        // iPhone is portrait-only; iPad keeps full rotation.
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            return .portrait
-        }
-        return .all
+        ConnectsPhoneReaderLandscape.supportedMask
     }
 
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
@@ -74,4 +70,42 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         StudyDocumentStore.shared.trimCaches()
         StudyProgressStore.shared.trimMemory()
     }
+}
+
+/// iPhone 默认竖屏；仅 PDF/代码阅读点「翻转」后允许横屏。iPad 不受限。
+enum ConnectsPhoneReaderLandscape {
+    static var isActive = false
+
+    static var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+
+    static var supportedMask: UIInterfaceOrientationMask {
+        guard isPhone else { return .all }
+        return isActive ? .landscape : .portrait
+    }
+
+    static func setActive(_ active: Bool, host: UIViewController) {
+        guard isPhone else { return }
+        guard isActive != active else {
+            requestGeometry(host: host)
+            return
+        }
+        isActive = active
+        let root = host.view.window?.rootViewController ?? host
+        root.setNeedsUpdateOfSupportedInterfaceOrientations()
+        host.setNeedsUpdateOfSupportedInterfaceOrientations()
+        requestGeometry(host: host)
+        NotificationCenter.default.post(name: .connectsPhoneReaderLandscapeDidChange, object: nil)
+    }
+
+    private static func requestGeometry(host: UIViewController) {
+        guard isPhone else { return }
+        let scene = host.view.window?.windowScene
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let mask: UIInterfaceOrientationMask = isActive ? .landscape : .portrait
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+    }
+}
+
+extension Notification.Name {
+    static let connectsPhoneReaderLandscapeDidChange = Notification.Name("connectsPhoneReaderLandscapeDidChange")
 }

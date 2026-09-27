@@ -502,6 +502,13 @@ final class StudyWorkspaceStore {
         replace(ws)
     }
 
+    func clearLastOpenedDocument(in workspaceID: String) {
+        guard var ws = workspace(id: workspaceID), ws.lastOpenedDocumentID != nil else { return }
+        ws.lastOpenedDocumentID = nil
+        ws.updatedAt = Date()
+        replace(ws)
+    }
+
     /// Validated last-opened document still living under this folder; clears stale ids.
     func lastOpenedDocumentID(in workspaceID: String) -> String? {
         guard var ws = workspace(id: workspaceID),
@@ -536,8 +543,16 @@ final class StudyWorkspaceStore {
     func removeDocumentFromAllWorkspaces(_ documentID: String) {
         var changed = false
         for i in workspaces.indices {
+            var mutated = false
             if workspaces[i].documentIDs.contains(documentID) {
                 workspaces[i].documentIDs.removeAll { $0 == documentID }
+                mutated = true
+            }
+            if workspaces[i].lastOpenedDocumentID == documentID {
+                workspaces[i].lastOpenedDocumentID = nil
+                mutated = true
+            }
+            if mutated {
                 workspaces[i].updatedAt = Date()
                 changed = true
             }
@@ -793,7 +808,7 @@ final class StudyWorkspaceStore {
 
         for dir in parents {
             if let names = Self.shallowStudyFileNamesViaURL(in: dir) {
-                return names.isEmpty ? [fileURL.lastPathComponent] : names
+                return Self.nonEmptyDiskNames(names, currentFile: fileURL)
             }
             var coordinated: [String]?
             var coordError: NSError?
@@ -802,13 +817,21 @@ final class StudyWorkspaceStore {
                     ?? Self.shallowStudyFileNames(in: url)
             }
             if let names = coordinated {
-                return names.isEmpty ? [fileURL.lastPathComponent] : names
+                return Self.nonEmptyDiskNames(names, currentFile: fileURL)
             }
             if let names = Self.shallowStudyFileNames(in: dir) {
-                return names.isEmpty ? [fileURL.lastPathComponent] : names
+                return Self.nonEmptyDiskNames(names, currentFile: fileURL)
             }
         }
         return nil
+    }
+
+    /// Empty folder: only keep the current leaf if it still exists on disk.
+    private static func nonEmptyDiskNames(_ names: [String], currentFile: URL) -> [String] {
+        if !names.isEmpty { return names }
+        return FileManager.default.fileExists(atPath: currentFile.path)
+            ? [currentFile.lastPathComponent]
+            : []
     }
 
     /// Parent of `fileURL` as a URL still under the granted root (scope-preserving).

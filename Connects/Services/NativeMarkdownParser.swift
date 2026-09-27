@@ -438,6 +438,20 @@ final class NativeMarkdownParser {
                     cursor = source.index(after: end)
                     continue
                 }
+                // `$5-$10` stays prose, but the closer must not reopen a formula
+                // that swallows the rest of the paragraph (e.g. `$0$ … \int … $`).
+                buffer.append(String(source[cursor...end]))
+                cursor = source.index(after: end)
+                continue
+            }
+            if let bareMath = bareTeXRunPrefix(tail) {
+                flush()
+                appendMathBody(bareMath, to: &result)
+                cursor = source.index(cursor, offsetBy: bareMath.count)
+                if cursor < source.endIndex, source[cursor] == "$" {
+                    cursor = source.index(after: cursor)
+                }
+                continue
             }
             if let bareMath = bareInlineMathPrefix(tail) {
                 flush()
@@ -550,12 +564,48 @@ final class NativeMarkdownParser {
     private func shouldParseDollarMath(_ body: String) -> Bool {
         let value = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("\n") else { return false }
-        // `$5-$10` and similar prices are prose, not two formulas.
+        // `$5-$10` is a price range. A lone number (`$0$`, `$1$`) is math.
         if value.first?.isNumber == true,
-           value.range(of: #"[A-Za-z\\_^{}]"#, options: .regularExpression) == nil {
+           value.range(of: #"[A-Za-z\\_^{}]"#, options: .regularExpression) == nil,
+           value.contains("-") {
             return false
         }
         return true
+    }
+
+    /// Models often drop the opening `$` on `\int_a^{+\infty} fh$`.
+    private func bareTeXRunPrefix(_ tail: Substring) -> String? {
+        let value = String(tail)
+        guard value.hasPrefix("\\") else { return nil }
+        let starters = [
+            "\\iiint", "\\iint", "\\oint", "\\int",
+            "\\sum", "\\prod", "\\lim", "\\dfrac", "\\tfrac", "\\frac"
+        ]
+        guard starters.contains(where: { command in
+            guard value.hasPrefix(command) else { return false }
+            let next = value.index(value.startIndex, offsetBy: command.count)
+            return next == value.endIndex || !value[next].isLetter
+        }) else { return nil }
+        var end = value.startIndex
+        var depth = 0
+        while end < value.endIndex {
+            let ch = value[end]
+            if ch == "$" { break }
+            if let scalar = ch.unicodeScalars.first,
+               (0x3400...0x4DBF).contains(scalar.value)
+                || (0x4E00...0x9FFF).contains(scalar.value)
+                || (0xF900...0xFAFF).contains(scalar.value) {
+                break
+            }
+            if ch == "。" || ch == "，" || ch == "；" { break }
+            if ch == "{" { depth += 1 }
+            if ch == "}" { depth -= 1 }
+            if ch == "\n" { break }
+            end = value.index(after: end)
+            if depth < 0 { break }
+        }
+        let run = String(value[..<end]).trimmingCharacters(in: .whitespaces)
+        return run.count >= 4 ? run : nil
     }
 
     private func displayMathStarting(at index: Int, lines: [String]) -> (source: String, next: Int)? {

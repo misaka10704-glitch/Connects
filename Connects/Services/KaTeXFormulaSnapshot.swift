@@ -1,7 +1,7 @@
 import UIKit
 import WebKit
 
-/// Off-screen KaTeX → PNG. Chat bubbles stay native bitmaps; this WKWebView is never in a cell.
+/// Off-screen KaTeX → PNG. Chat bubbles stay native bitmaps; these WKWebViews are never in a cell.
 final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
     static let shared = KaTeXFormulaSnapshot()
 
@@ -12,17 +12,23 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
         let display: Bool
         let scale: CGFloat
         let cacheKey: String
+        let attempt: Int
     }
 
-    private let canvasSize = CGSize(width: 1600, height: 900)
-    private var webView: WKWebView?
-    private var ready = false
+    private final class Lane {
+        let canvasSize = CGSize(width: 1600, height: 900)
+        var webView: WKWebView?
+        var hostView: UIView?
+        var ready = false
+        var busy = false
+    }
+
+    private let laneCount = 2
+    private var lanes: [Lane] = []
     private var started = false
-    private var busy = false
     private var queue: [Job] = []
     private var queuedKeys = Set<String>()
     private var failedKeys = Set<String>()
-    private var hostView: UIView?
 
     private override init() {
         super.init()
@@ -57,7 +63,8 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
                     color: color,
                     display: display,
                     scale: scale,
-                    cacheKey: cacheKey
+                    cacheKey: cacheKey,
+                    attempt: 0
                 )
             )
             self.pump()
@@ -72,18 +79,23 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
     private func startIfNeeded() {
         if !started {
             started = true
-            installWebView()
+            for _ in 0..<laneCount {
+                let lane = Lane()
+                installWebView(on: lane)
+                lanes.append(lane)
+            }
         }
         attachToKeyWindow()
     }
 
-    private func installWebView() {
-        if webView != nil { return }
+    private func installWebView(on lane: Lane) {
+        if lane.webView != nil { return }
         guard let base = Bundle.main.resourceURL?.appendingPathComponent("katex", isDirectory: true) else {
             return
         }
         let config = ConnectsWebKit.makeConfiguration()
-        let wv = WKWebView(frame: CGRect(origin: .zero, size: canvasSize), configuration: config)
+        let canvas = lane.canvasSize
+        let wv = WKWebView(frame: CGRect(origin: .zero, size: canvas), configuration: config)
         wv.isOpaque = false
         wv.backgroundColor = .clear
         wv.scrollView.isScrollEnabled = false
@@ -92,58 +104,73 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
         wv.scrollView.maximumZoomScale = 1
         wv.scrollView.contentInsetAdjustmentBehavior = .never
         wv.navigationDelegate = self
-        let host = UIView(frame: CGRect(x: -canvasSize.width - 80, y: 0, width: canvasSize.width, height: canvasSize.height))
-        // Must stay in the window and un-hidden: iOS 15 takeSnapshot skips fonts in hidden WKWebViews.
+        let host = UIView(frame: CGRect(x: -canvas.width - 80, y: 0, width: canvas.width, height: canvas.height))
+        // Must stay in the window and un-hidden: takeSnapshot skips fonts in hidden WKWebViews.
         host.isHidden = false
         host.isUserInteractionEnabled = false
         host.backgroundColor = .clear
         host.addSubview(wv)
         wv.frame = host.bounds
-        hostView = host
-        webView = wv
-        attachToKeyWindow()
+        lane.hostView = host
+        lane.webView = wv
         wv.loadHTMLString(Self.shellHTML, baseURL: base)
     }
 
     private func attachToKeyWindow() {
-        guard let host = hostView, host.superview == nil else { return }
         let window = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
             .first { $0.isKeyWindow }
             ?? UIApplication.shared.windows.first { $0.isKeyWindow }
-        window?.addSubview(host)
-        host.frame = CGRect(
-            x: -canvasSize.width - 80,
-            y: 0,
-            width: canvasSize.width,
-            height: canvasSize.height
-        )
-        webView?.frame = host.bounds
+        for (index, lane) in lanes.enumerated() {
+            guard let host = lane.hostView else { continue }
+            if host.superview == nil {
+                window?.addSubview(host)
+            }
+            host.frame = CGRect(
+                x: -lane.canvasSize.width - 80,
+                y: CGFloat(index) * 8,
+                width: lane.canvasSize.width,
+                height: lane.canvasSize.height
+            )
+            lane.webView?.frame = host.bounds
+        }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        webView.evaluateJavaScript("document.fonts.ready.then(function(){ return true; })") { [weak self] _, _ in
-            self?.ready = true
-            self?.pump()
+        webView.evaluateJavaScript(
+            """
+            (document.fonts && document.fonts.load)
+              ? document.fonts.load('16px KaTeX_Main').then(function(){ return true; })
+              : Promise.resolve(true)
+            """
+        ) { [weak self] _, _ in
+            guard let self, let lane = self.lanes.first(where: { $0.webView === webView }) else { return }
+            lane.ready = true
+            self.pump()
         }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        ready = false
+        lanes.first(where: { $0.webView === webView })?.ready = false
     }
 
     private func pump() {
         attachToKeyWindow()
-        guard ready, !busy, let job = queue.first, let webView else { return }
-        busy = true
-        queue.removeFirst()
-        render(job, in: webView)
+        while let job = queue.first, let lane = lanes.first(where: { $0.ready && !$0.busy && $0.webView != nil }) {
+            queue.removeFirst()
+            lane.busy = true
+            render(job, on: lane)
+        }
     }
 
-    private func render(_ job: Job, in webView: WKWebView) {
-        webView.frame = CGRect(origin: .zero, size: canvasSize)
-        webView.bounds = CGRect(origin: .zero, size: canvasSize)
+    private func render(_ job: Job, on lane: Lane) {
+        guard let webView = lane.webView else {
+            finish(job, artifact: nil, lane: lane)
+            return
+        }
+        webView.frame = CGRect(origin: .zero, size: lane.canvasSize)
+        webView.bounds = CGRect(origin: .zero, size: lane.canvasSize)
         let payload: [String: Any] = [
             "tex": job.tex,
             "display": job.display,
@@ -152,13 +179,13 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else {
-            finish(job, artifact: nil)
+            finish(job, artifact: nil, lane: lane)
             return
         }
         webView.evaluateJavaScript("window.__connectsRenderFormula(\(json))") { [weak self] result, error in
             guard let self else { return }
             if error != nil {
-                self.finish(job, artifact: nil)
+                self.finish(job, artifact: nil, lane: lane)
                 return
             }
             let dict: [String: Any]
@@ -169,14 +196,14 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
                       let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
                 dict = object
             } else {
-                self.finish(job, artifact: nil)
+                self.finish(job, artifact: nil, lane: lane)
                 return
             }
             guard dict["ok"] as? Bool == true,
                   let width = dict["width"] as? Double,
                   let height = dict["height"] as? Double,
                   width > 0, height > 0 else {
-                self.finish(job, artifact: nil)
+                self.finish(job, artifact: nil, lane: lane)
                 return
             }
             let pad: CGFloat = 3
@@ -186,27 +213,22 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
             )
             webView.frame = CGRect(origin: .zero, size: size)
             webView.bounds = CGRect(origin: .zero, size: size)
-            if let host = self.hostView {
-                host.frame.size = size
-            }
+            lane.hostView?.frame.size = size
             webView.setNeedsLayout()
             webView.layoutIfNeeded()
             DispatchQueue.main.async {
-                self.snapshot(job, in: webView, size: size)
+                self.snapshot(job, in: webView, size: size, lane: lane)
             }
         }
     }
 
-    private func snapshot(_ job: Job, in webView: WKWebView, size: CGSize) {
+    private func snapshot(_ job: Job, in webView: WKWebView, size: CGSize, lane: Lane) {
         let config = WKSnapshotConfiguration()
         config.rect = CGRect(origin: .zero, size: size)
-        // snapshotWidth is in *points*. Multiplying by screen scale made attachments 2×/3×.
-        if #available(iOS 13.0, *) {
-            config.snapshotWidth = NSNumber(value: Double(size.width))
-        }
+        config.snapshotWidth = NSNumber(value: Double(size.width))
         webView.takeSnapshot(with: config) { image, _ in
             guard let image, let cg = image.cgImage else {
-                self.finish(job, artifact: nil)
+                self.finish(job, artifact: nil, lane: lane)
                 return
             }
             let snap = UIImage(cgImage: cg, scale: max(job.scale, 1), orientation: .up)
@@ -217,20 +239,33 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
                 baseline = min(size.height * 0.82, job.fontSize * 0.82)
             }
             let artifact = NativeFormulaArtifact(image: snap, size: size, baseline: baseline)
-            self.finish(job, artifact: artifact)
+            self.finish(job, artifact: artifact, lane: lane)
         }
     }
 
-    private func finish(_ job: Job, artifact: NativeFormulaArtifact?) {
+    private func finish(_ job: Job, artifact: NativeFormulaArtifact?, lane: Lane) {
         queuedKeys.remove(job.cacheKey)
         if let artifact {
             NativeFormulaRenderer.shared.storeExternalArtifact(artifact, cacheKey: job.cacheKey)
+        } else if job.attempt < 2 {
+            queuedKeys.insert(job.cacheKey)
+            queue.append(
+                Job(
+                    tex: job.tex,
+                    fontSize: job.fontSize,
+                    color: job.color,
+                    display: job.display,
+                    scale: job.scale,
+                    cacheKey: job.cacheKey,
+                    attempt: job.attempt + 1
+                )
+            )
         } else {
             failedKeys.insert(job.cacheKey)
         }
-        webView?.frame = CGRect(origin: .zero, size: canvasSize)
-        hostView?.frame.size = canvasSize
-        busy = false
+        lane.webView?.frame = CGRect(origin: .zero, size: lane.canvasSize)
+        lane.hostView?.frame.size = lane.canvasSize
+        lane.busy = false
         pump()
     }
 
@@ -256,12 +291,14 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
       }
       #host { display:inline-block; line-height:1; }
       .katex-display { margin:0; }
+      .katex-error { color: #c0392b; }
       #preload {
         position:absolute; left:-9999px; top:0; opacity:0;
         font-family: KaTeX_Main, KaTeX_Math, KaTeX_Size1, KaTeX_Size2, KaTeX_Size3, KaTeX_Size4, KaTeX_AMS;
       }
     </style>
     <script src="katex.min.js"></script>
+    <script src="mhchem.min.js"></script>
     </head>
     <body>
     <div id="preload">0∑∫α</div>
@@ -277,15 +314,20 @@ final class KaTeXFormulaSnapshot: NSObject, WKNavigationDelegate {
           try {
             katex.render(job.tex, host, {
               displayMode: !!job.display,
-              throwOnError: true,
+              throwOnError: false,
               strict: "ignore",
+              trust: true,
               output: "html"
             });
           } catch (e) {
-            return {ok: false, error: String(e && e.message ? e.message : e)};
+            host.textContent = job.tex;
+            host.style.color = "#c0392b";
           }
           var el = host.querySelector(".katex-display") || host.querySelector(".katex") || host;
           var r = el.getBoundingClientRect();
+          if (!r.width || !r.height) {
+            return {ok: false, error: "empty-katex"};
+          }
           return {ok: true, width: r.width, height: r.height};
         };
         if (document.fonts && document.fonts.ready) {

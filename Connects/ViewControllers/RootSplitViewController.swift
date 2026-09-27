@@ -43,7 +43,7 @@ final class RootSplitViewController: UIViewController {
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
-        UIDevice.current.userInterfaceIdiom == .phone ? .portrait : .all
+        ConnectsPhoneReaderLandscape.supportedMask
     }
 
     override func viewDidLoad() {
@@ -219,6 +219,9 @@ final class RootSplitViewController: UIViewController {
 
     @objc private func conversationStoreDidUpdate() {
         let active = isStudySessionActive()
+        if !active {
+            studyShell.exitPhoneReaderLandscapeIfNeeded()
+        }
         guard active != studySessionActive else { return }
         studySessionActive = active
         if active, isDrawerOpen {

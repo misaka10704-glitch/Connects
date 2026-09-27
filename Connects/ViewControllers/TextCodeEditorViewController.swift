@@ -10,7 +10,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     private let buildButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
     private let appearanceButton = UIButton(type: .system)
+    private let rotateButton = UIButton(type: .system)
+    private var rotateButtonWidthConstraint: NSLayoutConstraint!
+    private var fileTitleCenterXBar: NSLayoutConstraint!
+    private var fileTitleCenterXSlot: NSLayoutConstraint!
+    private let titleSlotGuide = UILayoutGuide()
     private let fileTitleButton = UIButton(type: .system)
+    private let pinchScaleHost = UIView()
     private let gutterView = UIView()
     private let gutterSeparator = UIView()
     /// Non-interactive twin of the editor; contentOffset stays locked to `textView`.
@@ -129,6 +135,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     }()
     private var pinchBaseFontSize: CGFloat = CodeSyntaxHighlighter.defaultPointSize
     private var pinchTargetsPreview = false
+    private var pinchAnchorUTF16: Int = 0
+    private var pinchScrollOffset: CGPoint = .zero
+    private var pinchAttributedSnapshot: NSAttributedString?
+    private var isLivePinching = false
 
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
@@ -137,6 +147,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     var onAskSelection: ((String) -> Void)?
     /// Plan markdown: run Agent Build from the text/markdown chrome.
     var onBuildPlan: (() -> Void)?
+    var onToggleReaderLandscape: (() -> Void)?
 
     private var lastWrapLayoutWidth: CGFloat = 0
 
@@ -199,6 +210,17 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBar.addSubview(appearanceButton)
         updateAppearanceButton()
 
+        rotateButton.translatesAutoresizingMaskIntoConstraints = false
+        rotateButton.setImage(ActionIconFactory.image(.rotate, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
+        topBar.addSubview(rotateButton)
+        let phoneRotate = ConnectsPhoneReaderLandscape.isPhone
+        rotateButton.isHidden = !phoneRotate
+        rotateButtonWidthConstraint = rotateButton.widthAnchor.constraint(
+            equalToConstant: phoneRotate ? ActionIconFactory.hitTarget : 0
+        )
+        updateRotateButtonAppearance()
+
         tabToggleButton.translatesAutoresizingMaskIntoConstraints = false
         tabToggleButton.setTitle("Tab", for: .normal)
         tabToggleButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .bold)
@@ -225,10 +247,16 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBar.bringSubviewToFront(buildButton)
         topBar.bringSubviewToFront(saveButton)
         topBar.bringSubviewToFront(appearanceButton)
+        topBar.bringSubviewToFront(rotateButton)
+
+        pinchScaleHost.translatesAutoresizingMaskIntoConstraints = false
+        pinchScaleHost.clipsToBounds = true
+        pinchScaleHost.backgroundColor = DSTheme.reader.background
+        view.addSubview(pinchScaleHost)
 
         gutterView.translatesAutoresizingMaskIntoConstraints = false
         gutterView.clipsToBounds = true
-        view.addSubview(gutterView)
+        pinchScaleHost.addSubview(gutterView)
 
         lineNumberView.translatesAutoresizingMaskIntoConstraints = false
         lineNumberView.isEditable = false
@@ -250,7 +278,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         gutterView.addSubview(lineNumberView)
 
         gutterSeparator.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(gutterSeparator)
+        pinchScaleHost.addSubview(gutterSeparator)
 
         gutterWidthConstraint = gutterView.widthAnchor.constraint(equalToConstant: 44)
 
@@ -285,7 +313,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         textView.editorKeyCommandsProvider = { [weak self] in
             self?.keyCommands
         }
-        view.addSubview(textView)
+        pinchScaleHost.addSubview(textView)
 
         // Caret-trailing Tab accept chip (frame-based; subviews use Auto Layout).
         tabSuggestChip.translatesAutoresizingMaskIntoConstraints = true
@@ -368,14 +396,13 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
-            // Visually centered on the bar; leading/trailing keep it clear of chrome.
-            fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+            // Visually centered in the remaining slot (portrait) / bar (landscape).
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
             fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: tabToggleButton.leadingAnchor, constant: -4),
+            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -4),
 
-            // Far-right chrome: [Tab][mode][Build?][appearance][save]
+            // Far-right chrome: [rotate?][Tab][mode][Build?][appearance][save]
             saveButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             saveButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             saveButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
@@ -401,13 +428,23 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             tabToggleWidthConstraint,
             tabToggleButton.heightAnchor.constraint(equalToConstant: 32),
 
+            rotateButton.trailingAnchor.constraint(equalTo: tabToggleButton.leadingAnchor, constant: -2),
+            rotateButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            rotateButtonWidthConstraint,
+            rotateButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             topBarSeparator.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             topBarSeparator.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
 
-            gutterView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            gutterView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            pinchScaleHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pinchScaleHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pinchScaleHost.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            pinchScaleHost.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            gutterView.leadingAnchor.constraint(equalTo: pinchScaleHost.leadingAnchor),
+            gutterView.topAnchor.constraint(equalTo: pinchScaleHost.topAnchor),
             gutterWidthConstraint,
 
             lineNumberView.leadingAnchor.constraint(equalTo: gutterView.leadingAnchor),
@@ -416,12 +453,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             lineNumberView.bottomAnchor.constraint(equalTo: gutterView.bottomAnchor),
 
             gutterSeparator.leadingAnchor.constraint(equalTo: gutterView.trailingAnchor, constant: 6),
-            gutterSeparator.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            gutterSeparator.topAnchor.constraint(equalTo: pinchScaleHost.topAnchor),
             gutterSeparator.widthAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
 
             textView.leadingAnchor.constraint(equalTo: gutterSeparator.trailingAnchor, constant: 10),
-            textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            textView.topAnchor.constraint(equalTo: topBarSeparator.bottomAnchor),
+            textView.trailingAnchor.constraint(equalTo: pinchScaleHost.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: pinchScaleHost.topAnchor),
 
             previewWebView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewWebView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -432,15 +469,32 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
 
-        textBottomToView = textView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        gutterBottomToView = gutterView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        gutterSepBottomToView = gutterSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        textBottomToView = textView.bottomAnchor.constraint(equalTo: pinchScaleHost.bottomAnchor)
+        gutterBottomToView = gutterView.bottomAnchor.constraint(equalTo: pinchScaleHost.bottomAnchor)
+        gutterSepBottomToView = gutterSeparator.bottomAnchor.constraint(equalTo: pinchScaleHost.bottomAnchor)
         textBottomToView.isActive = true
         gutterBottomToView.isActive = true
         gutterSepBottomToView.isActive = true
 
+        topBar.addLayoutGuide(titleSlotGuide)
+        NSLayoutConstraint.activate([
+            titleSlotGuide.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
+            titleSlotGuide.trailingAnchor.constraint(equalTo: rotateButton.leadingAnchor, constant: -4),
+            titleSlotGuide.topAnchor.constraint(equalTo: topBar.topAnchor),
+            titleSlotGuide.bottomAnchor.constraint(equalTo: topBar.bottomAnchor)
+        ])
+        fileTitleCenterXBar = fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor)
+        fileTitleCenterXSlot = fileTitleButton.centerXAnchor.constraint(equalTo: titleSlotGuide.centerXAnchor)
+        syncFileTitlePlacement()
+
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .readerThemeDidChange, object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(phoneReaderLandscapeDidChange),
+            name: .connectsPhoneReaderLandscapeDidChange,
+            object: nil
+        )
         applyChromeColors()
         // Defaults already match read mode; avoid applyEditMode during load (view has no window yet).
         isEditMode = false
@@ -474,6 +528,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         topBar.bringSubviewToFront(tabToggleButton)
         topBar.bringSubviewToFront(modeButton)
         topBar.bringSubviewToFront(saveButton)
+        topBar.bringSubviewToFront(rotateButton)
     }
 
     deinit {
@@ -589,6 +644,8 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
     func prepareForShellLayoutChange() {}
     func beginShellRotation(keeping progress: StudyProgress?) {
+        isLivePinching = false
+        pinchAttributedSnapshot = nil
         pendingViewportProgress = progress ?? captureReadingProgress()
     }
     func updateDuringShellRotation() {}
@@ -732,6 +789,42 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
     }
 
+    @objc private func rotateTapped() {
+        onToggleReaderLandscape?()
+    }
+
+    @objc private func phoneReaderLandscapeDidChange() {
+        updateRotateButtonAppearance()
+        syncFileTitlePlacement()
+    }
+
+    func syncRotateButtonAppearance() {
+        updateRotateButtonAppearance()
+        syncFileTitlePlacement()
+    }
+
+    private func syncFileTitlePlacement() {
+        let phone = ConnectsPhoneReaderLandscape.isPhone
+        let landscape = phone && ConnectsPhoneReaderLandscape.isActive
+        fileTitleCenterXBar.isActive = !phone || landscape
+        fileTitleCenterXSlot.isActive = phone && !landscape
+    }
+
+    private func updateRotateButtonAppearance() {
+        guard ConnectsPhoneReaderLandscape.isPhone else {
+            rotateButton.isHidden = true
+            rotateButtonWidthConstraint?.constant = 0
+            return
+        }
+        let on = ConnectsPhoneReaderLandscape.isActive
+        let c = DSTheme.reader
+        rotateButton.tintColor = on ? c.accent : c.textSecondary
+        rotateButton.backgroundColor = on ? c.accent.withAlphaComponent(0.16) : .clear
+        rotateButton.layer.cornerRadius = 20
+        rotateButton.clipsToBounds = true
+        rotateButton.accessibilityLabel = on ? "退出横屏" : "横屏阅读"
+    }
+
     @objc private func themeChanged() {
         let savedProgress = captureReadingProgress()
             ?? StudyProgress(
@@ -775,8 +868,10 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fileTitleButton.setTitleColor(c.textPrimary, for: .normal)
         modeButton.tintColor = c.textSecondary
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+        pinchScaleHost.backgroundColor = c.background
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
         refreshModeChrome()
+        updateRotateButtonAppearance()
     }
 
     @objc private func handleFontPinch(_ gesture: UIPinchGestureRecognizer) {
@@ -784,6 +879,12 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         case .began:
             pinchTargetsPreview = showsMarkdownPreview
             pinchBaseFontSize = pinchTargetsPreview ? markdownPreviewFontSize : fontPointSize
+            isLivePinching = !pinchTargetsPreview
+            if isLivePinching {
+                pinchAttributedSnapshot = textView.attributedText.copy() as? NSAttributedString
+                pinchScrollOffset = textView.contentOffset
+                capturePinchAnchor(in: textView, at: gesture.location(in: textView))
+            }
         case .changed:
             if pinchTargetsPreview {
                 let next = min(
@@ -793,23 +894,82 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
                 guard abs(next - markdownPreviewFontSize) >= 0.4 else { return }
                 applyMarkdownPreviewFontSize(next, persist: false)
             } else {
-                let next = min(
-                    Self.maxFontPointSize,
-                    max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
-                )
-                guard abs(next - fontPointSize) >= 0.4 else { return }
-                applyFontSize(next, persist: false)
+                let next = min(Self.maxFontPointSize, max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale))
+                applyLiveFontSize(next)
             }
         case .ended, .cancelled:
             if pinchTargetsPreview {
                 applyMarkdownPreviewFontSize(markdownPreviewFontSize, persist: true)
                 showFontSizeFeedback(markdownPreviewFontSize)
             } else {
-                applyFontSize(fontPointSize, persist: true)
-                showFontSizeFeedback(fontPointSize)
+                let next = min(
+                    Self.maxFontPointSize,
+                    max(Self.minFontPointSize, pinchBaseFontSize * gesture.scale)
+                )
+                pinchAttributedSnapshot = nil
+                isLivePinching = false
+                applyFontSize(next, persist: true)
+                restorePinchAnchor()
+                showFontSizeFeedback(next)
             }
         default:
             break
+        }
+    }
+
+    private func capturePinchAnchor(in textView: UITextView, at point: CGPoint) {
+        if let pos = textView.closestPosition(to: point) {
+            pinchAnchorUTF16 = textView.offset(from: textView.beginningOfDocument, to: pos)
+        } else {
+            pinchAnchorUTF16 = 0
+        }
+    }
+
+    private func restorePinchAnchor() {
+        let text = textView.text ?? ""
+        let ns = text as NSString
+        guard ns.length > 0 else { return }
+        let loc = min(max(pinchAnchorUTF16, 0), ns.length - 1)
+        let range = NSRange(location: loc, length: 1)
+        textView.layoutIfNeeded()
+        textView.scrollRangeToVisible(range)
+    }
+
+    private func applyLiveFontSize(_ size: CGFloat) {
+        let next = min(Self.maxFontPointSize, max(Self.minFontPointSize, size))
+        fontPointSize = next
+        guard let snap = pinchAttributedSnapshot else {
+            applyFontSize(next, persist: false)
+            return
+        }
+        let painted = NSMutableAttributedString(attributedString: snap)
+        let full = NSRange(location: 0, length: painted.length)
+        if full.length > 0 {
+            painted.addAttribute(.font, value: CodeSyntaxHighlighter.font(size: next), range: full)
+            painted.addAttribute(
+                .paragraphStyle,
+                value: CodeSyntaxHighlighter.paragraphStyle(fontSize: next),
+                range: full
+            )
+        }
+        let ratio = next / max(pinchBaseFontSize, 0.1)
+        UIView.performWithoutAnimation {
+            textView.textStorage.setAttributedString(painted)
+            lineNumberView.font = CodeSyntaxHighlighter.font(size: next)
+            let digits = max(2, "\(max((textView.text ?? "").components(separatedBy: "\n").count, 1))".count)
+            gutterWidthConstraint.constant = CodeSyntaxHighlighter.lineNumberGutterWidth(
+                digits: digits,
+                fontSize: next
+            )
+            textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: next)
+            textView.layoutIfNeeded()
+            var offset = CGPoint(x: pinchScrollOffset.x * ratio, y: pinchScrollOffset.y * ratio)
+            let scroll = textView
+            let maxX = max(0, scroll.contentSize.width - scroll.bounds.width)
+            let maxY = max(0, scroll.contentSize.height - scroll.bounds.height)
+            offset.x = min(max(offset.x, 0), maxX)
+            offset.y = min(max(offset.y, 0), maxY)
+            textView.setContentOffset(offset, animated: false)
         }
     }
 

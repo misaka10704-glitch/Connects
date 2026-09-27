@@ -214,10 +214,7 @@ struct ChatMessage: Codable, Equatable {
         }
     }
 
-    var hasImageTranscription: Bool {
-        !imageTranscriptionContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || imageTranscriptionPhase != .idle
-    }
+    var hasImageTranscription: Bool { false }
 
     var hasAgentProcess: Bool {
         if !agentProcessSteps.isEmpty || !agentTimelineParts.isEmpty { return true }

@@ -36,18 +36,20 @@ enum ContextCompactor {
             from: conv.messages,
             model: conv.model,
             existingSummary: conv.contextSummary,
-            existingThroughID: conv.contextSummaryThroughMessageID
+            existingThroughID: conv.contextSummaryThroughMessageID,
+            keepRecentTurns: ContextBuilder.keepRecentTurns(for: conv)
         )
         guard force || snap.usage.shouldAutoCompact else {
             completion?(false)
             return
         }
 
+        let keepTurns = ContextBuilder.keepRecentTurns(forUsageRatio: snap.usage.ratio)
         let dialogue = conv.messages.filter { !$0.isStreaming && $0.role != .system }
-        let keepCount = ContextBuilder.recentVerbatimMessageCount(in: dialogue, turns: ContextBuilder.compactKeepRecentTurns)
+        let keepCount = ContextBuilder.recentVerbatimMessageCount(in: dialogue, turns: keepTurns)
         guard dialogue.count > keepCount + 1 else {
             // Nothing older to fold — still tighten builder summary if any.
-            applyLocal(conversationID: conversationID, keepTurns: ContextBuilder.compactKeepRecentTurns)
+            applyLocal(conversationID: conversationID, keepTurns: keepTurns)
             completion?(true)
             return
         }

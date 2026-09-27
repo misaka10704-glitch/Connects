@@ -116,17 +116,8 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
     }
 
-    /// OCR / vision caption for image turns and Study page screenshots. Default on.
-    var imageTranscriptionEnabled: Bool {
-        get {
-            if UserDefaults.standard.object(forKey: "connects_image_transcription") == nil { return true }
-            return UserDefaults.standard.bool(forKey: "connects_image_transcription")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "connects_image_transcription")
-            NotificationCenter.default.post(name: .imageTranscriptionDidChange, object: nil)
-        }
-    }
+    /// Kept for persisted chats; the composer toggle is gone and new turns never OCR.
+    var imageTranscriptionEnabled: Bool { false }
 
     /// Keep the display awake while Connects is in the foreground. Default on.
     var keepScreenOn: Bool {

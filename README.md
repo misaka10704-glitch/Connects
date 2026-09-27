@@ -1,6 +1,6 @@
 # Connects
 
-面向 **iPad** 的 AI 聊天客户端（**iOS 15+**）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
+面向 **iPad** 的 AI 聊天客户端（**iOS 18+**）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
 
 **当前版本：5.1.0**
 
@@ -45,11 +45,11 @@
 
 市面上主流 AI 客户端几乎都默认「新系统 + 新设备」：依赖较新的 iOS、只适配大屏或手机，对仍在服役的旧 iPad 支持很差。
 
-早期版本曾瞄准 **iPad Air 1 / iOS 12**；自 **4.0** 起底线为 **iOS 15+**，以便 Diff、WebKit 与布局路径更干净。现成 App 仍常把 Key 绑死在封闭生态里，或界面为手机裁切。
+早期版本曾瞄准 **iPad Air 1 / iOS 12**；**4.0** 起为 **iOS 15+**；当前底线为 **iOS 18+**，以便 KaTeX / WebKit 公式成图更完整。现成 App 仍常把 Key 绑死在封闭生态里，或界面为手机裁切。
 
 **Connects** 因此做了这些取舍：
 
-1. **UIKit 可读优先**：不追求 SwiftUI / 最新系统专属花活；4.0 起要求 iOS 15+。
+1. **UIKit 可读优先**：不追求 SwiftUI 花活；当前要求 iOS 18+。
 2. **自己带 Key**：各提供商 Key 放进本机钥匙串，不经第三方中转。
 3. **为阅读而排版**：居中阅读列、可调字号、思考过程可折叠，数学与 Markdown 尽量渲染完整。
 4. **会话可带走**：对话自动命名、可分叉、可导出完整 Markdown，方便备份与二次整理。
@@ -79,7 +79,7 @@
 
 ## 1.7 亮点
 
-- **原生渲染主路径**：已完成助手回复由 Native Markdown + iosMath 绘制，不再依赖整条 WebKit 截图主路线。
+- **原生渲染主路径**：已完成助手回复由 Native Markdown + KaTeX 快照绘制，不再依赖整条 WebKit 截图主路线。
 - **流式更稳**：固定节奏节流刷新；思考直播展开，结束后默认折叠，减少切入会话时的空白间隔。
 - **公式与来源**：行内 / 块级 TeX、窄侧栏缩放、参考链接折叠为可点击来源列表。
 - **可选联网检索**：App 代搜注入上下文，文末紧凑标注来源。
@@ -98,14 +98,14 @@
 | 项目 | 说明 |
 |------|------|
 | 目标设备 | iPad（主）/ iPhone（可安装，UI 仍为 iPad 布局） |
-| 最低系统 | iOS 15.0 |
+| 最低系统 | iOS 18.0 |
 | 布局 | 全宽聊天 / 阅读区 + 左缘浮动侧栏抽屉 |
 
 ### 构建路线（源码相同）
 
 | 路线 | Scheme | 设备 | 配置 |
 |------|--------|------|------|
-| iPad | `Connects-iPad` | iPad（iOS 15+） | Debug / Release |
+| iPad | `Connects-iPad` | iPad（iOS 18+） | Debug / Release |
 | iPhone | `Connects-iPhone` | iPhone（iOS 26 等） | Debug-iPhone / Release-iPhone |
 
 `Connects` scheme 为 **iPad 路线** 的别名。

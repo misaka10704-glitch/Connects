@@ -9,7 +9,7 @@
 | Team | `C8XVZJLC2D` |
 | Archive Scheme | `Connects-iPhone`（`TARGETED_DEVICE_FAMILY=1,2`） |
 | Archive Configuration | `Release-iPhone` |
-| 最低系统 | iOS 15.0 |
+| 最低系统 | iOS 18.0 |
 
 若 App Store Connect 上同 build 已占用，只 bump `CFBundleVersion`（如 `511`）。
 

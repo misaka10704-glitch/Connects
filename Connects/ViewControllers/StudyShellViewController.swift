@@ -165,7 +165,8 @@ final class StudyShellViewController: UIViewController {
         let root = StudyShellRootView()
         root.stageCapsule = panelStageCapsule
         root.shouldPreferStageHits = { [weak self] in
-            self?.isReaderVisible == true
+            guard let self else { return false }
+            return self.isReaderVisible && !self.blocksPhoneAIOverlay
         }
         view = root
     }
@@ -190,6 +191,12 @@ final class StudyShellViewController: UIViewController {
         markdownReaderVC.onToggleSidebar = toggleSidebar
         textEditorVC.onToggleSidebar = toggleSidebar
         ebookReaderVC.onToggleSidebar = toggleSidebar
+        pdfReaderVC.onToggleReaderLandscape = { [weak self] in
+            self?.togglePhoneReaderLandscape()
+        }
+        textEditorVC.onToggleReaderLandscape = { [weak self] in
+            self?.togglePhoneReaderLandscape()
+        }
         let askSelection: (String) -> Void = { [weak self] text in
             self?.handleAskSelection(text)
         }
@@ -230,6 +237,7 @@ final class StudyShellViewController: UIViewController {
         ebookReaderVC.onFileTitleTapped = fileTitle
         let buildPlan: () -> Void = { [weak self] in
             guard let self, let docID = self.boundDocumentID else { return }
+            if self.blocksPhoneAIOverlay { return }
             if self.isChatCollapsed {
                 self.applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
             } else {
@@ -634,7 +642,9 @@ final class StudyShellViewController: UIViewController {
 
     /// Prefer scene orientation; fall back to bounds aspect.
     private func currentPortraitLayout() -> Bool {
-        if UIDevice.current.userInterfaceIdiom == .phone { return true }
+        if UIDevice.current.userInterfaceIdiom == .phone, !ConnectsPhoneReaderLandscape.isActive {
+            return true
+        }
         if #available(iOS 13.0, *) {
             if let orientation = view.window?.windowScene?.interfaceOrientation,
                orientation != .unknown {
@@ -642,6 +652,46 @@ final class StudyShellViewController: UIViewController {
             }
         }
         return Self.isPortraitSize(view.bounds.size)
+    }
+
+    private var blocksPhoneAIOverlay: Bool {
+        ConnectsPhoneReaderLandscape.isPhone && ConnectsPhoneReaderLandscape.isActive
+    }
+
+    func exitPhoneReaderLandscapeIfNeeded() {
+        guard ConnectsPhoneReaderLandscape.isActive else { return }
+        ConnectsPhoneReaderLandscape.setActive(false, host: self)
+        pdfReaderVC.syncRotateButtonAppearance()
+        textEditorVC.syncRotateButtonAppearance()
+        syncPanelStageCapsuleLayout()
+        syncFloatingSidebarButton(animated: true)
+        syncResizePans()
+    }
+
+    private func togglePhoneReaderLandscape() {
+        guard ConnectsPhoneReaderLandscape.isPhone else { return }
+        guard isReaderVisible else { return }
+        switch activeReaderKind {
+        case .pdf, .text:
+            break
+        case .markdown, .ebook:
+            return
+        }
+        let next = !ConnectsPhoneReaderLandscape.isActive
+        if next {
+            applyChatPanelStage(.collapsed, animated: true)
+        }
+        ConnectsPhoneReaderLandscape.setActive(next, host: self)
+        pdfReaderVC.syncRotateButtonAppearance()
+        textEditorVC.syncRotateButtonAppearance()
+        if !next {
+            syncPanelStageCapsuleLayout()
+        } else {
+            panelStageCapsule.isHidden = true
+            panelStageCapsule.isUserInteractionEnabled = false
+        }
+        syncFloatingSidebarButton(animated: true)
+        syncResizePans()
     }
 
     private static func isPortraitSize(_ size: CGSize) -> Bool {
@@ -722,6 +772,14 @@ final class StudyShellViewController: UIViewController {
         ebookReaderVC.setReaderSurfaceActive(kind == .ebook)
         // Native keys stay hidden; shell floating control repositions to the active reader.
         syncReaderSidebarButtonVisibility(animated: true)
+        if ConnectsPhoneReaderLandscape.isActive {
+            switch kind {
+            case .pdf, .text:
+                break
+            case .markdown, .ebook:
+                exitPhoneReaderLandscapeIfNeeded()
+            }
+        }
     }
 
     private func isActiveReaderLoaded(documentID: String) -> Bool {
@@ -839,6 +897,22 @@ final class StudyShellViewController: UIViewController {
             panelStageCapsule.transform = .identity
             panelCapsulePortraitCenterX.isActive = false
             panelCapsulePortraitBottomY.isActive = false
+            panelCapsuleLandscapeCenterY.isActive = false
+            panelCapsuleLandscapeLeadingX.isActive = false
+            panelCapsuleLandscapeTrailingX.isActive = false
+            if reconcileChrome {
+                syncStudyOverlayChrome()
+            }
+            return
+        }
+
+        if blocksPhoneAIOverlay {
+            panelStageCapsule.isHidden = true
+            panelStageCapsule.isUserInteractionEnabled = false
+            panelStageCapsule.transform = .identity
+            panelCapsulePortraitCenterX.isActive = false
+            panelCapsulePortraitBottomY.isActive = false
+            panelCapsulePortraitSeamY.isActive = false
             panelCapsuleLandscapeCenterY.isActive = false
             panelCapsuleLandscapeLeadingX.isActive = false
             panelCapsuleLandscapeTrailingX.isActive = false
@@ -992,8 +1066,8 @@ final class StudyShellViewController: UIViewController {
     }
 
     private func syncResizePans() {
-        landscapeResizePan.isEnabled = isReaderVisible && !isPortraitMode && !isChatCollapsed
-        portraitResizePan.isEnabled = isReaderVisible && isPortraitMode && !isChatCollapsed
+        landscapeResizePan.isEnabled = isReaderVisible && !isPortraitMode && !isChatCollapsed && !blocksPhoneAIOverlay
+        portraitResizePan.isEnabled = isReaderVisible && isPortraitMode && !isChatCollapsed && !blocksPhoneAIOverlay
     }
 
     private func bringChromeToFront() {
@@ -1043,7 +1117,7 @@ final class StudyShellViewController: UIViewController {
     private var floatingSidebarLayoutRetryPending = false
 
     private func syncFloatingSidebarButton(animated: Bool) {
-        let shouldShow = isReaderVisible
+        let shouldShow = isReaderVisible && !blocksPhoneAIOverlay
         var target = floatingSidebarTargetFrame()
         if shouldShow, !isPlausibleFloatingSidebarFrame(target) {
             target = fallbackFloatingSidebarFrame()
@@ -1096,7 +1170,7 @@ final class StudyShellViewController: UIViewController {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.floatingSidebarLayoutRetryPending = false
-            guard self.isReaderVisible else { return }
+            guard self.isReaderVisible, !self.blocksPhoneAIOverlay else { return }
             self.view.layoutIfNeeded()
             self.syncFloatingSidebarButton(animated: false)
         }
@@ -1293,6 +1367,7 @@ final class StudyShellViewController: UIViewController {
             isReaderVisible = false
             chatPanelStage = .collapsed
             applyShellKeyboardLift(0)
+            exitPhoneReaderLandscapeIfNeeded()
         }
 
         // Re-sync orientation when entering study — rotation while chat-only used to skip updates.
@@ -1675,7 +1750,7 @@ final class StudyShellViewController: UIViewController {
     }
 
     private func stepPanelTowardAI() {
-        guard isReaderVisible else { return }
+        guard isReaderVisible, !blocksPhoneAIOverlay else { return }
         chatVC.prepareForStudyPanelControlTap()
         switch chatPanelStage {
         case .collapsed: applyChatPanelStage(.half, animated: true)
@@ -1695,6 +1770,9 @@ final class StudyShellViewController: UIViewController {
     }
 
     private func applyChatPanelStage(_ stage: StudyChatPanelStage, animated: Bool, focusComposerAfter: Bool = false) {
+        if blocksPhoneAIOverlay, stage != .collapsed {
+            return
+        }
         pendingFocusComposerAfterPanel = focusComposerAfter && stage != .collapsed
         // Never auto-pop the composer keyboard when expanding / collapsing the AI panel —
         // unless a shortcut asked to focus the composer after opening.
@@ -1770,16 +1848,20 @@ final class StudyShellViewController: UIViewController {
         if !panelStageCapsule.isHidden {
             view.bringSubviewToFront(panelStageCapsule)
         }
-        if isReaderVisible {
+        if isReaderVisible, !blocksPhoneAIOverlay {
             floatingSidebarButton.isHidden = false
             floatingSidebarButton.alpha = max(floatingSidebarButton.alpha, 0.01)
             view.bringSubviewToFront(floatingSidebarButton)
+        } else {
+            floatingSidebarButton.isHidden = true
+            floatingSidebarButton.alpha = 0
+            floatingSidebarButton.isUserInteractionEnabled = false
         }
 
         let animations = {
             self.view.layoutIfNeeded()
             self.updateChatPanelShadowPath()
-            if self.isReaderVisible {
+            if self.isReaderVisible, !self.blocksPhoneAIOverlay {
                 var frame = self.floatingSidebarTargetFrame()
                 if !self.isPlausibleFloatingSidebarFrame(frame) {
                     frame = self.fallbackFloatingSidebarFrame()
@@ -1999,6 +2081,7 @@ final class StudyShellViewController: UIViewController {
 
     func expandChatPanelIfNeeded() {
         guard isReaderVisible, isChatCollapsed else { return }
+        guard !blocksPhoneAIOverlay else { return }
         applyChatPanelStage(.half, animated: true)
     }
 
@@ -2018,6 +2101,10 @@ final class StudyShellViewController: UIViewController {
         case .pdf, .ebook: break
         }
         chatVC.prepareAskAboutSelection(trimmed)
+        if blocksPhoneAIOverlay {
+            ConnectsToast.show("横屏阅读中无法呼出 AI", in: view, duration: 1.1)
+            return
+        }
         if isChatCollapsed {
             applyChatPanelStage(.half, animated: true, focusComposerAfter: true)
         } else {
@@ -2363,7 +2450,11 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 icon: isPDF ? .book : .edit,
                 isSelected: fileName == activeLeaf,
                 longPressHandler: { [weak self] in
-                    self?.presentWorkspaceFileActions(named: fileName, workspaceID: sessionWSID)
+                    if isPDF {
+                        self?.confirmRemoveDocumentFromApp(named: fileName)
+                    } else {
+                        self?.presentWorkspaceFileActions(named: fileName, workspaceID: sessionWSID)
+                    }
                 },
                 handler: { [weak self] in
                     self?.openSiblingFileNamed(fileName)
@@ -2409,6 +2500,9 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 },
                 ConnectsMenuHeaderAction(icon: .importFile, accessibilityLabel: "文件夹授权") { [weak self] in
                     self?.presentFolderWorkspacePicker()
+                },
+                ConnectsMenuHeaderAction(title: "close", accessibilityLabel: "close") { [weak self] in
+                    self?.closeStudyReader()
                 }
             ]
         )
@@ -2430,13 +2524,26 @@ extension StudyShellViewController: StudyReadingContextProviding {
             from: self,
             title: "文件",
             items: [
-                ConnectsMenuItem(title: name, icon: isPDF ? .book : .edit, isSelected: true, handler: {}),
+                ConnectsMenuItem(
+                    title: name,
+                    icon: isPDF ? .book : .edit,
+                    isSelected: true,
+                    longPressHandler: { [weak self] in
+                        self?.confirmRemoveDocumentFromApp(named: name)
+                    },
+                    handler: {}
+                ),
                 ConnectsMenuItem(title: "打开…", icon: .folder) { [weak self] in
                     self?.presentStudyOpenFlow()
                 }
             ],
             sourceView: anchor,
-            sourceRect: rect
+            sourceRect: rect,
+            headerTrailingActions: [
+                ConnectsMenuHeaderAction(title: "close", accessibilityLabel: "close") { [weak self] in
+                    self?.closeStudyReader()
+                }
+            ]
         )
     }
 
@@ -2532,6 +2639,73 @@ extension StudyShellViewController: StudyReadingContextProviding {
         presentStudyOpenFlow()
     }
 
+    /// Leave the reader without deleting anything on disk.
+    private func closeStudyReader() {
+        saveActiveReaderProgress()
+        guard let convID = ConversationStore.shared.currentConversationID else { return }
+        let conv = ConversationStore.shared.currentConversation
+        if let wsID = conv?.activeStudyWorkspaceID {
+            StudyWorkspaceStore.shared.clearLastOpenedDocument(in: wsID)
+        }
+        ConversationStore.shared.updateConversation(id: convID) { draft in
+            draft.studyDocumentID = nil
+            draft.studyPageCaptureEnabled = false
+        }
+        forceRebindConversation()
+    }
+
+    private func confirmRemoveDocumentFromApp(named name: String) {
+        let leaf = (name as NSString).lastPathComponent
+        guard let doc = registeredDocument(named: leaf) else {
+            ConnectsToast.show("列表里没有「\(leaf)」。", in: view, duration: 1.6)
+            return
+        }
+        let alert = UIAlertController(
+            title: "从 Connects 移除？",
+            message: "只去掉软件内的书签和阅读进度，不会删除磁盘上的「\(leaf)」。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "移除", style: .destructive) { [weak self] _ in
+            self?.removeDocumentFromApp(doc)
+        })
+        present(alert, animated: true)
+    }
+
+    private func registeredDocument(named leaf: String) -> StudyDocument? {
+        let target = (leaf as NSString).lastPathComponent
+        if let nearID = ConversationStore.shared.currentConversation?.studyDocumentID
+            ?? boundDocumentID,
+           let path = StudyDocumentStore.shared.document(id: nearID)?.displayPath,
+           !path.isEmpty {
+            let sibling = URL(fileURLWithPath: path)
+                .deletingLastPathComponent()
+                .appendingPathComponent(target)
+            if let match = StudyDocumentStore.shared.documentMatchingPath(sibling.path) {
+                return match
+            }
+        }
+        return StudyDocumentStore.shared.recentDocuments(limit: 400).first { doc in
+            if let path = doc.displayPath, !path.isEmpty {
+                return URL(fileURLWithPath: path).lastPathComponent == target
+            }
+            return doc.title == target
+        }
+    }
+
+    private func removeDocumentFromApp(_ document: StudyDocument) {
+        let wasActive = boundDocumentID == document.id
+            || ConversationStore.shared.currentConversation?.studyDocumentID == document.id
+        StudyWorkspaceStore.shared.removeDocumentFromAllWorkspaces(document.id)
+        StudyDocumentStore.shared.delete(documentID: document.id)
+        if wasActive {
+            closeStudyReader()
+        } else {
+            forceRebindConversation()
+        }
+        ConnectsToast.show("已从列表移除 \(document.title)", in: view, duration: 1.4)
+    }
+
     private func presentWorkspaceFileActions(named name: String, workspaceID: String) {
         ConnectsMenu.present(
             from: self,
@@ -2540,7 +2714,10 @@ extension StudyShellViewController: StudyReadingContextProviding {
                 ConnectsMenuItem(title: "重命名…", icon: .rename) { [weak self] in
                     self?.promptRenameFile(named: name, workspaceID: workspaceID)
                 },
-                ConnectsMenuItem(title: "删除", icon: .trash, isDestructive: true) { [weak self] in
+                ConnectsMenuItem(title: "从列表移除", icon: .trash, isDestructive: true) { [weak self] in
+                    self?.confirmRemoveDocumentFromApp(named: name)
+                },
+                ConnectsMenuItem(title: "删除文件", icon: .trash, isDestructive: true) { [weak self] in
                     self?.confirmDeleteFile(named: name, workspaceID: workspaceID)
                 }
             ],
@@ -3348,6 +3525,7 @@ extension StudyShellViewController {
             chatVC.focusComposerFromShortcut()
             return
         }
+        guard !blocksPhoneAIOverlay else { return }
         // Leave code edit mode so the next ⌘J / ⌘1 clearly re-enters editing.
         if activeReaderKind == .text, textEditorVC.isInEditMode {
             textEditorVC.leaveEditModeFromKeyboardShortcut()

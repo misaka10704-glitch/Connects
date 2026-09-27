@@ -47,6 +47,8 @@ enum ContextBuilder {
         static let visibleThreshold: Double = 0.0
         /// Auto-compact when at/above this fill level.
         static let autoCompactThreshold: Double = 0.75
+        /// Warn / shrink keep-window when at/above this fill level.
+        static let warnThreshold: Double = 0.5
 
         var shouldAutoCompact: Bool { ratio >= Self.autoCompactThreshold }
 
@@ -63,8 +65,19 @@ enum ContextBuilder {
 
     /// Recent verbatim turns to keep (user↔assistant pairs). Older content becomes summary.
     static let keepRecentTurns = 6
-    /// After auto-compact, keep fewer verbatim turns.
+    /// Warn band (~50–75% fill): slightly tighter window, shared with Compactor.
+    static let warnKeepRecentTurns = 4
+    /// After auto-compact / critical fill, keep fewer verbatim turns.
     static let compactKeepRecentTurns = 3
+
+    /// Keep window used by both request assembly and Compactor.
+    static func keepRecentTurns(forUsageRatio ratio: Double) -> Int {
+        switch ratio {
+        case ..<Usage.warnThreshold: return keepRecentTurns
+        case ..<Usage.autoCompactThreshold: return warnKeepRecentTurns
+        default: return compactKeepRecentTurns
+        }
+    }
     /// Soft cap for a single mid-context message body (chars).
     static let midMessageCap = 4_500
     /// Soft cap for the compacted summary block.
@@ -86,15 +99,27 @@ enum ContextBuilder {
 
     /// Snapshot of what would be sent for the current conversation (for the usage UI).
     static func usage(for conversation: Conversation) -> Usage {
-        build(from: conversation.messages,
-              model: conversation.model,
-              existingSummary: conversation.contextSummary,
-              existingThroughID: conversation.contextSummaryThroughMessageID).usage
+        build(
+            from: conversation.messages,
+            model: conversation.model,
+            existingSummary: conversation.contextSummary,
+            existingThroughID: conversation.contextSummaryThroughMessageID,
+            keepRecentTurns: keepRecentTurns(for: conversation)
+        ).usage
     }
 
-    /// Fast estimate for immediate switch UI; same Usage math as `usage(for:)`.
+    /// Fast fill estimate: sums payload chars (no sliding-window build / extractive merge).
     static func quickUsageEstimate(for conversation: Conversation) -> Usage {
-        usage(for: conversation)
+        let budget = charBudget(for: conversation.model)
+        let expanded = ChatMessage.messagesWithExpandedAgentToolTurns(conversation.messages)
+        let finished = expanded.filter { !$0.isStreaming }
+        let slim = APIClient.slimMessagesForAPI(finished)
+        return Usage(usedChars: estimatedChars(slim), budgetChars: budget)
+    }
+
+    /// Keep window from a cheap fill estimate (shared with Compactor).
+    static func keepRecentTurns(for conversation: Conversation) -> Int {
+        keepRecentTurns(forUsageRatio: quickUsageEstimate(for: conversation).ratio)
     }
 
     /// Whether the meter should be visible for this conversation.
@@ -281,8 +306,8 @@ enum ContextBuilder {
     /// Display caps (tokens): Pro/K3 ~192K, Flash ~128K, K2.6 ~96K — still below provider windows.
     static func charBudget(for model: AIModelOption) -> Int {
         switch model.modelId {
-        case AIModelOption.deepseekV4Flash.modelId:
-            return 256_000
+        case AIModelOption.deepseekV41Flash.modelId, AIModelOption.deepseekV4Flash.modelId:
+            return 384_000
         case AIModelOption.deepseekV4Pro.modelId:
             return 384_000
         case AIModelOption.kimiK3.modelId:
@@ -291,8 +316,12 @@ enum ContextBuilder {
             return 192_000
         case AIModelOption.kimiK27.modelId, AIModelOption.kimiK27Highspeed.modelId:
             return 384_000
+        case AIModelOption.qwen38Flash.modelId, AIModelOption.qwen38Max.modelId:
+            return 384_000
         case AIModelOption.qwen37Flash.modelId:
             return 256_000
+        case AIModelOption.glm53.modelId, AIModelOption.glm53Flash.modelId:
+            return 384_000
         case AIModelOption.glm47Flash.modelId:
             return 192_000
         case AIModelOption.doubaoSeed2Mini.modelId:
@@ -403,12 +432,23 @@ enum ContextBuilder {
     // MARK: - Helpers
 
     static func estimatedChars(_ messages: [ChatMessage]) -> Int {
-        messages.reduce(0) { sum, m in
-            var n = m.content.count + m.reasoningContent.count
-            if let prefix = m.apiContextPrefix { n += prefix.count }
-            if let img = m.imageJPEGBase64 { n += min(img.count, 40_000) }
-            return sum + n + 24
+        let body = messages.reduce(0) { sum, m in
+            sum + messageCharWeight(m, includeRules: false)
         }
+        return body + userRulesCharWeight(messageCount: messages.count)
+    }
+
+    /// `apiRequestContent` prefixes rules onto every serialized message.
+    static func userRulesCharWeight(messageCount: Int) -> Int {
+        let rules = SettingsManager.shared.trimmedUserRules
+        guard !rules.isEmpty, messageCount > 0 else { return 0 }
+        return (rules.count + 2) * messageCount
+    }
+
+    /// Raw JPEG/base64 length — the old 40k cap made vision turns look cheap.
+    static func imageCharWeight(_ base64: String) -> Int {
+        guard !base64.isEmpty else { return 0 }
+        return base64.count
     }
 
     private static func oldestMutableDialogue(_ assembled: inout [ChatMessage], afterSystems: Int) -> ChatMessage? {
@@ -461,7 +501,8 @@ enum ContextBuilder {
             from: conversation.messages,
             model: conversation.model,
             existingSummary: conversation.contextSummary,
-            existingThroughID: conversation.contextSummaryThroughMessageID
+            existingThroughID: conversation.contextSummaryThroughMessageID,
+            keepRecentTurns: keepRecentTurns(for: conversation)
         )
 
         var buckets: [String: Int] = [
@@ -476,10 +517,7 @@ enum ContextBuilder {
             "otherSystem": 0
         ]
 
-        let rules = SettingsManager.shared.trimmedUserRules
-        if !rules.isEmpty {
-            buckets["rules", default: 0] += rules.count + 2
-        }
+        buckets["rules", default: 0] += userRulesCharWeight(messageCount: result.messages.count)
 
         for msg in result.messages {
             if msg.role == .system {
@@ -489,18 +527,18 @@ enum ContextBuilder {
             }
             if let prefix = msg.apiContextPrefix, !prefix.isEmpty {
                 if prefix.contains("## TOOL_RESULTS") || prefix.contains("CONNECTS_WORKSPACE_AGENT") {
-                    buckets["tools", default: 0] += min(prefix.count, 48_000) + 2
+                    buckets["tools", default: 0] += prefix.count + 2
                 } else {
                     buckets["study", default: 0] += prefix.count + 2
                 }
             }
             if msg.content.contains("## TOOL_RESULTS") {
-                buckets["tools", default: 0] += min(msg.content.count, 48_000)
+                buckets["tools", default: 0] += msg.content.count
             } else {
                 buckets["conversation", default: 0] += msg.content.count
             }
             if let img = msg.imageJPEGBase64, !img.isEmpty {
-                buckets["images", default: 0] += min(img.count, 40_000)
+                buckets["images", default: 0] += imageCharWeight(img)
             }
             buckets["conversation", default: 0] += msg.reasoningContent.count
                 + msg.searchProcessContent.count
@@ -546,8 +584,11 @@ enum ContextBuilder {
 
     private static func messageCharWeight(_ msg: ChatMessage, includeRules: Bool) -> Int {
         var n = msg.content.count + msg.reasoningContent.count + 24
-        if includeRules, let prefix = msg.apiContextPrefix { n += prefix.count }
-        if let img = msg.imageJPEGBase64 { n += min(img.count, 40_000) }
+        if let prefix = msg.apiContextPrefix { n += prefix.count }
+        if includeRules {
+            n += userRulesCharWeight(messageCount: 1)
+        }
+        if let img = msg.imageJPEGBase64 { n += imageCharWeight(img) }
         return n
     }
 }

@@ -15,8 +15,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let renderDebugLabel = UILabel()
     private let turnContextBarSwitch = UISwitch()
     private let turnContextBarLabel = UILabel()
-    private let imageTranscriptionSwitch = UISwitch()
-    private let imageTranscriptionLabel = UILabel()
     private let deepseekField = UITextField()
     private let kimiField = UITextField()
     private let dashscopeField = UITextField()
@@ -168,8 +166,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         renderDebugSwitch.onTintColor = c.accent
         turnContextBarLabel.textColor = c.textPrimary
         turnContextBarSwitch.onTintColor = c.accent
-        imageTranscriptionLabel.textColor = c.textPrimary
-        imageTranscriptionSwitch.onTintColor = c.accent
         keepScreenOnLabel.textColor = c.textPrimary
         keepScreenOnSwitch.onTintColor = c.accent
         reasoningEffortControl.tintColor = c.accent
@@ -265,7 +261,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         let tip = UILabel()
         tip.numberOfLines = 0
         tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串，不可混用。填写后请点左上角「完成」才会保存生效。图片转写：Kimi / Qwen / 豆包。联网 / 深度思考 / 图片转写：输入栏地球、灯泡与取景框图标。"
+        tip.text = "Key 存在本机钥匙串，不可混用。填写后请点左上角「完成」才会保存生效。联网 / 深度思考：输入栏地球与灯泡图标。"
         footerLabels.append(tip)
         contentStack.addArrangedSubview(tip)
         contentStack.setCustomSpacing(22, after: tip)
@@ -333,22 +329,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         footerLabels.append(turnContextTip)
         contentStack.addArrangedSubview(turnContextTip)
         contentStack.setCustomSpacing(12, after: turnContextTip)
-
-        let imageTranscriptionRow = makeSwitchRow(
-            label: imageTranscriptionLabel,
-            text: "启用图片转写",
-            sw: imageTranscriptionSwitch,
-            isOn: SettingsManager.shared.imageTranscriptionEnabled,
-            action: #selector(imageTranscriptionChanged)
-        )
-        contentStack.addArrangedSubview(makeCard(embedding: imageTranscriptionRow, height: 44, inset: 12))
-        let imageTranscriptionTip = UILabel()
-        imageTranscriptionTip.numberOfLines = 0
-        imageTranscriptionTip.font = DSTheme.bodyFont(size: 13)
-        imageTranscriptionTip.text = "关闭后发送含图消息不再 OCR / 视觉转写（Study 截图、相册图片均生效）。可在输入栏取景框图标随时切换，状态会记住。"
-        footerLabels.append(imageTranscriptionTip)
-        contentStack.addArrangedSubview(imageTranscriptionTip)
-        contentStack.setCustomSpacing(12, after: imageTranscriptionTip)
 
         if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
             reasoningEffortControl.selectedSegmentIndex = idx
@@ -556,10 +536,6 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func turnContextBarChanged() {
         SettingsManager.shared.turnContextBarEnabled = turnContextBarSwitch.isOn
-    }
-
-    @objc private func imageTranscriptionChanged() {
-        SettingsManager.shared.imageTranscriptionEnabled = imageTranscriptionSwitch.isOn
     }
 
     @objc private func keepScreenOnChanged() {

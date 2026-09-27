@@ -8,8 +8,17 @@ final class PDFReaderViewController: UIViewController {
     private let statusBarCover = UIView()
     private let sidebarButton = UIButton(type: .system)
     private let highlightPenButton = UIButton(type: .system)
+    private let rotateButton = UIButton(type: .system)
     private let appearanceButton = UIButton(type: .system)
     private let contentsButton = UIButton(type: .system)
+    private var rotateButtonWidthConstraint: NSLayoutConstraint!
+    private var fileTitleCenterXBar: NSLayoutConstraint!
+    private var fileTitleCenterXSlot: NSLayoutConstraint!
+    private let titleSlotGuide = UILayoutGuide()
+    /// Fit scale captured at rotation start — landscape must not reuse portrait absolute zoom.
+    private var rotationBaselineFitScale: CGFloat = 0
+    /// Width-fit multiple at rotation start (1 = 贴边). Reapplied on the final bounds.
+    private var pendingRotationRelative: CGFloat?
     private let pdfView = StudyPDFView()
     private var isHighlightPenOn = false
     /// White + difference blend → true invert (255 − x). Linear, so anti-aliased
@@ -48,6 +57,7 @@ final class PDFReaderViewController: UIViewController {
     var onPageChanged: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onFileTitleTapped: ((UIView) -> Void)?
+    var onToggleReaderLandscape: (() -> Void)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -81,6 +91,17 @@ final class PDFReaderViewController: UIViewController {
         highlightPenButton.accessibilityHint = "点按开/关。拖出红色虚线方框后可写标题代称"
         highlightPenButton.addTarget(self, action: #selector(highlightPenTapped), for: .touchUpInside)
         topBar.addSubview(highlightPenButton)
+
+        rotateButton.translatesAutoresizingMaskIntoConstraints = false
+        rotateButton.setImage(ActionIconFactory.image(.rotate, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
+        topBar.addSubview(rotateButton)
+        let phoneRotate = ConnectsPhoneReaderLandscape.isPhone
+        rotateButton.isHidden = !phoneRotate
+        rotateButtonWidthConstraint = rotateButton.widthAnchor.constraint(
+            equalToConstant: phoneRotate ? ActionIconFactory.hitTarget : 0
+        )
+        updateRotateButtonAppearance()
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
@@ -147,6 +168,7 @@ final class PDFReaderViewController: UIViewController {
         fileTitleButton.accessibilityLabel = "切换文件"
         topBar.addSubview(fileTitleButton)
         topBar.bringSubviewToFront(highlightPenButton)
+        topBar.bringSubviewToFront(rotateButton)
         topBar.bringSubviewToFront(appearanceButton)
         topBar.bringSubviewToFront(contentsButton)
 
@@ -170,11 +192,10 @@ final class PDFReaderViewController: UIViewController {
             sidebarButtonWidthConstraint,
             sidebarButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
-            fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
             fileTitleButton.topAnchor.constraint(equalTo: topBar.topAnchor),
             fileTitleButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
             fileTitleButton.leadingAnchor.constraint(greaterThanOrEqualTo: sidebarButton.trailingAnchor, constant: 4),
-            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: highlightPenButton.leadingAnchor, constant: -4),
+            fileTitleButton.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -4),
 
             contentsButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -4),
             contentsButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
@@ -190,6 +211,11 @@ final class PDFReaderViewController: UIViewController {
             highlightPenButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             highlightPenButton.widthAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
             highlightPenButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
+
+            rotateButton.trailingAnchor.constraint(equalTo: highlightPenButton.leadingAnchor, constant: -2),
+            rotateButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            rotateButtonWidthConstraint,
+            rotateButton.heightAnchor.constraint(equalToConstant: ActionIconFactory.hitTarget),
 
             topBarSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBarSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -215,6 +241,23 @@ final class PDFReaderViewController: UIViewController {
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
 
+        topBar.addLayoutGuide(titleSlotGuide)
+        NSLayoutConstraint.activate([
+            titleSlotGuide.leadingAnchor.constraint(equalTo: sidebarButton.trailingAnchor, constant: 4),
+            titleSlotGuide.trailingAnchor.constraint(equalTo: rotateButton.leadingAnchor, constant: -4),
+            titleSlotGuide.topAnchor.constraint(equalTo: topBar.topAnchor),
+            titleSlotGuide.bottomAnchor.constraint(equalTo: topBar.bottomAnchor)
+        ])
+        fileTitleCenterXBar = fileTitleButton.centerXAnchor.constraint(equalTo: topBar.centerXAnchor)
+        fileTitleCenterXSlot = fileTitleButton.centerXAnchor.constraint(equalTo: titleSlotGuide.centerXAnchor)
+        syncFileTitlePlacement()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(phoneReaderLandscapeDidChange),
+            name: .connectsPhoneReaderLandscapeDidChange,
+            object: nil
+        )
         installContentsPanel()
         syncContentsOverlayZOrder()
         applyPDFColorInvert()
@@ -265,8 +308,12 @@ final class PDFReaderViewController: UIViewController {
         let size = pdfView.bounds.size
         if size.width > 1, size.height > 1, size != lastLayoutSize {
             lastLayoutSize = size
-            if !isRestoringViewport, !isUserInteractingWithPDF, pdfView.document != nil, !isZoomedIn {
-                refitScaleIfNeeded()
+            if !isRestoringViewport, !isUserInteractingWithPDF, pdfView.document != nil {
+                if pendingRotationRelative != nil {
+                    applyPendingRotationScale()
+                } else {
+                    refreshMinScaleForCurrentBounds(snapToFitIfNotZoomed: true)
+                }
             }
         }
 
@@ -338,8 +385,7 @@ final class PDFReaderViewController: UIViewController {
         bar.layoutIfNeeded()
         // Pre-layout / cold start: zero-height bar makes y = -hitTarget/2 → floats above the screen.
         guard bar.bounds.height > 1, bar.window != nil else { return .zero }
-        let y = (bar.bounds.height - ActionIconFactory.hitTarget) / 2
-        return bar.convert(CGRect(x: 4, y: y, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget), to: target)
+        return sidebarButton.convert(sidebarButton.bounds, to: target)
     }
 
     @objc private func sidebarTapped() {
@@ -366,6 +412,7 @@ final class PDFReaderViewController: UIViewController {
         fileTitleButton.setTitleColor(chrome.textPrimary, for: .normal)
         sidebarButton.tintColor = chrome.textSecondary
         contentsButton.tintColor = chrome.textSecondary
+        updateRotateButtonAppearance()
         updateAppearanceButton()
         updateHighlightPenAppearance()
         contentsPanelHost.backgroundColor = chrome.background
@@ -376,6 +423,42 @@ final class PDFReaderViewController: UIViewController {
 
     @objc private func appearanceTapped() {
         ReaderThemeManager.shared.toggle()
+    }
+
+    @objc private func rotateTapped() {
+        onToggleReaderLandscape?()
+    }
+
+    @objc private func phoneReaderLandscapeDidChange() {
+        updateRotateButtonAppearance()
+        syncFileTitlePlacement()
+    }
+
+    func syncRotateButtonAppearance() {
+        updateRotateButtonAppearance()
+        syncFileTitlePlacement()
+    }
+
+    private func syncFileTitlePlacement() {
+        let phone = ConnectsPhoneReaderLandscape.isPhone
+        let landscape = phone && ConnectsPhoneReaderLandscape.isActive
+        fileTitleCenterXBar.isActive = !phone || landscape
+        fileTitleCenterXSlot.isActive = phone && !landscape
+    }
+
+    private func updateRotateButtonAppearance() {
+        guard ConnectsPhoneReaderLandscape.isPhone else {
+            rotateButton.isHidden = true
+            rotateButtonWidthConstraint?.constant = 0
+            return
+        }
+        let on = ConnectsPhoneReaderLandscape.isActive
+        let c = DSTheme.reader
+        rotateButton.tintColor = on ? c.accent : c.textSecondary
+        rotateButton.backgroundColor = on ? c.accent.withAlphaComponent(0.16) : .clear
+        rotateButton.layer.cornerRadius = 20
+        rotateButton.clipsToBounds = true
+        rotateButton.accessibilityLabel = on ? "退出横屏" : "横屏阅读"
     }
 
     private func updateAppearanceButton() {
@@ -908,38 +991,15 @@ final class PDFReaderViewController: UIViewController {
     /// Freeze heavy reflow while the study shell rotates; step scale during the transition.
     func beginShellRotation(keeping progress: StudyProgress?) {
         shellRotationProgress = progress
+        rotationBaselineFitScale = measureFitScale()
+        let rel = pdfView.scaleFactor / max(rotationBaselineFitScale, 0.01)
+        pendingRotationRelative = rel <= 1.05 ? 1 : rel
         isShellRotating = true
         isRestoringViewport = true
     }
 
     func updateDuringShellRotation() {
         guard isShellRotating, pdfView.document != nil else { return }
-        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
-        let progress = shellRotationProgress
-        let zoomed = progress?.scaleFactor.map { $0 > fitScale * 1.02 } ?? false
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if zoomed, let progress = progress, let scale = progress.scaleFactor, let document = pdfView.document {
-            pdfView.minScaleFactor = fitScale
-            pdfView.maxScaleFactor = max(scale * 2, fitScale * 4)
-            pdfView.scaleFactor = scale
-            let pageIndex = min(max(progress.pageIndex, 0), max(document.pageCount - 1, 0))
-            if let page = document.page(at: pageIndex),
-               let anchorX = progress.anchorX, let anchorY = progress.anchorY {
-                alignViewport(toPagePoint: CGPoint(x: anchorX, y: anchorY), in: page)
-            }
-        } else {
-            pdfView.minScaleFactor = fitScale
-            pdfView.maxScaleFactor = fitScale * 4
-            pdfView.scaleFactor = fitScale
-            if let progress = progress, let document = pdfView.document,
-               pdfView.bounds.size != lastLayoutSize {
-                scrollToProgress(progress, in: document)
-            }
-        }
-        clearSpuriousContentInsets()
-        CATransaction.commit()
         lastLayoutSize = pdfView.bounds.size
     }
 
@@ -950,16 +1010,32 @@ final class PDFReaderViewController: UIViewController {
             isShellRotating = false
             isRestoringViewport = false
             shellRotationProgress = nil
-            lastLayoutSize = pdfView.bounds.size
+            rotationBaselineFitScale = 0
+            lastLayoutSize = .zero
         }
-        guard let snapshot = snapshot, let document = pdfView.document else { return }
+        guard pdfView.document != nil else { return }
+        view.layoutIfNeeded()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        applyFitScale(from: snapshot)
-        scrollToProgress(snapshot, in: document)
-        clearSpuriousContentInsets()
+        applyPendingRotationScale()
+        restorePageAfterRotation(snapshot)
+        snapPageToHorizontalEdgesIfAtMinZoom()
         CATransaction.commit()
         updatePageLabel()
+    }
+
+    private func applyPendingRotationScale() {
+        let relative = pendingRotationRelative ?? 1
+        let fitScale = measureFitScale()
+        pdfView.autoScales = false
+        pdfView.minScaleFactor = fitScale
+        pdfView.maxScaleFactor = max(fitScale * 8, 4)
+        pdfView.scaleFactor = relative <= 1.05 ? fitScale : fitScale * relative
+        pdfView.layoutDocumentView()
+        if !isShellRotating {
+            pendingRotationRelative = nil
+        }
+        snapPageToHorizontalEdgesIfAtMinZoom()
     }
 
     func realignVisibleViewport(using progress: StudyProgress?) {
@@ -1152,33 +1228,98 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private var isZoomedIn: Bool {
-        let fit = pdfView.scaleFactorForSizeToFit
-        guard fit > 0 else { return false }
-        return pdfView.scaleFactor > fit * 1.02
+        let floor = max(pdfView.minScaleFactor, 0.01)
+        return pdfView.scaleFactor > floor * 1.02
     }
 
-    private func applyFitScale(from progress: StudyProgress?) {
-        pdfView.autoScales = true
-        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
+    /// Width-fit: page left/right flush with the viewer. `scaleFactorForSizeToFit` uses
+    /// min(width, height) so landscape height-fit leaks into portrait as side gaps.
+    private func measureFitScale() -> CGFloat {
+        guard pdfView.bounds.width > 1,
+              let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else {
+            return 0.01
+        }
+        let box = page.bounds(for: pdfView.displayBox)
+        guard box.width > 1 else { return 0.01 }
+        return pdfView.bounds.width / box.width
+    }
+
+    private func applyFitScale(from progress: StudyProgress?, relativeToFit oldFit: CGFloat = 0) {
+        let fitScale = measureFitScale()
         pdfView.autoScales = false
 
-        if let saved = progress?.scaleFactor, saved > fitScale * 1.02 {
-            pdfView.minScaleFactor = fitScale
-            pdfView.maxScaleFactor = max(saved * 2, fitScale * 4)
-            pdfView.scaleFactor = saved
+        let saved = progress?.scaleFactor
+        let relative: CGFloat
+        if oldFit > 0.01, let saved, saved > oldFit * 1.05 {
+            relative = saved / oldFit
         } else {
-            pdfView.minScaleFactor = fitScale
-            pdfView.maxScaleFactor = fitScale * 4
+            relative = 1
+        }
+
+        pdfView.minScaleFactor = fitScale
+        pdfView.maxScaleFactor = max(fitScale * 8, 4)
+        if relative > 1.05 {
+            pdfView.scaleFactor = fitScale * relative
+        } else {
             pdfView.scaleFactor = fitScale
         }
+        pdfView.layoutDocumentView()
+        snapPageToHorizontalEdgesIfAtMinZoom()
+    }
+
+    /// Bounds change after rotate: always lower min to the new page-fit so pinch can return.
+    private func refreshMinScaleForCurrentBounds(snapToFitIfNotZoomed: Bool) {
+        let fitScale = measureFitScale()
+        pdfView.autoScales = false
+        pdfView.minScaleFactor = fitScale
+        pdfView.maxScaleFactor = max(pdfView.maxScaleFactor, fitScale * 8)
+        if snapToFitIfNotZoomed, pdfView.scaleFactor <= fitScale * 1.05 {
+            pdfView.scaleFactor = fitScale
+        } else if pdfView.scaleFactor < fitScale {
+            pdfView.scaleFactor = fitScale
+        }
+        pdfView.layoutDocumentView()
+        snapPageToHorizontalEdgesIfAtMinZoom()
+    }
+
+    /// At min zoom the page must be flush left/right (no leftover landscape letterbox).
+    private func snapPageToHorizontalEdgesIfAtMinZoom() {
+        guard !isZoomedIn else { return }
+        for scrollView in pdfView.allEmbeddedScrollViews {
+            if abs(scrollView.contentOffset.x) > 0.5 {
+                var offset = scrollView.contentOffset
+                offset.x = 0
+                scrollView.contentOffset = offset
+            }
+        }
+        clearSpuriousContentInsets()
+    }
+
+    /// Fitted rotation: keep the page, not the old top-left in the previous aspect.
+    private func restorePageAfterRotation(_ progress: StudyProgress?) {
+        guard let progress, let document = pdfView.document else { return }
+        let pageIndex = min(max(0, progress.pageIndex), max(document.pageCount - 1, 0))
+        guard let page = document.page(at: pageIndex) else { return }
+        let box = page.bounds(for: pdfView.displayBox)
+        let y = progress.pageOffsetY ?? box.maxY
+        pdfView.go(to: PDFDestination(page: page, at: CGPoint(x: box.minX, y: y)))
+        let wasUserZoomed: Bool = {
+            guard let saved = progress.scaleFactor, rotationBaselineFitScale > 0.01 else { return false }
+            return saved > rotationBaselineFitScale * 1.05
+        }()
+        if wasUserZoomed, let anchorX = progress.anchorX, let anchorY = progress.anchorY {
+            alignViewport(toPagePoint: CGPoint(x: anchorX, y: anchorY), in: page)
+        }
+        clearSpuriousContentInsets()
     }
 
     private func scrollToProgress(_ progress: StudyProgress?, in document: PDFDocument) {
         guard let progress = progress else { return }
         let pageIndex = min(max(0, progress.pageIndex), max(document.pageCount - 1, 0))
         guard let page = document.page(at: pageIndex) else { return }
-        let y = progress.pageOffsetY ?? 0
-        let x = progress.pageOffsetX ?? 0
+        let box = page.bounds(for: pdfView.displayBox)
+        let y = progress.pageOffsetY ?? box.maxY
+        let x = progress.pageOffsetX ?? box.minX
         pdfView.go(to: PDFDestination(page: page, at: CGPoint(x: x, y: y)))
         if let anchorX = progress.anchorX, let anchorY = progress.anchorY, isZoomedIn {
             alignViewport(toPagePoint: CGPoint(x: anchorX, y: anchorY), in: page)
@@ -1200,11 +1341,7 @@ final class PDFReaderViewController: UIViewController {
     }
 
     private func refitScaleIfNeeded() {
-        let fitScale = max(pdfView.scaleFactorForSizeToFit, 0.01)
-        guard abs(pdfView.scaleFactor - fitScale) > 0.01 else { return }
-        pdfView.minScaleFactor = fitScale
-        pdfView.maxScaleFactor = fitScale * 4
-        pdfView.scaleFactor = fitScale
+        refreshMinScaleForCurrentBounds(snapToFitIfNotZoomed: true)
     }
 
     private func clearSpuriousContentInsets() {
