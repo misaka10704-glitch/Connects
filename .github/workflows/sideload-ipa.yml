@@ -1,0 +1,51 @@
+name: sideload-ipa
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build unsigned app (device)
+        run: |
+          xcodebuild \
+            -scheme Connects-iPhone \
+            -configuration Release-iPhone \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP=$(find build/Build/Products -name "Connects.app" -path "*iphoneos*" | head -1)
+          test -n "$APP"
+          mkdir -p Payload dist
+          cp -R "$APP" Payload/
+          ditto -c -k --sequesterRsrc Payload dist/Connects.ipa
+          rm -rf Payload
+          shasum -a 256 dist/Connects.ipa > dist/Connects.ipa.sha256
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME:-nightly}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Connects $TAG" \
+              --notes "Unsigned sideload build — sign with your own Apple ID via Sideloadly / AltStore / SideStore." \
+              --latest
+          fi
+          gh release upload "$TAG" dist/Connects.ipa dist/Connects.ipa.sha256 --clobber
