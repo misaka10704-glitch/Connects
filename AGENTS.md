@@ -18,6 +18,8 @@ xcrun devicectl device process launch --device <DEVICE_UDID> com.misamisa.connec
 ```
 
 - Schemes: `Connects`, `Connects-iPad`, `Connects-iPhone`. Tests: `ConnectsTests` (xcodebuild test).
+- The `*-iPhone` configurations must exist at BOTH project and target level — if a project-level configuration is missing, `-configuration Release-iPhone` silently falls back to `Release` for the app while SwiftPM packages still build `Release-iPhone`, splitting products across two dirs (breaks Readium bundle copying).
+- CI (`sideload-ipa.yml`, macos-15) uses Xcode 16.4 / iOS 18.5 SDK — SDK-gated symbols (e.g. iOS 26 APIs like `hidesSharedBackground`) need `#if compiler(>=6.2)` in addition to `#available`; `#available` alone can't hide an unknown member.
 - Known pre-existing test failures (unrelated to chat work): `ReadiumEbookOpenTests` needs local EPUB fixtures; `testCJKParenBoldBecomesHtmlStrong`.
 - DEBUG launch args: `-SettingsPreview`, `-BYOKPreview`, `-ScrollBottom`, `-ScrollMid`, `-AppleLanguages "(zh-Hans)"`.
 
