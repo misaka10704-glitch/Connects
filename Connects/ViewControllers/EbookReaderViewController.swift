@@ -223,6 +223,9 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        contentsButton.imageView?.contentMode = .center
+        contentsButton.contentHorizontalAlignment = .center
+        contentsButton.contentVerticalAlignment = .center
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
@@ -240,7 +243,6 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         fileTitleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fileTitleButton.addTarget(self, action: #selector(fileTitleTapped), for: .touchUpInside)
         topBar.addSubview(fileTitleButton)
-
         contentHost.translatesAutoresizingMaskIntoConstraints = false
         contentHost.backgroundColor = DSTheme.reader.background
         contentHost.clipsToBounds = true
@@ -415,6 +417,9 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        sidebarButton.imageView?.contentMode = .center
+        sidebarButton.contentHorizontalAlignment = .center
+        sidebarButton.contentVerticalAlignment = .center
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
@@ -944,6 +949,7 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
         contentsButton.tintColor = c.textSecondary
         sidebarButton.tintColor = c.textSecondary
         appearanceButton.tintColor = c.textSecondary
+
         contentsPanelHost.backgroundColor = c.surface
         contentsTable.backgroundColor = c.surface
         contentsTitleButton.setTitleColor(c.textPrimary, for: .normal)
@@ -1042,6 +1048,9 @@ final class EbookReaderViewController: UIViewController, UITableViewDataSource, 
             ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
             for: .normal
         )
+        appearanceButton.imageView?.contentMode = .center
+        appearanceButton.contentHorizontalAlignment = .center
+        appearanceButton.contentVerticalAlignment = .center
         appearanceButton.tintColor = DSTheme.c.textSecondary
         appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
     }

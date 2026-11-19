@@ -298,9 +298,9 @@ final class SettingsManager {
 
     var chatBodyFontSize: CGFloat {
         switch chatFontSizeIndex {
-        case 0: return 15
-        case 2: return 18
-        default: return 16.5
+        case 0: return 16
+        case 2: return 19.5
+        default: return 17.5
         }
     }
 

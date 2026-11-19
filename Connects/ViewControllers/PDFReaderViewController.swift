@@ -87,6 +87,9 @@ final class PDFReaderViewController: UIViewController {
 
         highlightPenButton.translatesAutoresizingMaskIntoConstraints = false
         highlightPenButton.setImage(ActionIconFactory.image(.highlighter, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        highlightPenButton.imageView?.contentMode = .center
+        highlightPenButton.contentHorizontalAlignment = .center
+        highlightPenButton.contentVerticalAlignment = .center
         highlightPenButton.accessibilityLabel = "框选标注"
         highlightPenButton.accessibilityHint = "点按开/关。拖出红色虚线方框后可写标题代称"
         highlightPenButton.addTarget(self, action: #selector(highlightPenTapped), for: .touchUpInside)
@@ -94,6 +97,9 @@ final class PDFReaderViewController: UIViewController {
 
         rotateButton.translatesAutoresizingMaskIntoConstraints = false
         rotateButton.setImage(ActionIconFactory.image(.rotate, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        rotateButton.imageView?.contentMode = .center
+        rotateButton.contentHorizontalAlignment = .center
+        rotateButton.contentVerticalAlignment = .center
         rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
         topBar.addSubview(rotateButton)
         let phoneRotate = ConnectsPhoneReaderLandscape.isPhone
@@ -105,6 +111,9 @@ final class PDFReaderViewController: UIViewController {
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        contentsButton.imageView?.contentMode = .center
+        contentsButton.contentHorizontalAlignment = .center
+        contentsButton.contentVerticalAlignment = .center
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录与标注"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
@@ -362,6 +371,9 @@ final class PDFReaderViewController: UIViewController {
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        sidebarButton.imageView?.contentMode = .center
+        sidebarButton.contentHorizontalAlignment = .center
+        sidebarButton.contentVerticalAlignment = .center
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
@@ -412,6 +424,7 @@ final class PDFReaderViewController: UIViewController {
         fileTitleButton.setTitleColor(chrome.textPrimary, for: .normal)
         sidebarButton.tintColor = chrome.textSecondary
         contentsButton.tintColor = chrome.textSecondary
+
         updateRotateButtonAppearance()
         updateAppearanceButton()
         updateHighlightPenAppearance()
@@ -454,10 +467,8 @@ final class PDFReaderViewController: UIViewController {
         }
         let on = ConnectsPhoneReaderLandscape.isActive
         let c = DSTheme.reader
+        // Inside the trailing pill the accent state is conveyed by tint alone.
         rotateButton.tintColor = on ? c.accent : c.textSecondary
-        rotateButton.backgroundColor = on ? c.accent.withAlphaComponent(0.16) : .clear
-        rotateButton.layer.cornerRadius = 20
-        rotateButton.clipsToBounds = true
         rotateButton.accessibilityLabel = on ? "退出横屏" : "横屏阅读"
     }
 
@@ -468,6 +479,9 @@ final class PDFReaderViewController: UIViewController {
             ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
             for: .normal
         )
+        appearanceButton.imageView?.contentMode = .center
+        appearanceButton.contentHorizontalAlignment = .center
+        appearanceButton.contentVerticalAlignment = .center
         appearanceButton.tintColor = DSTheme.c.textSecondary
         appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
     }

@@ -4693,11 +4693,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyTitleLabel.textColor = c.textPrimary
         emptySubtitleLabel.textColor = c.textSecondary
         emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
+        emptyConfigureKeyButton.backgroundColor = c.accent.withAlphaComponent(0.10)
+        emptyConfigureKeyButton.layer.borderColor = c.accent.withAlphaComponent(0.45).cgColor
         modelButton.setTitleColor(c.textPrimary, for: .normal)
         modelButton.backgroundColor = c.surfaceHover
         modelButton.layer.borderWidth = 1 / UIScreen.main.scale
         modelButton.layer.borderColor = c.border.cgColor
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         navigationController?.navigationBar.barStyle = c.navBarStyle
         navigationController?.navigationBar.barTintColor = c.background
         turnContextBar.applyTheme()
@@ -7049,7 +7051,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func setupNavBar() {
         // Kept for legacy picker anchors; model / AI 选项 UI is input-bar only.
         modelButton.translatesAutoresizingMaskIntoConstraints = true
-        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        modelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         modelButton.titleLabel?.lineBreakMode = .byTruncatingTail
         modelButton.titleLabel?.textAlignment = .center
         modelButton.connectsSetContentInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
@@ -7560,6 +7562,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyConfigureKeyButton.translatesAutoresizingMaskIntoConstraints = false
         emptyConfigureKeyButton.setTitle(L("配置 API Key", "Set up API Key"), for: .normal)
         emptyConfigureKeyButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        // Pill — a bordered capsule reads as a button, not loose text.
+        emptyConfigureKeyButton.layer.cornerRadius = 20
+        emptyConfigureKeyButton.layer.borderWidth = 1 / UIScreen.main.scale
+        emptyConfigureKeyButton.connectsSetContentInsets(top: 10, leading: 22, bottom: 10, trailing: 22)
         emptyConfigureKeyButton.addTarget(self, action: #selector(emptyConfigureKeyTapped), for: .touchUpInside)
         emptyConfigureKeyButton.isHidden = true
         emptyContainer.addSubview(emptyConfigureKeyButton)
@@ -7618,6 +7624,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
             emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
+            emptyConfigureKeyButton.backgroundColor = c.accent.withAlphaComponent(0.10)
+            emptyConfigureKeyButton.layer.borderColor = c.accent.withAlphaComponent(0.45).cgColor
             refreshEmptyOnboardingCopy()
         } else {
             emptyConfigureKeyButton.isHidden = true

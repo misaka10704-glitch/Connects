@@ -114,7 +114,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     /// Cleared when user dismisses the Ask 选区 badge.
     var onClearAskSelection: (() -> Void)?
 
-    private let btnSize: CGFloat = 30
+    private let btnSize: CGFloat = 32
     private let textMaxHeight: CGFloat = 120
 
     var aiOptionsAnchorView: UIView { aiOptionsButton }
@@ -349,7 +349,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         for file in diffBannerFiles {
             let row = UIButton(type: .system)
             row.contentHorizontalAlignment = .left
-            row.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+            row.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
             row.setTitle("  \(file.fileName)  +\(file.additions) −\(file.deletions)", for: .normal)
             row.accessibilityIdentifier = file.documentID
             row.addTarget(self, action: #selector(diffFileRowTapped(_:)), for: .touchUpInside)
@@ -475,20 +475,20 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(diffReviewBanner)
 
         diffExpandButton.translatesAutoresizingMaskIntoConstraints = false
-        diffExpandButton.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        diffExpandButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         diffExpandButton.contentHorizontalAlignment = .left
         diffExpandButton.isHidden = true
         diffExpandButton.addTarget(self, action: #selector(diffExpandTapped), for: .touchUpInside)
         diffReviewBanner.addSubview(diffExpandButton)
 
         diffChangesLabel.translatesAutoresizingMaskIntoConstraints = false
-        diffChangesLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        diffChangesLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
         diffChangesLabel.text = "0 处改动"
         diffReviewBanner.addSubview(diffChangesLabel)
 
         for btn in [diffUndoAllButton, diffKeepAllButton, diffReviewButton] {
             btn.translatesAutoresizingMaskIntoConstraints = false
-            btn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+            btn.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
             diffReviewBanner.addSubview(btn)
         }
         diffUndoAllButton.setTitle("全部撤销", for: .normal)
@@ -510,7 +510,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(buildTodoStrip)
 
         buildTodoLabel.translatesAutoresizingMaskIntoConstraints = false
-        buildTodoLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        buildTodoLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
         buildTodoLabel.textColor = DSTheme.c.textSecondary
         buildTodoStrip.addSubview(buildTodoLabel)
 
@@ -529,14 +529,14 @@ final class InputBarView: UIView, ThemeRefreshable {
 
         chipLabel.translatesAutoresizingMaskIntoConstraints = false
         chipLabel.text = "图片"
-        chipLabel.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        chipLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium)
         chip.addSubview(chipLabel)
 
         chipRemove.translatesAutoresizingMaskIntoConstraints = false
         // Draw a small × via title for clarity.
         chipRemove.setImage(nil, for: .normal)
         chipRemove.setTitle("×", for: .normal)
-        chipRemove.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        chipRemove.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         chipRemove.layer.cornerRadius = 11
         chipRemove.clipsToBounds = true
         chipRemove.addTarget(self, action: #selector(removePreview), for: .touchUpInside)
@@ -566,7 +566,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(codeAIEditButton)
 
         agentModeButton.translatesAutoresizingMaskIntoConstraints = false
-        agentModeButton.titleLabel?.font = UIFont.systemFont(ofSize: 11, weight: .semibold)
+        agentModeButton.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         agentModeButton.titleLabel?.adjustsFontSizeToFitWidth = true
         agentModeButton.titleLabel?.minimumScaleFactor = 0.8
         agentModeButton.setTitle("Agent", for: .normal)
@@ -629,17 +629,17 @@ final class InputBarView: UIView, ThemeRefreshable {
 
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
-        textView.font = DSTheme.bodyFont(size: 16)
+        textView.font = DSTheme.bodyFont(size: 17)
         textView.isScrollEnabled = false
         textView.delegate = self
         // Keep vertical insets balanced so the first line optically matches + / 🌐 / send.
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        textView.textContainerInset = UIEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         containerView.addSubview(textView)
 
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.text = L("问任何问题…", "Ask anything…")
-        placeholderLabel.font = DSTheme.bodyFont(size: 16)
+        placeholderLabel.font = DSTheme.bodyFont(size: 17)
         containerView.addSubview(placeholderLabel)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
@@ -661,7 +661,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
         containerView.bringSubviewToFront(aiOptionsButton)
 
-        textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 36)
+        textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 40)
         chipHeightConstraint = chip.heightAnchor.constraint(equalToConstant: 0)
         textTopToChip = textView.topAnchor.constraint(equalTo: chip.bottomAnchor, constant: 4)
         textTopToContainer = textView.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 5)
@@ -872,7 +872,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         let name = NSAttributedString(
             string: modelChipDisplayName,
             attributes: [
-                .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+                .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
                 .foregroundColor: c.textPrimary
             ]
         )
@@ -1079,7 +1079,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         // (sim QA: Plan/Ask chip looked empty while title(for:) was correct).
         agentModeButton.configuration = nil
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+            .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: fg
         ]
         let attributed = NSAttributedString(string: title, attributes: attrs)

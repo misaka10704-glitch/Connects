@@ -184,7 +184,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
         modeButton.translatesAutoresizingMaskIntoConstraints = false
         modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        modeButton.imageView?.contentMode = .scaleAspectFit
+        modeButton.imageView?.contentMode = .center
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
         modeButton.accessibilityLabel = "切换到编辑模式"
         topBar.addSubview(modeButton)
@@ -202,7 +202,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
         saveButton.translatesAutoresizingMaskIntoConstraints = false
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        saveButton.imageView?.contentMode = .scaleAspectFit
+        saveButton.imageView?.contentMode = .center
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
         topBar.addSubview(saveButton)
@@ -214,6 +214,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
 
         rotateButton.translatesAutoresizingMaskIntoConstraints = false
         rotateButton.setImage(ActionIconFactory.image(.rotate, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        rotateButton.imageView?.contentMode = .center
+        rotateButton.contentHorizontalAlignment = .center
+        rotateButton.contentVerticalAlignment = .center
         rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
         topBar.addSubview(rotateButton)
         let phoneRotate = ConnectsPhoneReaderLandscape.isPhone
@@ -534,6 +537,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        sidebarButton.imageView?.contentMode = .center
+        sidebarButton.contentHorizontalAlignment = .center
+        sidebarButton.contentVerticalAlignment = .center
         sidebarButton.tintColor = DSTheme.reader.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
@@ -809,6 +815,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
             for: .normal
         )
+        appearanceButton.imageView?.contentMode = .center
+        appearanceButton.contentHorizontalAlignment = .center
+        appearanceButton.contentVerticalAlignment = .center
         appearanceButton.tintColor = DSTheme.reader.textSecondary
         appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
     }
@@ -891,6 +900,7 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         fileTitleButton.setTitleColor(c.textPrimary, for: .normal)
         modeButton.tintColor = c.textSecondary
         saveButton.tintColor = isEditMode ? c.accent : c.textTertiary
+
         pinchScaleHost.backgroundColor = c.background
         textView.typingAttributes = CodeSyntaxHighlighter.typingAttributes(fontSize: fontPointSize)
         refreshModeChrome()
@@ -1276,6 +1286,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             let modeKind: ActionIconFactory.Kind = showingDiff ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
             modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+            modeButton.imageView?.contentMode = .center
+            modeButton.contentHorizontalAlignment = .center
+            modeButton.contentVerticalAlignment = .center
             modeButton.tintColor = c.accent
             modeButton.isEnabled = true
             modeButton.alpha = 1
@@ -1286,6 +1299,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
             let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
             modeButton.setTitle(nil, for: .normal)
             modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+            modeButton.imageView?.contentMode = .center
+            modeButton.contentHorizontalAlignment = .center
+            modeButton.contentVerticalAlignment = .center
             // Accent while editing so the toggle is visibly “on”.
             modeButton.tintColor = isEditMode ? c.accent : c.textSecondary
             modeButton.isEnabled = true
@@ -1299,6 +1315,9 @@ final class TextCodeEditorViewController: UIViewController, UITextViewDelegate, 
         }
         saveButton.setTitle(nil, for: .normal)
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        saveButton.imageView?.contentMode = .center
+        saveButton.contentHorizontalAlignment = .center
+        saveButton.contentVerticalAlignment = .center
         saveButton.isHidden = false
         saveButton.isEnabled = isEditMode && !isDiffSessionActive
         saveButton.alpha = saveButton.isEnabled ? 1 : 0.35

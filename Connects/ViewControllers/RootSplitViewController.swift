@@ -8,6 +8,11 @@ final class RootSplitViewController: UIViewController {
     private let chatVC = ChatViewController()
     private let studyShell: StudyShellViewController
 
+    #if DEBUG
+    /// QA accessor for debug screenshot hooks (e.g. -CapsuleHalfStage).
+    var qaStudyShell: StudyShellViewController { studyShell }
+    #endif
+
     private let sidebarContainer = UIView()
     private let divider = UIView()
     private let chatContainer = UIView()

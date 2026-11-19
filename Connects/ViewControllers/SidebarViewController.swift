@@ -107,6 +107,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         archiveFilterButton.tintColor = c.textSecondary
         settingsButton.tintColor = c.textSecondary
         settingsButton.setTitleColor(c.textSecondary, for: .normal)
+        settingsButton.backgroundColor = c.surface
+        settingsButton.layer.borderColor = c.border.cgColor
         topDivider.backgroundColor = c.divider
         bottomDivider.backgroundColor = c.divider
         searchField.backgroundColor = c.surface
@@ -422,8 +424,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         newChatButton.translatesAutoresizingMaskIntoConstraints = false
         newChatButton.setTitle(L("  新对话", "  New Chat"), for: .normal)
         newChatButton.setImage(ActionIconFactory.image(.newChat, pointSize: ActionIconFactory.toolGlyph), for: .normal)
-        newChatButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
-        newChatButton.layer.cornerRadius = 12
+        newChatButton.titleLabel?.font = DSTheme.bodyFont(size: 16)
+        newChatButton.layer.cornerRadius = 16
         newChatButton.layer.borderWidth = 1
         newChatButton.contentHorizontalAlignment = .left
         newChatButton.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 14, imagePadding: 6)
@@ -431,8 +433,8 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         headerBar.addSubview(newChatButton)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.font = DSTheme.bodyFont(size: 14)
-        searchField.layer.cornerRadius = 10
+        searchField.font = DSTheme.bodyFont(size: 15)
+        searchField.layer.cornerRadius = 14
         searchField.layer.borderWidth = 1
         let searchIcon = UIImageView(image: ActionIconFactory.image(.search, pointSize: ActionIconFactory.fieldGlyph))
         searchIcon.tintColor = DSTheme.c.textTertiary
@@ -466,9 +468,11 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.setTitle("  设置", for: .normal)
         settingsButton.setImage(ActionIconFactory.image(.settings, pointSize: ActionIconFactory.toolGlyph), for: .normal)
-        settingsButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
+        settingsButton.titleLabel?.font = DSTheme.bodyFont(size: 16)
+        settingsButton.layer.cornerRadius = 14
+        settingsButton.layer.borderWidth = 1
         settingsButton.contentHorizontalAlignment = .left
-        settingsButton.connectsSetContentInsets(top: 0, leading: 16, bottom: 0, trailing: 18)
+        settingsButton.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 14)
         settingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
         footerBar.addSubview(settingsButton)
 
@@ -491,12 +495,12 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             newChatButton.topAnchor.constraint(equalTo: logoImageView.bottomAnchor, constant: 14),
             newChatButton.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 12),
             newChatButton.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -12),
-            newChatButton.heightAnchor.constraint(equalToConstant: 40),
+            newChatButton.heightAnchor.constraint(equalToConstant: 44),
 
             searchField.topAnchor.constraint(equalTo: newChatButton.bottomAnchor, constant: 10),
             searchField.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 12),
             searchField.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor, constant: -12),
-            searchField.heightAnchor.constraint(equalToConstant: 34),
+            searchField.heightAnchor.constraint(equalToConstant: 38),
             searchField.bottomAnchor.constraint(equalTo: headerBar.bottomAnchor, constant: -12),
 
             topDivider.topAnchor.constraint(equalTo: headerBar.bottomAnchor, constant: 8),
@@ -509,10 +513,10 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             footerBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             footerBar.heightAnchor.constraint(equalToConstant: 52),
 
-            settingsButton.leadingAnchor.constraint(equalTo: footerBar.leadingAnchor),
-            settingsButton.trailingAnchor.constraint(equalTo: footerBar.trailingAnchor),
-            settingsButton.topAnchor.constraint(equalTo: footerBar.topAnchor),
-            settingsButton.bottomAnchor.constraint(equalTo: footerBar.bottomAnchor),
+            settingsButton.leadingAnchor.constraint(equalTo: footerBar.leadingAnchor, constant: 12),
+            settingsButton.trailingAnchor.constraint(equalTo: footerBar.trailingAnchor, constant: -12),
+            settingsButton.topAnchor.constraint(equalTo: footerBar.topAnchor, constant: 6),
+            settingsButton.bottomAnchor.constraint(equalTo: footerBar.bottomAnchor, constant: -6),
 
             bottomDivider.bottomAnchor.constraint(equalTo: footerBar.topAnchor),
             bottomDivider.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -572,7 +576,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         let c = DSTheme.c
         cell.backgroundColor = .clear
         cell.textLabel?.numberOfLines = 1
-        cell.textLabel?.font = DSTheme.bodyFont(size: 14)
+        cell.textLabel?.font = DSTheme.bodyFont(size: 16)
         cell.imageView?.image = nil
         cell.accessoryType = .none
         cell.indentationLevel = 0
@@ -589,7 +593,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             cell.imageView?.image = AgentAppearancePreset.colorBall(for: project, size: 12)
             cell.textLabel?.text = project.name
             cell.textLabel?.textColor = isActive ? c.textPrimary : c.textPrimary
-            cell.textLabel?.font = UIFont.systemFont(ofSize: 14, weight: isActive ? .semibold : .regular)
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 16, weight: isActive ? .semibold : .regular)
             cell.backgroundColor = isActive ? c.surfaceHover.withAlphaComponent(0.55) : .clear
         case .conversation(let conv):
             let running = StreamManager.shared.isRunning(conv.id)
@@ -598,7 +602,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             cell.imageView?.image = nil
             cell.textLabel?.text = title
             cell.textLabel?.textColor = running ? c.accent : c.textPrimary
-            cell.textLabel?.font = DSTheme.bodyFont(size: 14)
+            cell.textLabel?.font = DSTheme.bodyFont(size: 16)
         }
         return cell
     }

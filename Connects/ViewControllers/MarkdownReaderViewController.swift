@@ -198,6 +198,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
         contentsButton.translatesAutoresizingMaskIntoConstraints = false
         contentsButton.setImage(ActionIconFactory.image(.toc, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        contentsButton.imageView?.contentMode = .center
+        contentsButton.contentHorizontalAlignment = .center
+        contentsButton.contentVerticalAlignment = .center
         contentsButton.tintColor = DSTheme.c.textSecondary
         contentsButton.accessibilityLabel = "目录"
         contentsButton.addTarget(self, action: #selector(contentsTapped), for: .touchUpInside)
@@ -210,7 +213,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
         modeButton.translatesAutoresizingMaskIntoConstraints = false
         modeButton.setImage(ActionIconFactory.image(.editMode, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        modeButton.imageView?.contentMode = .scaleAspectFit
+        modeButton.imageView?.contentMode = .center
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
         modeButton.accessibilityLabel = "切换到编辑模式"
         topBar.addSubview(modeButton)
@@ -228,7 +231,7 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
 
         saveButton.translatesAutoresizingMaskIntoConstraints = false
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        saveButton.imageView?.contentMode = .scaleAspectFit
+        saveButton.imageView?.contentMode = .center
         saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
         saveButton.accessibilityLabel = "保存"
         saveButton.isEnabled = false
@@ -394,6 +397,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
     func updateSidebarToggle(collapsed: Bool) {
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         sidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        sidebarButton.imageView?.contentMode = .center
+        sidebarButton.contentHorizontalAlignment = .center
+        sidebarButton.contentVerticalAlignment = .center
         sidebarButton.tintColor = DSTheme.c.textSecondary
         sidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
     }
@@ -445,6 +451,9 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
             ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph),
             for: .normal
         )
+        appearanceButton.imageView?.contentMode = .center
+        appearanceButton.contentHorizontalAlignment = .center
+        appearanceButton.contentVerticalAlignment = .center
         appearanceButton.tintColor = DSTheme.c.textSecondary
         appearanceButton.accessibilityLabel = dark ? "切换到白天模式" : "切换到黑夜模式"
     }
@@ -552,10 +561,16 @@ final class MarkdownReaderViewController: UIViewController, WKNavigationDelegate
         let modeKind: ActionIconFactory.Kind = isEditMode ? .readMode : .editMode
         modeButton.setTitle(nil, for: .normal)
         modeButton.setImage(ActionIconFactory.image(modeKind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        modeButton.imageView?.contentMode = .center
+        modeButton.contentHorizontalAlignment = .center
+        modeButton.contentVerticalAlignment = .center
         modeButton.tintColor = c.textSecondary
         modeButton.accessibilityLabel = isEditMode ? "切换到阅读模式" : "切换到编辑模式"
         saveButton.setTitle(nil, for: .normal)
         saveButton.setImage(ActionIconFactory.image(.save, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        saveButton.imageView?.contentMode = .center
+        saveButton.contentHorizontalAlignment = .center
+        saveButton.contentVerticalAlignment = .center
         saveButton.isHidden = false
         saveButton.isEnabled = isEditMode
         saveButton.alpha = isEditMode ? 1 : 0.35

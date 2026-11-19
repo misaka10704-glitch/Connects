@@ -311,6 +311,8 @@ final class StudyShellViewController: UIViewController {
         panelCapsulePortraitCenterX = panelStageCapsule.centerXAnchor.constraint(equalTo: chatHost.centerXAnchor)
         // Align with chat nav bar icons (sidebar / ⋯), not chatHost.top — that sat in the
         // status-bar band and looked vertically offset when AI is fully expanded.
+        // syncPortraitStageCapsuleChromeAlignment() corrects .constant to the real
+        // bar-button mid-line after layout — the base anchor must stay at bar mid-Y.
         panelCapsulePortraitSeamY = panelStageCapsule.centerYAnchor.constraint(
             equalTo: chatNav.navigationBar.centerYAnchor
         )
@@ -1092,6 +1094,9 @@ final class StudyShellViewController: UIViewController {
         floatingSidebarButton.translatesAutoresizingMaskIntoConstraints = true
         floatingSidebarButton.frame = CGRect(x: 0, y: 0, width: ActionIconFactory.hitTarget, height: ActionIconFactory.hitTarget)
         floatingSidebarButton.setImage(ActionIconFactory.image(.sidebarOpen, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
+        floatingSidebarButton.imageView?.contentMode = .center
+        floatingSidebarButton.contentHorizontalAlignment = .center
+        floatingSidebarButton.contentVerticalAlignment = .center
         floatingSidebarButton.tintColor = DSTheme.c.textSecondary
         floatingSidebarButton.accessibilityLabel = "打开侧栏"
         floatingSidebarButton.alpha = 0
@@ -1312,7 +1317,10 @@ final class StudyShellViewController: UIViewController {
         ebookReaderVC.updateSidebarToggle(collapsed: collapsed)
         let kind: ActionIconFactory.Kind = collapsed ? .sidebar : .sidebarOpen
         floatingSidebarButton.setImage(ActionIconFactory.image(kind, pointSize: ActionIconFactory.chromeGlyph), for: .normal)
-        floatingSidebarButton.tintColor = DSTheme.c.textSecondary
+        floatingSidebarButton.imageView?.contentMode = .center
+        floatingSidebarButton.contentHorizontalAlignment = .center
+        floatingSidebarButton.contentVerticalAlignment = .center
+        floatingSidebarButton.tintColor = DSTheme.reader.textPrimary
         floatingSidebarButton.accessibilityLabel = collapsed ? "打开侧栏" : "关闭侧栏"
         chatVC.updateSidebarToggleTitle(collapsed: collapsed)
     }
@@ -2160,6 +2168,13 @@ extension StudyShellViewController: StudyReadingContextProviding {
     }
 
     var studyChatPanelStage: StudyChatPanelStage { chatPanelStage }
+
+    #if DEBUG
+    /// QA hook: -CapsuleHalfStage drives the panel straight into half stage for screenshots.
+    func qaSetPanelStage(_ stage: StudyChatPanelStage) {
+        applyChatPanelStage(stage, animated: false)
+    }
+    #endif
 
     var studyIsPortraitLayout: Bool { isPortraitMode }
 

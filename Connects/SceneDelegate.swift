@@ -88,6 +88,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 if let doc = try? StudyDocumentStore.shared.openDocument(from: file, forceText: false) {
                     _ = ConversationStore.shared.createConversation(studyDocumentID: doc.id)
                 }
+                if ProcessInfo.processInfo.arguments.contains("-CapsuleHalfStage") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        (window.rootViewController as? RootSplitViewController)?
+                            .qaStudyShell.qaSetPanelStage(.half)
+                    }
+                }
             }
         }
         #endif

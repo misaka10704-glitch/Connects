@@ -200,10 +200,10 @@ final class StudyPanelStageCapsule: UIView {
     /// so the seam doesn't steal highlighter strokes.
     var prefersFullBoundsHitTesting = false
 
-    /// Match input-bar「AI 选项」chip height (`InputBarView.btnSize` = 30).
+    /// Match input-bar「AI 选项」chip height (`InputBarView.btnSize` = 32).
     /// Width is longer than the model chip so ▲/▼ halves stay easy to hit.
-    static let chipHeight: CGFloat = 30
-    static let chipWidth: CGFloat = 96
+    static let chipHeight: CGFloat = 36
+    static let chipWidth: CGFloat = 100
 
     override init(frame: CGRect) {
         super.init(frame: frame)

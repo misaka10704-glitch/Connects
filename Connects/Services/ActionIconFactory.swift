@@ -7,21 +7,21 @@ enum ActionIconFactory {
     // MARK: - Size tokens (single source of truth)
 
     /// Reader top bars, floating sidebar, nav bar items.
-    static let chromeGlyph: CGFloat = 18
+    static let chromeGlyph: CGFloat = 20
     /// Composer tool row (attach / search / think / Ask / capture).
-    static let toolGlyph: CGFloat = 16
+    static let toolGlyph: CGFloat = 17
     /// ConnectsMenu + compact Study chrome clusters.
-    static let menuGlyph: CGFloat = 15
+    static let menuGlyph: CGFloat = 16
     /// Message copy / retry / fork.
-    static let messageActionGlyph: CGFloat = 16
+    static let messageActionGlyph: CGFloat = 17
     /// Inline search-field leading icon.
-    static let fieldGlyph: CGFloat = 14
+    static let fieldGlyph: CGFloat = 15
     /// Send / stop glyphs inside the circular action button.
-    static let sendGlyph: CGFloat = 14
+    static let sendGlyph: CGFloat = 15
     /// Tiny AI spark on model chip.
-    static let chipGlyph: CGFloat = 11
+    static let chipGlyph: CGFloat = 12
     /// Reader / nav icon button hit target.
-    static let hitTarget: CGFloat = 40
+    static let hitTarget: CGFloat = 44
 
     enum Kind: String {
         case copy, retry, fork, send, stop, plus

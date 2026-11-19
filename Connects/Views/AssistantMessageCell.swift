@@ -120,7 +120,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private var nativeMessageForRemeasure: ChatMessage?
     private var lastActionRowSignature = ""
     private var lastChromeActionKey = ""
-    private static let chromeHeaderFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
+    private static let chromeHeaderFont = UIFont.systemFont(ofSize: 14, weight: .semibold)
     private var cachedThinkingExpandDelta: CGFloat = 0
     private var cachedSearchExpandDelta: CGFloat = 0
 
@@ -1114,7 +1114,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         let body = UILabel()
         body.translatesAutoresizingMaskIntoConstraints = false
-        body.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        body.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         body.numberOfLines = 3
         body.textColor = colors.textSecondary
         body.tag = 7102
@@ -3246,7 +3246,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         searchHeader.translatesAutoresizingMaskIntoConstraints = false
         searchHeader.contentHorizontalAlignment = .left
-        searchHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        searchHeader.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
         searchHeader.titleLabel?.lineBreakMode = .byTruncatingTail
         searchHeader.setContentCompressionResistancePriority(.required, for: .vertical)
         searchHeader.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
@@ -3285,7 +3285,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         thinkingHeader.translatesAutoresizingMaskIntoConstraints = false
         thinkingHeader.contentHorizontalAlignment = .left
-        thinkingHeader.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        thinkingHeader.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
         thinkingHeader.connectsSetContentInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
         thinkingHeader.addTarget(self, action: #selector(openThinkingChrome), for: .touchUpInside)
         thinkingBox.addSubview(thinkingHeader)
@@ -3358,7 +3358,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         versionCluster.spacing = 2
         versionCluster.alignment = .center
         versionCluster.isHidden = true
-        versionLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        versionLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         versionLabel.textAlignment = .center
         versionLabel.setContentHuggingPriority(.required, for: .horizontal)
         versionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
