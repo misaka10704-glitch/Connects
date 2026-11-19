@@ -2,11 +2,24 @@
 
 面向 **iPad** 的开源 AI 聊天与 Study 工作台（**iOS 18+**，GPL-3.0）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型，也支持任意 OpenAI 兼容端点（BYOK）。
 
-**当前版本：5.2.0** · **License：GPL-3.0** · 仅源码发行（自签 / sideload，不上架 App Store）
+**当前版本：5.3.0** · **License：GPL-3.0** · 仅源码发行（自签 / sideload，不上架 App Store）
 
 介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
 
 > **开源说明**：本项目按 GPL-3.0 开源（见 `LICENSE`），第三方组件许可见 `THIRD_PARTY_NOTICES.md`。仓库不含任何 API Key——所有 Key 仅存本机 Keychain。`Connects.xcodeproj` 里保留的 `DEVELOPMENT_TEAM` 是作者个人签名 ID，克隆后请在 Signing 中换成你自己的 Team。
+
+## 5.3 亮点（开源首个版本）
+
+- **GPL-3.0 开源**：仓库含 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`；仅源码 + sideload IPA 发行，不上架 App Store。
+- **BYOK**：自定义 OpenAI 兼容提供商（baseURL 自动归一化，模型 ID 自选，可标视觉支持）；设置页重构，内置提供商池扩充。
+- **工作区 Agent**：`propose_edit` / `create_file` / `delete_file` 可作用于工作区内任意相对路径，全部进逐文件 Diff 审查；会话模式三档（Ask / Plan / Agent）。
+- **系统适配**：改用 UIScene 生命周期（iOS 27 启动修复）；启动屏品牌化；顶栏图标与输入栏观感统一。
+- **公式与解析**：KaTeX `mhchem`（`\ce` / `\pu`）；价格 `$` 与散 `\text` 按正文处理，不再误判公式。
+- **发行**：`sideload-ipa` workflow 产未签名 `Connects.ipa`，Sideloadly / AltStore / SideStore 自签即可装。
+
+## 5.2 亮点（EPUB / PDF 批注）
+
+- EPUB / PDF 批注：可靠的跳转与写回（`v5.2.0` tag 对应 `89784e9`，未出 Release）。
 
 ## 5.1 亮点（稳定版）
 
