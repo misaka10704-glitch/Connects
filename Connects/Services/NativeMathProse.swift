@@ -81,6 +81,13 @@ enum NativeMathProse {
         decompose(tex)
     }
 
+    /// Peel a leading `\\text{…}` (and kin) so chat prose does not leak the command.
+    static func peelTextCommand(at start: String.Index,
+                                in source: String) -> (content: String, end: String.Index)? {
+        guard let command = textCommand(at: start, in: source, proseOnly: false) else { return nil }
+        return (command.content, command.end)
+    }
+
     private static func coalesceAdjacentMath(_ inlines: [NativeInline]) -> [NativeInline] {
         var merged = [NativeInline]()
         for inline in inlines {

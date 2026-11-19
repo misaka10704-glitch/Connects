@@ -446,6 +446,93 @@ final class NativeMathParseTests: XCTestCase {
         XCTAssertTrue(ios.contains("■"), ios)
     }
 
+    func testAppStorePriceAndTextCommandsStayProse() {
+        NativeMarkdownParser.shared.clear()
+        let raw = """
+        **$9.99 \\text{是}“\\text{卖得动}”\\text{和}“\\text{不掉价}”\\text{之间的平衡点。}**
+        \\text{你本来想把国区} ¥39 \\text{那套搬过去}。
+        - **美区定价 $9.99，\\text{回本约} 12 \\text{份}，\\text{别定} $4.99。**
+        开发者账号 $99/年，到手约 $8.49。
+        | 定价 | 到手 |
+        |---|---|
+        | $9.99 | ~$8.49 |
+        """
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        let joined = flattenText(doc)
+        XCTAssertTrue(joined.contains("$9.99"), joined)
+        XCTAssertTrue(joined.contains("$4.99"), joined)
+        XCTAssertTrue(joined.contains("$99/年"), joined)
+        XCTAssertTrue(joined.contains("$8.49"), joined)
+        XCTAssertTrue(joined.contains("卖得动"), joined)
+        XCTAssertTrue(joined.contains("回本约"), joined)
+        XCTAssertFalse(joined.contains("\\text"), joined)
+        XCTAssertFalse(joined.contains("$9.99 \\text"), joined)
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .table(let table) = $0 {
+                return table.rows.contains { row in
+                    row.contains { cell in
+                        flattenInlines(cell).contains("$9.99")
+                    }
+                }
+            }
+            return false
+        }), describe(doc.blocks))
+        NativeMarkdownParser.shared.clear()
+        let mathZero = NativeMarkdownParser.shared.parse("趋于 $0$ 与 $2x$。")
+        XCTAssertTrue(flattenText(mathZero).contains("趋于"), flattenText(mathZero))
+        XCTAssertTrue(mathZero.blocks.contains(where: {
+            if case .paragraph(let inlines) = $0 {
+                return inlines.contains {
+                    if case .inlineMath(let tex) = $0 { return tex == "0" }
+                    return false
+                }
+            }
+            return false
+        }), describe(mathZero.blocks))
+        XCTAssertTrue(mathZero.blocks.contains(where: {
+            if case .paragraph(let inlines) = $0 {
+                return inlines.contains {
+                    if case .inlineMath(let tex) = $0 { return tex == "2x" }
+                    return false
+                }
+            }
+            return false
+        }), describe(mathZero.blocks))
+    }
+
+    private func flattenText(_ doc: NativeMarkdownDocument) -> String {
+        doc.blocks.map { block in
+            switch block {
+            case .paragraph(let inlines), .displayMathComposite(let inlines), .blockquote(let inlines):
+                return flattenInlines(inlines)
+            case .heading(_, let inlines):
+                return flattenInlines(inlines)
+            case .list(_, let items):
+                return items.map { flattenInlines($0) }.joined()
+            case .table(let table):
+                let header = table.header.map { flattenInlines($0) }.joined(separator: "|")
+                let rows = table.rows.map { $0.map { flattenInlines($0) }.joined(separator: "|") }.joined()
+                return header + rows
+            default:
+                return ""
+            }
+        }.joined()
+    }
+
+    private func flattenInlines(_ inlines: [NativeInline]) -> String {
+        inlines.map { inline in
+            switch inline {
+            case .text(let t): return t
+            case .bold(let kids), .italic(let kids), .link(let kids, _):
+                return flattenInlines(kids)
+            case .inlineCode(let t): return t
+            case .inlineMath(let t): return "$\(t)$"
+            case .mathWithScript(let base, let script, _): return base + script
+            case .lineBreak: return "\n"
+            }
+        }.joined()
+    }
+
     private func joinedText(_ doc: NativeMarkdownDocument) -> String {
         doc.blocks.flatMap { block -> [String] in
             switch block {

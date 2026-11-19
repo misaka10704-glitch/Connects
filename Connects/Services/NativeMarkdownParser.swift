@@ -429,6 +429,12 @@ final class NativeMarkdownParser {
                 cursor = end.upperBound
                 continue
             }
+            // `$9.99` / `$99/年` is money — do not hunt for a later `$` closer.
+            if let money = currencyAmountPrefix(tail) {
+                buffer.append(money)
+                cursor = source.index(cursor, offsetBy: money.count)
+                continue
+            }
             if tail.hasPrefix("$"), !tail.hasPrefix("$$"), !isEscaped(cursor, in: source),
                let end = nextUnescapedDollar(after: cursor, in: source) {
                 let body = String(source[source.index(after: cursor)..<end])
@@ -442,6 +448,12 @@ final class NativeMarkdownParser {
                 // that swallows the rest of the paragraph (e.g. `$0$ … \int … $`).
                 buffer.append(String(source[cursor...end]))
                 cursor = source.index(after: end)
+                continue
+            }
+            if let peeled = NativeMathProse.peelTextCommand(at: cursor, in: source) {
+                flush()
+                result.append(contentsOf: parseInlines(peeled.content))
+                cursor = peeled.end
                 continue
             }
             if let bareMath = bareTeXRunPrefix(tail) {
@@ -564,6 +576,8 @@ final class NativeMarkdownParser {
     private func shouldParseDollarMath(_ body: String) -> Bool {
         let value = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains("\n") else { return false }
+        if looksLikeCurrencyMathBody(value) { return false }
+        if containsCJK(value) || value.contains("\\text") { return false }
         // `$5-$10` is a price range. A lone number (`$0$`, `$1$`) is math.
         if value.first?.isNumber == true,
            value.range(of: #"[A-Za-z\\_^{}]"#, options: .regularExpression) == nil,
@@ -571,6 +585,54 @@ final class NativeMarkdownParser {
             return false
         }
         return true
+    }
+
+    /// `$9.99`, `$8.49`, `$99/年` — not a TeX formula.
+    private func currencyAmountPrefix(_ tail: Substring) -> String? {
+        guard tail.hasPrefix("$") else { return nil }
+        var index = tail.index(after: tail.startIndex)
+        guard index < tail.endIndex, tail[index].isNumber else { return nil }
+        while index < tail.endIndex, tail[index].isNumber {
+            index = tail.index(after: index)
+        }
+        if index < tail.endIndex, (tail[index] == "." || tail[index] == ",") {
+            let fracStart = tail.index(after: index)
+            guard fracStart < tail.endIndex, tail[fracStart].isNumber else { return nil }
+            index = fracStart
+            var frac = 0
+            while index < tail.endIndex, tail[index].isNumber, frac < 2 {
+                index = tail.index(after: index)
+                frac += 1
+            }
+        }
+        if index < tail.endIndex, tail[index] == "/" {
+            index = tail.index(after: index)
+            while index < tail.endIndex {
+                let ch = tail[index]
+                if ch.isWhitespace || ch == "$" || ch == "|" || ch == "\\" { break }
+                if "，。；、,.;:!?)]}\"'\u{201C}\u{201D}".contains(ch) { break }
+                index = tail.index(after: index)
+            }
+        }
+        if index < tail.endIndex {
+            let next = tail[index]
+            if next.isLetter || next == "+" || next == "=" || next == "^" || next == "_"
+                || next == "{" || next == "(" || next == "*" {
+                return nil
+            }
+            if next == "$" { return nil }
+        }
+        let token = String(tail[..<index])
+        return token.count >= 2 ? token : nil
+    }
+
+    private func looksLikeCurrencyMathBody(_ value: String) -> Bool {
+        let ns = value as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        let decimal = try? NSRegularExpression(pattern: #"^\d{1,6}[.,]\d{1,2}$"#)
+        if decimal?.firstMatch(in: value, range: range) != nil { return true }
+        let slash = try? NSRegularExpression(pattern: #"^\d{1,6}(/\S+)$"#)
+        return slash?.firstMatch(in: value, range: range) != nil
     }
 
     /// Models often drop the opening `$` on `\int_a^{+\infty} fh$`.
@@ -817,6 +879,11 @@ final class NativeMarkdownParser {
                 if next < text.endIndex, text[next] == "$" {
                     current.append("$$")
                     index = text.index(after: next)
+                    continue
+                }
+                if currencyAmountPrefix(text[index...]) != nil {
+                    current.append("$")
+                    index = next
                     continue
                 }
                 inInlineMath.toggle()
