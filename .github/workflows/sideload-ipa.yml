@@ -16,21 +16,18 @@ jobs:
 
       - name: Build unsigned app (device)
         run: |
-          # Local-package resource bundles (Readium_*.bundle) can lose the
-          # clean-build ordering race against the app target's copy phase —
-          # lstat(...): No such file or directory. An incremental second pass
-          # finds them already produced, so retry once before giving up.
-          build_app() {
-            xcodebuild \
-              -scheme Connects-iPhone \
-              -configuration Release-iPhone \
-              -destination 'generic/platform=iOS' \
-              -derivedDataPath build \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              build
-          }
-          build_app || { echo "::warning::First pass failed — retrying once (incremental)."; build_app; }
+          # Release-iPhone must exist at BOTH project and target level — if the
+          # project-level configuration is missing, the app silently falls back
+          # to "Release" while local packages build "Release-iPhone", and the
+          # Readium_*.bundle copy phase then looks in the wrong products dir.
+          xcodebuild \
+            -scheme Connects-iPhone \
+            -configuration Release-iPhone \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
 
       - name: Package unsigned IPA
         run: |

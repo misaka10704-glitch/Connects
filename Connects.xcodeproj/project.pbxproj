@@ -935,6 +935,31 @@
 			};
 			name = Debug;
 		};
+		G30000010000000000000001 /* Debug-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = "Debug-iPhone";
+		};
 		AA0000010000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -954,6 +979,26 @@
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
+		};
+		G30000010000000000000002 /* Release-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Release-iPhone";
 		};
 		AA0000010000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1070,6 +1115,48 @@
 			};
 			name = Release;
 		};
+		D70000010000000000000006 /* Debug-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Connects.app/Connects";
+			};
+			name = "Debug-iPhone";
+		};
+		D70000010000000000000007 /* Release-iPhone */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Connects/Vendor/iosMath/lib",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render",
+					"$(SRCROOT)/Connects/Vendor/iosMath/render/internal",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.connects.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Connects.app/Connects";
+			};
+			name = "Release-iPhone";
+		};
 		G10000010000000000000001 /* Debug-iPhone */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1151,6 +1238,8 @@
 			buildConfigurations = (
 				AA0000010000000000000001 /* Debug */,
 				AA0000010000000000000002 /* Release */,
+				G30000010000000000000001 /* Debug-iPhone */,
+				G30000010000000000000002 /* Release-iPhone */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1171,6 +1260,8 @@
 			buildConfigurations = (
 				D70000010000000000000002 /* Debug */,
 				D70000010000000000000003 /* Release */,
+				D70000010000000000000006 /* Debug-iPhone */,
+				D70000010000000000000007 /* Release-iPhone */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
