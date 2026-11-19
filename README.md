@@ -2,7 +2,7 @@
 
 面向 **iPad** 的开源 AI 聊天与 Study 工作台（**iOS 18+**，GPL-3.0）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型，也支持任意 OpenAI 兼容端点（BYOK）。
 
-**当前版本：5.1.0** · **License：GPL-3.0** · 仅源码发行（自签 / sideload，不上架 App Store）
+**当前版本：5.2.0** · **License：GPL-3.0** · 仅源码发行（自签 / sideload，不上架 App Store）
 
 介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
 
