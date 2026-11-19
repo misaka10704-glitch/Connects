@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A10000010000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* AppDelegate.swift */; };
+		A10000010000000000000090 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000090 /* SceneDelegate.swift */; };
 		A10000010000000000000002 /* AIModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* AIModel.swift */; };
 		A10000010000000000000003 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* ChatMessage.swift */; };
 		A10000010000000000000004 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* Conversation.swift */; };
@@ -177,6 +178,7 @@
 
 /* Begin PBXFileReference section */
 		A20000010000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A20000010000000000000090 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		A20000010000000000000002 /* AIModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModel.swift; sourceTree = "<group>"; };
 		A20000010000000000000003 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		A20000010000000000000004 /* Conversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Conversation.swift; sourceTree = "<group>"; };
@@ -372,6 +374,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000001 /* AppDelegate.swift */,
+				A20000010000000000000090 /* SceneDelegate.swift */,
 				B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */,
 				B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */,
 				B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */,
@@ -747,6 +750,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000010000000000000001 /* AppDelegate.swift in Sources */,
+				A10000010000000000000090 /* SceneDelegate.swift in Sources */,
 				H10000010000000000000001 /* UIApplication+ConnectsWindows.swift in Sources */,
 				A10000010000000000000002 /* AIModel.swift in Sources */,
 				A10000010000000000000003 /* ChatMessage.swift in Sources */,
@@ -965,6 +969,7 @@
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1000,6 +1005,7 @@
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1078,6 +1084,7 @@
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1113,6 +1120,7 @@
 				);
 				INFOPLIST_FILE = Connects/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
