@@ -35,7 +35,7 @@ enum ConnectsKeysTransferService {
             to: staging.appendingPathComponent("preferences.plist")
         )
 
-        let snapshot = KeychainHelper.exportSnapshot()
+        let snapshot = KeychainHelper.exportSnapshot(extraKeys: SettingsManager.shared.customKeychainKeys)
         let keychainData = try JSONSerialization.data(
             withJSONObject: snapshot,
             options: [.prettyPrinted, .sortedKeys]

@@ -21,6 +21,34 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         StudyAgentProcessQAHarness.runIfRequested()
         StudyAgentLiveQAHarness.runIfRequested()
         StudyAgentSPIE2EHarness.runIfRequested()
+        if ProcessInfo.processInfo.arguments.contains("-SettingsPreview") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                (window.rootViewController as? RootSplitViewController)?.sidebarDidRequestSettings()
+            }
+            let scrollArg = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("-ScrollBottom") || $0.hasPrefix("-ScrollMid") }
+            if scrollArg != nil {
+                let fraction: CGFloat = scrollArg == "-ScrollMid" ? 0.16 : 1.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                    func scrollTo(_ view: UIView) -> Bool {
+                        if let sv = view as? UIScrollView, sv.contentSize.height > sv.bounds.height {
+                            let maxY = sv.contentSize.height - sv.bounds.height + sv.adjustedContentInset.bottom
+                            sv.setContentOffset(CGPoint(x: 0, y: max(0, maxY * fraction)), animated: false)
+                            return true
+                        }
+                        return view.subviews.contains(where: { scrollTo($0) })
+                    }
+                    if let presented = window.rootViewController?.presentedViewController {
+                        _ = scrollTo(presented.view)
+                    }
+                }
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("-BYOKPreview") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                let editor = BYOKProviderEditViewController(provider: nil)
+                window.rootViewController?.present(editor.embeddedForSettings(onSave: {}), animated: false)
+            }
+        }
         #endif
     }
 

@@ -36,7 +36,7 @@ final class ModelVisibilityView: UIView, UITextFieldDelegate {
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.font = DSTheme.bodyFont(size: 14)
-        searchField.placeholder = "添加或搜索模型"
+        searchField.placeholder = L("添加或搜索模型", "Add or search models")
         searchField.clearButtonMode = .whileEditing
         searchField.returnKeyType = .search
         searchField.delegate = self
@@ -83,7 +83,7 @@ final class ModelVisibilityView: UIView, UITextFieldDelegate {
         searchField.textColor = c.textPrimary
         searchField.tintColor = c.accent
         searchField.attributedPlaceholder = NSAttributedString(
-            string: "添加或搜索模型",
+            string: L("添加或搜索模型", "Add or search models"),
             attributes: [.foregroundColor: c.textTertiary]
         )
         viewWithTag(88)?.backgroundColor = c.divider
@@ -106,11 +106,11 @@ final class ModelVisibilityView: UIView, UITextFieldDelegate {
         switches.removeAll()
 
         let q = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let models = AIModelOption.all.filter { m in
+        let models = AIModelOption.catalog.filter { m in
             guard !q.isEmpty else { return true }
             return m.displayName.lowercased().contains(q)
                 || m.modelId.lowercased().contains(q)
-                || m.provider.displayName.lowercased().contains(q)
+                || m.providerDisplayName.lowercased().contains(q)
         }
 
         for (i, model) in models.enumerated() {

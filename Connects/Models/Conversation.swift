@@ -97,7 +97,7 @@ struct Conversation: Codable, Equatable {
     }
 
     init(id: String = UUID().uuidString,
-         title: String = "新对话",
+         title: String = L("新对话", "New Chat"),
          model: AIModelOption = .deepseekV4Pro,
          messages: [ChatMessage] = [],
          updatedAt: Date = Date(),
@@ -132,12 +132,18 @@ struct Conversation: Codable, Equatable {
         self.studyAgentMode = studyAgentMode
     }
 
+    /// Untitled / fork-derived names across both UI languages — eligible for AI renaming.
+    static func isGenericTitle(_ title: String) -> Bool {
+        title == "新对话" || title == "New Chat"
+            || title.hasSuffix("（分叉）") || title.hasSuffix(" (Fork)")
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, title, messages, updatedAt, isArchived, forkedFromID, titleLocked
         case contextSummary, contextSummaryThroughMessageID
         case agentID, projectID
         case studyDocumentID, studyWorkspaceID, studySessionKind, studyPageCaptureEnabled, studyAgentMode
-        case provider, modelId
+        case provider, modelId, customProviderID
     }
 
     init(from decoder: Decoder) throws {
@@ -168,7 +174,22 @@ struct Conversation: Codable, Equatable {
         )
         let provider = try container.decode(AIProvider.self, forKey: .provider)
         let modelId = try container.decode(String.self, forKey: .modelId)
-        if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
+        let customProviderID = try container.decodeIfPresent(String.self, forKey: .customProviderID)
+        if provider == .custom {
+            // BYOK: rebuild the option from the live profile; fall back when deleted.
+            if let pid = customProviderID,
+               let profile = SettingsManager.shared.customProvider(id: pid),
+               profile.modelIDs.contains(modelId) {
+                model = AIModelOption(
+                    provider: .custom, modelId: modelId, displayName: modelId,
+                    baseURL: profile.chatCompletionsURL, supportsVision: profile.supportsVision,
+                    supportsThinkingToggle: false, forcesThinking: false,
+                    thinkingStyle: .none, customProviderID: pid
+                )
+            } else {
+                model = .deepseekV4Pro
+            }
+        } else if let available = AIModelOption.all.first(where: { $0.provider == provider && $0.modelId == modelId }) {
             model = available
         } else if provider == .kimi {
             model = .kimiK3
@@ -197,5 +218,6 @@ struct Conversation: Codable, Equatable {
         try container.encode(studyAgentMode, forKey: .studyAgentMode)
         try container.encode(model.provider, forKey: .provider)
         try container.encode(model.modelId, forKey: .modelId)
+        try container.encodeIfPresent(model.customProviderID, forKey: .customProviderID)
     }
 }

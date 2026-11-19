@@ -7,6 +7,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let contentStack = UIStackView()
 
     private let appearanceControl = UISegmentedControl(items: AppearanceMode.allCases.map { $0.displayName })
+    private let languageControl = UISegmentedControl(items: AppLanguage.allCases.map { $0.displayName })
     private let fontSizeControl = UISegmentedControl(items: ["小", "中", "大"])
     private let keepScreenOnSwitch = UISwitch()
     private let keepScreenOnLabel = UILabel()
@@ -44,19 +45,50 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private var sectionLabels: [UILabel] = []
     private var cards: [UIView] = []
     private var footerLabels: [UILabel] = []
+    private var providerRowLabels: [UILabel] = []
+    private var separatorLines: [UIView] = []
+    private let showKeysLabel = UILabel()
+    private let showKeysSwitch = UISwitch()
+    private let byokListStack = UIStackView()
+    private var byokRowViews: [UIView] = []
+    private var doneBarButton: UIBarButtonItem?
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "设置"
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "完成",
+        title = L("设置", "Settings")
+        let done = UIBarButtonItem(
+            title: L("完成", "Done"),
             style: .done,
             target: self,
             action: #selector(doneTapped)
         )
+        doneBarButton = done
+        navigationItem.rightBarButtonItem = done
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appLanguageChanged), name: .appLanguageDidChange, object: nil)
         buildForm()
         applyTheme()
+    }
+
+    /// Language switching swaps every label — rebuild the form rather than patching strings.
+    private func rebuildForm() {
+        contentStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        sectionLabels.removeAll()
+        footerLabels.removeAll()
+        providerRowLabels.removeAll()
+        separatorLines.removeAll()
+        cards.removeAll { $0 !== modelVisibility }
+        buildForm()
+        applyTheme()
+    }
+
+    @objc private func appLanguageChanged() { rebuildForm() }
+
+    @objc private func languageChanged() {
+        let modes = AppLanguage.allCases
+        guard languageControl.selectedSegmentIndex >= 0,
+              languageControl.selectedSegmentIndex < modes.count else { return }
+        SettingsManager.shared.appLanguage = modes[languageControl.selectedSegmentIndex]
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -107,47 +139,30 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             card.backgroundColor = c.surface
             card.layer.borderColor = c.border.cgColor
         }
+        for line in separatorLines {
+            line.backgroundColor = c.divider
+        }
 
-        deepseekField.textColor = c.textPrimary
-        deepseekField.tintColor = c.accent
-        deepseekField.attributedPlaceholder = NSAttributedString(
-            string: "sk-… DeepSeek",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        kimiField.textColor = c.textPrimary
-        kimiField.tintColor = c.accent
-        kimiField.attributedPlaceholder = NSAttributedString(
-            string: "sk-… Kimi / Moonshot",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        dashscopeField.textColor = c.textPrimary
-        dashscopeField.tintColor = c.accent
-        dashscopeField.attributedPlaceholder = NSAttributedString(
-            string: "sk-… DashScope / 通义",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        zhipuField.textColor = c.textPrimary
-        zhipuField.tintColor = c.accent
-        zhipuField.attributedPlaceholder = NSAttributedString(
-            string: "智谱 API Key",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        doubaoField.textColor = c.textPrimary
-        doubaoField.tintColor = c.accent
-        doubaoField.attributedPlaceholder = NSAttributedString(
-            string: "火山方舟 API Key",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
-        doubaoEndpointField.textColor = c.textPrimary
-        doubaoEndpointField.tintColor = c.accent
-        doubaoEndpointField.attributedPlaceholder = NSAttributedString(
-            string: "可选 ep-… 接入点",
-            attributes: [.foregroundColor: c.textTertiary]
-        )
+        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField, doubaoEndpointField] {
+            field.textColor = c.textPrimary
+            field.tintColor = c.accent
+            if let raw = field.placeholder {
+                field.attributedPlaceholder = NSAttributedString(
+                    string: raw,
+                    attributes: [.foregroundColor: c.textTertiary]
+                )
+            }
+        }
+        for label in providerRowLabels {
+            label.textColor = c.textPrimary
+        }
+        showKeysLabel.textColor = c.textPrimary
+        showKeysSwitch.onTintColor = c.accent
         kimiCNLabel.textColor = c.textPrimary
         kimiCNSwitch.onTintColor = c.accent
         qwenCNLabel.textColor = c.textPrimary
         qwenCNSwitch.onTintColor = c.accent
+        applyBYOKRowTheme()
         modelVisibility.applyTheme()
         exportBackupButton.setTitleColor(c.accent, for: .normal)
         exportChatTransferButton.setTitleColor(c.accent, for: .normal)
@@ -176,6 +191,10 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             fontSizeControl.selectedSegmentTintColor = c.accent
             fontSizeControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
             fontSizeControl.setTitleTextAttributes([.foregroundColor: c.textPrimary], for: .normal)
+            languageControl.tintColor = c.accent
+            languageControl.selectedSegmentTintColor = c.accent
+            languageControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
+            languageControl.setTitleTextAttributes([.foregroundColor: c.textPrimary], for: .normal)
         }
     }
 
@@ -206,241 +225,165 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -40)
         ])
 
-        // 1. API keys first — cold-start path.
-        contentStack.addArrangedSubview(makeSectionTitle("DeepSeek（Pro / Flash 共用）"))
-        configureField(deepseekField)
-        deepseekField.text = SettingsManager.shared.deepseekAPIKey
-        contentStack.addArrangedSubview(makeCard(embedding: deepseekField, height: 44, inset: 0))
-        contentStack.setCustomSpacing(22, after: contentStack.arrangedSubviews.last!)
-
-        contentStack.addArrangedSubview(makeSectionTitle("Kimi"))
-        configureField(kimiField)
-        kimiField.text = SettingsManager.shared.kimiAPIKey
-        contentStack.addArrangedSubview(makeCard(embedding: kimiField, height: 44, inset: 0))
-
-        let cnRow = makeSwitchRow(
-            label: kimiCNLabel,
-            text: "国内节点 api.moonshot.cn（国内强烈建议开）",
-            sw: kimiCNSwitch,
-            isOn: SettingsManager.shared.kimiUseChinaEndpoint,
-            action: #selector(kimiCNChanged)
-        )
-        contentStack.addArrangedSubview(cnRow)
-        contentStack.setCustomSpacing(22, after: cnRow)
-
-        contentStack.addArrangedSubview(makeSectionTitle("Qwen（DashScope）"))
-        configureField(dashscopeField)
-        dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
-        contentStack.addArrangedSubview(makeCard(embedding: dashscopeField, height: 44, inset: 0))
-        let qwenCNRow = makeSwitchRow(
-            label: qwenCNLabel,
-            text: "国内节点 dashscope.aliyuncs.com",
-            sw: qwenCNSwitch,
-            isOn: SettingsManager.shared.qwenUseChinaEndpoint,
-            action: #selector(qwenCNChanged)
-        )
-        contentStack.addArrangedSubview(qwenCNRow)
-        contentStack.setCustomSpacing(22, after: qwenCNRow)
-
-        contentStack.addArrangedSubview(makeSectionTitle("智谱 GLM"))
-        configureField(zhipuField)
-        zhipuField.text = SettingsManager.shared.zhipuAPIKey
-        contentStack.addArrangedSubview(makeCard(embedding: zhipuField, height: 44, inset: 0))
-        contentStack.setCustomSpacing(22, after: contentStack.arrangedSubviews.last!)
-
-        contentStack.addArrangedSubview(makeSectionTitle("豆包（火山方舟）"))
-        configureField(doubaoField)
-        doubaoField.text = SettingsManager.shared.doubaoAPIKey
-        contentStack.addArrangedSubview(makeCard(embedding: doubaoField, height: 44, inset: 0))
+        // 1. API keys — one grouped card: provider rows + endpoint options.
+        contentStack.addArrangedSubview(makeSectionTitle(L("API Key", "API Keys")))
+        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField] {
+            configureField(field)
+        }
         configureField(doubaoEndpointField)
         doubaoEndpointField.isSecureTextEntry = false
-        doubaoEndpointField.placeholder = "可选 ep-… 接入点"
+        deepseekField.text = SettingsManager.shared.deepseekAPIKey
+        kimiField.text = SettingsManager.shared.kimiAPIKey
+        dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
+        zhipuField.text = SettingsManager.shared.zhipuAPIKey
+        doubaoField.text = SettingsManager.shared.doubaoAPIKey
         doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
-        contentStack.addArrangedSubview(makeCard(embedding: doubaoEndpointField, height: 44, inset: 0))
 
-        let tip = UILabel()
-        tip.numberOfLines = 0
-        tip.font = DSTheme.bodyFont(size: 13)
-        tip.text = "Key 存在本机钥匙串，不可混用。填写后请点左上角「完成」才会保存生效。联网 / 深度思考：输入栏地球与灯泡图标。"
-        footerLabels.append(tip)
-        contentStack.addArrangedSubview(tip)
-        contentStack.setCustomSpacing(22, after: tip)
+        let keysCard = makeGroupedCard(rows: [
+            makeProviderRow("DeepSeek", field: deepseekField, placeholder: "sk-…"),
+            makeProviderRow("Kimi", field: kimiField, placeholder: "sk-…"),
+            makeInlineSwitchRow(
+                label: kimiCNLabel, text: L("Kimi 国内节点 api.moonshot.cn", "Kimi China endpoint (api.moonshot.cn)"),
+                sw: kimiCNSwitch, isOn: SettingsManager.shared.kimiUseChinaEndpoint,
+                action: #selector(kimiCNChanged)
+            ),
+            makeProviderRow("Qwen", field: dashscopeField, placeholder: "sk-…"),
+            makeInlineSwitchRow(
+                label: qwenCNLabel, text: L("Qwen 国内节点 dashscope", "Qwen China endpoint (DashScope)"),
+                sw: qwenCNSwitch, isOn: SettingsManager.shared.qwenUseChinaEndpoint,
+                action: #selector(qwenCNChanged)
+            ),
+            makeProviderRow(L("智谱 GLM", "Zhipu GLM"), field: zhipuField, placeholder: "API Key"),
+            makeProviderRow(L("豆包", "Doubao"), field: doubaoField, placeholder: L("方舟 API Key", "Ark API Key")),
+            makeProviderRow(L("豆包接入点", "Doubao endpoint"), field: doubaoEndpointField, placeholder: L("可选 ep-…", "optional ep-…")),
+            makeInlineSwitchRow(
+                label: showKeysLabel, text: L("显示 API Key 明文", "Show API keys"),
+                sw: showKeysSwitch, isOn: false,
+                action: #selector(showKeysChanged)
+            ),
+        ])
+        contentStack.addArrangedSubview(keysCard)
+        let keyTip = makeTip(L("Key 存本机钥匙串；填完点右上角「完成」保存。深度思考在输入栏灯泡切换。", "Keys stay in the device Keychain. Tap Done to save. Toggle deep thinking via the composer bulb."))
+        contentStack.addArrangedSubview(keyTip)
+        contentStack.setCustomSpacing(22, after: keyTip)
 
-        // 2. Visible models
-        contentStack.addArrangedSubview(makeSectionTitle("显示的模型"))
+        // 2. BYOK custom providers
+        contentStack.addArrangedSubview(makeSectionTitle(L("自定义服务（OpenAI 兼容）", "Custom Providers (OpenAI-Compatible)")))
+        byokListStack.translatesAutoresizingMaskIntoConstraints = false
+        byokListStack.axis = .vertical
+        byokListStack.spacing = 0
+        let byokCard = makeGroupedCard(rows: [], stackOverride: byokListStack)
+        contentStack.addArrangedSubview(byokCard)
+        reloadBYOKRows()
+        let byokTip = makeTip(L("接入任意 OpenAI 兼容端点（OpenAI、OpenRouter、Groq、Ollama 等）。模型以独立条目进入选择列表。", "Connect any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq, Ollama…). Models appear in the picker."))
+        contentStack.addArrangedSubview(byokTip)
+        contentStack.setCustomSpacing(22, after: byokTip)
+
+        // 3. Visible models
+        contentStack.addArrangedSubview(makeSectionTitle(L("显示的模型", "Visible Models")))
         contentStack.addArrangedSubview(modelVisibility)
         cards.append(modelVisibility)
-        let visTip = UILabel()
-        visTip.numberOfLines = 0
-        visTip.font = DSTheme.bodyFont(size: 13)
-        visTip.text = "关掉的模型不会出现在顶栏选择列表里。至少保留一个。"
-        footerLabels.append(visTip)
+        let visTip = makeTip(L("关掉的模型不会出现在顶栏选择列表里。至少保留一个。", "Hidden models are removed from the picker. Keep at least one."))
         contentStack.addArrangedSubview(visTip)
         contentStack.setCustomSpacing(22, after: visTip)
 
-        // 3. Appearance
-        contentStack.addArrangedSubview(makeSectionTitle("外观"))
+        // 4. Appearance & chat — one grouped card.
+        contentStack.addArrangedSubview(makeSectionTitle(L("外观与聊天", "Appearance & Chat")))
         appearanceControl.selectedSegmentIndex = SettingsManager.shared.appearanceMode == .light ? 0 : 1
         appearanceControl.addTarget(self, action: #selector(appearanceChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: appearanceControl, height: 36, inset: 12))
-        contentStack.setCustomSpacing(12, after: contentStack.arrangedSubviews.last!)
-
-        let keepScreenRow = makeSwitchRow(
-            label: keepScreenOnLabel,
-            text: "保持屏幕常亮",
-            sw: keepScreenOnSwitch,
-            isOn: SettingsManager.shared.keepScreenOn,
-            action: #selector(keepScreenOnChanged)
-        )
-        contentStack.addArrangedSubview(makeCard(embedding: keepScreenRow, height: 44, inset: 12))
-        let keepScreenTip = UILabel()
-        keepScreenTip.numberOfLines = 0
-        keepScreenTip.font = DSTheme.bodyFont(size: 13)
-        keepScreenTip.text = "前台使用时防止自动锁屏，方便长时间阅读与对话。切到后台后会恢复系统熄屏。"
-        footerLabels.append(keepScreenTip)
-        contentStack.addArrangedSubview(keepScreenTip)
-        contentStack.setCustomSpacing(22, after: keepScreenTip)
-
-        // 4. Chat (font + turn bar + reasoning)
-        contentStack.addArrangedSubview(makeSectionTitle("聊天"))
         fontSizeControl.selectedSegmentIndex = SettingsManager.shared.chatFontSizeIndex
         fontSizeControl.addTarget(self, action: #selector(fontSizeChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: fontSizeControl, height: 36, inset: 12))
-        let fontTip = UILabel()
-        fontTip.numberOfLines = 0
-        fontTip.font = DSTheme.bodyFont(size: 13)
-        fontTip.text = "字号：小 / 中 / 大。侧栏可用聊天页左上角「关闭 / 侧栏」切换。"
-        footerLabels.append(fontTip)
-        contentStack.addArrangedSubview(fontTip)
-        contentStack.setCustomSpacing(12, after: fontTip)
-
-        let turnContextRow = makeSwitchRow(
-            label: turnContextBarLabel,
-            text: "显示「问题」跳转条",
-            sw: turnContextBarSwitch,
-            isOn: SettingsManager.shared.turnContextBarEnabled,
-            action: #selector(turnContextBarChanged)
-        )
-        contentStack.addArrangedSubview(makeCard(embedding: turnContextRow, height: 44, inset: 12))
-        let turnContextTip = UILabel()
-        turnContextTip.numberOfLines = 0
-        turnContextTip.font = DSTheme.bodyFont(size: 13)
-        turnContextTip.text = "聊天页顶部显示当前可见回复对应的问题；点按可从本对话全部问题中选择并跳转。"
-        footerLabels.append(turnContextTip)
-        contentStack.addArrangedSubview(turnContextTip)
-        contentStack.setCustomSpacing(12, after: turnContextTip)
-
         if let idx = ReasoningEffortLevel.allCases.firstIndex(of: SettingsManager.shared.reasoningEffort) {
             reasoningEffortControl.selectedSegmentIndex = idx
         } else {
             reasoningEffortControl.selectedSegmentIndex = 0
         }
         reasoningEffortControl.addTarget(self, action: #selector(reasoningEffortChanged), for: .valueChanged)
-        contentStack.addArrangedSubview(makeCard(embedding: reasoningEffortControl, height: 36, inset: 12))
-        let effortTip = UILabel()
-        effortTip.numberOfLines = 0
-        effortTip.font = DSTheme.bodyFont(size: 13)
-        effortTip.text = "Kimi K3 思考程度。默认「低」以减少等待；难题可改为「高」或「最大」。也可在输入栏长按灯泡切换。"
-        footerLabels.append(effortTip)
-        contentStack.addArrangedSubview(effortTip)
-        contentStack.setCustomSpacing(22, after: effortTip)
+        if let idx = AppLanguage.allCases.firstIndex(of: SettingsManager.shared.appLanguage) {
+            languageControl.selectedSegmentIndex = idx
+        }
+        languageControl.addTarget(self, action: #selector(languageChanged), for: .valueChanged)
 
-        // 5. Slide Over
-        contentStack.addArrangedSubview(makeSectionTitle("网课侧拉（Slide Over）"))
-        let slideTip = UILabel()
-        slideTip.numberOfLines = 0
-        slideTip.font = DSTheme.bodyFont(size: 13)
-        slideTip.text = """
+        contentStack.addArrangedSubview(makeGroupedCard(rows: [
+            makeLabeledControlRow(L("语言", "Language"), control: languageControl, controlHeight: 32),
+            makeLabeledControlRow(L("外观", "Appearance"), control: appearanceControl, controlHeight: 32),
+            makeLabeledControlRow(L("字号", "Font size"), control: fontSizeControl, controlHeight: 32),
+            makeInlineSwitchRow(
+                label: keepScreenOnLabel, text: L("保持屏幕常亮", "Keep screen on"),
+                sw: keepScreenOnSwitch, isOn: SettingsManager.shared.keepScreenOn,
+                action: #selector(keepScreenOnChanged)
+            ),
+            makeInlineSwitchRow(
+                label: turnContextBarLabel, text: L("显示「问题」跳转条", "Show question bar"),
+                sw: turnContextBarSwitch, isOn: SettingsManager.shared.turnContextBarEnabled,
+                action: #selector(turnContextBarChanged)
+            ),
+            makeLabeledControlRow(L("Kimi 思考", "Kimi thinking"), control: reasoningEffortControl, controlHeight: 32),
+        ]))
+        let chatTip = makeTip(L("Kimi 思考默认「低」；也可在输入栏长按灯泡切换。常亮仅前台生效。", "Kimi thinking defaults to Low; long-press the composer bulb to change. Keep-awake applies while in the foreground."))
+        contentStack.addArrangedSubview(chatTip)
+        contentStack.setCustomSpacing(22, after: chatTip)
+
+        // 5. Backup — one grouped card of action rows.
+        contentStack.addArrangedSubview(makeSectionTitle(L("备份与迁移", "Backup & Transfer")))
+        exportBackupButton.setTitle(L("导出完整备份", "Export full backup"), for: .normal)
+        exportBackupButton.addTarget(self, action: #selector(exportBackupTapped), for: .touchUpInside)
+        importBackupButton.setTitle(L("从完整备份恢复", "Restore from full backup"), for: .normal)
+        importBackupButton.setTitleColor(.systemRed, for: .normal)
+        importBackupButton.addTarget(self, action: #selector(importBackupTapped), for: .touchUpInside)
+        exportChatTransferButton.setTitle(L("导出聊天迁移包", "Export chat transfer"), for: .normal)
+        exportChatTransferButton.addTarget(self, action: #selector(exportChatTransferTapped), for: .touchUpInside)
+        importChatTransferButton.setTitle(L("导入聊天迁移包", "Import chat transfer"), for: .normal)
+        importChatTransferButton.addTarget(self, action: #selector(importChatTransferTapped), for: .touchUpInside)
+        exportKeysButton.setTitle(L("导出 Key 设置", "Export key settings"), for: .normal)
+        exportKeysButton.addTarget(self, action: #selector(exportKeysTapped), for: .touchUpInside)
+        importKeysButton.setTitle(L("导入 Key 设置", "Import key settings"), for: .normal)
+        importKeysButton.addTarget(self, action: #selector(importKeysTapped), for: .touchUpInside)
+        let backupButtons = [
+            exportBackupButton, importBackupButton,
+            exportChatTransferButton, importChatTransferButton,
+            exportKeysButton, importKeysButton,
+        ]
+        for button in backupButtons {
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            button.contentHorizontalAlignment = .left
+        }
+        contentStack.addArrangedSubview(makeGroupedCard(rows: backupButtons.map { makeButtonRow($0) }))
+        let backupTip = makeTip(L("完整备份含对话+Study+设置+Key（恢复会覆盖）；迁移包仅对话；Key 设置含密钥勿公开分享。", "Full backup: chats + Study + settings + keys (restore overwrites). Chat transfer: chats only. Key settings contain secrets — share carefully."))
+        contentStack.addArrangedSubview(backupTip)
+        contentStack.setCustomSpacing(22, after: backupTip)
+
+        // 6. Slide Over tip
+        contentStack.addArrangedSubview(makeSectionTitle(L("网课侧拉（Slide Over）", "Slide Over")))
+        let slideTip = makeTip(L("""
         全屏上网课时可把 Connects 侧拉到屏幕一侧一起用：
         ① 打开网课后，从屏幕底部上滑露出 Dock
         ② 长按 Connects 图标，拖到屏幕右侧松手（进入侧拉）
         ③ 侧拉窗口里点左上角打开对话列表，或从左边缘向右滑
         ④ 再点一下侧拉把手可收起，网课继续全屏看
-        """
-        footerLabels.append(slideTip)
+        """, """
+        Use Connects side-by-side with a full-screen lecture app:
+        1. Swipe up from the bottom to reveal the Dock
+        2. Long-press the Connects icon and drag it to the screen edge
+        3. Tap the top-left button (or swipe from the left edge) for history
+        4. Tap the grabber again to tuck Connects away
+        """))
         contentStack.addArrangedSubview(slideTip)
         contentStack.setCustomSpacing(22, after: slideTip)
 
-        // 6. Backup
-        contentStack.addArrangedSubview(makeSectionTitle("备份与恢复"))
-        exportBackupButton.setTitle("导出完整备份", for: .normal)
-        exportBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        exportBackupButton.contentHorizontalAlignment = .left
-        exportBackupButton.addTarget(self, action: #selector(exportBackupTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: exportBackupButton, height: 42, inset: 0))
-
-        importBackupButton.setTitle("从完整备份恢复", for: .normal)
-        importBackupButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        importBackupButton.contentHorizontalAlignment = .left
-        if #available(iOS 13.0, *) {
-            importBackupButton.setTitleColor(.systemRed, for: .normal)
-        } else {
-            importBackupButton.setTitleColor(UIColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1), for: .normal)
-        }
-        importBackupButton.addTarget(self, action: #selector(importBackupTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: importBackupButton, height: 42, inset: 0))
-
-        exportChatTransferButton.setTitle("导出聊天迁移包", for: .normal)
-        exportChatTransferButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        exportChatTransferButton.contentHorizontalAlignment = .left
-        exportChatTransferButton.addTarget(self, action: #selector(exportChatTransferTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: exportChatTransferButton, height: 42, inset: 0))
-
-        importChatTransferButton.setTitle("导入聊天迁移包", for: .normal)
-        importChatTransferButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        importChatTransferButton.contentHorizontalAlignment = .left
-        importChatTransferButton.addTarget(self, action: #selector(importChatTransferTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: importChatTransferButton, height: 42, inset: 0))
-
-        exportKeysButton.setTitle("导出 Key 设置", for: .normal)
-        exportKeysButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        exportKeysButton.contentHorizontalAlignment = .left
-        exportKeysButton.addTarget(self, action: #selector(exportKeysTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: exportKeysButton, height: 42, inset: 0))
-
-        importKeysButton.setTitle("导入 Key 设置", for: .normal)
-        importKeysButton.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        importKeysButton.contentHorizontalAlignment = .left
-        importKeysButton.addTarget(self, action: #selector(importKeysTapped), for: .touchUpInside)
-        contentStack.addArrangedSubview(makeCard(embedding: importKeysButton, height: 42, inset: 0))
-
-        let backupTip = UILabel()
-        backupTip.numberOfLines = 0
-        backupTip.font = DSTheme.bodyFont(size: 13)
-        backupTip.text = """
-        · 完整备份：对话 + Study + 设置 + API Key；恢复会覆盖本机现有数据。
-        · 聊天迁移包：仅对话（可含图片）；合并导入，同 ID 覆盖，不含 API Key。
-        · Key 设置：API Key、节点与可见模型等；合并写入，不含聊天。含密钥，勿发公共频道。
-        """
-        footerLabels.append(backupTip)
-        contentStack.addArrangedSubview(backupTip)
-        contentStack.setCustomSpacing(22, after: backupTip)
-
         // 7. Developer
-        contentStack.addArrangedSubview(makeSectionTitle("开发者"))
-        let debugRow = makeSwitchRow(
-            label: renderDebugLabel,
-            text: "聊天布局调试框",
-            sw: renderDebugSwitch,
-            isOn: SettingsManager.shared.renderDebugOverlayEnabled,
+        contentStack.addArrangedSubview(makeSectionTitle(L("开发者", "Developer")))
+        let debugRow = makeInlineSwitchRow(
+            label: renderDebugLabel, text: L("聊天布局调试框", "Chat layout debug frames"),
+            sw: renderDebugSwitch, isOn: SettingsManager.shared.renderDebugOverlayEnabled,
             action: #selector(renderDebugChanged)
         )
-        contentStack.addArrangedSubview(makeCard(embedding: debugRow, height: 44, inset: 12))
-        let debugTip = UILabel()
-        debugTip.numberOfLines = 0
-        debugTip.font = DSTheme.bodyFont(size: 13)
-        debugTip.text = "红=列，绿=原生回复，蓝=用户气泡。用于排查气泡空白、高度异常；开启后返回聊天页即可看到描边。"
-        footerLabels.append(debugTip)
-        contentStack.addArrangedSubview(debugTip)
-        contentStack.setCustomSpacing(22, after: debugTip)
+        contentStack.addArrangedSubview(makeGroupedCard(rows: [debugRow]))
 
         // 8. About
-        contentStack.addArrangedSubview(makeSectionTitle("关于"))
-        let about = UILabel()
-        about.numberOfLines = 0
+        contentStack.addArrangedSubview(makeSectionTitle(L("关于", "About")))
+        let about = makeTip("Connects · iPad · iOS 18+ · DeepSeek / Kimi / Qwen / GLM / Doubao + BYOK")
         about.font = DSTheme.bodyFont(size: 14)
-        about.text = "Connects · iPad · iOS 12+ · DeepSeek / Kimi / Qwen / GLM / 豆包 · 可选联网搜索"
-        footerLabels.append(about)
         contentStack.addArrangedSubview(about)
     }
 
@@ -452,23 +395,246 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         return label
     }
 
-    private func makeCard(embedding child: UIView, height: CGFloat, inset: CGFloat) -> UIView {
+    private func makeTip(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.font = DSTheme.bodyFont(size: 13)
+        label.text = text
+        footerLabels.append(label)
+        return label
+    }
+
+    /// Grouped card stacking rows with hairline separators (iOS settings style).
+    /// `stackOverride` lets BYOK own its stack for later reloads.
+    private func makeGroupedCard(rows: [UIView], stackOverride: UIStackView? = nil) -> UIView {
         let card = UIView()
-        card.layer.cornerRadius = 12
+        card.layer.cornerRadius = DSTheme.cardCornerRadius
         card.layer.borderWidth = 1 / UIScreen.main.scale
+        card.clipsToBounds = true
         cards.append(card)
 
-        child.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(child)
+        let stack = stackOverride ?? UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 0
+        card.addSubview(stack)
         NSLayoutConstraint.activate([
-            child.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: inset > 0 ? inset : 14),
-            child.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: inset > 0 ? -inset : -14),
-            child.topAnchor.constraint(equalTo: card.topAnchor, constant: inset > 0 ? inset : 0),
-            child.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: inset > 0 ? -inset : 0),
-            child.heightAnchor.constraint(equalToConstant: height),
-            card.heightAnchor.constraint(equalToConstant: height + (inset > 0 ? inset * 2 : 0))
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor)
         ])
+        for (i, row) in rows.enumerated() {
+            if i > 0 { stack.addArrangedSubview(makeSeparator()) }
+            stack.addArrangedSubview(row)
+        }
         return card
+    }
+
+    private func makeSeparator() -> UIView {
+        let line = UIView()
+        line.tag = 99
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale).isActive = true
+        separatorLines.append(line)
+        let inset = UIView()
+        inset.addSubview(line)
+        NSLayoutConstraint.activate([
+            line.leadingAnchor.constraint(equalTo: inset.leadingAnchor, constant: 14),
+            line.trailingAnchor.constraint(equalTo: inset.trailingAnchor, constant: -14),
+            line.topAnchor.constraint(equalTo: inset.topAnchor),
+            line.bottomAnchor.constraint(equalTo: inset.bottomAnchor),
+            inset.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale)
+        ])
+        return inset
+    }
+
+    /// Provider label + secure field on one row.
+    private func makeProviderRow(_ title: String, field: UITextField, placeholder: String) -> UIView {
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = title
+        label.font = DSTheme.bodyFont(size: 14)
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        providerRowLabels.append(label)
+        field.placeholder = placeholder
+        field.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(label)
+        row.addSubview(field)
+        NSLayoutConstraint.activate([
+            row.heightAnchor.constraint(equalToConstant: 46),
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 84),
+            field.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 10),
+            field.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -14),
+            field.centerYAnchor.constraint(equalTo: row.centerYAnchor)
+        ])
+        return row
+    }
+
+    /// Label + segmented/control on one row.
+    private func makeLabeledControlRow(_ title: String, control: UIView, controlHeight: CGFloat) -> UIView {
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = title
+        label.font = DSTheme.bodyFont(size: 14)
+        providerRowLabels.append(label)
+        control.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(label)
+        row.addSubview(control)
+        NSLayoutConstraint.activate([
+            row.heightAnchor.constraint(equalToConstant: 50),
+            label.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            control.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 12),
+            control.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -12),
+            control.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            control.heightAnchor.constraint(equalToConstant: controlHeight)
+        ])
+        return row
+    }
+
+    /// Switch row padded for use inside grouped cards.
+    private func makeInlineSwitchRow(label: UILabel, text: String, sw: UISwitch, isOn: Bool, action: Selector) -> UIView {
+        let row = makeSwitchRow(label: label, text: text, sw: sw, isOn: isOn, action: action)
+        let padded = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        padded.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: padded.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -6),
+            padded.heightAnchor.constraint(greaterThanOrEqualToConstant: 46)
+        ])
+        return padded
+    }
+
+    /// Left-aligned text button row for grouped cards.
+    private func makeButtonRow(_ button: UIButton) -> UIView {
+        let padded = UIView()
+        button.translatesAutoresizingMaskIntoConstraints = false
+        padded.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 14),
+            button.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -14),
+            button.topAnchor.constraint(equalTo: padded.topAnchor),
+            button.bottomAnchor.constraint(equalTo: padded.bottomAnchor),
+            padded.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        return padded
+    }
+
+    // MARK: - BYOK provider rows
+
+    private func reloadBYOKRows() {
+        byokListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        byokRowViews.removeAll()
+        let providers = SettingsManager.shared.customProviders
+        var rows: [UIView] = providers.map { makeBYOKRow($0) }
+        rows.append(makeAddBYOKRow())
+        for (i, row) in rows.enumerated() {
+            if i > 0 { byokListStack.addArrangedSubview(makeSeparator()) }
+            byokListStack.addArrangedSubview(row)
+            byokRowViews.append(row)
+        }
+        applyBYOKRowTheme()
+    }
+
+    private func makeBYOKRow(_ provider: BYOKProvider) -> UIView {
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: 56).isActive = true
+
+        let name = UILabel()
+        name.tag = 1
+        name.translatesAutoresizingMaskIntoConstraints = false
+        name.text = provider.displayName
+        name.font = DSTheme.bodyFont(size: 15)
+
+        let detail = UILabel()
+        detail.tag = 2
+        detail.translatesAutoresizingMaskIntoConstraints = false
+        let keyState = SettingsManager.shared.customAPIKey(for: provider.id).isEmpty ? L("未填 Key", "no key") : L("已填 Key", "key set")
+        detail.text = L("\(provider.modelIDs.count) 个模型 · \(keyState)", "\(provider.modelIDs.count) models · \(keyState)")
+        detail.font = DSTheme.bodyFont(size: 12)
+
+        let chevron = UILabel()
+        chevron.tag = 3
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.text = "›"
+        chevron.font = UIFont.systemFont(ofSize: 20, weight: .medium)
+
+        let tap = UIButton(type: .system)
+        tap.translatesAutoresizingMaskIntoConstraints = false
+        tap.accessibilityIdentifier = provider.id
+        tap.addTarget(self, action: #selector(byokRowTapped(_:)), for: .touchUpInside)
+
+        row.addSubview(name)
+        row.addSubview(detail)
+        row.addSubview(chevron)
+        row.addSubview(tap)
+        NSLayoutConstraint.activate([
+            name.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 14),
+            name.topAnchor.constraint(equalTo: row.topAnchor, constant: 9),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
+            detail.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            detail.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 2),
+            detail.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -8),
+            chevron.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -14),
+            chevron.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            tap.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            tap.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            tap.topAnchor.constraint(equalTo: row.topAnchor),
+            tap.bottomAnchor.constraint(equalTo: row.bottomAnchor)
+        ])
+        return row
+    }
+
+    private func makeAddBYOKRow() -> UIView {
+        let button = UIButton(type: .system)
+        button.tag = 4
+        button.setTitle(L("＋ 添加自定义服务", "＋ Add custom provider"), for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        button.contentHorizontalAlignment = .left
+        button.addTarget(self, action: #selector(addBYOKTapped), for: .touchUpInside)
+        return makeButtonRow(button)
+    }
+
+    private func applyBYOKRowTheme() {
+        let c = DSTheme.c
+        for row in byokRowViews {
+            if let name = row.viewWithTag(1) as? UILabel { name.textColor = c.textPrimary }
+            if let detail = row.viewWithTag(2) as? UILabel { detail.textColor = c.textTertiary }
+            if let chevron = row.viewWithTag(3) as? UILabel { chevron.textColor = c.textTertiary }
+            if let add = row.viewWithTag(4) as? UIButton { add.setTitleColor(c.accent, for: .normal) }
+        }
+    }
+
+    @objc private func byokRowTapped(_ sender: UIButton) {
+        guard let id = sender.accessibilityIdentifier,
+              let provider = SettingsManager.shared.customProvider(id: id) else { return }
+        present(BYOKProviderEditViewController(provider: provider).embeddedForSettings { [weak self] in
+            self?.reloadBYOKRows()
+        }, animated: true)
+    }
+
+    @objc private func addBYOKTapped() {
+        present(BYOKProviderEditViewController(provider: nil).embeddedForSettings { [weak self] in
+            self?.reloadBYOKRows()
+        }, animated: true)
+    }
+
+    @objc private func showKeysChanged() {
+        let show = showKeysSwitch.isOn
+        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField] {
+            field.isSecureTextEntry = !show
+        }
     }
 
     private func makeSwitchRow(label: UILabel, text: String, sw: UISwitch, isOn: Bool, action: Selector) -> UIView {
@@ -587,12 +753,12 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func exportKeysTapped() {
         let alert = UIAlertController(
-            title: "导出 Key 设置？",
-            message: "文件含 API Key 明文，请勿发到公共频道。",
+            title: L("导出 Key 设置？", "Export key settings?"),
+            message: L("文件含 API Key 明文，请勿发到公共频道。", "The file contains plaintext API keys — do not share publicly."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "导出", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: L("取消", "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: L("导出", "Export"), style: .default) { [weak self] _ in
             self?.exportPackage(
                 fileStem: "ConnectsKeys",
                 fileExtension: ConnectsKeysTransferService.fileExtension
@@ -688,14 +854,14 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private func beginBackupRestore(from url: URL, stagingFolder: URL) {
         let alert = UIAlertController(
-            title: "从完整备份恢复？",
-            message: "将覆盖对话、项目、设置与 API Key 数据。此操作不可撤销。",
+            title: L("从完整备份恢复？", "Restore from full backup?"),
+            message: L("将覆盖对话、项目、设置与 API Key 数据。此操作不可撤销。", "Overwrites chats, projects, settings and API keys. This cannot be undone."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: L("取消", "Cancel"), style: .cancel) { _ in
             try? FileManager.default.removeItem(at: stagingFolder)
         })
-        alert.addAction(UIAlertAction(title: "继续", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: L("继续", "Continue"), style: .destructive) { [weak self] _ in
             self?.confirmBackupRestore(from: url, stagingFolder: stagingFolder)
         })
         present(alert, animated: true)
@@ -703,14 +869,14 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private func beginChatTransferImport(from url: URL, stagingFolder: URL) {
         let alert = UIAlertController(
-            title: "导入聊天迁移包？",
-            message: "将合并导入对话：同 ID 覆盖本地，新对话追加。不含 API Key。",
+            title: L("导入聊天迁移包？", "Import chat transfer?"),
+            message: L("将合并导入对话：同 ID 覆盖本地，新对话追加。不含 API Key。", "Merges chats: same IDs overwrite, new ones append. No API keys included."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: L("取消", "Cancel"), style: .cancel) { _ in
             try? FileManager.default.removeItem(at: stagingFolder)
         })
-        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: L("导入", "Import"), style: .default) { [weak self] _ in
             guard let self = self else { return }
             self.setBackupBusy(true)
             DispatchQueue.global(qos: .userInitiated).async {
@@ -728,7 +894,8 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
                     switch result {
                     case .success(let summary):
                         self.showBackupMessage(
-                            "已导入 \(summary.conversationCount) 条对话（新增 \(summary.addedCount)，覆盖 \(summary.mergedCount)）。"
+                            L("已导入 \(summary.conversationCount) 条对话（新增 \(summary.addedCount)，覆盖 \(summary.mergedCount)）。",
+                              "Imported \(summary.conversationCount) chats (\(summary.addedCount) new, \(summary.mergedCount) merged).")
                         )
                     case .failure(let error):
                         self.showBackupMessage(error.localizedDescription)
@@ -741,14 +908,14 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private func beginKeysImport(from url: URL, stagingFolder: URL) {
         let alert = UIAlertController(
-            title: "导入 Key 设置？",
-            message: "将写入 API Key 与相关设置（非空 Key 覆盖本地）。不含聊天记录。",
+            title: L("导入 Key 设置？", "Import key settings?"),
+            message: L("将写入 API Key 与相关设置（非空 Key 覆盖本地）。不含聊天记录。", "Writes API keys and related settings (non-empty keys overwrite). No chats included."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: L("取消", "Cancel"), style: .cancel) { _ in
             try? FileManager.default.removeItem(at: stagingFolder)
         })
-        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: L("导入", "Import"), style: .default) { [weak self] _ in
             guard let self = self else { return }
             self.setBackupBusy(true)
             DispatchQueue.global(qos: .userInitiated).async {
@@ -758,7 +925,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
                         self.setBackupBusy(false)
                         try? FileManager.default.removeItem(at: stagingFolder)
                         self.applyImportedSettingsToForm()
-                        self.showBackupMessage("已导入 \(summary.keyCount) 个 API Key 及相关设置。")
+                        self.showBackupMessage(L("已导入 \(summary.keyCount) 个 API Key 及相关设置。", "Imported \(summary.keyCount) API keys and related settings."))
                     }
                 } catch {
                     DispatchQueue.main.async {
@@ -774,19 +941,20 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     private func confirmBackupRestore(from url: URL, stagingFolder: URL) {
         let alert = UIAlertController(
-            title: "二次确认",
-            message: "请输入“恢复完整备份”以确认。",
+            title: L("二次确认", "Confirm again"),
+            message: L("请输入“恢复完整备份”以确认。", "Type RESTORE to confirm."),
             preferredStyle: .alert
         )
         alert.addTextField { $0.autocorrectionType = .no }
-        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+        alert.addAction(UIAlertAction(title: L("取消", "Cancel"), style: .cancel) { _ in
             try? FileManager.default.removeItem(at: stagingFolder)
         })
-        alert.addAction(UIAlertAction(title: "恢复", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: L("恢复", "Restore"), style: .destructive) { [weak self] _ in
             guard let self = self else { return }
-            guard alert.textFields?.first?.text == "恢复完整备份" else {
+            let confirmWord = SettingsManager.shared.appLanguage == .en ? "RESTORE" : "恢复完整备份"
+        guard alert.textFields?.first?.text == confirmWord else {
                 try? FileManager.default.removeItem(at: stagingFolder)
-                self.showBackupMessage("确认文字不匹配，未恢复。")
+                self.showBackupMessage(L("确认文字不匹配，未恢复。", "Confirmation text did not match — nothing restored."))
                 return
             }
             self.setBackupBusy(true)
@@ -797,7 +965,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
                         self.setBackupBusy(false)
                         try? FileManager.default.removeItem(at: stagingFolder)
                         self.applyImportedSettingsToForm()
-                        self.showBackupMessage("完整备份已恢复。")
+                        self.showBackupMessage(L("完整备份已恢复。", "Full backup restored."))
                     }
                 } catch {
                     DispatchQueue.main.async {
@@ -828,6 +996,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
         kimiCNSwitch.isOn = SettingsManager.shared.kimiUseChinaEndpoint
         qwenCNSwitch.isOn = SettingsManager.shared.qwenUseChinaEndpoint
+        reloadBYOKRows()
         modelVisibility.reload()
         ProjectStore.shared.reloadAfterBackupImport()
     }
@@ -845,13 +1014,13 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             indicator.startAnimating()
             navigationItem.rightBarButtonItem = UIBarButtonItem(customView: indicator)
         } else {
-            navigationItem.rightBarButtonItem = nil
+            navigationItem.rightBarButtonItem = doneBarButton
         }
     }
 
     private func showBackupMessage(_ message: String) {
         let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default))
+        alert.addAction(UIAlertAction(title: L("好", "OK"), style: .default))
         present(alert, animated: true)
     }
 

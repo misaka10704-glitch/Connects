@@ -410,6 +410,11 @@ final class NativeMessageRenderView: UIView {
             super.touchesEnded(touches, with: event)
             return
         }
+        if let hit = layout?.codeFenceHits.first(where: { $0.copyFrame.insetBy(dx: -4, dy: -6).contains(point) }) {
+            UIPasteboard.general.string = hit.code
+            ConnectsToast.show("已复制代码", in: self, duration: 1.2)
+            return
+        }
         if let hit = layout?.codeFenceHits.first(where: { $0.frame.insetBy(dx: -4, dy: -4).contains(point) }) {
             onCodeFenceTap?(hit)
             return
@@ -548,12 +553,41 @@ enum NativeMessagePainter {
         )
         (title as NSString).draw(at: titleOrigin, withAttributes: titleAttrs)
         let metaOrigin = CGPoint(
-            x: fence.headerFrame.maxX - metaSize.width,
+            x: fence.copyFrame.minX - metaSize.width - 8,
             y: fence.headerFrame.midY - metaSize.height * 0.5
         )
         if metaOrigin.x > titleOrigin.x + titleSize.width + 8 {
             (meta as NSString).draw(at: metaOrigin, withAttributes: metaAttrs)
         }
+
+        // "􀉃 复制" pill at the header's trailing edge (hit zone = fence.copyFrame).
+        let pill = fence.copyFrame.insetBy(dx: 0, dy: 1)
+        let pillPath = UIBezierPath(roundedRect: pill, cornerRadius: pill.height / 2)
+        fence.cardBorder.withAlphaComponent(0.55).setStroke()
+        pillPath.lineWidth = 1 / UIScreen.main.scale
+        pillPath.stroke()
+        let copyAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: max(10, fence.font.pointSize * 0.82), weight: .medium),
+            .foregroundColor: fence.mutedColor
+        ]
+        let copyLabel = "复制"
+        let labelSize = (copyLabel as NSString).size(withAttributes: copyAttrs)
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: max(9, fence.font.pointSize * 0.78), weight: .medium)
+        let copyIcon = UIImage(systemName: "doc.on.doc", withConfiguration: iconConfig)?
+            .withTintColor(fence.mutedColor, renderingMode: .alwaysOriginal)
+        let iconW = copyIcon?.size.width ?? 0
+        let gap: CGFloat = 3
+        let groupW = iconW + gap + labelSize.width
+        var penX = pill.midX - groupW / 2
+        if let copyIcon {
+            let iconH = copyIcon.size.height
+            copyIcon.draw(in: CGRect(x: penX, y: pill.midY - iconH / 2, width: iconW, height: iconH))
+            penX += iconW + gap
+        }
+        (copyLabel as NSString).draw(
+            at: CGPoint(x: penX, y: pill.midY - labelSize.height / 2),
+            withAttributes: copyAttrs
+        )
 
         let step = max(fence.lineStep, 1)
         let ctx = UIGraphicsGetCurrentContext()

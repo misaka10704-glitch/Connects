@@ -71,7 +71,7 @@ enum ContextCompactor {
         let extractive = ContextBuilder.makeExtractiveSummary(from: toFold)
         let prior = conv.contextSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        guard SettingsManager.shared.hasAPIKey(for: conv.model.provider) else {
+        guard SettingsManager.shared.hasAPIKey(for: conv.model) else {
             finishLocal(conversationID: conversationID,
                         summary: merge(prior, extractive),
                         throughID: head.last?.id)

@@ -73,7 +73,6 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private let containerView = UIView()
     private let attachButton = UIButton(type: .system)
-    private let webSearchButton = UIButton(type: .system)
     private let thinkingButton = UIButton(type: .system)
     /// Study code/text: grants the model permission to propose file edits (not forced).
     private let codeAIEditButton = UIButton(type: .system)
@@ -162,14 +161,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         didSet { updateStudyCaptureAppearance() }
     }
 
-    var webSearchEnabled: Bool {
-        get { SettingsManager.shared.webSearchEnabled }
-        set {
-            SettingsManager.shared.webSearchEnabled = newValue
-            updateWebSearchAppearance()
-        }
-    }
-
     var thinkingEnabled: Bool {
         get { SettingsManager.shared.thinkingEnabled }
         set {
@@ -243,7 +234,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         updateAskSelectionAppearance()
         updateFocusBorder()
         updateSendEnabled()
-        updateWebSearchAppearance()
         updateThinkingAppearance()
         updateCodeAIEditAppearance()
         updateAgentModeAppearance()
@@ -473,7 +463,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func setup() {
         containerView.translatesAutoresizingMaskIntoConstraints = false
-        containerView.layer.cornerRadius = 22
+        containerView.layer.cornerRadius = DSTheme.cornerRadius
         containerView.layer.borderWidth = 1 / UIScreen.main.scale
         containerView.clipsToBounds = true
         addSubview(containerView)
@@ -525,7 +515,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         buildTodoStrip.addSubview(buildTodoLabel)
 
         chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.layer.cornerRadius = 12
+        chip.layer.cornerRadius = DSTheme.chipCornerRadius
         chip.layer.borderWidth = 1 / UIScreen.main.scale
         chip.clipsToBounds = true
         chip.isHidden = true
@@ -557,12 +547,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         attachButton.accessibilityLabel = "添加图片"
         attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
         containerView.addSubview(attachButton)
-
-        webSearchButton.translatesAutoresizingMaskIntoConstraints = false
-        webSearchButton.setImage(ActionIconFactory.image(.globe, pointSize: ActionIconFactory.toolGlyph), for: .normal)
-        webSearchButton.accessibilityLabel = "联网搜索"
-        webSearchButton.addTarget(self, action: #selector(webSearchTapped), for: .touchUpInside)
-        containerView.addSubview(webSearchButton)
 
         thinkingButton.translatesAutoresizingMaskIntoConstraints = false
         thinkingButton.setImage(ActionIconFactory.image(.think, pointSize: ActionIconFactory.toolGlyph), for: .normal)
@@ -610,7 +594,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionButton.isHidden = true
         containerView.addSubview(askSelectionButton)
 
-        for tool in [attachButton, studyCaptureButton, webSearchButton, thinkingButton, codeAIEditButton, askSelectionButton] {
+        for tool in [attachButton, studyCaptureButton, thinkingButton, codeAIEditButton, askSelectionButton] {
             styleIconToolButton(tool)
         }
 
@@ -654,7 +638,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         containerView.addSubview(textView)
 
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        placeholderLabel.text = "问任何问题…"
+        placeholderLabel.text = L("问任何问题…", "Ask anything…")
         placeholderLabel.font = DSTheme.bodyFont(size: 16)
         containerView.addSubview(placeholderLabel)
 
@@ -687,7 +671,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         askSelectionWidthConstraint = askSelectionButton.widthAnchor.constraint(equalToConstant: 0)
         aiOptionsWidthConstraint = aiOptionsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68)
         // iPhone portrait: keep the model chip short so tools don't collide.
-        let modelChipMax: CGFloat = UIDevice.current.userInterfaceIdiom == .phone ? 100 : 132
+        let modelChipMax: CGFloat = UIDevice.current.userInterfaceIdiom == .phone ? 124 : 160
         let aiOptionsMaxW = aiOptionsButton.widthAnchor.constraint(lessThanOrEqualToConstant: modelChipMax)
         contextUsageWidthConstraint = contextUsageButton.widthAnchor.constraint(equalToConstant: 0)
         textTopToContainer?.isActive = true
@@ -769,12 +753,7 @@ final class InputBarView: UIView, ThemeRefreshable {
             studyCaptureWidthConstraint!,
             studyCaptureButton.heightAnchor.constraint(equalToConstant: btnSize),
 
-            webSearchButton.leadingAnchor.constraint(equalTo: studyCaptureButton.trailingAnchor, constant: 2),
-            webSearchButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
-            webSearchButton.widthAnchor.constraint(equalToConstant: btnSize),
-            webSearchButton.heightAnchor.constraint(equalToConstant: btnSize),
-
-            thinkingButton.leadingAnchor.constraint(equalTo: webSearchButton.trailingAnchor, constant: 2),
+            thinkingButton.leadingAnchor.constraint(equalTo: studyCaptureButton.trailingAnchor, constant: 2),
             thinkingButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
             thinkingButton.widthAnchor.constraint(equalToConstant: btnSize),
             thinkingButton.heightAnchor.constraint(equalToConstant: btnSize),
@@ -811,8 +790,8 @@ final class InputBarView: UIView, ThemeRefreshable {
 
             contextRing.centerXAnchor.constraint(equalTo: contextUsageButton.centerXAnchor),
             contextRing.centerYAnchor.constraint(equalTo: contextUsageButton.centerYAnchor),
-            contextRing.widthAnchor.constraint(equalToConstant: 22),
-            contextRing.heightAnchor.constraint(equalToConstant: 22),
+            contextRing.widthAnchor.constraint(equalToConstant: 26),
+            contextRing.heightAnchor.constraint(equalToConstant: 26),
 
             sendButton.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -8),
             sendButton.centerYAnchor.constraint(equalTo: textView.centerYAnchor),
@@ -847,8 +826,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         textView.isEditable = !isStreaming
         attachButton.isEnabled = !isStreaming && attachEnabled
         attachButton.alpha = attachButton.isEnabled ? 1 : 0.35
-        webSearchButton.isEnabled = !isStreaming
-        webSearchButton.alpha = isStreaming ? 0.35 : 1
         thinkingButton.isEnabled = !isStreaming
         thinkingButton.alpha = isStreaming ? 0.35 : 1
         codeAIEditButton.isEnabled = !isStreaming && codeAIEditVisible
@@ -933,10 +910,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         button.backgroundColor = on ? c.accent.withAlphaComponent(0.14) : .clear
         button.layer.cornerRadius = btnSize / 2
         button.accessibilityValue = on ? "开" : "关"
-    }
-
-    private func updateWebSearchAppearance() {
-        updateToggleAppearance(webSearchButton, on: webSearchEnabled)
     }
 
     private func updateThinkingAppearance() {
@@ -1029,21 +1002,24 @@ final class InputBarView: UIView, ThemeRefreshable {
         delegate?.inputBarDidTapAttach()
     }
 
-    @objc private func webSearchTapped() {
-        webSearchEnabled.toggle()
-    }
-
     @objc private func thinkingTapped() {
         thinkingEnabled.toggle()
+    }
+
+    /// Re-apply placeholder copy after an app-language switch.
+    func refreshLocalizedStrings() {
+        placeholderLabel.text = codeAIEditEnabled
+            ? L("提问；需要改代码时模型可提案…", "Ask — models can propose code edits…")
+            : L("问任何问题…", "Ask anything…")
     }
 
     @objc private func codeAIEditTapped() {
         guard codeAIEditVisible else { return }
         setCodeAIEditEnabled(!codeAIEditEnabled, notify: true)
         if codeAIEditEnabled {
-            placeholderLabel.text = "提问；需要改代码时模型可提案…"
+            placeholderLabel.text = L("提问；需要改代码时模型可提案…", "Ask — models can propose code edits…")
         } else {
-            placeholderLabel.text = "问任何问题…"
+            placeholderLabel.text = L("问任何问题…", "Ask anything…")
         }
     }
 
@@ -1177,7 +1153,6 @@ final class InputBarView: UIView, ThemeRefreshable {
         clearAttachment()
     }
     func syncToolTogglesFromSettings() {
-        updateWebSearchAppearance()
         updateThinkingAppearance()
     }
 }

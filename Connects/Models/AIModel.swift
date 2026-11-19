@@ -6,6 +6,8 @@ enum AIProvider: String, Codable, CaseIterable {
     case qwen
     case zhipu
     case doubao
+    /// User-defined OpenAI-compatible endpoint (BYOK).
+    case custom
 
     var displayName: String {
         switch self {
@@ -14,6 +16,7 @@ enum AIProvider: String, Codable, CaseIterable {
         case .qwen: return "Qwen"
         case .zhipu: return "智谱 GLM"
         case .doubao: return "豆包"
+        case .custom: return L("自定义服务", "Custom")
         }
     }
 }
@@ -37,8 +40,46 @@ struct AIModelOption: Equatable {
     let supportsThinkingToggle: Bool
     let forcesThinking: Bool
     let thinkingStyle: ThinkingPayloadStyle
+    /// Set only for BYOK models — identifies which `BYOKProvider` owns this option.
+    let customProviderID: String?
 
-    var stableID: String { "\(provider.rawValue)|\(modelId)" }
+    init(provider: AIProvider, modelId: String, displayName: String, baseURL: String,
+         supportsVision: Bool, supportsThinkingToggle: Bool, forcesThinking: Bool,
+         thinkingStyle: ThinkingPayloadStyle, customProviderID: String? = nil) {
+        self.provider = provider
+        self.modelId = modelId
+        self.displayName = displayName
+        self.baseURL = baseURL
+        self.supportsVision = supportsVision
+        self.supportsThinkingToggle = supportsThinkingToggle
+        self.forcesThinking = forcesThinking
+        self.thinkingStyle = thinkingStyle
+        self.customProviderID = customProviderID
+    }
+
+    var stableID: String {
+        if provider == .custom, let pid = customProviderID {
+            return "custom|\(pid)|\(modelId)"
+        }
+        return "\(provider.rawValue)|\(modelId)"
+    }
+
+    /// Provider label for errors/empty states — BYOK shows the profile name.
+    var providerDisplayName: String {
+        if provider == .custom, let pid = customProviderID,
+           let profile = SettingsManager.shared.customProvider(id: pid) {
+            return profile.displayName
+        }
+        return provider.displayName
+    }
+
+    /// Compact label for the composer capsule (vendor prefix dropped when long).
+    var chipName: String {
+        displayName
+            .replacingOccurrences(of: "DeepSeek ", with: "")
+            .replacingOccurrences(of: " Vision", with: "")
+            .replacingOccurrences(of: " Seed", with: "")
+    }
 
     /// 豆包可在设置里填方舟接入点 `ep-…` 覆盖 model id。
     var resolvedModelId: String {
@@ -209,10 +250,27 @@ struct AIModelOption: Equatable {
 
     static let unsupportedImageSendMessage = "该模型不支持上传图片"
 
+    /// BYOK models generated from the user's custom providers.
+    static var customModels: [AIModelOption] {
+        SettingsManager.shared.customProviders.flatMap { profile in
+            profile.modelIDs.map { mid in
+                AIModelOption(
+                    provider: .custom, modelId: mid, displayName: mid,
+                    baseURL: profile.chatCompletionsURL, supportsVision: profile.supportsVision,
+                    supportsThinkingToggle: false, forcesThinking: false,
+                    thinkingStyle: .none, customProviderID: profile.id
+                )
+            }
+        }
+    }
+
+    /// Full catalog: built-ins + BYOK models.
+    static var catalog: [AIModelOption] { all + customModels }
+
     static var visible: [AIModelOption] {
         SettingsManager.shared.ensureModelCatalogSynced()
         let enabled = SettingsManager.shared.enabledModelIDs
-        let filtered = all.filter { enabled.contains($0.stableID) }
+        let filtered = catalog.filter { enabled.contains($0.stableID) }
         return filtered.isEmpty ? defaultEnabled : filtered
     }
 
@@ -225,6 +283,6 @@ struct AIModelOption: Equatable {
 
     static func option(stableID: String) -> AIModelOption? {
         if stableID == kimiK25Vision.stableID { return kimiK25Vision }
-        return all.first { $0.stableID == stableID }
+        return catalog.first { $0.stableID == stableID }
     }
 }

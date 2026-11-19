@@ -513,7 +513,6 @@ enum ContextBuilder {
             "images": 0,
             "study": 0,
             "tools": 0,
-            "webSearch": 0,
             "otherSystem": 0
         ]
 
@@ -552,7 +551,6 @@ enum ContextBuilder {
             ("system", "系统指令", UIColor(white: 0.62, alpha: 1)),
             ("rules", "用户规则", UIColor(red: 0.55, green: 0.82, blue: 0.55, alpha: 1)),
             ("summary", "对话摘要", UIColor(red: 0.92, green: 0.42, blue: 0.38, alpha: 1)),
-            ("webSearch", "联网搜索", UIColor(red: 0.35, green: 0.78, blue: 0.92, alpha: 1)),
             ("study", "文档上下文", UIColor(red: 0.58, green: 0.62, blue: 0.95, alpha: 1)),
             ("tools", "工具结果", UIColor(red: 0.85, green: 0.65, blue: 0.25, alpha: 1)),
             ("images", "图片", UIColor(red: 0.45, green: 0.72, blue: 0.95, alpha: 1)),
@@ -577,7 +575,6 @@ enum ContextBuilder {
 
     private static func classifySystemBucket(_ content: String) -> String {
         if content.hasPrefix("[Earlier conversation summary") { return "summary" }
-        if content.hasPrefix("[Web search context]") { return "webSearch" }
         if content.contains("You are a precise, context-aware assistant") { return "system" }
         return "otherSystem"
     }

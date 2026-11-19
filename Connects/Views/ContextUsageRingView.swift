@@ -7,7 +7,7 @@ final class ContextUsageRingView: UIView {
     private let percentLabel = UILabel()
     private var displayedProgress: CGFloat = 0
 
-    var progressColor = UIColor(red: 0.28, green: 0.84, blue: 0.52, alpha: 1) {
+    var progressColor = DSTheme.c.usageOK {
         didSet { progressLayer.strokeColor = progressColor.cgColor }
     }
 
@@ -28,7 +28,7 @@ final class ContextUsageRingView: UIView {
 
         percentLabel.translatesAutoresizingMaskIntoConstraints = false
         percentLabel.textAlignment = .center
-        percentLabel.font = UIFont.systemFont(ofSize: 7, weight: .semibold)
+        percentLabel.font = UIFont.systemFont(ofSize: 8, weight: .semibold)
         percentLabel.adjustsFontSizeToFitWidth = true
         percentLabel.minimumScaleFactor = 0.7
         percentLabel.text = "0"
@@ -96,12 +96,13 @@ final class ContextUsageRingView: UIView {
     }
 
     private func updateFillColor(for percent: Int) {
+        let c = DSTheme.c
         if percent >= 75 {
-            progressColor = UIColor(red: 0.92, green: 0.32, blue: 0.28, alpha: 1)
+            progressColor = c.usageCritical
         } else if percent >= 50 {
-            progressColor = UIColor(red: 0.95, green: 0.68, blue: 0.22, alpha: 1)
+            progressColor = c.usageWarn
         } else {
-            progressColor = UIColor(red: 0.28, green: 0.84, blue: 0.52, alpha: 1)
+            progressColor = c.usageOK
         }
     }
 }

@@ -1,7 +1,7 @@
 import UIKit
 
 #if DEBUG
-/// Full tool-coverage simulation: chat, thinking, web search, Study PDF capture, image upload, fork, scroll.
+/// Full tool-coverage simulation: chat, thinking, Study PDF capture, image upload, fork, scroll.
 /// Launch: `-UsageSimulation`
 enum UsageSimulationHarness {
     private static let logTag = "[ConnectsUsageSim]"
@@ -13,9 +13,7 @@ enum UsageSimulationHarness {
         var imageBase64: String?
         var studyCaptureEnabled: Bool?
         var thinking: Bool?
-        var webSearch: Bool?
         var requireReasoning = false
-        var requireSearch = false
         var requireUserImage = false
         var timeout: TimeInterval = 180
     }
@@ -51,9 +49,7 @@ enum UsageSimulationHarness {
         chat.reloadChat()
 
         let savedThinking = SettingsManager.shared.thinkingEnabled
-        let savedSearch = SettingsManager.shared.webSearchEnabled
         SettingsManager.shared.thinkingEnabled = false
-        SettingsManager.shared.webSearchEnabled = false
 
         let issues: [RenderAuditChecks.Issue] = []
         let toolResults: [ToolResult] = []
@@ -67,16 +63,7 @@ enum UsageSimulationHarness {
                 id: "deep-thinking",
                 prompt: "请逐步推导：证明 \\(\\sqrt{2}\\) 是无理数。",
                 thinking: true,
-                webSearch: false,
                 requireReasoning: true,
-                timeout: 240
-            ),
-            Scenario(
-                id: "web-search",
-                prompt: "2024年诺贝尔物理学奖得主是谁？请给出姓名并一句话说明贡献。",
-                thinking: false,
-                webSearch: true,
-                requireSearch: true,
                 timeout: 240
             ),
             Scenario(
@@ -85,7 +72,6 @@ enum UsageSimulationHarness {
                 imageBase64: makeTestImageBase64(label: "V = I × R"),
                 studyCaptureEnabled: false,
                 thinking: false,
-                webSearch: false,
                 requireUserImage: true,
                 timeout: 240
             ),
@@ -93,7 +79,6 @@ enum UsageSimulationHarness {
                 id: "fork-chat",
                 prompt: "用一句话总结我们上面讨论过的主题。",
                 thinking: false,
-                webSearch: false,
                 timeout: 120
             )
         ]
@@ -118,7 +103,6 @@ enum UsageSimulationHarness {
                     var finalIssues = issues
                     chat.debugSetStudyCaptureEnabled(false)
                     SettingsManager.shared.thinkingEnabled = savedThinking
-                    SettingsManager.shared.webSearchEnabled = savedSearch
                     finalIssues.append(contentsOf: auditFontSizes())
                     runScrollCheck(on: chat) { scrollIssues in
                         finalIssues.append(contentsOf: scrollIssues)
@@ -226,7 +210,7 @@ enum UsageSimulationHarness {
                     return
                 }
                 shell?.debugExpandChatPanel()
-                applyToolToggles(Scenario(id: id, prompt: prompt, thinking: false, webSearch: false))
+                applyToolToggles(Scenario(id: id, prompt: prompt, thinking: false))
                 print("\(logTag) send study-capture: \(id)")
                 chat.debugSendUserMessage(
                     prompt,
@@ -278,9 +262,6 @@ enum UsageSimulationHarness {
         if let thinking = step.thinking {
             SettingsManager.shared.thinkingEnabled = thinking
         }
-        if let search = step.webSearch {
-            SettingsManager.shared.webSearchEnabled = search
-        }
     }
 
     private static func verifyScenario(_ step: Scenario, chat: ChatViewController) -> [RenderAuditChecks.Issue] {
@@ -304,14 +285,6 @@ enum UsageSimulationHarness {
                 issues.append(RenderAuditChecks.Issue(caseID: step.id, kind: "thinking", detail: "reasoning content empty"))
             } else {
                 print("\(logTag) thinking OK \(step.id) chars=\(think.count)")
-            }
-        }
-        if step.requireSearch {
-            let hadSearch = assistant.hasSearchProcess || assistant.searchProcessPhase != .idle
-            if !hadSearch {
-                issues.append(RenderAuditChecks.Issue(caseID: step.id, kind: "web-search", detail: "no search process recorded"))
-            } else {
-                print("\(logTag) search OK \(step.id)")
             }
         }
         if !assistant.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

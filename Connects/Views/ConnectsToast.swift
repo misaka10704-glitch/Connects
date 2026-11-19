@@ -9,18 +9,25 @@ enum ConnectsToast {
         hideWork?.cancel()
         activeToast?.removeFromSuperview()
 
+        let c = DSTheme.c
         let bubble = UIView()
         bubble.translatesAutoresizingMaskIntoConstraints = false
-        bubble.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        bubble.backgroundColor = c.surface.withAlphaComponent(0.96)
         bubble.layer.cornerRadius = 14
-        bubble.clipsToBounds = true
+        bubble.layer.borderWidth = 1 / UIScreen.main.scale
+        bubble.layer.borderColor = c.border.cgColor
+        bubble.layer.shadowColor = UIColor.black.cgColor
+        bubble.layer.shadowOpacity = 0.18
+        bubble.layer.shadowRadius = 10
+        bubble.layer.shadowOffset = CGSize(width: 0, height: 3)
+        bubble.clipsToBounds = false
         bubble.isUserInteractionEnabled = false
         bubble.alpha = 0
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
         label.text = text
-        label.textColor = .white
+        label.textColor = c.textPrimary
         label.font = UIFont.systemFont(ofSize: 14, weight: .medium)
         label.textAlignment = .center
         label.numberOfLines = 2

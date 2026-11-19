@@ -5,7 +5,7 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
     private let borderView = UIView()
     private let prefixLabel = UILabel()
     private let questionLabel = UILabel()
-    private let chevronLabel = UILabel()
+    private let chevronView = UIImageView()
     private var heightConstraint: NSLayoutConstraint?
 
     var onTap: (() -> Void)?
@@ -29,7 +29,7 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
         borderView.layer.borderColor = c.border.cgColor
         prefixLabel.textColor = c.textSecondary
         questionLabel.textColor = c.textPrimary
-        chevronLabel.textColor = c.accent
+        chevronView.tintColor = c.accent
     }
 
     func update(question: String?, visible: Bool) {
@@ -50,7 +50,7 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
         clipsToBounds = true
 
         borderView.translatesAutoresizingMaskIntoConstraints = false
-        borderView.layer.cornerRadius = 8
+        borderView.layer.cornerRadius = DSTheme.cardCornerRadius
         borderView.layer.borderWidth = 1 / UIScreen.main.scale
         borderView.clipsToBounds = true
         addSubview(borderView)
@@ -68,13 +68,15 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
         questionLabel.numberOfLines = 1
         borderView.addSubview(questionLabel)
 
-        chevronLabel.translatesAutoresizingMaskIntoConstraints = false
-        chevronLabel.font = UIFont.systemFont(ofSize: 11, weight: .bold)
-        chevronLabel.text = "▼"
-        chevronLabel.textAlignment = .center
-        chevronLabel.setContentHuggingPriority(.required, for: .horizontal)
-        chevronLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        borderView.addSubview(chevronLabel)
+        chevronView.translatesAutoresizingMaskIntoConstraints = false
+        chevronView.image = UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+        )
+        chevronView.contentMode = .scaleAspectFit
+        chevronView.setContentHuggingPriority(.required, for: .horizontal)
+        chevronView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        borderView.addSubview(chevronView)
 
         heightConstraint = heightAnchor.constraint(equalToConstant: 0)
 
@@ -96,12 +98,12 @@ final class TurnContextBarView: UIView, ThemeRefreshable {
             prefixLabel.leadingAnchor.constraint(equalTo: borderView.leadingAnchor, constant: 10),
             prefixLabel.centerYAnchor.constraint(equalTo: borderView.centerYAnchor),
 
-            chevronLabel.trailingAnchor.constraint(equalTo: borderView.trailingAnchor, constant: -10),
-            chevronLabel.centerYAnchor.constraint(equalTo: borderView.centerYAnchor),
-            chevronLabel.widthAnchor.constraint(equalToConstant: 16),
+            chevronView.trailingAnchor.constraint(equalTo: borderView.trailingAnchor, constant: -10),
+            chevronView.centerYAnchor.constraint(equalTo: borderView.centerYAnchor),
+            chevronView.widthAnchor.constraint(equalToConstant: 16),
 
             questionLabel.leadingAnchor.constraint(equalTo: prefixLabel.trailingAnchor, constant: 8),
-            questionLabel.trailingAnchor.constraint(equalTo: chevronLabel.leadingAnchor, constant: -8),
+            questionLabel.trailingAnchor.constraint(equalTo: chevronView.leadingAnchor, constant: -8),
             questionLabel.centerYAnchor.constraint(equalTo: borderView.centerYAnchor)
         ])
 

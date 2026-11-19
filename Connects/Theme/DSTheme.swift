@@ -29,6 +29,10 @@ struct ThemeColors {
     let inputBorder: UIColor
     let sendEnabled: UIColor
     let sendDisabled: UIColor
+    /// Context-usage ring tiers (<50%, 50–75%, ≥75%).
+    let usageOK: UIColor
+    let usageWarn: UIColor
+    let usageCritical: UIColor
     let navBarStyle: UIBarStyle
     let statusBarStyle: UIStatusBarStyle
 }
@@ -116,6 +120,9 @@ final class ReaderThemeManager {
         inputBorder: UIColor(red: 70/255, green: 70/255, blue: 76/255, alpha: 1),
         sendEnabled: brandCyan,
         sendDisabled: UIColor(red: 80/255, green: 80/255, blue: 86/255, alpha: 1),
+        usageOK: UIColor(red: 0.28, green: 0.84, blue: 0.52, alpha: 1),
+        usageWarn: UIColor(red: 0.95, green: 0.68, blue: 0.22, alpha: 1),
+        usageCritical: UIColor(red: 0.92, green: 0.32, blue: 0.28, alpha: 1),
         navBarStyle: .black,
         statusBarStyle: .lightContent
     )
@@ -137,6 +144,9 @@ final class ReaderThemeManager {
         inputBorder: UIColor(red: 210/255, green: 210/255, blue: 218/255, alpha: 1),
         sendEnabled: brandCyan,
         sendDisabled: UIColor(red: 210/255, green: 210/255, blue: 216/255, alpha: 1),
+        usageOK: UIColor(red: 0.16, green: 0.68, blue: 0.42, alpha: 1),
+        usageWarn: UIColor(red: 0.90, green: 0.62, blue: 0.16, alpha: 1),
+        usageCritical: UIColor(red: 0.88, green: 0.30, blue: 0.26, alpha: 1),
         navBarStyle: .default,
         statusBarStyle: .default
     )
@@ -152,6 +162,10 @@ final class ReaderThemeManager {
     static let bubbleMaxWidth: CGFloat = 720
     static let cornerRadius: CGFloat = 22
     static let bubbleCornerRadius: CGFloat = 16
+    /// Menu cards, settings cards, context bars.
+    static let cardCornerRadius: CGFloat = 12
+    /// Suggestion chips, attachment chips, small pills.
+    static let chipCornerRadius: CGFloat = 12
     static let inputBarHeight: CGFloat = 44
     static let inputBarBottomPadding: CGFloat = 10
     static let inputButtonSize: CGFloat = 30

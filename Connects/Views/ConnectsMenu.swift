@@ -210,11 +210,11 @@ private final class ConnectsMenuController: UIViewController {
         view.addSubview(dimView)
 
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.layer.cornerRadius = 12
+        card.layer.cornerRadius = DSTheme.cardCornerRadius
         view.addSubview(card)
 
         clip.translatesAutoresizingMaskIntoConstraints = false
-        clip.layer.cornerRadius = 12
+        clip.layer.cornerRadius = DSTheme.cardCornerRadius
         clip.clipsToBounds = true
         card.addSubview(clip)
 

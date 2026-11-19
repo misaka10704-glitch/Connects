@@ -113,7 +113,7 @@ final class UserMessageCell: BaseMessageCell {
 
     private func setupUserBubble() {
         userBubble.translatesAutoresizingMaskIntoConstraints = false
-        userBubble.layer.cornerRadius = 18
+        userBubble.layer.cornerRadius = DSTheme.bubbleCornerRadius
         userBubble.isHidden = true
         column.addSubview(userBubble)
 

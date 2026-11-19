@@ -54,10 +54,17 @@ final class ConversationStore {
         reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: loaded.allowBootstrap)
     }
 
+    /// Chats that never received a message are noise once they stop being current —
+    /// e.g.「新对话」tapped then abandoned. Drop them everywhere the current set changes.
+    private func dropDisposableEmptyConversations() {
+        conversations.removeAll { $0.messages.isEmpty && $0.id != currentConversationID }
+    }
+
     /// Restore last opened chat and align sidebar project filter with it.
     /// - Parameter allowBootstrapEmpty: only create a blank conversation on true first launch.
     ///   Never bootstrap (and overwrite disk) when a persistence read failed.
     private func reconcileCurrentConversationAfterLoad(allowBootstrapEmpty: Bool) {
+        dropDisposableEmptyConversations()
         if let id = currentConversationID,
            let conv = conversations.first(where: { $0.id == id }) {
             if !conv.isArchived {
@@ -118,6 +125,7 @@ final class ConversationStore {
         guard conversations.contains(where: { $0.id == id }) else { return }
         let priorProject = selectedProjectID
         currentConversationID = id
+        dropDisposableEmptyConversations()
         if let conv = conversation(id: id), !conv.isArchived {
             alignProjectFilter(with: conv.projectID, persist: true)
         }
@@ -172,6 +180,7 @@ final class ConversationStore {
         )
         conversations.insert(conversation, at: 0)
         currentConversationID = conversation.id
+        dropDisposableEmptyConversations()
         showArchived = false
         // Never encode the full store on the tap path — UserDefaults JSON can freeze the UI.
         persistCurrentConversationID()
@@ -322,7 +331,7 @@ final class ConversationStore {
         // Drop incomplete streaming tail
         msgs = msgs.filter { !$0.isStreaming }
         var copy = Conversation(
-            title: source.title + "（分叉）",
+            title: source.title + L("（分叉）", " (Fork)"),
             model: source.model,
             messages: msgs.map {
                 ChatMessage(
@@ -371,7 +380,7 @@ final class ConversationStore {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         guard !conversations[index].titleLocked else { return }
         let cur = conversations[index].title
-        guard cur == "新对话" || cur.hasSuffix("（分叉）") else { return }
+        guard Conversation.isGenericTitle(cur) else { return }
         let cleaned = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")

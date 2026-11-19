@@ -423,7 +423,8 @@ final class NativeMessageLayouter {
                 frame: fence.cardFrame,
                 code: fence.fullCode,
                 language: fence.language,
-                title: fence.languageLabel
+                title: fence.languageLabel,
+                copyFrame: fence.copyFrame
             )
         }
         let contentBottom = commands.reduce(CGFloat(0)) { bottom, command in
@@ -809,6 +810,13 @@ final class NativeMessageLayouter {
             }
             return lang.displayName
         }()
+        let copyW: CGFloat = 58
+        let copyFrame = CGRect(
+            x: header.maxX - copyW,
+            y: header.minY - 2,
+            width: copyW,
+            height: header.height + 4
+        )
         commands.append(.codeFence(NativeCodeFenceFragment(
             fullCode: code,
             language: lang,
@@ -825,7 +833,8 @@ final class NativeMessageLayouter {
             cardFill: style.colors.mdCodeBlockFill,
             cardBorder: style.colors.mdCodeBlockBorder.withAlphaComponent(0.9),
             lineStep: lineStep,
-            showsFade: showsFade
+            showsFade: showsFade,
+            copyFrame: copyFrame
         )))
         return cardH + 11
     }

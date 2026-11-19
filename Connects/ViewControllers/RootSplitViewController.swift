@@ -235,8 +235,10 @@ final class RootSplitViewController: UIViewController {
         ConversationStore.shared.currentConversation?.studyDocumentID != nil
     }
 
+    /// Overlay drawer only on compact widths (iPhone / Slide Over);
+    /// wide iPad keeps a persistent split sidebar instead.
     private func usesOverlaySidebar() -> Bool {
-        true
+        isCompactLayout
     }
 
     private func ensureOverlaySidebarConstraints() {
@@ -248,6 +250,20 @@ final class RootSplitViewController: UIViewController {
         sidebarWidthConstraint.constant = DSTheme.sidebarWidth
         dividerWidthConstraint.constant = 0
         divider.isHidden = true
+    }
+
+    /// Persistent left pane: sidebar pinned to the leading edge, chat after the divider.
+    private func ensureSplitSidebarConstraints() {
+        sidebarLeadingCompact.isActive = false
+        chatLeadingCompact.isActive = false
+        sidebarLeadingWide.isActive = true
+        chatLeadingWide.isActive = true
+        sidebarWidthConstraint.constant = isSidebarCollapsed ? 0 : DSTheme.sidebarWidth
+        dividerWidthConstraint.constant = isSidebarCollapsed ? 0 : 1 / UIScreen.main.scale
+        divider.isHidden = isSidebarCollapsed
+        dimView.isUserInteractionEnabled = false
+        dimView.alpha = 0
+        dimView.isHidden = true
     }
 
     private func setupLaunchOverlay() {
@@ -293,34 +309,31 @@ final class RootSplitViewController: UIViewController {
             sidebarContainer.layer.shadowRadius = 10
             sidebarContainer.layer.shadowOffset = CGSize(width: 2, height: 0)
         } else {
-            sidebarContainer.layer.shadowColor = UIColor.black.cgColor
-            sidebarContainer.layer.shadowOpacity = 0.2
-            sidebarContainer.layer.shadowRadius = 12
-            sidebarContainer.layer.shadowOffset = CGSize(width: 3, height: 0)
+            // Persistent pane sits in-flow — no floating shadow.
+            sidebarContainer.layer.shadowOpacity = 0
+            sidebarContainer.layer.shadowRadius = 0
+            sidebarContainer.layer.shadowOffset = .zero
         }
     }
 
     private func applyLayoutMode(animated: Bool) {
         studySessionActive = isStudySessionActive()
-        ensureOverlaySidebarConstraints()
 
         if isCompactLayout {
+            ensureOverlaySidebarConstraints()
             isDrawerOpen = false
             dimView.isUserInteractionEnabled = false
             dimView.isHidden = true
             dimView.alpha = 0
             sidebarLeadingCompact.constant = -DSTheme.sidebarWidth
-            isSidebarCollapsed = true
             syncSidebarToggleUI(collapsed: true)
             chatVC.setCompactChrome(true)
         } else {
-            chatVC.setCompactChrome(false)
-            sidebarLeadingCompact.constant = isDrawerOpen ? 0 : -DSTheme.sidebarWidth
-            isSidebarCollapsed = !isDrawerOpen
+            isDrawerOpen = false
+            ensureSplitSidebarConstraints()
+            sidebarVC.ensureListLoaded()
             syncSidebarToggleUI(collapsed: isSidebarCollapsed)
-            dimView.isHidden = !isDrawerOpen
-            dimView.alpha = isDrawerOpen ? 1 : 0
-            dimView.isUserInteractionEnabled = isDrawerOpen
+            chatVC.setCompactChrome(false)
         }
         applyThemeColors()
         let updates = { self.view.layoutIfNeeded() }
@@ -332,7 +345,27 @@ final class RootSplitViewController: UIViewController {
     }
 
     private func toggleSidebar() {
-        if isDrawerOpen { closeDrawer() } else { openDrawer() }
+        if usesOverlaySidebar() {
+            if isDrawerOpen { closeDrawer() } else { openDrawer() }
+        } else {
+            setSidebarCollapsed(!isSidebarCollapsed, animated: true)
+        }
+    }
+
+    /// Wide iPad: show/hide the persistent sidebar (state persists across launches).
+    private func setSidebarCollapsed(_ collapsed: Bool, animated: Bool) {
+        isSidebarCollapsed = collapsed
+        UserDefaults.standard.set(collapsed, forKey: "connects_sidebar_collapsed")
+        sidebarWidthConstraint.constant = collapsed ? 0 : DSTheme.sidebarWidth
+        dividerWidthConstraint.constant = collapsed ? 0 : 1 / UIScreen.main.scale
+        divider.isHidden = collapsed
+        syncSidebarToggleUI(collapsed: collapsed)
+        let updates = { self.view.layoutIfNeeded() }
+        if animated {
+            UIView.animate(withDuration: 0.22, animations: updates)
+        } else {
+            updates()
+        }
     }
 
     private func openDrawer() {

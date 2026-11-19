@@ -38,7 +38,7 @@ enum ConnectsBackupService {
         )
 
         let keychainData = try JSONSerialization.data(
-            withJSONObject: KeychainHelper.exportSnapshot(),
+            withJSONObject: KeychainHelper.exportSnapshot(extraKeys: SettingsManager.shared.customKeychainKeys),
             options: [.prettyPrinted, .sortedKeys]
         )
         try keychainData.write(to: staging.appendingPathComponent("keychain.json"))

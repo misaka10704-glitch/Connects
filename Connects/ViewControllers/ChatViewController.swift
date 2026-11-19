@@ -29,6 +29,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let emptySubtitleLabel = UILabel()
     private let emptyConfigureKeyButton = UIButton(type: .system)
     private let emptyContainer = UIView()
+    private let emptyLogoImageView = UIImageView()
+    private let emptySuggestionsStack = UIStackView()
+    private var emptySuggestionButtons: [UIButton] = []
+    private static var emptySuggestions: [String] {
+        [L("解释当前文档", "Explain this doc"),
+         L("总结要点", "Summarize"),
+         L("帮我改一处代码", "Fix my code")]
+    }
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
     private var studyChromeMode: StudyChromeMode = .none
@@ -184,10 +192,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     private var isCurrentStreaming: Bool {
         guard let id = currentConversationID else { return false }
-        if WebSearchCoordinator.shared.isSearching(id) { return true }
         if StreamManager.shared.isRunning(id) { return true }
-        // Keep chrome/timer alive across the synchronous search → stream
-        // handoff. Cold-launch orphan flags are repaired by ConversationStore.
+        // Cold-launch orphan flags are repaired by ConversationStore.
         return ConversationStore.shared.currentConversation?.messages.last?.isStreaming == true
     }
 
@@ -199,10 +205,10 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         setupInputBar()
         setupEmptyState()
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appLanguageChanged), name: .appLanguageDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(storeChanged(_:)), name: .conversationStoreDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamUpdated(_:)), name: .streamManagerDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinished(_:)), name: .streamManagerDidFinish, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(webSearchUpdated(_:)), name: .webSearchDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(imageTranscriptionUpdated(_:)), name: .imageTranscriptionDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(retryImageTranscription(_:)), name: Notification.Name("ConnectsImageTranscriptionRetry"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .chatFontSizeDidChange, object: nil)
@@ -324,7 +330,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         ScrollStressHarness.scheduleIfRequested(on: self)
         ScrollStressHarness.scheduleThinkingExpandBenchIfRequested(on: self)
         UsageSimulationHarness.startIfRequested(from: self)
-        WebSearchDebugHarness.startIfRequested(from: self)
         #endif
     }
 
@@ -4689,6 +4694,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyContainer.backgroundColor = c.background
         emptyTitleLabel.textColor = c.textPrimary
         emptySubtitleLabel.textColor = c.textSecondary
+        emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
+        styleEmptySuggestionButtons()
         modelButton.setTitleColor(c.textPrimary, for: .normal)
         modelButton.backgroundColor = c.surfaceHover
         modelButton.layer.borderWidth = 1 / UIScreen.main.scale
@@ -4718,6 +4725,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         NativeFormulaRenderer.shared.clear()
         applyTheme(reloadMessages: true)
         prewarmVisibleRichReplies(for: currentRenderWidth())
+    }
+
+    @objc private func appLanguageChanged() {
+        inputBar.refreshLocalizedStrings()
+        updateEmptyState()
     }
 
     @objc private func storeChanged(_ note: Notification) {
@@ -4779,13 +4791,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if finishViewportLocked || stickToBottom {
             followStreamingViewportToBottom()
         }
-    }
-
-    @objc private func webSearchUpdated(_ note: Notification) {
-        guard let id = note.userInfo?["conversationID"] as? String,
-              id == currentConversationID else { return }
-        syncStreamingChrome()
-        ensureStreamUITimer()
     }
 
     func messageCellDidTapChromeViewer(_ cell: MessageCellType,
@@ -7513,25 +7518,57 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         view.insertSubview(emptyContainer, belowSubview: inputBar)
 
         emptyTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        emptyTitleLabel.text = "今天想聊些什么？"
+        emptyTitleLabel.text = L("今天想聊些什么？", "Where would you like to begin?")
         emptyTitleLabel.textAlignment = .center
-        emptyTitleLabel.font = UIFont.systemFont(ofSize: 28, weight: .semibold)
+        emptyTitleLabel.font = UIFont.systemFont(ofSize: 30, weight: .semibold)
         emptyTitleLabel.numberOfLines = 2
         emptyContainer.addSubview(emptyTitleLabel)
 
+        emptyLogoImageView.translatesAutoresizingMaskIntoConstraints = false
+        emptyLogoImageView.image = UIImage(named: "Logo-120")
+        emptyLogoImageView.contentMode = .scaleAspectFit
+        // Logo 烘焙了深色方底 — 收成圆角 tile，深浅主题下都是刻意的 app-icon 形态而非露边。
+        emptyLogoImageView.layer.cornerRadius = 22
+        emptyLogoImageView.clipsToBounds = true
+        emptyContainer.addSubview(emptyLogoImageView)
+
         emptySubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        emptySubtitleLabel.text = "选择模型后开始对话"
+        emptySubtitleLabel.text = L("选择模型后开始对话", "Pick a model and start chatting")
         emptySubtitleLabel.textAlignment = .center
-        emptySubtitleLabel.font = DSTheme.bodyFont(size: 14)
+        emptySubtitleLabel.font = DSTheme.bodyFont(size: 15)
         emptySubtitleLabel.numberOfLines = 0
         emptyContainer.addSubview(emptySubtitleLabel)
 
         emptyConfigureKeyButton.translatesAutoresizingMaskIntoConstraints = false
-        emptyConfigureKeyButton.setTitle("配置 API Key", for: .normal)
+        emptyConfigureKeyButton.setTitle(L("配置 API Key", "Set up API Key"), for: .normal)
         emptyConfigureKeyButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         emptyConfigureKeyButton.addTarget(self, action: #selector(emptyConfigureKeyTapped), for: .touchUpInside)
         emptyConfigureKeyButton.isHidden = true
         emptyContainer.addSubview(emptyConfigureKeyButton)
+
+        emptySuggestionsStack.translatesAutoresizingMaskIntoConstraints = false
+        emptySuggestionsStack.axis = .horizontal
+        emptySuggestionsStack.alignment = .center
+        emptySuggestionsStack.spacing = 8
+        emptySuggestionsStack.distribution = .fill
+        emptyContainer.addSubview(emptySuggestionsStack)
+        for title in Self.emptySuggestions {
+            let button = UIButton(type: .system)
+            button.setTitle(title, for: .normal)
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+            button.titleLabel?.numberOfLines = 1
+            button.titleLabel?.adjustsFontSizeToFitWidth = true
+            button.titleLabel?.minimumScaleFactor = 0.7
+            button.titleLabel?.lineBreakMode = .byClipping
+            button.connectsSetContentInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
+            button.configuration?.titleLineBreakMode = .byClipping
+            button.layer.cornerRadius = DSTheme.chipCornerRadius
+            button.layer.borderWidth = 1
+            button.accessibilityLabel = L("建议：\(title)", "Suggestion: \(title)")
+            button.addTarget(self, action: #selector(emptySuggestionTapped(_:)), for: .touchUpInside)
+            emptySuggestionsStack.addArrangedSubview(button)
+            emptySuggestionButtons.append(button)
+        }
 
         // Center empty chrome in the band above the composer (moves with keyboard).
         NSLayoutConstraint.activate([
@@ -7545,12 +7582,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 24),
             emptyTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -24),
 
+            emptyLogoImageView.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
+            emptyLogoImageView.bottomAnchor.constraint(equalTo: emptyTitleLabel.topAnchor, constant: -22),
+            emptyLogoImageView.widthAnchor.constraint(equalToConstant: 92),
+            emptyLogoImageView.heightAnchor.constraint(equalToConstant: 92),
+
             emptySubtitleLabel.topAnchor.constraint(equalTo: emptyTitleLabel.bottomAnchor, constant: 10),
             emptySubtitleLabel.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
             emptySubtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 28),
             emptySubtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -28),
 
-            emptyConfigureKeyButton.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 18),
+            emptySuggestionsStack.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 18),
+            emptySuggestionsStack.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
+            emptySuggestionsStack.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 16),
+            emptySuggestionsStack.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -16),
+
+            emptyConfigureKeyButton.topAnchor.constraint(equalTo: emptySuggestionsStack.bottomAnchor, constant: 18),
             emptyConfigureKeyButton.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor)
         ])
 
@@ -7559,6 +7606,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func emptyConfigureKeyTapped() {
         delegate?.chatDidRequestSettings()
+    }
+
+    @objc private func emptySuggestionTapped(_ sender: UIButton) {
+        guard let title = sender.currentTitle else { return }
+        inputBar.setComposerText(title, focus: true)
     }
 
     private func updateEmptyState() {
@@ -7582,6 +7634,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
             emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
+            let suggestions = Self.emptySuggestions
+            for (i, button) in emptySuggestionButtons.enumerated() where i < suggestions.count {
+                button.setTitle(suggestions[i], for: .normal)
+            }
+            styleEmptySuggestionButtons()
             refreshEmptyOnboardingCopy()
         } else {
             emptyConfigureKeyButton.isHidden = true
@@ -7589,18 +7646,34 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         layoutEmptyChromeForKeyboard()
     }
 
+    private func styleEmptySuggestionButtons() {
+        let c = DSTheme.c
+        for button in emptySuggestionButtons {
+            button.setTitleColor(c.textPrimary, for: .normal)
+            button.backgroundColor = c.surface.withAlphaComponent(0.7)
+            button.layer.borderColor = c.border.cgColor
+        }
+    }
+
     /// Cold-start / missing-key empty state vs normal suggestions.
     private func refreshEmptyOnboardingCopy() {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
-        let hasKey = SettingsManager.shared.hasAPIKey(for: model.provider)
+        let hasKey = SettingsManager.shared.hasAPIKey(for: model)
         emptyConfigureKeyButton.isHidden = hasKey
         if hasKey {
-            emptyTitleLabel.text = "今天想聊些什么？"
-            emptySubtitleLabel.text = "试试：解释当前文档 · 总结要点 · 帮我改一处代码"
+            emptyTitleLabel.text = L("今天想聊些什么？", "Where would you like to begin?")
+            emptySubtitleLabel.text = L(
+                "试试：解释当前文档 · 总结要点 · 帮我改一处代码",
+                "Try: Explain this document · Summarize key points · Fix some code"
+            )
         } else {
-            emptyTitleLabel.text = "先配置 API Key"
-            emptySubtitleLabel.text = "在设置中填写 \(model.provider.displayName) 密钥后即可开始对话。点右上角「完成」才会保存。"
+            emptyTitleLabel.text = L("先配置 API Key", "Set up an API Key first")
+            emptySubtitleLabel.text = L(
+                "在设置中填写 \(model.providerDisplayName) 密钥后即可开始对话。点右上角「完成」才会保存。",
+                "Add a \(model.providerDisplayName) key in Settings to start. Tap Done to save."
+            )
         }
+        emptyConfigureKeyButton.setTitle(L("配置 API Key", "Set up API Key"), for: .normal)
     }
 
     /// When keyboard is up, keep title above the composer; hide subtitle to avoid clutter.
@@ -7611,14 +7684,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyConfigureKeyButton.isHidden = true
         } else {
             let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
-            emptyConfigureKeyButton.isHidden = SettingsManager.shared.hasAPIKey(for: model.provider)
+            emptyConfigureKeyButton.isHidden = SettingsManager.shared.hasAPIKey(for: model)
         }
     }
 
     private func updateModelButton() {
         let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
+        // Study 顶栏留给 ▲▼ 浮动胶囊与 +/历史/⋯；普通会话才显示会话标题。
+        let inStudy = isStudySessionActive() || studyChromeMode != .none
+        navigationItem.title = inStudy ? nil : ConversationStore.shared.currentConversation?.title
         // Single source of truth: input-bar AI 选项. Do not also mount a nav model chip.
-        inputBar.setModelChip(title: model.displayName)
+        inputBar.setModelChip(title: model.chipName)
         inputBar.modelSupportsVision = model.supportsVision
         if !model.supportsVision, let id = ConversationStore.shared.currentConversationID {
             let kind = ConversationStore.shared.conversation(id: id).flatMap { conv in
@@ -7855,7 +7931,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         guard let conv = ConversationStore.shared.currentConversation,
               index >= 0, index < conv.messages.count,
               conv.messages[index].role == .user else { return }
-        if StreamManager.shared.isRunning(conv.id) || WebSearchCoordinator.shared.isSearching(conv.id) {
+        if StreamManager.shared.isRunning(conv.id) {
             showAlert(title: "正在生成", message: "请先停止或等待当前回复完成。")
             return
         }
@@ -8141,11 +8217,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先停止或等待完成。")
             return
         }
-        if WebSearchCoordinator.shared.isSearching(conv.id) {
-            showAlert(title: "正在联网搜索", message: "当前对话仍在检索网页，请先停止或等待完成。")
-            return
-        }
-
         var userIndex = index
         if conv.messages[index].role == .assistant {
             userIndex = index - 1
@@ -8169,7 +8240,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
+        let needsAITitle = (Conversation.isGenericTitle(conv.title)) && !conv.titleLocked
         let convID = conv.id
         let oldRowCount = tableView.numberOfRows(inSection: 0)
 
@@ -8208,28 +8279,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
         applyRetryThreadUI(oldRowCount: oldRowCount, userIndex: userIndex)
 
-        let target = ConversationStore.shared.conversation(id: convID)
-        let userText = target?.messages[userIndex].content ?? userMessage.content
-        let searchOn = SettingsManager.shared.webSearchEnabled
-            && !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && userText != "[图片]"
-
-        if searchOn {
-            beginWebSearchThenStream(
-                convID: convID,
+        buildAPIContextAsync(for: model, conversationID: convID) { [weak self] messages in
+            self?.startStream(
+                conversationID: convID,
+                messages: messages,
                 model: model,
-                needsAITitle: needsAITitle,
-                query: userText
+                needsAITitle: needsAITitle
             )
-        } else {
-            buildAPIContextAsync(for: model, conversationID: convID) { [weak self] messages in
-                self?.startStream(
-                    conversationID: convID,
-                    messages: messages,
-                    model: model,
-                    needsAITitle: needsAITitle
-                )
-            }
         }
     }
 
@@ -8297,174 +8353,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             self.followStreamingViewportToBottom()
             if let live = ConversationStore.shared.currentConversation?.messages, !live.isEmpty {
                 self.chaseLiveTailToBottom(messages: live, layoutWidth: self.currentRenderWidth())
-            }
-        }
-    }
-
-    /// Plan queries from conversation → search → read pages → stream. Shared by send + retry.
-    /// Each conversation has its own search generation so parallel chats never cancel or cross-wire.
-    private func beginWebSearchThenStream(
-        convID: String,
-        model: AIModelOption,
-        needsAITitle: Bool,
-        query: String,
-        studyCapture: StudyPageCapture? = nil
-    ) {
-        let generation = WebSearchCoordinator.shared.begin(convID)
-        syncStreamingChrome()
-        updateSearchProcess(
-            convID: convID,
-            phase: .planning,
-            body: "正在结合对话上下文推荐查证来源…\n（会消解「那这个呢」「为什么」等指代，并选择百科、知乎、媒体等站点定向检索。）"
-        )
-
-        // Lightweight transcript only — planSearch truncates to ~3.5k chars.
-        // Avoid a full ContextBuilder pass before search (was blocking TTFT).
-        let planningMsgs = Self.planningMessages(for: convID)
-        WebSearchService.planSearch(
-            contextMessages: planningMsgs,
-            model: model,
-            fallbackQuery: query
-        ) { [weak self] plan in
-            guard let self = self else { return }
-            guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
-
-            let effectivePlan = plan.targets.isEmpty ? WebSearchService.SearchPlan.fallback(query) : plan
-            #if DEBUG
-            print("[Connects] web search plan [\(convID.prefix(6))]: topic=\(effectivePlan.topic), targets=\(effectivePlan.targets.count)")
-            #endif
-
-            var planLog = "根据对话上下文推荐的查证来源：\n"
-            for (i, target) in effectivePlan.targets.enumerated() {
-                planLog += "\(i + 1). \(target.name)"
-                if let domain = target.domain { planLog += " (\(domain))" }
-                planLog += "\n   检索：\(target.query)"
-                if let reason = target.reason, !reason.isEmpty {
-                    planLog += "\n   原因：\(reason)"
-                }
-                if let url = target.directURL, !url.isEmpty {
-                    planLog += "\n   直达：\(url)"
-                }
-                planLog += "\n"
-            }
-            self.updateSearchProcess(convID: convID, phase: .searching, body: planLog)
-
-            WebSearchService.searchAndFormat(
-                plan: effectivePlan,
-                onStatus: { [weak self] status in
-                    guard let self = self else { return }
-                    guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
-                    let phase: SearchProcessPhase =
-                        (status.contains("阅读") || status.contains("已读")) ? .reading : .searching
-                    self.updateSearchProcess(
-                        convID: convID,
-                        phase: phase,
-                        append: "\n" + status
-                    )
-                }
-            ) { [weak self] result in
-                guard let self = self else { return }
-                guard WebSearchCoordinator.shared.isCurrent(convID, generation: generation) else { return }
-                WebSearchCoordinator.shared.finish(convID, generation: generation)
-                ConversationStore.shared.updateConversationQuietly(id: convID) { c in
-                    guard var last = c.messages.last, last.isStreaming else { return }
-                    last.content = ""
-                    c.messages[c.messages.count - 1] = last
-                }
-                // Single ContextBuilder pass after search, off the main-thread hot path.
-                self.buildAPIContextAsync(
-                    for: model,
-                    conversationID: convID,
-                    studyCapture: studyCapture
-                ) { msgs in
-                    guard WebSearchCoordinator.shared.matchesGeneration(convID, generation: generation) else { return }
-                    var apiMsgs = msgs
-                    switch result {
-                    case .success(let bundle):
-                        self.updateSearchProcess(
-                            convID: convID,
-                            phase: .done,
-                            body: bundle.processLog
-                        )
-                        apiMsgs = WebSearchService.inject(into: apiMsgs, bundle: bundle)
-                        apiMsgs = WebSearchService.fitInjectedContext(apiMsgs, model: model)
-                    case .failure(let err):
-                        #if DEBUG
-                        print("[Connects] web search failed [\(convID.prefix(6))]: \(err.localizedDescription)")
-                        #endif
-                        self.updateSearchProcess(
-                            convID: convID,
-                            phase: .done,
-                            append: "\n\n检索未成功：\(err.localizedDescription)\n将改为不依赖网页证据直接作答。"
-                        )
-                    }
-                    self.startStream(
-                        conversationID: convID,
-                        messages: apiMsgs,
-                        model: model,
-                        needsAITitle: needsAITitle
-                    )
-                }
-            }
-        }
-    }
-
-    /// Recent finished turns for web-search planning (no ContextBuilder / no images).
-    private static func planningMessages(for conversationID: String) -> [ChatMessage] {
-        guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return [] }
-        let finished = conv.messages.filter {
-            !$0.isStreaming && ($0.role == .user || $0.role == .assistant)
-        }
-        return Array(finished.suffix(12)).map { msg in
-            var copy = msg
-            copy.imageJPEGBase64 = nil
-            return copy
-        }
-    }
-
-    private func updateSearchProcess(
-        convID: String,
-        phase: SearchProcessPhase,
-        body: String? = nil,
-        append: String? = nil
-    ) {
-        // Status lives only in the assistant bubble's search tag — never in
-        // UINavigationItem.prompt (which sits above the model capsule).
-        ConversationStore.shared.updateConversationQuietly(id: convID) { c in
-            guard var last = c.messages.last, last.isStreaming else { return }
-            last.searchProcessPhase = phase
-            if let body = body {
-                last.searchProcessContent = body
-            } else if let append = append, !append.isEmpty {
-                if last.searchProcessContent.isEmpty {
-                    last.searchProcessContent = append.trimmingCharacters(in: .whitespacesAndNewlines)
-                } else if !last.searchProcessContent.contains(append.trimmingCharacters(in: CharacterSet.newlines)) {
-                    last.searchProcessContent += append
-                }
-            }
-            // Keep the main bubble free of status text — process lives in the collapsible panel.
-            if last.content.hasPrefix("正在规划")
-                || last.content.hasPrefix("正在搜索")
-                || last.content.hasPrefix("正在阅读") {
-                last.content = ""
-            }
-            c.messages[c.messages.count - 1] = last
-        }
-        if currentConversationID == convID {
-            guard let messages = ConversationStore.shared.currentConversation?.messages,
-                  !messages.isEmpty else { return }
-            let path = IndexPath(row: messages.count - 1, section: 0)
-            rowHeights.invalidate(messageID: messages[path.row].id)
-            UIView.performWithoutAnimation {
-                if let cell = tableView.cellForRow(at: path) as? AssistantMessageCell {
-                    if !cell.updateStreamingContent(messages[path.row]) {
-                        cell.configure(with: messages[path.row], preferredHeight: nil, layoutWidth: currentRenderWidth())
-                    }
-                } else {
-                    tableView.reloadRows(at: [path], with: .none)
-                }
-                tableView.beginUpdates()
-                tableView.endUpdates()
             }
         }
     }
@@ -8546,18 +8434,18 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// always returns the conversation model for the actual reply.
     private func streamModel(for conversationModel: AIModelOption, hasImages: Bool) -> AIModelOption? {
         _ = hasImages
-        guard SettingsManager.shared.hasAPIKey(for: conversationModel.provider) else { return nil }
+        guard SettingsManager.shared.hasAPIKey(for: conversationModel) else { return nil }
         return conversationModel
     }
 
     private func streamModelMissingKeyMessage(for conversationModel: AIModelOption, hasImages: Bool) -> String {
         _ = hasImages
-        return "请先在设置中填写 \(conversationModel.provider.displayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
+        return "请先在设置中填写 \(conversationModel.providerDisplayName) 的 API Key。\n当前模型：\(conversationModel.displayName)"
     }
 
     private func imageTranscriptionModel() -> AIModelOption? {
         let vision = AIModelOption.preferredImageTranscription
-        guard SettingsManager.shared.hasAPIKey(for: vision.provider) else { return nil }
+        guard SettingsManager.shared.hasAPIKey(for: vision) else { return nil }
         return vision
     }
 
@@ -8733,10 +8621,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             showAlert(title: "正在生成", message: "当前对话仍在回复中，请先点停止或等待完成。")
             return
         }
-        if WebSearchCoordinator.shared.isSearching(conv.id) {
-            showAlert(title: "正在联网搜索", message: "当前对话仍在检索网页，请先点停止或等待完成。")
-            return
-        }
         if ContextCompactor.isCompacting(conv.id) {
             showAlert(title: "正在压缩", message: "上下文压缩完成后即可发送。")
             return
@@ -8860,7 +8744,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
         let trimmedUserText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let needsAITitle = (conv.title == "新对话" || conv.title.hasSuffix("（分叉）")) && !conv.titleLocked
+        let needsAITitle = (Conversation.isGenericTitle(conv.title)) && !conv.titleLocked
         let displayText: String
         if !trimmedUserText.isEmpty {
             displayText = text
@@ -8892,14 +8776,13 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        let searchOn = SettingsManager.shared.webSearchEnabled && !trimmedUserText.isEmpty
         let useAgentChrome = conv.usesWorkspaceAgentChrome
         let assistantMsg = ChatMessage(
             role: .assistant,
             content: "",
             reasoningContent: "",
-            searchProcessContent: searchOn ? "正在结合对话上下文规划检索词…" : "",
-            searchProcessPhase: searchOn ? .planning : .idle,
+            searchProcessContent: "",
+            searchProcessPhase: .idle,
             isStreaming: true,
             agentProcessSteps: [],
             agentProcessPhase: useAgentChrome ? .running : .idle,
@@ -9046,27 +8929,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let captureForAPI = resolvedStudyCapture
         let startReply = { [weak self] in
             guard let self = self else { return }
-            if searchOn {
-                self.beginWebSearchThenStream(
-                    convID: convID,
-                    model: model,
-                    needsAITitle: needsAITitle,
-                    query: displayText,
-                    studyCapture: captureForAPI
-                )
-            } else {
-                self.buildAPIContextAsync(
-                    for: model,
+            self.buildAPIContextAsync(
+                for: model,
+                conversationID: convID,
+                studyCapture: captureForAPI
+            ) { messages in
+                self.startStream(
                     conversationID: convID,
-                    studyCapture: captureForAPI
-                ) { messages in
-                    self.startStream(
-                        conversationID: convID,
-                        messages: messages,
-                        model: model,
-                        needsAITitle: needsAITitle
-                    )
-                }
+                    messages: messages,
+                    model: model,
+                    needsAITitle: needsAITitle
+                )
             }
         }
 
@@ -10724,14 +10597,6 @@ extension ChatViewController: InputBarViewDelegate {
 
     func inputBarDidTapStop() {
         guard let id = currentConversationID else { return }
-        if WebSearchCoordinator.shared.isSearching(id) {
-            WebSearchCoordinator.shared.cancel(id)
-            ConversationStore.shared.finishStreamingMessage(
-                conversationID: id,
-                errorText: "已取消联网搜索。"
-            )
-            reloadChat()
-        }
         if ImageTranscriptionCoordinator.shared.isTranscribing(id) {
             ImageTranscriptionCoordinator.shared.cancel(id)
             ConversationStore.shared.updateConversationQuietly(id: id) { draft in

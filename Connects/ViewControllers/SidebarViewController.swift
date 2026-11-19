@@ -58,9 +58,9 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         super.viewDidLoad()
         setupLayout()
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appLanguageChanged), name: .appLanguageDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(storeChanged), name: .conversationStoreDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidFinish, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .webSearchDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(streamFinishedSidebar), name: .streamManagerDidUpdate, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(projectsChanged), name: .projectsDidChange, object: nil)
         applyTheme()
@@ -124,6 +124,10 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
     }
 
     @objc private func themeChanged() { applyTheme() }
+
+    @objc private func appLanguageChanged() {
+        newChatButton.setTitle(L("  新对话", "  New Chat"), for: .normal)
+    }
     @objc private func storeChanged(_ note: Notification) {
         let source = note.userInfo?["source"] as? String
         let projectFilterOnly = source == "projectFilter"
@@ -299,7 +303,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         let alert = UIAlertController(title: "重命名项目", message: nil, preferredStyle: .alert)
         alert.addTextField {
             $0.text = project.name
-            $0.placeholder = "项目名称"
+            $0.placeholder = L("项目名称", "Project name")
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "保存", style: .default) { _ in
@@ -416,7 +420,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
         headerBar.addSubview(archiveFilterButton)
 
         newChatButton.translatesAutoresizingMaskIntoConstraints = false
-        newChatButton.setTitle("  新对话", for: .normal)
+        newChatButton.setTitle(L("  新对话", "  New Chat"), for: .normal)
         newChatButton.setImage(ActionIconFactory.image(.newChat, pointSize: ActionIconFactory.toolGlyph), for: .normal)
         newChatButton.titleLabel?.font = DSTheme.bodyFont(size: 15)
         newChatButton.layer.cornerRadius = 12
@@ -588,7 +592,7 @@ final class SidebarViewController: UIViewController, ThemeRefreshable, UITableVi
             cell.textLabel?.font = UIFont.systemFont(ofSize: 14, weight: isActive ? .semibold : .regular)
             cell.backgroundColor = isActive ? c.surfaceHover.withAlphaComponent(0.55) : .clear
         case .conversation(let conv):
-            let running = StreamManager.shared.isRunning(conv.id) || WebSearchCoordinator.shared.isSearching(conv.id)
+            let running = StreamManager.shared.isRunning(conv.id)
             let title = running ? "●  \(conv.title)" : conv.title
             // Same chrome as Study / plain chats — no folder icon or workspace name prefix.
             cell.imageView?.image = nil

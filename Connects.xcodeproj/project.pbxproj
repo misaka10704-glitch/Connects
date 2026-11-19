@@ -23,6 +23,7 @@
 		A1000001000000000000000D /* InputBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000D /* InputBarView.swift */; };
 		A1000001000000000000000E /* AssistantMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000E /* AssistantMessageCell.swift */; };
 		A1000001000000000000000F /* DSTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000F /* DSTheme.swift */; };
+		A10000010000000000000064 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000064 /* L10n.swift */; };
 		A10000010000000000000012 /* ImageAttachmentHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* ImageAttachmentHelper.swift */; };
 		A10000010000000000000014 /* MarkdownExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* MarkdownExporter.swift */; };
 		A10000010000000000000015 /* MathContentDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000015 /* MathContentDetector.swift */; };
@@ -47,13 +48,14 @@
 		A10000010000000000000040 /* icon-copy.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000040 /* icon-copy.png */; };
 		A10000010000000000000041 /* icon-retry.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000041 /* icon-retry.png */; };
 		A10000010000000000000042 /* icon-fork.png in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000042 /* icon-fork.png */; };
-		A10000010000000000000053 /* WebSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000053 /* WebSearchService.swift */; };
+		A10000010000000000000060 /* ImageTranscriptionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* ImageTranscriptionCoordinator.swift */; };
+		A10000010000000000000062 /* BYOKProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000062 /* BYOKProvider.swift */; };
+		A10000010000000000000063 /* BYOKProviderEditViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000063 /* BYOKProviderEditViewController.swift */; };
 		A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000054 /* WebKitRenderWarmup.swift */; };
 		A10000010000000000000055 /* RenderCacheStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000055 /* RenderCacheStore.swift */; };
 		A10000010000000000000056 /* ConnectsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000056 /* ConnectsMenu.swift */; };
 		A10000010000000000000057 /* ModelVisibilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000057 /* ModelVisibilityView.swift */; };
 		A10000010000000000000058 /* ModelCapsuleDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000058 /* ModelCapsuleDropdown.swift */; };
-		A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000060 /* WebSearchCoordinator.swift */; };
 		A10000010000000000000061 /* TurnContextBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000061 /* TurnContextBarView.swift */; };
 		B10000010000000000000001 /* NativeMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* NativeMarkdown.swift */; };
 		B10000010000000000000002 /* NativeMarkdownParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* NativeMarkdownParser.swift */; };
@@ -67,7 +69,6 @@
 		B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000008 /* DebugAPIBootstrap.swift */; };
 		B10000010000000000000009 /* RenderAuditChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000009 /* RenderAuditChecks.swift */; };
 		B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000A /* UsageSimulationHarness.swift */; };
-		B1000001000000000000000B /* WebSearchDebugHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001000000000000000B /* WebSearchDebugHarness.swift */; };
 		B10000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
 		B10000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
 		B10000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */; settings = {COMPILER_FLAGS = "-Wno-nullability-completeness -Wno-deprecated-declarations"; }; };
@@ -193,6 +194,7 @@
 		A2000001000000000000000D /* InputBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBarView.swift; sourceTree = "<group>"; };
 		A2000001000000000000000E /* AssistantMessageCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageCell.swift; sourceTree = "<group>"; };
 		A2000001000000000000000F /* DSTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSTheme.swift; sourceTree = "<group>"; };
+		A20000010000000000000064 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		A20000010000000000000012 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000010000000000000013 /* ImageAttachmentHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAttachmentHelper.swift; sourceTree = "<group>"; };
 		A20000010000000000000014 /* MarkdownExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownExporter.swift; sourceTree = "<group>"; };
@@ -219,14 +221,15 @@
 		A20000010000000000000041 /* icon-retry.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-retry.png"; sourceTree = "<group>"; };
 		A20000010000000000000042 /* icon-fork.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "icon-fork.png"; sourceTree = "<group>"; };
 		A20000010000000000000052 /* LaunchScreen.storyboardc */ = {isa = PBXFileReference; lastKnownFileType = wrapper.storyboardc; path = LaunchScreen.storyboardc; sourceTree = "<group>"; };
-		A20000010000000000000053 /* WebSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchService.swift; sourceTree = "<group>"; };
+		A20000010000000000000060 /* ImageTranscriptionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageTranscriptionCoordinator.swift; sourceTree = "<group>"; };
 		A20000010000000000000054 /* WebKitRenderWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitRenderWarmup.swift; sourceTree = "<group>"; };
 		A20000010000000000000055 /* RenderCacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderCacheStore.swift; sourceTree = "<group>"; };
 		A20000010000000000000056 /* ConnectsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectsMenu.swift; sourceTree = "<group>"; };
 		A20000010000000000000057 /* ModelVisibilityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelVisibilityView.swift; sourceTree = "<group>"; };
 		A20000010000000000000058 /* ModelCapsuleDropdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCapsuleDropdown.swift; sourceTree = "<group>"; };
-		A20000010000000000000060 /* WebSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchCoordinator.swift; sourceTree = "<group>"; };
 		A20000010000000000000061 /* TurnContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnContextBarView.swift; sourceTree = "<group>"; };
+		A20000010000000000000062 /* BYOKProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BYOKProvider.swift; sourceTree = "<group>"; };
+		A20000010000000000000063 /* BYOKProviderEditViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BYOKProviderEditViewController.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* Connects.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Connects.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000010000000000000001 /* NativeMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdown.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* NativeMarkdownParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownParser.swift; sourceTree = "<group>"; };
@@ -240,7 +243,6 @@
 		B20000010000000000000008 /* DebugAPIBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugAPIBootstrap.swift; sourceTree = "<group>"; };
 		B20000010000000000000009 /* RenderAuditChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderAuditChecks.swift; sourceTree = "<group>"; };
 		B2000001000000000000000A /* UsageSimulationHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageSimulationHarness.swift; sourceTree = "<group>"; };
-		B2000001000000000000000B /* WebSearchDebugHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSearchDebugHarness.swift; sourceTree = "<group>"; };
 		B20000010000000000000010 /* Vendor/iosMath/lib/MTMathListIndex.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListIndex.m; sourceTree = "<group>"; };
 		B20000010000000000000011 /* Vendor/iosMath/lib/MTMathListBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathListBuilder.m; sourceTree = "<group>"; };
 		B20000010000000000000012 /* Vendor/iosMath/lib/MTMathList.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Vendor/iosMath/lib/MTMathList.m; sourceTree = "<group>"; };
@@ -415,6 +417,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000002 /* AIModel.swift */,
+				A20000010000000000000062 /* BYOKProvider.swift */,
 				A20000010000000000000003 /* ChatMessage.swift */,
 				A20000010000000000000004 /* Conversation.swift */,
 				C2000001000000000000000D /* Project.swift */,
@@ -443,8 +446,7 @@
 				A2000001000000000000001C /* ActionIconFactory.swift */,
 				A2000001000000000000001D /* ContextBuilder.swift */,
 				A2000001000000000000001E /* ContextCompactor.swift */,
-				A20000010000000000000053 /* WebSearchService.swift */,
-				A20000010000000000000060 /* WebSearchCoordinator.swift */,
+				A20000010000000000000060 /* ImageTranscriptionCoordinator.swift */,
 				A20000010000000000000054 /* WebKitRenderWarmup.swift */,
 				A20000010000000000000055 /* RenderCacheStore.swift */,
 				E20000010000000000000005 /* ChatRowHeightResolver.swift */,
@@ -466,7 +468,6 @@
 				B20000010000000000000008 /* DebugAPIBootstrap.swift */,
 				B20000010000000000000009 /* RenderAuditChecks.swift */,
 				B2000001000000000000000A /* UsageSimulationHarness.swift */,
-				B2000001000000000000000B /* WebSearchDebugHarness.swift */,
 				B20000010000000000000003 /* NativeFormulaRenderer.swift */,
 				B2000001000000000000000D /* KaTeXFormulaSnapshot.swift */,
 				B20000010000000000000004 /* NativeMessageLayouter.swift */,
@@ -515,6 +516,7 @@
 				F20000010000000000000005 /* ContextUsageDetailViewController.swift */,
 				A2000001000000000000000A /* RootSplitViewController.swift */,
 				A2000001000000000000000B /* SettingsViewController.swift */,
+				A20000010000000000000063 /* BYOKProviderEditViewController.swift */,
 				C20000010000000000000008 /* DiffPreviewViewController.swift */,
 				C2000001000000000000000F /* ProjectListViewController.swift */,
 				A2000001000000000000000C /* SidebarViewController.swift */,
@@ -558,6 +560,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000001000000000000000F /* DSTheme.swift */,
+				A20000010000000000000064 /* L10n.swift */,
 			);
 			path = Theme;
 			sourceTree = "<group>";
@@ -771,6 +774,7 @@
 				E10000010000000000000004 /* AssistantMessageLayout.swift in Sources */,
 				A1000001000000000000000E /* AssistantMessageCell.swift in Sources */,
 				A1000001000000000000000F /* DSTheme.swift in Sources */,
+				A10000010000000000000064 /* L10n.swift in Sources */,
 				A10000010000000000000012 /* ImageAttachmentHelper.swift in Sources */,
 				A10000010000000000000014 /* MarkdownExporter.swift in Sources */,
 				A10000010000000000000015 /* MathContentDetector.swift in Sources */,
@@ -786,8 +790,9 @@
 				F10000010000000000000004 /* ContextUsageRingView.swift in Sources */,
 				F10000010000000000000005 /* ContextUsageDetailViewController.swift in Sources */,
 				A10000010000000000000061 /* TurnContextBarView.swift in Sources */,
-				A10000010000000000000053 /* WebSearchService.swift in Sources */,
-				A10000010000000000000060 /* WebSearchCoordinator.swift in Sources */,
+				A10000010000000000000060 /* ImageTranscriptionCoordinator.swift in Sources */,
+				A10000010000000000000062 /* BYOKProvider.swift in Sources */,
+				A10000010000000000000063 /* BYOKProviderEditViewController.swift in Sources */,
 				A10000010000000000000054 /* WebKitRenderWarmup.swift in Sources */,
 				A10000010000000000000055 /* RenderCacheStore.swift in Sources */,
 				E10000010000000000000005 /* ChatRowHeightResolver.swift in Sources */,
@@ -814,7 +819,6 @@
 				B10000010000000000000008 /* DebugAPIBootstrap.swift in Sources */,
 				B10000010000000000000009 /* RenderAuditChecks.swift in Sources */,
 				B1000001000000000000000A /* UsageSimulationHarness.swift in Sources */,
-				B1000001000000000000000B /* WebSearchDebugHarness.swift in Sources */,
 				B10000010000000000000003 /* NativeFormulaRenderer.swift in Sources */,
 				B1000001000000000000000D /* KaTeXFormulaSnapshot.swift in Sources */,
 				B10000010000000000000004 /* NativeMessageLayouter.swift in Sources */,

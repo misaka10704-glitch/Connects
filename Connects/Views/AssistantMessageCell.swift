@@ -4,7 +4,7 @@ import ObjectiveC
 /// Assistant reply row: native markdown, thinking/search chrome, action row.
 final class AssistantMessageCell: UITableViewCell, MessageCellType {
     static let reuseID = MessageCellReuseID.assistant
-    private static let actionRowVisibleHeight: CGFloat = 28
+    private static let actionRowVisibleHeight: CGFloat = 36
 
     weak var cellDelegate: MessageCellDelegate?
     private(set) var messageID: String = ""
@@ -3349,7 +3349,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         actionChromeStack.translatesAutoresizingMaskIntoConstraints = false
         actionChromeStack.axis = .horizontal
-        actionChromeStack.spacing = 10
+        actionChromeStack.spacing = 14
         actionChromeStack.alignment = .center
         actionChromeStack.distribution = .fill
         actionRow.addSubview(actionChromeStack)
@@ -3366,8 +3366,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
 
         for b in [versionPrevButton, versionNextButton, copyButton, retryButton, forkButton] {
             b.translatesAutoresizingMaskIntoConstraints = false
-            b.widthAnchor.constraint(equalToConstant: 32).isActive = true
-            b.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 36).isActive = true
             b.setContentHuggingPriority(.required, for: .horizontal)
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
         }

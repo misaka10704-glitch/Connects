@@ -81,6 +81,8 @@ struct NativeCodeFenceFragment {
     let cardBorder: UIColor
     let lineStep: CGFloat
     let showsFade: Bool
+    /// Header-right "复制" affordance zone (drawn into the card bitmap).
+    let copyFrame: CGRect
 }
 
 struct NativeCodeFenceHit {
@@ -88,6 +90,8 @@ struct NativeCodeFenceHit {
     let code: String
     let language: StudyTextLanguage
     let title: String
+    /// Tapping this zone copies `code` instead of opening the popup.
+    let copyFrame: CGRect
 }
 
 /// Wide display formula: viewport stays in the bubble; content scrolls horizontally.

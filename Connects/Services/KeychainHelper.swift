@@ -78,11 +78,16 @@ enum KeychainHelper {
             zhipuAPIKey,
             doubaoAPIKey,
         ]
+
+        /// Keychain account for a BYOK profile's API key.
+        static func customAPIKey(_ providerID: String) -> String {
+            "custom_key_\(providerID)"
+        }
     }
 
-    static func exportSnapshot() -> [String: String] {
+    static func exportSnapshot(extraKeys: [String] = []) -> [String: String] {
         var snapshot: [String: String] = [:]
-        for key in Keys.all {
+        for key in Keys.all + extraKeys {
             if let value = load(key: key) {
                 snapshot[key] = value
             }

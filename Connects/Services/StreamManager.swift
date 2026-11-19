@@ -132,9 +132,9 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     }
 
     func start() {
-        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        let apiKey = SettingsManager.shared.apiKey(for: model)
         guard !apiKey.isEmpty else {
-            fail(APIClientError.missingAPIKey(model.provider.displayName))
+            fail(APIClientError.missingAPIKey(model.providerDisplayName))
             return
         }
         if messages.contains(where: { $0.hasImage }) && !model.supportsVision {
@@ -405,7 +405,7 @@ private final class StreamEngine: NSObject, URLSessionDataDelegate {
     private func startContinuation(assistantContent: String,
                                    assistantReasoning: String,
                                    userNudge: String) {
-        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        let apiKey = SettingsManager.shared.apiKey(for: model)
         guard !apiKey.isEmpty, let url = URL(string: model.chatCompletionsURL) else {
             ended = true
             ConversationStore.shared.finishStreamingMessage(

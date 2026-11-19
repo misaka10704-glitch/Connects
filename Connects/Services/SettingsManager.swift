@@ -26,6 +26,7 @@ extension Notification.Name {
     static let reasoningEffortDidChange = Notification.Name("ConnectsReasoningEffortDidChange")
     static let imageTranscriptionDidChange = Notification.Name("ConnectsImageTranscriptionDidChange")
     static let nativeFormulaDidRender = Notification.Name("ConnectsNativeFormulaDidRender")
+    static let appLanguageDidChange = Notification.Name("ConnectsAppLanguageDidChange")
 }
 
 final class SettingsManager {
@@ -64,6 +65,68 @@ final class SettingsManager {
     var doubaoAPIKey: String {
         get { KeychainHelper.load(key: KeychainHelper.Keys.doubaoAPIKey) ?? "" }
         set { persist(key: KeychainHelper.Keys.doubaoAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    // MARK: - BYOK custom providers (OpenAI-compatible)
+
+    private let customProvidersKey = "connects_custom_providers"
+
+    var customProviders: [BYOKProvider] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: customProvidersKey),
+                  let list = try? JSONDecoder().decode([BYOKProvider].self, from: data) else {
+                return []
+            }
+            return list
+        }
+        set {
+            if newValue.isEmpty {
+                UserDefaults.standard.removeObject(forKey: customProvidersKey)
+            } else if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: customProvidersKey)
+            }
+        }
+    }
+
+    func customProvider(id: String) -> BYOKProvider? {
+        customProviders.first { $0.id == id }
+    }
+
+    /// Insert or replace a profile. Deleting goes through `removeCustomProvider`
+    /// so the Keychain entry and stale model visibility get cleaned up too.
+    func saveCustomProvider(_ provider: BYOKProvider) {
+        var list = customProviders
+        if let idx = list.firstIndex(where: { $0.id == provider.id }) {
+            list[idx] = provider
+        } else {
+            list.append(provider)
+        }
+        customProviders = list
+        ensureModelCatalogSynced()
+        NotificationCenter.default.post(name: .visibleModelsDidChange, object: nil)
+    }
+
+    func removeCustomProvider(id: String) {
+        var list = customProviders
+        guard let idx = list.firstIndex(where: { $0.id == id }) else { return }
+        list.remove(at: idx)
+        customProviders = list
+        KeychainHelper.delete(key: KeychainHelper.Keys.customAPIKey(id))
+        ensureModelCatalogSynced()
+        NotificationCenter.default.post(name: .visibleModelsDidChange, object: nil)
+    }
+
+    func customAPIKey(for providerID: String) -> String {
+        KeychainHelper.load(key: KeychainHelper.Keys.customAPIKey(providerID)) ?? ""
+    }
+
+    func setCustomAPIKey(_ key: String, for providerID: String) {
+        persist(key: KeychainHelper.Keys.customAPIKey(providerID), value: Self.sanitizeKey(key))
+    }
+
+    /// Keychain account names for every BYOK profile — included in key exports.
+    var customKeychainKeys: [String] {
+        customProviders.map { KeychainHelper.Keys.customAPIKey($0.id) }
     }
 
     /// 火山方舟接入点 ID（`ep-…`）。填写后覆盖豆包默认 model id。
@@ -109,11 +172,6 @@ final class SettingsManager {
             UserDefaults.standard.set(true, forKey: instantDefaultMigrationKey)
             UserDefaults.standard.set(newValue, forKey: "connects_thinking")
         }
-    }
-
-    var webSearchEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "connects_web_search") }
-        set { UserDefaults.standard.set(newValue, forKey: "connects_web_search") }
     }
 
     /// Kept for persisted chats; the composer toggle is gone and new turns never OCR.
@@ -188,6 +246,18 @@ final class SettingsManager {
     var appearanceMode: AppearanceMode {
         get { ThemeManager.shared.mode }
         set { ThemeManager.shared.mode = newValue }
+    }
+
+    /// UI language override; `.system` follows the device locale. Views observe
+    /// `appLanguageDidChange` to re-render strings.
+    var appLanguage: AppLanguage {
+        get {
+            AppLanguage(rawValue: UserDefaults.standard.string(forKey: "connects_app_language") ?? "system") ?? .system
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "connects_app_language")
+            NotificationCenter.default.post(name: .appLanguageDidChange, object: nil)
+        }
     }
 
     var chatFontSizeIndex: Int {
@@ -291,7 +361,7 @@ final class SettingsManager {
     }
 
     func ensureModelCatalogSynced() {
-        let catalog = AIModelOption.all.map { $0.stableID }
+        let catalog = AIModelOption.catalog.map { $0.stableID }
         let known = Set((UserDefaults.standard.array(forKey: knownModelsKey) as? [String]) ?? [])
         let stored = UserDefaults.standard.array(forKey: enabledModelsKey) as? [String]
 
@@ -333,6 +403,7 @@ final class SettingsManager {
         case .qwen: raw = dashscopeAPIKey
         case .zhipu: raw = zhipuAPIKey
         case .doubao: raw = doubaoAPIKey
+        case .custom: raw = "" // BYOK keys are per-profile — use apiKey(for: model)
         }
         return Self.sanitizeKey(raw)
     }
@@ -341,6 +412,23 @@ final class SettingsManager {
 
     func hasAPIKey(for provider: AIProvider) -> Bool {
         !sanitizedAPIKey(for: provider).isEmpty
+    }
+
+    /// Model-aware key lookup — routes BYOK models to their profile's Keychain entry.
+    func apiKey(for model: AIModelOption) -> String {
+        if model.provider == .custom, let pid = model.customProviderID {
+            return Self.sanitizeKey(customAPIKey(for: pid))
+        }
+        return sanitizedAPIKey(for: model.provider)
+    }
+
+    func hasAPIKey(for model: AIModelOption) -> Bool {
+        !apiKey(for: model).isEmpty
+    }
+
+    /// Human label for the model's provider (BYOK → profile name).
+    func displayName(for model: AIModelOption) -> String {
+        model.providerDisplayName
     }
 
     static func sanitizeKey(_ raw: String) -> String {

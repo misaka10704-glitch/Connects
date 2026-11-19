@@ -76,11 +76,11 @@ final class APIClient: NSObject {
         streamBuffer = ""
         pendingHTTPError = nil
         errorBodyData = Data()
-        currentProviderName = model.provider.displayName
+        currentProviderName = model.providerDisplayName
 
-        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        let apiKey = SettingsManager.shared.apiKey(for: model)
         guard !apiKey.isEmpty else {
-            delegate.streamDidFail(APIClientError.missingAPIKey(model.provider.displayName))
+            delegate.streamDidFail(APIClientError.missingAPIKey(model.providerDisplayName))
             return
         }
 
@@ -119,9 +119,9 @@ final class APIClient: NSObject {
                   maxTokens: Int = 32,
                   timeout: TimeInterval? = nil,
                   completion: @escaping (Result<String, Error>) -> Void) {
-        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        let apiKey = SettingsManager.shared.apiKey(for: model)
         guard !apiKey.isEmpty else {
-            completion(.failure(APIClientError.missingAPIKey(model.provider.displayName)))
+            completion(.failure(APIClientError.missingAPIKey(model.providerDisplayName)))
             return
         }
         guard let url = URL(string: model.chatCompletionsURL) else {
@@ -178,9 +178,9 @@ final class APIClient: NSObject {
                           maxTokens: Int = 32,
                           timeout: TimeInterval? = nil,
                           completion: @escaping (Result<String, Error>) -> Void) {
-        let apiKey = SettingsManager.shared.sanitizedAPIKey(for: model.provider)
+        let apiKey = SettingsManager.shared.apiKey(for: model)
         guard !apiKey.isEmpty else {
-            completion(.failure(APIClientError.missingAPIKey(model.provider.displayName)))
+            completion(.failure(APIClientError.missingAPIKey(model.providerDisplayName)))
             return
         }
         guard let url = URL(string: model.chatCompletionsURL) else {

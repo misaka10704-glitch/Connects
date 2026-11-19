@@ -84,7 +84,7 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = chromeGlyph, color: UIColor = .black) -> UIImage {
-        let key = "v17-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
+        let key = "v19-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
         let canvas = ceil(pointSize + 8)
@@ -108,32 +108,10 @@ enum ActionIconFactory {
 
         switch kind {
         case .copy:
-            let back = CGRect(x: r.minX + 4, y: r.minY + 1.5, width: pointSize - 6, height: pointSize - 6)
-            let front = CGRect(x: r.minX + 1.5, y: r.minY + 4, width: pointSize - 6, height: pointSize - 6)
-            let pathB = UIBezierPath(roundedRect: back, cornerRadius: 2.2)
-            let pathF = UIBezierPath(roundedRect: front, cornerRadius: 2.2)
-            pathB.lineWidth = lw
-            pathF.lineWidth = lw
-            pathB.stroke()
-            ctx.setBlendMode(.clear)
-            UIBezierPath(roundedRect: front.insetBy(dx: -0.5, dy: -0.5), cornerRadius: 2.2).fill()
-            ctx.setBlendMode(.normal)
-            color.setStroke()
-            pathF.stroke()
+            drawSystemSymbol("doc.on.doc", in: r, color: color)
 
         case .retry:
-            let c = CGPoint(x: r.midX, y: r.midY)
-            let rad = pointSize * 0.34
-            let arc = UIBezierPath(arcCenter: c, radius: rad, startAngle: -.pi * 0.15, endAngle: .pi * 1.35, clockwise: true)
-            arc.lineWidth = lw
-            arc.stroke()
-            let tip = CGPoint(x: c.x + rad * cos(-.pi * 0.15), y: c.y + rad * sin(-.pi * 0.15))
-            let head = UIBezierPath()
-            head.move(to: CGPoint(x: tip.x - 3.2, y: tip.y - 1.2))
-            head.addLine(to: tip)
-            head.addLine(to: CGPoint(x: tip.x - 1.0, y: tip.y + 3.4))
-            head.lineWidth = lw
-            head.stroke()
+            drawSystemSymbol("arrow.clockwise", in: r, color: color, weight: .medium)
 
         case .fork:
             let left = CGPoint(x: r.minX + pointSize * 0.28, y: r.minY + pointSize * 0.22)
@@ -152,223 +130,46 @@ enum ActionIconFactory {
             }
 
         case .send:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.midX, y: r.minY + 2))
-            path.addLine(to: CGPoint(x: r.midX, y: r.maxY - 2))
-            path.move(to: CGPoint(x: r.midX - 4.5, y: r.minY + 7))
-            path.addLine(to: CGPoint(x: r.midX, y: r.minY + 2))
-            path.addLine(to: CGPoint(x: r.midX + 4.5, y: r.minY + 7))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("arrow.up", in: r, color: color, weight: .bold)
 
         case .stop:
-            let sq = r.insetBy(dx: pointSize * 0.28, dy: pointSize * 0.28)
-            UIBezierPath(roundedRect: sq, cornerRadius: 1.5).fill()
+            drawSystemSymbol("stop.fill", in: r, color: color)
 
         case .plus, .newChat:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.midX, y: r.minY + 3))
-            path.addLine(to: CGPoint(x: r.midX, y: r.maxY - 3))
-            path.move(to: CGPoint(x: r.minX + 3, y: r.midY))
-            path.addLine(to: CGPoint(x: r.maxX - 3, y: r.midY))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("plus", in: r, color: color, weight: .semibold)
 
         case .sidebar:
-            // Collapsed → open: empty panel + left rail (outline only).
-            let frame = r.insetBy(dx: pointSize * 0.10, dy: pointSize * 0.14)
-            let outer = UIBezierPath(roundedRect: frame, cornerRadius: 2.4)
-            outer.lineWidth = lw
-            outer.stroke()
-            let railX = frame.minX + frame.width * 0.34
-            let rail = UIBezierPath()
-            rail.move(to: CGPoint(x: railX, y: frame.minY))
-            rail.addLine(to: CGPoint(x: railX, y: frame.maxY))
-            rail.lineWidth = lw
-            rail.stroke()
+            drawSystemSymbol("sidebar.left", in: r, color: color)
 
         case .sidebarOpen:
-            // Open → close: filled left pane + inward chevron.
-            let frame = r.insetBy(dx: pointSize * 0.10, dy: pointSize * 0.14)
-            let outer = UIBezierPath(roundedRect: frame, cornerRadius: 2.4)
-            outer.lineWidth = lw
-            outer.stroke()
-            let paneW = frame.width * 0.34
-            let pane = UIBezierPath(
-                roundedRect: CGRect(x: frame.minX, y: frame.minY, width: paneW, height: frame.height),
-                byRoundingCorners: [.topLeft, .bottomLeft],
-                cornerRadii: CGSize(width: 2.4, height: 2.4)
-            )
-            pane.fill()
-            let chev = UIBezierPath()
-            let cx = frame.minX + frame.width * 0.68
-            chev.move(to: CGPoint(x: cx + pointSize * 0.10, y: r.midY - pointSize * 0.18))
-            chev.addLine(to: CGPoint(x: cx - pointSize * 0.06, y: r.midY))
-            chev.addLine(to: CGPoint(x: cx + pointSize * 0.10, y: r.midY + pointSize * 0.18))
-            chev.lineWidth = lw
-            color.setStroke()
-            chev.stroke()
+            drawSystemSymbol("rectangle.lefthalf.inset.filled", in: r, color: color)
 
         case .more:
-            let rad = max(1.2, pointSize * 0.075)
-            for i in 0..<3 {
-                let cx = r.minX + pointSize * (0.22 + CGFloat(i) * 0.28)
-                UIBezierPath(ovalIn: CGRect(x: cx - rad, y: r.midY - rad, width: rad * 2, height: rad * 2)).fill()
-            }
+            drawSystemSymbol("ellipsis", in: r, color: color, weight: .semibold)
 
         case .share:
-            // Tray + bold upward arrow (export out).
-            let tray = UIBezierPath()
-            tray.move(to: CGPoint(x: r.minX + pointSize * 0.16, y: r.midY + pointSize * 0.10))
-            tray.addLine(to: CGPoint(x: r.minX + pointSize * 0.16, y: r.maxY - pointSize * 0.14))
-            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.maxY - pointSize * 0.14))
-            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.midY + pointSize * 0.10))
-            tray.lineWidth = lw
-            tray.stroke()
-            let arrow = UIBezierPath()
-            arrow.move(to: CGPoint(x: r.midX, y: r.maxY - pointSize * 0.28))
-            arrow.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.12))
-            arrow.move(to: CGPoint(x: r.midX - pointSize * 0.20, y: r.minY + pointSize * 0.32))
-            arrow.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.12))
-            arrow.addLine(to: CGPoint(x: r.midX + pointSize * 0.20, y: r.minY + pointSize * 0.32))
-            arrow.lineWidth = lwThick
-            arrow.stroke()
+            drawSystemSymbol("square.and.arrow.up", in: r, color: color)
 
         case .archive:
-            let lid = UIBezierPath()
-            lid.move(to: CGPoint(x: r.minX + 2, y: r.minY + 5.5))
-            lid.addLine(to: CGPoint(x: r.minX + 4, y: r.minY + 2.5))
-            lid.addLine(to: CGPoint(x: r.maxX - 4, y: r.minY + 2.5))
-            lid.addLine(to: CGPoint(x: r.maxX - 2, y: r.minY + 5.5))
-            lid.close()
-            lid.lineWidth = lw
-            lid.stroke()
-            let box = UIBezierPath(roundedRect: CGRect(x: r.minX + 2.5, y: r.minY + 5.5, width: pointSize - 5, height: pointSize - 8), cornerRadius: 1.5)
-            box.lineWidth = lw
-            box.stroke()
-            let slit = UIBezierPath()
-            slit.move(to: CGPoint(x: r.midX - 2.5, y: r.midY + 1.5))
-            slit.addLine(to: CGPoint(x: r.midX + 2.5, y: r.midY + 1.5))
-            slit.lineWidth = lw
-            slit.stroke()
+            drawSystemSymbol("archivebox", in: r, color: color)
 
         case .settings:
-            // Proper six-tooth gear (inner hub + outer ring + teeth).
-            let c = CGPoint(x: r.midX, y: r.midY)
-            let outerR = pointSize * 0.38
-            let toothOut = pointSize * 0.48
-            let toothHalf = CGFloat.pi / 12
-            let gear = UIBezierPath()
-            for i in 0..<6 {
-                let a = CGFloat(i) * (CGFloat.pi / 3) - CGFloat.pi / 2
-                let a0 = a - toothHalf
-                let a1 = a + toothHalf
-                let next = a + CGFloat.pi / 3
-                let pOuter0 = CGPoint(x: c.x + outerR * cos(a0), y: c.y + outerR * sin(a0))
-                let pTooth0 = CGPoint(x: c.x + toothOut * cos(a0), y: c.y + toothOut * sin(a0))
-                let pTooth1 = CGPoint(x: c.x + toothOut * cos(a1), y: c.y + toothOut * sin(a1))
-                let pOuter1 = CGPoint(x: c.x + outerR * cos(a1), y: c.y + outerR * sin(a1))
-                if i == 0 {
-                    let start = a0 - toothHalf
-                    gear.move(to: CGPoint(x: c.x + outerR * cos(start), y: c.y + outerR * sin(start)))
-                }
-                gear.addLine(to: pOuter0)
-                gear.addLine(to: pTooth0)
-                gear.addLine(to: pTooth1)
-                gear.addLine(to: pOuter1)
-                gear.addArc(withCenter: c, radius: outerR, startAngle: a1, endAngle: next - toothHalf, clockwise: true)
-            }
-            gear.close()
-            gear.lineWidth = lw
-            gear.stroke()
-            let hubR = pointSize * 0.12
-            let hub = UIBezierPath(ovalIn: CGRect(x: c.x - hubR, y: c.y - hubR, width: hubR * 2, height: hubR * 2))
-            hub.lineWidth = lw
-            hub.stroke()
+            drawSystemSymbol("gearshape", in: r, color: color)
 
         case .search:
-            let circle = UIBezierPath(ovalIn: CGRect(x: r.minX + 2, y: r.minY + 2, width: pointSize * 0.55, height: pointSize * 0.55))
-            circle.lineWidth = lw
-            circle.stroke()
-            let handle = UIBezierPath()
-            handle.move(to: CGPoint(x: r.minX + pointSize * 0.55, y: r.minY + pointSize * 0.55))
-            handle.addLine(to: CGPoint(x: r.maxX - 2.5, y: r.maxY - 2.5))
-            handle.lineWidth = lwThick
-            handle.stroke()
+            drawSystemSymbol("magnifyingglass", in: r, color: color)
 
         case .globe:
-            let oval = UIBezierPath(ovalIn: r.insetBy(dx: 1.5, dy: 1.5))
-            oval.lineWidth = lw
-            oval.stroke()
-            let midV = UIBezierPath()
-            midV.move(to: CGPoint(x: r.midX, y: r.minY + 1.5))
-            midV.addLine(to: CGPoint(x: r.midX, y: r.maxY - 1.5))
-            midV.lineWidth = lwThin
-            midV.stroke()
-            let eq = UIBezierPath()
-            eq.move(to: CGPoint(x: r.minX + 1.5, y: r.midY))
-            eq.addLine(to: CGPoint(x: r.maxX - 1.5, y: r.midY))
-            eq.lineWidth = lwThin
-            eq.stroke()
-            let lat = UIBezierPath(ovalIn: CGRect(x: r.midX - pointSize * 0.18, y: r.minY + 1.5,
-                                                  width: pointSize * 0.36, height: pointSize - 3))
-            lat.lineWidth = lwThin
-            lat.stroke()
+            drawSystemSymbol("globe", in: r, color: color)
 
         case .think:
-            let bulb = UIBezierPath(
-                ovalIn: CGRect(
-                    x: r.midX - pointSize * 0.28,
-                    y: r.minY + 1.8,
-                    width: pointSize * 0.56,
-                    height: pointSize * 0.56
-                )
-            )
-            bulb.lineWidth = lw
-            bulb.stroke()
-            let neck = UIBezierPath(
-                roundedRect: CGRect(
-                    x: r.midX - pointSize * 0.14,
-                    y: r.minY + pointSize * 0.52,
-                    width: pointSize * 0.28,
-                    height: pointSize * 0.18
-                ),
-                cornerRadius: 1.2
-            )
-            neck.lineWidth = lwThin
-            neck.stroke()
-            let base = UIBezierPath()
-            base.move(to: CGPoint(x: r.midX - pointSize * 0.16, y: r.maxY - 3.2))
-            base.addLine(to: CGPoint(x: r.midX + pointSize * 0.16, y: r.maxY - 3.2))
-            base.lineWidth = lw
-            base.stroke()
-            let filament = UIBezierPath()
-            filament.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.22))
-            filament.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.42))
-            filament.lineWidth = lwThin
-            filament.stroke()
+            drawSystemSymbol("lightbulb", in: r, color: color)
 
         case .imageTranscribe:
             drawSystemSymbol("text.viewfinder", in: r, color: color)
 
         case .ai:
-            let cx = r.midX
-            let cy = r.midY
-            let spark = UIBezierPath()
-            spark.move(to: CGPoint(x: cx, y: r.minY + 1.5))
-            spark.addLine(to: CGPoint(x: cx + pointSize * 0.12, y: cy - pointSize * 0.06))
-            spark.addLine(to: CGPoint(x: r.maxX - 1.5, y: cy))
-            spark.addLine(to: CGPoint(x: cx + pointSize * 0.12, y: cy + pointSize * 0.06))
-            spark.addLine(to: CGPoint(x: cx, y: r.maxY - 1.5))
-            spark.addLine(to: CGPoint(x: cx - pointSize * 0.12, y: cy + pointSize * 0.06))
-            spark.addLine(to: CGPoint(x: r.minX + 1.5, y: cy))
-            spark.addLine(to: CGPoint(x: cx - pointSize * 0.12, y: cy - pointSize * 0.06))
-            spark.close()
-            spark.lineWidth = lwThin
-            spark.stroke()
-            UIBezierPath(
-                ovalIn: CGRect(x: cx - 1.2, y: cy - 1.2, width: 2.4, height: 2.4)
-            ).fill()
+            drawSystemSymbol("sparkles", in: r, color: color)
 
         case .aiEdit:
             // Composer “AI may edit”: fat diagonal pencil.
@@ -410,36 +211,7 @@ enum ActionIconFactory {
             ctx.restoreGState()
 
         case .brain:
-            let left = UIBezierPath(
-                ovalIn: CGRect(
-                    x: r.minX + pointSize * 0.08,
-                    y: r.minY + pointSize * 0.18,
-                    width: pointSize * 0.42,
-                    height: pointSize * 0.52
-                )
-            )
-            let right = UIBezierPath(
-                ovalIn: CGRect(
-                    x: r.midX - pointSize * 0.02,
-                    y: r.minY + pointSize * 0.18,
-                    width: pointSize * 0.42,
-                    height: pointSize * 0.52
-                )
-            )
-            left.lineWidth = lw
-            right.lineWidth = lw
-            left.stroke()
-            right.stroke()
-            let cleft = UIBezierPath()
-            cleft.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.28))
-            cleft.addLine(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.62))
-            cleft.lineWidth = lwThin
-            cleft.stroke()
-            let stem = UIBezierPath()
-            stem.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.68))
-            stem.addLine(to: CGPoint(x: r.midX, y: r.maxY - pointSize * 0.12))
-            stem.lineWidth = lw
-            stem.stroke()
+            drawSystemSymbol("brain", in: r, color: color)
 
         case .memory:
             let back = UIBezierPath(
@@ -474,11 +246,7 @@ enum ActionIconFactory {
             mark.stroke()
 
         case .vinyl:
-            let disc = UIBezierPath(ovalIn: r.insetBy(dx: 1.4, dy: 1.4))
-            disc.lineWidth = lw; disc.stroke()
-            let groove = UIBezierPath(ovalIn: r.insetBy(dx: pointSize * 0.25, dy: pointSize * 0.25))
-            groove.lineWidth = lwThin; groove.stroke()
-            UIBezierPath(ovalIn: CGRect(x: r.midX - 1.6, y: r.midY - 1.6, width: 3.2, height: 3.2)).fill()
+            drawSystemSymbol("opticaldisc", in: r, color: color)
 
         case .tshirt:
             let badge = UIBezierPath(
@@ -508,61 +276,13 @@ enum ActionIconFactory {
             shoulders.stroke()
 
         case .rename:
-            let body = UIBezierPath()
-            body.move(to: CGPoint(x: r.minX + 3.5, y: r.maxY - 4))
-            body.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 4))
-            body.lineWidth = lw
-            body.stroke()
-            let tip = UIBezierPath()
-            tip.move(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 4))
-            tip.addLine(to: CGPoint(x: r.maxX - 3.2, y: r.minY + 6.3))
-            tip.addLine(to: CGPoint(x: r.maxX - 5.2, y: r.minY + 8.3))
-            tip.close()
-            tip.fill()
-            let base = UIBezierPath()
-            base.move(to: CGPoint(x: r.minX + 2.5, y: r.maxY - 2.8))
-            base.addLine(to: CGPoint(x: r.minX + 6.5, y: r.maxY - 2.8))
-            base.lineWidth = lwThin
-            base.stroke()
+            drawSystemSymbol("pencil", in: r, color: color)
 
         case .trash:
-            let lid = UIBezierPath()
-            lid.move(to: CGPoint(x: r.minX + 3, y: r.minY + 5))
-            lid.addLine(to: CGPoint(x: r.maxX - 3, y: r.minY + 5))
-            lid.move(to: CGPoint(x: r.midX - 2.5, y: r.minY + 5))
-            lid.addLine(to: CGPoint(x: r.midX - 2.5, y: r.minY + 3.2))
-            lid.addLine(to: CGPoint(x: r.midX + 2.5, y: r.minY + 3.2))
-            lid.addLine(to: CGPoint(x: r.midX + 2.5, y: r.minY + 5))
-            lid.lineWidth = lw
-            lid.stroke()
-            let can = UIBezierPath(roundedRect: CGRect(x: r.minX + 4, y: r.minY + 5.5,
-                                                       width: pointSize - 8, height: pointSize - 8.5),
-                                   cornerRadius: 1.2)
-            can.lineWidth = lw
-            can.stroke()
-            for dx in [-2.0, 0.0, 2.0] as [CGFloat] {
-                let slit = UIBezierPath()
-                slit.move(to: CGPoint(x: r.midX + dx, y: r.minY + 8))
-                slit.addLine(to: CGPoint(x: r.midX + dx, y: r.maxY - 4.5))
-                slit.lineWidth = lwThin
-                slit.stroke()
-            }
+            drawSystemSymbol("trash", in: r, color: color)
 
         case .edit:
-            let box = UIBezierPath(roundedRect: r.insetBy(dx: 1.8, dy: 1.8), cornerRadius: 2.2)
-            box.lineWidth = lw
-            box.stroke()
-            let pen = UIBezierPath()
-            pen.move(to: CGPoint(x: r.minX + 5, y: r.maxY - 5.5))
-            pen.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 5))
-            pen.lineWidth = lw
-            pen.stroke()
-            let tip = UIBezierPath()
-            tip.move(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 5))
-            tip.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.minY + 7))
-            tip.addLine(to: CGPoint(x: r.maxX - 5.2, y: r.minY + 8.7))
-            tip.close()
-            tip.fill()
+            drawSystemSymbol("square.and.pencil", in: r, color: color)
 
         case .editMode:
             // File chrome “enter edit”: fat vertical pencil.
@@ -613,222 +333,43 @@ enum ActionIconFactory {
             eraser.fill()
 
         case .readMode:
-            // Eye — “tap to view / preview”. Pairs with the pencil edit glyph.
-            let eye = UIBezierPath()
-            eye.move(to: CGPoint(x: r.minX + pointSize * 0.12, y: r.midY))
-            eye.addQuadCurve(
-                to: CGPoint(x: r.maxX - pointSize * 0.12, y: r.midY),
-                controlPoint: CGPoint(x: r.midX, y: r.minY + pointSize * 0.18)
-            )
-            eye.addQuadCurve(
-                to: CGPoint(x: r.minX + pointSize * 0.12, y: r.midY),
-                controlPoint: CGPoint(x: r.midX, y: r.maxY - pointSize * 0.18)
-            )
-            eye.close()
-            eye.lineWidth = lw
-            eye.stroke()
-            let irisR = pointSize * 0.14
-            let iris = UIBezierPath(ovalIn: CGRect(
-                x: r.midX - irisR,
-                y: r.midY - irisR,
-                width: irisR * 2,
-                height: irisR * 2
-            ))
-            iris.lineWidth = lw
-            iris.stroke()
-            let pupilR = pointSize * 0.055
-            UIBezierPath(ovalIn: CGRect(
-                x: r.midX - pupilR,
-                y: r.midY - pupilR,
-                width: pupilR * 2,
-                height: pupilR * 2
-            )).fill()
+            drawSystemSymbol("eye", in: r, color: color)
 
         case .save:
-            let body = UIBezierPath(roundedRect: r.insetBy(dx: pointSize * 0.16, dy: pointSize * 0.16), cornerRadius: 1.8)
-            body.lineWidth = lw
-            body.stroke()
-            let label = UIBezierPath(
-                roundedRect: CGRect(x: r.minX + pointSize * 0.28, y: r.minY + pointSize * 0.18,
-                                    width: pointSize * 0.44, height: pointSize * 0.22),
-                cornerRadius: 1.0
-            )
-            label.lineWidth = lwThin
-            label.stroke()
-            let window = UIBezierPath(
-                roundedRect: CGRect(x: r.minX + pointSize * 0.28, y: r.midY + pointSize * 0.02,
-                                    width: pointSize * 0.44, height: pointSize * 0.24),
-                cornerRadius: 1.0
-            )
-            window.lineWidth = lwThin
-            window.stroke()
+            drawSystemSymbol("square.and.arrow.down", in: r, color: color)
 
         case .highlighter:
-            let barrel = UIBezierPath(
-                roundedRect: CGRect(
-                    x: r.minX + pointSize * 0.18,
-                    y: r.minY + pointSize * 0.28,
-                    width: pointSize * 0.52,
-                    height: pointSize * 0.28
-                ),
-                cornerRadius: 1.4
-            )
-            barrel.lineWidth = lw
-            barrel.stroke()
-            let tip = UIBezierPath()
-            tip.move(to: CGPoint(x: r.minX + pointSize * 0.70, y: r.minY + pointSize * 0.28))
-            tip.addLine(to: CGPoint(x: r.maxX - pointSize * 0.10, y: r.midY))
-            tip.addLine(to: CGPoint(x: r.minX + pointSize * 0.70, y: r.minY + pointSize * 0.56))
-            tip.close()
-            tip.fill()
-            let swipe = UIBezierPath()
-            swipe.move(to: CGPoint(x: r.minX + pointSize * 0.12, y: r.maxY - pointSize * 0.18))
-            swipe.addLine(to: CGPoint(x: r.maxX - pointSize * 0.22, y: r.maxY - pointSize * 0.18))
-            swipe.lineWidth = lwThick * 1.2
-            swipe.stroke()
+            drawSystemSymbol("highlighter", in: r, color: color)
 
         case .folder:
-            let tab = UIBezierPath()
-            tab.move(to: CGPoint(x: r.minX + 2.5, y: r.minY + 5.5))
-            tab.addLine(to: CGPoint(x: r.minX + 5.5, y: r.minY + 3))
-            tab.addLine(to: CGPoint(x: r.minX + pointSize * 0.48, y: r.minY + 3))
-            tab.addLine(to: CGPoint(x: r.minX + pointSize * 0.58, y: r.minY + 5.5))
-            tab.lineWidth = lw
-            tab.stroke()
-            let body = UIBezierPath(roundedRect: CGRect(x: r.minX + 2.2, y: r.minY + 5.5,
-                                                        width: pointSize - 4.4, height: pointSize - 7.8),
-                                     cornerRadius: 1.8)
-            body.lineWidth = lw
-            body.stroke()
+            drawSystemSymbol("folder", in: r, color: color)
 
         case .clock:
-            let c = CGPoint(x: r.midX, y: r.midY)
-            let rad = pointSize * 0.38
-            let circle = UIBezierPath(arcCenter: c, radius: rad, startAngle: 0, endAngle: .pi * 2, clockwise: true)
-            circle.lineWidth = lw
-            circle.stroke()
-            let hands = UIBezierPath()
-            hands.move(to: c)
-            hands.addLine(to: CGPoint(x: c.x, y: c.y - rad * 0.55))
-            hands.move(to: c)
-            hands.addLine(to: CGPoint(x: c.x + rad * 0.42, y: c.y + rad * 0.12))
-            hands.lineWidth = lw
-            hands.stroke()
+            drawSystemSymbol("clock", in: r, color: color)
 
         case .chevronLeft:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.midX + 2.2, y: r.minY + 3.5))
-            path.addLine(to: CGPoint(x: r.midX - 2.4, y: r.midY))
-            path.addLine(to: CGPoint(x: r.midX + 2.2, y: r.maxY - 3.5))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("chevron.left", in: r, color: color, weight: .semibold)
 
         case .chevronRight:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.midX - 2.2, y: r.minY + 3.5))
-            path.addLine(to: CGPoint(x: r.midX + 2.4, y: r.midY))
-            path.addLine(to: CGPoint(x: r.midX - 2.2, y: r.maxY - 3.5))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("chevron.right", in: r, color: color, weight: .semibold)
 
         case .chevronUp:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.minX + 3.5, y: r.midY + 2.2))
-            path.addLine(to: CGPoint(x: r.midX, y: r.midY - 2.4))
-            path.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.midY + 2.2))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("chevron.up", in: r, color: color, weight: .semibold)
 
         case .chevronDown:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.minX + 3.5, y: r.midY - 2.2))
-            path.addLine(to: CGPoint(x: r.midX, y: r.midY + 2.4))
-            path.addLine(to: CGPoint(x: r.maxX - 3.5, y: r.midY - 2.2))
-            path.lineWidth = lwThick
-            path.stroke()
+            drawSystemSymbol("chevron.down", in: r, color: color, weight: .semibold)
 
         case .book:
-            // Simple document — file-type / reading label (not the composer context toggle).
-            let page = UIBezierPath(
-                roundedRect: CGRect(
-                    x: r.minX + pointSize * 0.18,
-                    y: r.minY + pointSize * 0.10,
-                    width: pointSize * 0.64,
-                    height: pointSize * 0.80
-                ),
-                cornerRadius: 1.8
-            )
-            page.lineWidth = lw
-            page.stroke()
-            let fold = UIBezierPath()
-            fold.move(to: CGPoint(x: r.maxX - pointSize * 0.34, y: r.minY + pointSize * 0.10))
-            fold.addLine(to: CGPoint(x: r.maxX - pointSize * 0.34, y: r.minY + pointSize * 0.28))
-            fold.addLine(to: CGPoint(x: r.maxX - pointSize * 0.18, y: r.minY + pointSize * 0.28))
-            fold.lineWidth = lwThin
-            fold.stroke()
-            let lines = UIBezierPath()
-            for yFrac: CGFloat in [0.42, 0.56, 0.70] {
-                lines.move(to: CGPoint(x: r.minX + pointSize * 0.30, y: r.minY + pointSize * yFrac))
-                lines.addLine(to: CGPoint(x: r.maxX - pointSize * 0.30, y: r.minY + pointSize * yFrac))
-            }
-            lines.lineWidth = lwThin
-            lines.stroke()
+            drawSystemSymbol("doc.text", in: r, color: color)
 
         case .docContext:
-            // Composer “include file content”: plain page — nothing else.
-            let page = UIBezierPath(
-                roundedRect: CGRect(
-                    x: r.minX + pointSize * 0.20,
-                    y: r.minY + pointSize * 0.12,
-                    width: pointSize * 0.60,
-                    height: pointSize * 0.76
-                ),
-                cornerRadius: 2.0
-            )
-            page.lineWidth = lwThick
-            page.stroke()
-            let lines = UIBezierPath()
-            for yFrac: CGFloat in [0.38, 0.52, 0.66] {
-                lines.move(to: CGPoint(x: r.minX + pointSize * 0.32, y: r.minY + pointSize * yFrac))
-                lines.addLine(to: CGPoint(x: r.maxX - pointSize * 0.32, y: r.minY + pointSize * yFrac))
-            }
-            lines.lineWidth = lw
-            lines.stroke()
+            drawSystemSymbol("doc", in: r, color: color)
 
         case .toc:
-            // Outline list + left rail (no bookmark corner — distinct from .bookmark).
-            let rail = UIBezierPath()
-            rail.move(to: CGPoint(x: r.minX + pointSize * 0.18, y: r.minY + pointSize * 0.14))
-            rail.addLine(to: CGPoint(x: r.minX + pointSize * 0.18, y: r.maxY - pointSize * 0.14))
-            rail.lineWidth = lwThick
-            rail.stroke()
-            let rows: [(CGFloat, CGFloat)] = [(0.28, 0.70), (0.50, 0.58), (0.72, 0.64)]
-            for (yFrac, wFrac) in rows {
-                let y = r.minY + pointSize * yFrac
-                let bul = UIBezierPath(ovalIn: CGRect(
-                    x: r.minX + pointSize * 0.28 - pointSize * 0.045,
-                    y: y - pointSize * 0.045,
-                    width: pointSize * 0.09,
-                    height: pointSize * 0.09
-                ))
-                bul.fill()
-                let line = UIBezierPath()
-                line.move(to: CGPoint(x: r.minX + pointSize * 0.38, y: y))
-                line.addLine(to: CGPoint(x: r.minX + pointSize * (0.38 + wFrac * 0.52), y: y))
-                line.lineWidth = lw
-                line.stroke()
-            }
+            drawSystemSymbol("list.bullet", in: r, color: color)
 
         case .bookmark:
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: r.minX + 5.5, y: r.minY + 2.5))
-            path.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.minY + 2.5))
-            path.addLine(to: CGPoint(x: r.maxX - 5.5, y: r.maxY - 2.5))
-            path.addLine(to: CGPoint(x: r.midX, y: r.maxY - 5.5))
-            path.addLine(to: CGPoint(x: r.minX + 5.5, y: r.maxY - 2.5))
-            path.close()
-            path.lineWidth = lw
-            path.stroke()
+            drawSystemSymbol("bookmark", in: r, color: color)
 
         case .appearanceSun:
             // Pair with moon: SF Symbol reads clearly at chrome size.
@@ -839,91 +380,13 @@ enum ActionIconFactory {
             drawSystemSymbol("moon.fill", in: r, color: color)
 
         case .ask:
-            // Single continuous "?" stroke: bowl → inward curve → stem, then a separate disc.
-            let qx = r.midX
-            let stroke = pointSize * 0.20
-            let path = UIBezierPath()
-            // Left of the bowl
-            path.move(to: CGPoint(x: qx - pointSize * 0.20, y: r.minY + pointSize * 0.34))
-            // Over the top to the right side
-            path.addCurve(
-                to: CGPoint(x: qx + pointSize * 0.22, y: r.minY + pointSize * 0.36),
-                controlPoint1: CGPoint(x: qx - pointSize * 0.22, y: r.minY + pointSize * 0.10),
-                controlPoint2: CGPoint(x: qx + pointSize * 0.26, y: r.minY + pointSize * 0.10)
-            )
-            // Soft turn into the vertical stem (no hard kink)
-            path.addCurve(
-                to: CGPoint(x: qx, y: r.minY + pointSize * 0.54),
-                controlPoint1: CGPoint(x: qx + pointSize * 0.20, y: r.minY + pointSize * 0.50),
-                controlPoint2: CGPoint(x: qx, y: r.minY + pointSize * 0.46)
-            )
-            path.lineWidth = stroke
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.stroke()
-            let dotR = pointSize * 0.115
-            let dotCenterY = r.minY + pointSize * 0.80
-            color.setFill()
-            UIBezierPath(ovalIn: CGRect(
-                x: qx - dotR,
-                y: dotCenterY - dotR,
-                width: dotR * 2,
-                height: dotR * 2
-            )).fill()
+            drawSystemSymbol("questionmark.bubble", in: r, color: color)
 
         case .importFile:
-            // Tray + bold downward arrow (import in).
-            let tray = UIBezierPath()
-            tray.move(to: CGPoint(x: r.minX + pointSize * 0.16, y: r.midY + pointSize * 0.06))
-            tray.addLine(to: CGPoint(x: r.minX + pointSize * 0.16, y: r.maxY - pointSize * 0.14))
-            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.maxY - pointSize * 0.14))
-            tray.addLine(to: CGPoint(x: r.maxX - pointSize * 0.16, y: r.midY + pointSize * 0.06))
-            tray.lineWidth = lw
-            tray.stroke()
-            let arrow = UIBezierPath()
-            arrow.move(to: CGPoint(x: r.midX, y: r.minY + pointSize * 0.10))
-            arrow.addLine(to: CGPoint(x: r.midX, y: r.midY + pointSize * 0.22))
-            arrow.move(to: CGPoint(x: r.midX - pointSize * 0.20, y: r.midY + pointSize * 0.04))
-            arrow.addLine(to: CGPoint(x: r.midX, y: r.midY + pointSize * 0.22))
-            arrow.addLine(to: CGPoint(x: r.midX + pointSize * 0.20, y: r.midY + pointSize * 0.04))
-            arrow.lineWidth = lwThick
-            arrow.stroke()
+            drawSystemSymbol("tray.and.arrow.down", in: r, color: color)
 
         case .rotate:
-            let c = CGPoint(x: r.midX, y: r.midY)
-            let rad = pointSize * 0.32
-            let top = UIBezierPath(
-                arcCenter: c,
-                radius: rad,
-                startAngle: .pi * 0.15,
-                endAngle: .pi * 1.05,
-                clockwise: true
-            )
-            top.lineWidth = lw
-            top.stroke()
-            let bot = UIBezierPath(
-                arcCenter: c,
-                radius: rad,
-                startAngle: .pi * 1.15,
-                endAngle: .pi * 0.05,
-                clockwise: true
-            )
-            bot.lineWidth = lw
-            bot.stroke()
-            let t1 = CGPoint(x: c.x + rad * cos(.pi * 0.15), y: c.y + rad * sin(.pi * 0.15))
-            let tHead = UIBezierPath()
-            tHead.move(to: CGPoint(x: t1.x - 2.4, y: t1.y + 2.6))
-            tHead.addLine(to: t1)
-            tHead.addLine(to: CGPoint(x: t1.x + 3.2, y: t1.y + 1.4))
-            tHead.lineWidth = lw
-            tHead.stroke()
-            let t2 = CGPoint(x: c.x + rad * cos(.pi * 1.15), y: c.y + rad * sin(.pi * 1.15))
-            let bHead = UIBezierPath()
-            bHead.move(to: CGPoint(x: t2.x + 2.4, y: t2.y - 2.6))
-            bHead.addLine(to: t2)
-            bHead.addLine(to: CGPoint(x: t2.x - 3.2, y: t2.y - 1.4))
-            bHead.lineWidth = lw
-            bHead.stroke()
+            drawSystemSymbol("rotate.right", in: r, color: color)
         }
 
         let img = (UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()).withRenderingMode(.alwaysTemplate)
@@ -932,8 +395,13 @@ enum ActionIconFactory {
     }
 
     /// Draw an SF Symbol centered in `rect` (same canvas as hand-drawn glyphs).
-    private static func drawSystemSymbol(_ name: String, in rect: CGRect, color: UIColor) {
-        let config = UIImage.SymbolConfiguration(pointSize: rect.width * 0.88, weight: .regular)
+    private static func drawSystemSymbol(
+        _ name: String,
+        in rect: CGRect,
+        color: UIColor,
+        weight: UIImage.SymbolWeight = .regular
+    ) {
+        let config = UIImage.SymbolConfiguration(pointSize: rect.width * 0.88, weight: weight)
         guard let symbol = UIImage(systemName: name, withConfiguration: config) else { return }
         let tinted = symbol.withTintColor(color, renderingMode: .alwaysOriginal)
         let s = tinted.size
