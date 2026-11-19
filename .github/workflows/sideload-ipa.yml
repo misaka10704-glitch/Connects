@@ -16,14 +16,21 @@ jobs:
 
       - name: Build unsigned app (device)
         run: |
-          xcodebuild \
-            -scheme Connects-iPhone \
-            -configuration Release-iPhone \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          # Local-package resource bundles (Readium_*.bundle) can lose the
+          # clean-build ordering race against the app target's copy phase —
+          # lstat(...): No such file or directory. An incremental second pass
+          # finds them already produced, so retry once before giving up.
+          build_app() {
+            xcodebuild \
+              -scheme Connects-iPhone \
+              -configuration Release-iPhone \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              build
+          }
+          build_app || { echo "::warning::First pass failed — retrying once (incremental)."; build_app; }
 
       - name: Package unsigned IPA
         run: |
