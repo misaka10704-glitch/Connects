@@ -7261,9 +7261,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private static func hideBarItemGlass(_ item: UIBarButtonItem) {
+        // hidesSharedBackground only exists in the iOS 26 SDK — the
+        // compiler guard keeps Xcode 16 builds working; #available
+        // keeps runtime behavior correct there too.
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             item.hidesSharedBackground = true
         }
+        #endif
     }
 
     @objc private func studyNewChatTapped() {
