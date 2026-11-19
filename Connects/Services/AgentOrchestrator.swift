@@ -101,15 +101,14 @@ final class AgentOrchestrator {
         parts.append("## WORKSPACE FILES\n\(workspaceListing)")
         if let active = conversation.studyActiveFileName {
             parts.append("""
-            ## ACTIVE FILE (only writable target)
-            \(active)
-            propose_edit / delete_file ONLY for this file. Read/list/grep/glob may use the whole folder.
-            create_file is blocked in Agent mode (use UI +). To edit another file, the user must switch the reader first — do not write other paths.
+            ## WRITE SCOPE
+            propose_edit / create_file / delete_file may target ANY file listed under WORKSPACE FILES (use the relative path for subfolders, e.g. Code/a.v). Edits stage as reviewable pending changes — the user Keeps or Undoes each file.
+            ACTIVE FILE (open now): \(active) — prefer it when the request is ambiguous.
             """)
         } else {
             parts.append("""
-            ## ACTIVE FILE
-            (none open) — do not propose_edit / delete_file / create_file until the user opens a file.
+            ## WRITE SCOPE
+            propose_edit / create_file / delete_file may target ANY file listed under WORKSPACE FILES (use the relative path for subfolders). Edits stage as reviewable pending changes — the user Keeps or Undoes each file.
             """)
         }
         parts.append("Mode: \(conversation.studyAgentMode.rawValue)")
@@ -130,7 +129,7 @@ final class AgentOrchestrator {
         model: AIModelOption? = nil,
         appendStep: @escaping (AgentProcessStep) -> Void,
         updateStep: @escaping (AgentProcessStep) -> Void,
-        onProposeEdit: @escaping (String, String) -> Void,
+        onProposeEdit: @escaping (String, String, Bool) -> Void,
         onPlanUpdate: ((String) -> Void)? = nil,
         requestContinuation: @escaping (_ toolResults: String) -> Void
     ) -> Bool {
@@ -286,12 +285,12 @@ final class AgentOrchestrator {
                 updateStep(step)
                 needAsk = prompt
                 pendingAsk = (conversationID, prompt)
-            case .proposeEdit(let path, let body):
+            case .proposeEdit(let path, let body, let fresh):
                 step.markDone()
                 step.detail = AgentTools.humanStepDetailSummary(for: call, result: result)
                 if !step.detail.isEmpty { step.title = step.detail }
                 updateStep(step)
-                onProposeEdit(path, body)
+                onProposeEdit(path, body, fresh)
                 didMutatingWork = true
                 mutatedThisTurn[conversationID] = true
                 resultChunks.append("[\(call.name.rawValue)] queued edit for \(path) (\(body.count) chars)")
@@ -324,7 +323,7 @@ final class AgentOrchestrator {
                     mutatedThisTurn[conversationID] = true
                 }
                 for edit in edits {
-                    onProposeEdit(edit.path, edit.content)
+                    onProposeEdit(edit.path, edit.content, edit.createdFresh)
                 }
             }
         }

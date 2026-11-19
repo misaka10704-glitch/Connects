@@ -417,6 +417,7 @@ final class StudyShellViewController: UIViewController {
             object: nil
         )
         NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: .themeDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(readerThemeChanged), name: .readerThemeDidChange, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(studyKeyboardWillChange(_:)),
@@ -943,14 +944,15 @@ final class StudyShellViewController: UIViewController {
                 self.panelStageCapsule.transform = .identity
                 self.panelStageCapsule.isUserInteractionEnabled = true
                 self.panelStageCapsule.prefersFullBoundsHitTesting = true
-                self.panelCapsulePortraitCenterX.isActive = true
                 if self.isChatCollapsed {
-                    // Full reading: chip centered on the bottom edge.
+                    // Full reading: same centered ▲▼ pill, hugging the bottom edge.
+                    self.panelCapsulePortraitCenterX.isActive = true
                     self.panelStageCapsule.isHidden = false
                     self.panelCapsulePortraitBottomY.isActive = true
-                    self.panelCapsulePortraitBottomY.constant = -(size.height / 2 + self.collapsedHandleBottomInset)
+                    self.panelCapsulePortraitBottomY.constant = -(size.height / 2 + 10)
                     self.panelCapsulePortraitSeamY.isActive = false
                 } else {
+                    self.panelCapsulePortraitCenterX.isActive = true
                     // Half / full AI: same horizontal line as chat nav (+ / ⋯).
                     // Keep the floating chip (not nav titleView) so stage animation
                     // doesn't drag ▲▼ across the screen inside chatHost.
@@ -1266,6 +1268,12 @@ final class StudyShellViewController: UIViewController {
         panelStageCapsule.applyTheme(elevated: false)
         floatingSidebarButton.tintColor = DSTheme.c.textSecondary
         chatVC.syncStudyPanelStageControl()
+    }
+
+    /// Page-local ☀/☾ toggle — the capsule is page chrome, re-style from
+    /// `DSTheme.reader` (not the global app theme).
+    @objc private func readerThemeChanged() {
+        panelStageCapsule.applyTheme(elevated: false)
     }
 
     /// After PDF note save/cancel, keyboard teardown used to swallow the next AI-stage tap.
@@ -2262,28 +2270,61 @@ extension StudyShellViewController: StudyReadingContextProviding {
     }
 
     @discardableResult
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool {
-        // Study edits never auto-switch files — only the currently open document is writable.
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> StudyEditProposalOutcome {
         if let raw = proposal.targetPath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
             let lower = raw.lowercased()
             if !(lower == "current" || lower == "." || lower == "active") {
                 if let targetID = resolveDocumentID(forEditPath: raw) {
                     if targetID != boundDocumentID {
-                        ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
-                        return false
+                        // Multi-doc: full-file edits stage into the shared pending
+                        // session and join the Review banner alongside agent edits.
+                        // Selection-range edits still need the file open (range is
+                        // resolved against the live editor selection).
+                        guard proposal.rangeKind == .full,
+                              ConversationStore.shared.currentConversation?.isWorkspaceStudySession == true else {
+                            ConnectsToast.show("选区编辑需先打开目标文件", in: view, duration: 1.6)
+                            return .failed
+                        }
+                        let before = WorkspaceEditSession.shared.pending(documentID: targetID)?.before
+                            ?? StudyDocumentStore.shared.textContent(for: targetID) ?? ""
+                        guard proposal.replacement != before else {
+                            ConnectsToast.show("提案与目标文件相同，未暂存改动", in: view, duration: 1.8)
+                            return .failed
+                        }
+                        guard proposal.replacement.count <= CodeEditApplyTools.maxChars,
+                              before.count <= CodeEditApplyTools.maxChars else {
+                            ConnectsToast.show("内容过大，无法暂存改动", in: view, duration: 1.6)
+                            return .failed
+                        }
+                        let name = StudyDocumentStore.shared.document(id: targetID)?.title
+                            ?? (raw as NSString).lastPathComponent
+                        WorkspaceEditSession.shared.upsert(
+                            documentID: targetID,
+                            fileName: name,
+                            before: before,
+                            after: proposal.replacement
+                        )
+                        NotificationCenter.default.post(
+                            name: .workspaceAgentDidMutateDocuments,
+                            object: nil,
+                            userInfo: ["documentIDs": [targetID]]
+                        )
+                        chatVC.refreshWorkspaceDiffBanner()
+                        return .staged
                     }
                 } else {
                     ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
-                    return false
+                    return .failed
                 }
             }
         }
-        guard studyCodeAIEditSupported else { return false }
+        guard studyCodeAIEditSupported else { return .failed }
         // Ensure reader is visible for Diff review.
         if chatPanelStage == .full {
             applyChatPanelStage(.half, animated: true)
         }
         return codeEditCoordinator.presentProposal(proposal, assistantMessageID: assistantMessageID)
+            ? .presented : .failed
     }
 
     func switchActiveDocument(to documentID: String) {
@@ -2339,6 +2380,17 @@ extension StudyShellViewController: StudyReadingContextProviding {
         let needle = (raw as NSString).lastPathComponent
         if let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID {
             _ = try? StudyWorkspaceStore.shared.scanAndSyncDocuments(workspaceID: wsID)
+            // Exact relative-path match first — subfolder paths with duplicate basenames.
+            if let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: raw, in: wsID),
+               let ws = StudyWorkspaceStore.shared.workspace(id: wsID) {
+                let abs = (url.path as NSString).standardizingPath
+                if let exact = ws.documentIDs.first(where: { id in
+                    guard let p = StudyDocumentStore.shared.document(id: id)?.displayPath else { return false }
+                    return (p as NSString).standardizingPath == abs
+                }) {
+                    return exact
+                }
+            }
             if let ws = StudyWorkspaceStore.shared.workspace(id: wsID) {
                 for id in ws.documentIDs {
                     guard let doc = StudyDocumentStore.shared.document(id: id) else { continue }
@@ -3222,13 +3274,29 @@ extension StudyShellViewController: StudyReadingContextProviding {
         if codeEditCoordinator.isPresentingDiff {
             codeEditCoordinator.undoAll()
         }
+        let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID
+        var deletedBoundDoc = false
         for file in pending {
+            // Agent-created files: Undo removes the file instead of writing an empty body.
+            if file.createdFresh, let wsID {
+                StudyWorkspaceStore.shared.deleteDocumentFile(documentID: file.documentID, in: wsID)
+                if file.documentID == boundDocumentID { deletedBoundDoc = true }
+                continue
+            }
             try? StudyDocumentStore.shared.writeTextContent(file.before, for: file.documentID)
             if file.documentID == boundDocumentID {
                 textEditorVC.applyResolvedDiffText(file.before)
             }
         }
         WorkspaceEditSession.shared.clear()
+        if deletedBoundDoc, let wsID {
+            // The open document was an agent-created file — move to another file.
+            if let next = StudyWorkspaceStore.shared.listFileNames(in: wsID).first {
+                openWorkspaceFileNamed(next, workspaceID: wsID)
+            } else {
+                ensureWorkspaceHasFileIfEmpty(workspaceID: wsID)
+            }
+        }
         chatVC.refreshWorkspaceDiffBanner()
         if !pending.isEmpty {
             ConnectsToast.show("已撤销全部改动", in: view, duration: 1.2)

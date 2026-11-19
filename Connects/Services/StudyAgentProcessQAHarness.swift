@@ -346,7 +346,7 @@ enum StudyAgentProcessQAHarness {
                 mode: .agent,
                 activeFileName: patchName
             )
-            if case .proposeEdit(_, let content) = result {
+            if case .proposeEdit(_, let content, _) = result {
                 if !content.contains("wire y;") || content.contains("wire x;") {
                     failures.append("patch propose_edit content wrong")
                 }
@@ -725,14 +725,27 @@ enum StudyAgentProcessQAHarness {
             if case .text(let t) = planDenied, !t.contains("error:") {
                 failures.append("delete_file should fail in plan mode")
             }
-            let otherDenied = AgentTools.execute(
-                delCall,
-                workspaceID: ws.id,
-                mode: .agent,
-                activeFileName: "other_open.v"
-            )
-            if case .text(let t) = otherDenied, !t.contains("error:") {
-                failures.append("delete_file should fail when not the open file")
+            // Multi-doc write: deleting a non-open file in the same workspace is allowed.
+            let otherName = "qa_del_other_\(UUID().uuidString.prefix(6)).v"
+            var otherDeleted = false
+            if let _ = try? StudyWorkspaceStore.shared.createFile(
+                named: otherName,
+                content: "module qa_del_other;\nendmodule\n",
+                in: ws.id
+            ) {
+                let otherCall = AgentToolCall(name: .deleteFile, arguments: ["path": otherName])
+                let otherResult = AgentTools.execute(
+                    otherCall,
+                    workspaceID: ws.id,
+                    mode: .agent,
+                    activeFileName: delName
+                )
+                if case .text(let t) = otherResult, t.lowercased().contains("deleted") {
+                    otherDeleted = true
+                }
+            }
+            if !otherDeleted {
+                failures.append("delete_file should allow a non-open file in the workspace")
             }
             let delResult = AgentTools.execute(delCall, workspaceID: ws.id, mode: .agent, activeFileName: delName)
             if case .text(let t) = delResult {
@@ -757,19 +770,22 @@ enum StudyAgentProcessQAHarness {
         }
 
         // WorkspaceAgentRuntime batch: propose_edit on the open file + flush → disk + session.
+        // Multi-doc: create_file is allowed in Agent mode (creates a real workspace doc).
         let batchName = "qa_batch_\(UUID().uuidString.prefix(6)).v"
         let createBody = "module qa_batch;\n  wire a;\n  wire b;\nendmodule\n"
-        let batchBlocked = AgentTools.execute(
+        let batchCreated = AgentTools.execute(
             AgentToolCall(name: .createFile, arguments: ["path": batchName, "body": createBody]),
             workspaceID: ws.id,
             mode: .agent,
             activeFileName: "already_open.v"
         )
-        if case .text(let t) = batchBlocked, !t.contains("error:") {
-            failures.append("create_file should be blocked in Agent mode")
-        } else if case .proposeEdit = batchBlocked {
-            failures.append("create_file agent mode must not return proposeEdit")
+        if case .proposeEdit(_, _, let fresh) = batchCreated {
+            if !fresh { failures.append("create_file should mark createdFresh") }
+        } else {
+            failures.append("create_file in Agent mode should stage an edit: \(batchCreated)")
         }
+        // Clean the just-created fixture so the next fixture create can reuse the name.
+        try? StudyWorkspaceStore.shared.deleteFile(named: batchName, in: ws.id)
         if let batchDoc = try? StudyWorkspaceStore.shared.createFile(
             named: batchName,
             content: "module qa_batch;\n  wire a;\nendmodule\n",
@@ -789,7 +805,7 @@ enum StudyAgentProcessQAHarness {
                 mode: .agent,
                 activeFileName: batchName
             )
-            if case .proposeEdit(let path, let body) = createResult {
+            if case .proposeEdit(let path, let body, _) = createResult {
                 WorkspaceAgentRuntime.shared.beginEditBatch(
                     conversationID: "qa-batch",
                     rootMessageID: "qa-root",
@@ -803,7 +819,7 @@ enum StudyAgentProcessQAHarness {
                 if WorkspaceEditSession.shared.pending(documentID: flush.mutatedDocumentIDs.first ?? "") == nil {
                     failures.append("agent runtime flush missing WorkspaceEditSession entry")
                 }
-                // Cross-file enqueue must no-op when conversation locks another open file.
+                // Multi-doc: enqueue on a non-open workspace file must stage + mutate.
                 let otherName = "qa_other_\(UUID().uuidString.prefix(6)).v"
                 if let otherDoc = try? StudyWorkspaceStore.shared.createFile(
                     named: otherName,
@@ -815,6 +831,7 @@ enum StudyAgentProcessQAHarness {
                         draft.studyDocumentID = batchDoc.id
                         draft.studyWorkspaceID = ws.id
                         draft.studySessionKind = .workspace
+                        draft.studyAgentMode = .agent
                     }
                     WorkspaceAgentRuntime.shared.beginEditBatch(
                         conversationID: openConvID,
@@ -823,12 +840,45 @@ enum StudyAgentProcessQAHarness {
                     )
                     WorkspaceAgentRuntime.shared.enqueueProposedEdit(
                         path: otherName,
-                        body: "module other;\n  // should not write\nendmodule\n"
+                        body: "module other;\n  // staged multi-doc write\nendmodule\n"
                     )
-                    let blockedFlush = WorkspaceAgentRuntime.shared.flushEditBatch { _, _ in }
-                    if blockedFlush.mutatedDocumentIDs.contains(otherDoc.id) {
-                        failures.append("runtime wrote a non-open file")
+                    let crossFlush = WorkspaceAgentRuntime.shared.flushEditBatch { _, _ in }
+                    if !crossFlush.mutatedDocumentIDs.contains(otherDoc.id) {
+                        failures.append("runtime dropped a workspace (non-open) file edit")
                     }
+                    if WorkspaceEditSession.shared.pending(documentID: otherDoc.id) == nil {
+                        failures.append("cross-file edit missing WorkspaceEditSession entry")
+                    }
+                    // createdFresh flows through to the session so Undo can delete
+                    // rather than restore an empty body.
+                    WorkspaceAgentRuntime.shared.beginEditBatch(
+                        conversationID: openConvID,
+                        rootMessageID: "qa-root-3",
+                        workspaceID: ws.id
+                    )
+                    let freshName = "qa_fresh_\(UUID().uuidString.prefix(6)).v"
+                    if let freshDoc = try? StudyWorkspaceStore.shared.createFile(
+                        named: freshName,
+                        content: "module fresh;\nendmodule\n",
+                        in: ws.id
+                    ) {
+                        WorkspaceAgentRuntime.shared.enqueueProposedEdit(
+                            path: freshName,
+                            body: "module fresh;\nendmodule\n",
+                            createdFresh: true
+                        )
+                        _ = WorkspaceAgentRuntime.shared.flushEditBatch { _, _ in }
+                        if WorkspaceEditSession.shared.pending(documentID: freshDoc.id)?.createdFresh != true {
+                            failures.append("createdFresh flag lost before session")
+                        }
+                        // Simulated undo: deleteDocumentFile removes file + registry.
+                        StudyWorkspaceStore.shared.deleteDocumentFile(documentID: freshDoc.id, in: ws.id)
+                        if StudyDocumentStore.shared.document(id: freshDoc.id) != nil {
+                            failures.append("undo-delete left registered doc behind")
+                        }
+                        WorkspaceEditSession.shared.remove(documentID: freshDoc.id)
+                    }
+                    WorkspaceEditSession.shared.remove(documentID: otherDoc.id)
                     if let folder = try? StudyWorkspaceStore.shared.folderURL(for: ws.id) {
                         try? FileManager.default.removeItem(at: folder.appendingPathComponent(otherName))
                     }
@@ -868,7 +918,7 @@ enum StudyAgentProcessQAHarness {
             mode: .agent,
             appendStep: { _ in },
             updateStep: { _ in },
-            onProposeEdit: { _, _ in },
+            onProposeEdit: { _, _, _ in },
             requestContinuation: { _ in }
         )
         ritualContinued = AgentOrchestrator.shared.handleAssistantFinished(
@@ -885,7 +935,7 @@ enum StudyAgentProcessQAHarness {
             mode: .agent,
             appendStep: { _ in },
             updateStep: { _ in },
-            onProposeEdit: { _, _ in },
+            onProposeEdit: { _, _, _ in },
             requestContinuation: { chunk in
                 ritualChunks = chunk
             }

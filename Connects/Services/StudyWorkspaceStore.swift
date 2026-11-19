@@ -574,11 +574,17 @@ final class StudyWorkspaceStore {
     }
 
     /// Create a new file with initial UTF-8 content inside the workspace folder.
+    /// `rawName` may be a workspace-relative path (`Code/a.v`); `.`/`..` segments rejected.
     @discardableResult
     func createFile(named rawName: String, content: String, in workspaceID: String) throws -> StudyDocument {
         var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !name.contains("/") else { throw StudyWorkspaceError.invalidName }
-        if !name.contains(".") {
+        let segments = name.split(separator: "/").map(String.init)
+        guard !name.isEmpty, !segments.isEmpty,
+              segments.allSatisfy({ $0 != "." && $0 != ".." }) else {
+            throw StudyWorkspaceError.invalidName
+        }
+        let leaf = segments.last ?? name
+        if !leaf.contains(".") {
             name += ".md"
         }
         // Prefer creating directly under the workspace folder (security-scoped when granted).
@@ -587,7 +593,10 @@ final class StudyWorkspaceStore {
             ?? primaryGrantedWorkspace() {
             _ = try? folderURL(for: grant.id)
         }
-        let dest = folder.appendingPathComponent(name)
+        let dest = Self.absoluteURL(relativePath: name, under: folder)
+        let stdDest = (dest.path as NSString).standardizingPath
+        let stdRoot = (folder.path as NSString).standardizingPath
+        guard stdDest.hasPrefix(stdRoot + "/") else { throw StudyWorkspaceError.invalidName }
         if FileManager.default.fileExists(atPath: dest.path) {
             throw StudyWorkspaceError.fileExists
         }
@@ -595,6 +604,8 @@ final class StudyWorkspaceStore {
             throw StudyWorkspaceError.writeFailed
         }
         do {
+            let parent = dest.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
             try data.write(to: dest, options: [.atomic])
         } catch {
             throw StudyWorkspaceError.writeFailed
@@ -1192,7 +1203,9 @@ final class StudyWorkspaceStore {
     }
 
     private static func absoluteURL(relativePath: String, under root: URL) -> URL {
-        let parts = relativePath.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
+        // `.` / `..` must never escape the workspace root.
+        let parts = relativePath.split(separator: "/").map(String.init)
+            .filter { !$0.isEmpty && $0 != "." && $0 != ".." }
         return parts.reduce(root) { $0.appendingPathComponent($1) }
     }
 
@@ -1243,12 +1256,27 @@ final class StudyWorkspaceStore {
         return doc
     }
 
+    /// Undo of an agent-created file: remove the on-disk file + registry rows
+    /// for a registered workspace document.
+    func deleteDocumentFile(documentID: String, in workspaceID: String) {
+        guard let doc = StudyDocumentStore.shared.document(id: documentID) else { return }
+        if let abs = doc.displayPath, !abs.isEmpty {
+            try? FileManager.default.removeItem(atPath: abs)
+        }
+        removeDocument(documentID, from: workspaceID)
+        StudyDocumentStore.shared.delete(documentID: documentID)
+    }
+
     /// Delete a file from the workspace folder and detach its StudyDocument.
     /// `name` may be a relative path (`Gowin/FPGA/a.pdf`).
     func deleteFile(named name: String, in workspaceID: String) throws {
         let folder = try folderURL(for: workspaceID)
         let url = Self.absoluteURL(relativePath: name, under: folder)
         let path = url.path
+        // Containment: deletes must never leave the workspace root.
+        let std = (path as NSString).standardizingPath
+        let root = (folder.path as NSString).standardizingPath
+        guard std.hasPrefix(root + "/") else { throw StudyWorkspaceError.invalidName }
         let doc = StudyDocumentStore.shared.documentMatchingPath(path)
         if FileManager.default.fileExists(atPath: path) {
             do {

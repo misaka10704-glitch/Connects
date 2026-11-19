@@ -14,6 +14,35 @@ final class WorkspaceEditSession {
         var after: String
         var additions: Int
         var deletions: Int
+        /// True when the agent created this file — Undo deletes it instead of
+        /// restoring an empty body.
+        var createdFresh: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case documentID, fileName, before, after, additions, deletions, createdFresh
+        }
+
+        init(documentID: String, fileName: String, before: String, after: String,
+             additions: Int, deletions: Int, createdFresh: Bool = false) {
+            self.documentID = documentID
+            self.fileName = fileName
+            self.before = before
+            self.after = after
+            self.additions = additions
+            self.deletions = deletions
+            self.createdFresh = createdFresh
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            documentID = try c.decode(String.self, forKey: .documentID)
+            fileName = try c.decode(String.self, forKey: .fileName)
+            before = try c.decode(String.self, forKey: .before)
+            after = try c.decode(String.self, forKey: .after)
+            additions = try c.decode(Int.self, forKey: .additions)
+            deletions = try c.decode(Int.self, forKey: .deletions)
+            createdFresh = try c.decodeIfPresent(Bool.self, forKey: .createdFresh) ?? false
+        }
     }
 
     private struct DiskPayload: Codable {
@@ -57,7 +86,8 @@ final class WorkspaceEditSession {
     /// Record an edit. Re-edits of the same file keep the original `before` and only
     /// advance `after`, so Review shows a cumulative Myers diff — not a wall of `+++++`
     /// from comparing intermediate agent writes against each other.
-    func upsert(documentID: String, fileName: String, before: String, after: String) {
+    func upsert(documentID: String, fileName: String, before: String, after: String,
+                createdFresh: Bool = false) {
         if boundConversationID == nil {
             boundConversationID = ConversationStore.shared.currentConversationID
         }
@@ -70,7 +100,8 @@ final class WorkspaceEditSession {
                 before: baseline,
                 after: after,
                 additions: stats.add,
-                deletions: stats.del
+                deletions: stats.del,
+                createdFresh: files[idx].createdFresh || createdFresh
             )
         } else {
             let stats = lightLineStats(before: before, after: after)
@@ -81,7 +112,8 @@ final class WorkspaceEditSession {
                     before: before,
                     after: after,
                     additions: stats.add,
-                    deletions: stats.del
+                    deletions: stats.del,
+                    createdFresh: createdFresh
                 )
             )
         }

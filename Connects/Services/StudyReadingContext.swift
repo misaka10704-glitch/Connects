@@ -88,6 +88,15 @@ enum StudyChatPanelStage: Int {
     case full = 2       // full AI
 }
 
+/// Result of presenting a CONNECTS_EDIT proposal.
+enum StudyEditProposalOutcome {
+    /// Inline Diff opened on the bound document.
+    case presented
+    /// Multi-doc: staged into WorkspaceEditSession — review via the banner.
+    case staged
+    case failed
+}
+
 protocol StudyReadingContextProviding: AnyObject {
     func captureCurrentStudyPage() -> StudyPageCapture?
     /// When true, ChatVC skips docked-keyboard composer lift — StudyShell raises reader+chat as one page.
@@ -101,7 +110,7 @@ protocol StudyReadingContextProviding: AnyObject {
     /// Study text/code: whether「AI 编辑」authorization is meaningful.
     var studyCodeAIEditSupported: Bool { get }
     /// Present a parsed CONNECTS_EDIT proposal in the code reader Diff surface.
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> StudyEditProposalOutcome
     /// On「重跑」: undo open Diff and/or restore the pre-Keep file for that assistant turn.
     func revertStudyCodeEditIfNeeded(forAssistantMessageID: String)
     func studyCodeDiffUndoAll()
@@ -127,7 +136,7 @@ extension StudyReadingContextProviding {
     var studyIsPortraitLayout: Bool { true }
     func clearAskSelectionHighlightInReader() {}
     var studyCodeAIEditSupported: Bool { false }
-    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> Bool { false }
+    func presentStudyCodeEditProposal(_ proposal: CodeEditProposal, assistantMessageID: String) -> StudyEditProposalOutcome { .failed }
     func revertStudyCodeEditIfNeeded(forAssistantMessageID: String) {}
     func studyCodeDiffUndoAll() {}
     func studyCodeDiffKeepAll() {}
@@ -199,11 +208,11 @@ final class StudyPanelStageCapsule: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = true
-        clipsToBounds = true
         layer.cornerRadius = Self.chipHeight / 2
         layer.borderWidth = 1 / UIScreen.main.scale
-        // No drop shadow — same cost profile as the model chip.
-        layer.shadowOpacity = 0
+        // Floating over document content — clip content, never the lift shadow.
+        clipsToBounds = false
+        layer.masksToBounds = false
 
         [upButton, downButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -296,17 +305,26 @@ final class StudyPanelStageCapsule: UIView {
         applyTheme(elevated: false)
     }
 
-    /// Matches input-bar model chip (accent wash + hairline). `elevated` kept for API compat.
+    /// Floating over the document — follows the **reader** appearance (per-page
+    /// ☀/☾), not the global app theme. One consistent look in both modes:
+    /// translucent accent pill + white chevrons with a dark halo.
+    /// `elevated` kept for API compat.
     func applyTheme(elevated: Bool) {
         _ = elevated
-        let c = DSTheme.c
-        backgroundColor = c.accent.withAlphaComponent(0.10)
-        layer.borderColor = c.accent.withAlphaComponent(0.20).cgColor
-        layer.shadowOpacity = 0
-        layer.shadowRadius = 0
-        layer.shadowPath = nil
-        upButton.tintColor = c.accent
-        downButton.tintColor = c.accent
+        let accent = DSTheme.reader.accent
+        backgroundColor = accent.withAlphaComponent(0.5)
+        layer.borderColor = accent.withAlphaComponent(0.65).cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.28
+        layer.shadowRadius = 6
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        for button in [upButton, downButton] {
+            button.tintColor = .white
+            button.layer.shadowColor = UIColor.black.cgColor
+            button.layer.shadowOpacity = 0.35
+            button.layer.shadowRadius = 1.5
+            button.layer.shadowOffset = CGSize(width: 0, height: 0.5)
+        }
         refreshStageButtonBackgrounds()
     }
 

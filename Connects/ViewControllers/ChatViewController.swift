@@ -30,13 +30,9 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private let emptyConfigureKeyButton = UIButton(type: .system)
     private let emptyContainer = UIView()
     private let emptyLogoImageView = UIImageView()
-    private let emptySuggestionsStack = UIStackView()
-    private var emptySuggestionButtons: [UIButton] = []
-    private static var emptySuggestions: [String] {
-        [L("解释当前文档", "Explain this doc"),
-         L("总结要点", "Summarize"),
-         L("帮我改一处代码", "Fix my code")]
-    }
+    /// Drives the fade in/out of the empty-state hero (logo + subtitle).
+    private var emptyHeroCollapsed = false
+
     private var sidebarToggleItem: UIBarButtonItem?
     private var pendingSidebarCollapsed: Bool?
     private var studyChromeMode: StudyChromeMode = .none
@@ -389,6 +385,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if inputBar.superview === view {
             view.bringSubviewToFront(inputBar)
         }
+        // Empty-state band may have just gotten real bounds — settle hero chrome.
+        layoutEmptyChromeForKeyboard()
         let bucket = widthBucket(for: tableView.bounds.width)
         guard bucket > 0 else { return }
         if layoutWidthBucket == 0 {
@@ -4695,7 +4693,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyTitleLabel.textColor = c.textPrimary
         emptySubtitleLabel.textColor = c.textSecondary
         emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
-        styleEmptySuggestionButtons()
         modelButton.setTitleColor(c.textPrimary, for: .normal)
         modelButton.backgroundColor = c.surfaceHover
         modelButton.layer.borderWidth = 1 / UIScreen.main.scale
@@ -5216,14 +5213,19 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                         }
                     }
                 },
-                onProposeEdit: { path, body in
+                onProposeEdit: { path, body, fresh in
                     if isAgentMode {
-                        WorkspaceAgentRuntime.shared.enqueueProposedEdit(path: path, body: body)
+                        WorkspaceAgentRuntime.shared.enqueueProposedEdit(
+                            path: path,
+                            body: body,
+                            createdFresh: fresh
+                        )
                     } else {
                         DispatchQueue.main.async { [weak self] in
                             self?.presentAgentProposedEdit(
                                 path: path,
                                 body: body,
+                                createdFresh: fresh,
                                 assistantMessageID: finishedMessage.id
                             )
                         }
@@ -5443,7 +5445,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
     }
 
-    private func presentAgentProposedEdit(path: String, body: String, assistantMessageID: String) {
+    private func presentAgentProposedEdit(path: String, body: String, createdFresh: Bool, assistantMessageID: String) {
         // Workspace Agent: write + banner + Diff review. Keep All lives on the input bar.
         guard let conv = ConversationStore.shared.currentConversation,
               conv.isWorkspaceStudySession,
@@ -5451,15 +5453,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             refreshWorkspaceDiffBanner()
             return
         }
-        // Study lock: Agent writes only the open file (Plan may stage new plan markdown).
-        if conv.studyAgentMode != .plan, !conv.allowsStudyMutating(path: path) {
-            ConnectsToast.show("只能编辑当前打开的文件", in: view, duration: 1.6)
-            refreshWorkspaceDiffBanner()
-            return
-        }
-        // New-file create only in Plan mode; Agent must edit an already-open document.
+        // Multi-doc: resolve any registered workspace doc; fall back to registering
+        // an on-disk workspace file that was never imported.
         var docID = resolveWorkspaceDocumentID(path: path, workspaceID: wsID)
-        var createdFresh = false
+            ?? WorkspaceAgentRuntime.registeredDocumentID(path: path, workspaceID: wsID)
+        var createdFresh = createdFresh
         if docID == nil {
             guard conv.studyAgentMode == .plan else {
                 refreshWorkspaceDiffBanner()
@@ -5508,7 +5506,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             documentID: docID,
             fileName: name,
             before: before,
-            after: body
+            after: body,
+            createdFresh: createdFresh
         )
         let card = AgentEditCard(
             fileName: name,
@@ -5674,10 +5673,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     }
 
     private func resolveWorkspaceDocumentID(path: String, workspaceID: String) -> String? {
-        let needle = (path as NSString).lastPathComponent
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = (trimmed as NSString).lastPathComponent
         guard !needle.isEmpty else { return nil }
         // Never scanAndSyncDocuments on the agent edit hot path — folder walks freeze UI.
         guard let ws = StudyWorkspaceStore.shared.workspace(id: workspaceID) else { return nil }
+        // Exact relative-path match first — subfolder paths with duplicate basenames.
+        if let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: trimmed, in: workspaceID) {
+            let abs = (url.path as NSString).standardizingPath
+            if let exact = ws.documentIDs.first(where: { id in
+                guard let p = StudyDocumentStore.shared.document(id: id)?.displayPath else { return false }
+                return (p as NSString).standardizingPath == abs
+            }) {
+                return exact
+            }
+        }
         for id in ws.documentIDs {
             guard let doc = StudyDocumentStore.shared.document(id: id) else { continue }
             if let display = doc.displayPath,
@@ -5872,28 +5882,34 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        let presented = studyContextProvider?.presentStudyCodeEditProposal(
+        let outcome = studyContextProvider?.presentStudyCodeEditProposal(
             proposal,
             assistantMessageID: finishedMessage.id
-        ) ?? false
+        ) ?? .failed
         let prose = proposal.displayContent.trimmingCharacters(in: .whitespacesAndNewlines)
         let emptyProse = prose.isEmpty
             || prose == "（文件编辑内容已隐藏）"
             || prose == "（已提出文件编辑）"
         let persisted: String
-        if presented {
+        switch outcome {
+        case .presented:
             // Diff is the real product; don't claim “已提出” with an empty bubble.
             persisted = emptyProse ? "（已打开 Diff，请在阅读器中按块保留或撤销）" : prose
             ConnectsToast.show("Diff 已打开 — 可按块保留/撤销，或用输入栏全部保留", in: view, duration: 1.6)
-        } else if studyContextProvider?.studyCodeAIEditSupported != true {
-            persisted = emptyProse
-                ? "（已生成编辑提案，但当前不是代码/文本页，未改文件）"
-                : prose + "\n\n（当前不是代码/文本页，未打开 Diff）"
-            ConnectsToast.show("请先打开代码或文本文件，再让 AI 编辑", in: view, duration: 2.2)
-        } else {
-            persisted = emptyProse
-                ? "（编辑提案未打开 Diff，文件未改）"
-                : prose + "\n\n（Diff 未打开，文件未改）"
+        case .staged:
+            persisted = emptyProse ? "（改动已暂存到 Review，可保留或撤销）" : prose
+            ConnectsToast.show("改动已暂存 — 在 Review 中保留/撤销", in: view, duration: 1.8)
+        case .failed:
+            if studyContextProvider?.studyCodeAIEditSupported != true {
+                persisted = emptyProse
+                    ? "（已生成编辑提案，但当前不是代码/文本页，未改文件）"
+                    : prose + "\n\n（当前不是代码/文本页，未打开 Diff）"
+                ConnectsToast.show("请先打开代码或文本文件，再让 AI 编辑", in: view, duration: 2.2)
+            } else {
+                persisted = emptyProse
+                    ? "（编辑提案未打开 Diff，文件未改）"
+                    : prose + "\n\n（Diff 未打开，文件未改）"
+            }
         }
         persistStrippedEditMessage(
             conversationID: conversationID,
@@ -6364,6 +6380,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             bottomConstraint?.constant = restingComposerBottomConstant()
         }
         view.layoutIfNeeded()
+        // Stage changes (collapsed/half/full) resize the empty-state band.
+        layoutEmptyChromeForKeyboard()
         guard reconcileViewport,
               let messages = renderedConversationMessages(), !messages.isEmpty else { return }
         reconcileBottomViewportIfNeeded(messages: messages, layoutWidth: currentRenderWidth())
@@ -7546,30 +7564,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyConfigureKeyButton.isHidden = true
         emptyContainer.addSubview(emptyConfigureKeyButton)
 
-        emptySuggestionsStack.translatesAutoresizingMaskIntoConstraints = false
-        emptySuggestionsStack.axis = .horizontal
-        emptySuggestionsStack.alignment = .center
-        emptySuggestionsStack.spacing = 8
-        emptySuggestionsStack.distribution = .fill
-        emptyContainer.addSubview(emptySuggestionsStack)
-        for title in Self.emptySuggestions {
-            let button = UIButton(type: .system)
-            button.setTitle(title, for: .normal)
-            button.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .medium)
-            button.titleLabel?.numberOfLines = 1
-            button.titleLabel?.adjustsFontSizeToFitWidth = true
-            button.titleLabel?.minimumScaleFactor = 0.7
-            button.titleLabel?.lineBreakMode = .byClipping
-            button.connectsSetContentInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
-            button.configuration?.titleLineBreakMode = .byClipping
-            button.layer.cornerRadius = DSTheme.chipCornerRadius
-            button.layer.borderWidth = 1
-            button.accessibilityLabel = L("建议：\(title)", "Suggestion: \(title)")
-            button.addTarget(self, action: #selector(emptySuggestionTapped(_:)), for: .touchUpInside)
-            emptySuggestionsStack.addArrangedSubview(button)
-            emptySuggestionButtons.append(button)
-        }
-
         // Center empty chrome in the band above the composer (moves with keyboard).
         NSLayoutConstraint.activate([
             emptyContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -7592,12 +7586,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptySubtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 28),
             emptySubtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -28),
 
-            emptySuggestionsStack.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 18),
-            emptySuggestionsStack.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor),
-            emptySuggestionsStack.leadingAnchor.constraint(greaterThanOrEqualTo: emptyContainer.leadingAnchor, constant: 16),
-            emptySuggestionsStack.trailingAnchor.constraint(lessThanOrEqualTo: emptyContainer.trailingAnchor, constant: -16),
-
-            emptyConfigureKeyButton.topAnchor.constraint(equalTo: emptySuggestionsStack.bottomAnchor, constant: 18),
+            emptyConfigureKeyButton.topAnchor.constraint(equalTo: emptySubtitleLabel.bottomAnchor, constant: 18),
             emptyConfigureKeyButton.centerXAnchor.constraint(equalTo: emptyContainer.centerXAnchor)
         ])
 
@@ -7606,11 +7595,6 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
 
     @objc private func emptyConfigureKeyTapped() {
         delegate?.chatDidRequestSettings()
-    }
-
-    @objc private func emptySuggestionTapped(_ sender: UIButton) {
-        guard let title = sender.currentTitle else { return }
-        inputBar.setComposerText(title, focus: true)
     }
 
     private func updateEmptyState() {
@@ -7634,25 +7618,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             emptyTitleLabel.textColor = c.textPrimary
             emptySubtitleLabel.textColor = c.textSecondary
             emptyConfigureKeyButton.setTitleColor(c.accent, for: .normal)
-            let suggestions = Self.emptySuggestions
-            for (i, button) in emptySuggestionButtons.enumerated() where i < suggestions.count {
-                button.setTitle(suggestions[i], for: .normal)
-            }
-            styleEmptySuggestionButtons()
             refreshEmptyOnboardingCopy()
         } else {
             emptyConfigureKeyButton.isHidden = true
         }
         layoutEmptyChromeForKeyboard()
-    }
-
-    private func styleEmptySuggestionButtons() {
-        let c = DSTheme.c
-        for button in emptySuggestionButtons {
-            button.setTitleColor(c.textPrimary, for: .normal)
-            button.backgroundColor = c.surface.withAlphaComponent(0.7)
-            button.layer.borderColor = c.border.cgColor
-        }
     }
 
     /// Cold-start / missing-key empty state vs normal suggestions.
@@ -7663,8 +7633,8 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         if hasKey {
             emptyTitleLabel.text = L("今天想聊些什么？", "Where would you like to begin?")
             emptySubtitleLabel.text = L(
-                "试试：解释当前文档 · 总结要点 · 帮我改一处代码",
-                "Try: Explain this document · Summarize key points · Fix some code"
+                "输入问题开始对话",
+                "Ask anything to get started"
             )
         } else {
             emptyTitleLabel.text = L("先配置 API Key", "Set up an API Key first")
@@ -7676,11 +7646,31 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         emptyConfigureKeyButton.setTitle(L("配置 API Key", "Set up API Key"), for: .normal)
     }
 
-    /// When keyboard is up, keep title above the composer; hide subtitle to avoid clutter.
+    /// Collapse the hero (logo + subtitle) whenever the band above the composer is
+    /// cramped: keyboard up, Study half-stage panel, or a short container.
+    /// Fades rather than snapping — title stays centered through the transition.
     private func layoutEmptyChromeForKeyboard() {
         guard !emptyContainer.isHidden else { return }
-        emptySubtitleLabel.isHidden = keyboardVisible
-        if keyboardVisible {
+        let band = emptyContainer.bounds.height
+        let cramped = keyboardVisible
+            || studyContextProvider?.studyChatPanelStage == .half
+            || (band > 0 && band < 300)
+        if cramped != emptyHeroCollapsed {
+            emptyHeroCollapsed = cramped
+            // Unhide before fading in; hide only after fade-out completes.
+            if !cramped {
+                emptyLogoImageView.isHidden = false
+                emptySubtitleLabel.isHidden = false
+            }
+            UIView.animate(withDuration: 0.22, delay: 0, options: [.beginFromCurrentState]) {
+                self.emptyLogoImageView.alpha = cramped ? 0 : 1
+                self.emptySubtitleLabel.alpha = cramped ? 0 : 1
+            } completion: { _ in
+                self.emptyLogoImageView.isHidden = cramped
+                self.emptySubtitleLabel.isHidden = cramped
+            }
+        }
+        if cramped {
             emptyConfigureKeyButton.isHidden = true
         } else {
             let model = ConversationStore.shared.currentConversation?.model ?? .deepseekV4Pro
@@ -7852,10 +7842,14 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         refreshComposerBottomAnchorIfNeeded()
         let snap = ConnectsKeyboardGeometry.resolve(screenFrame: keyboardFrame, in: view)
         switch snap.kind {
-        case .hidden, .docked:
-            // Docked: StudyShell already raised reader + chat above the keyboard.
-            // Keep composer at the panel bottom — do not lift again inside the panel.
+        case .hidden:
             keyboardVisible = false
+            bottomConstraint?.constant = restingComposerBottomConstant()
+        case .docked:
+            // Docked: StudyShell already raised reader + chat above the keyboard,
+            // so the composer stays at panel bottom — but the keyboard IS up, and
+            // empty-state chrome must still collapse (subtitle/config hidden).
+            keyboardVisible = true
             bottomConstraint?.constant = restingComposerBottomConstant()
         case .floatingMini:
             let lift = ConnectsKeyboardGeometry.composerLift(
@@ -7868,6 +7862,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 ? -(lift + DSTheme.inputBarBottomPadding)
                 : restingComposerBottomConstant()
         }
+        layoutEmptyChromeForKeyboard()
     }
 
     private func refreshComposerBottomAnchorIfNeeded() {

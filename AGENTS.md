@@ -56,6 +56,14 @@ Bitmap-per-message is a legitimate high-perf route (scroll = texture composite).
 
 `L("中文", "English")` in `Theme/L10n.swift`; `SettingsManager.appLanguage` (`.system/.zh/.en`), `appLanguageDidChange` notification → settings `rebuildForm()`. New user-facing strings: add both languages at call site.
 
+## Study workspace agent (multi-doc read/write)
+
+- Tool layer `AgentTools.execute`: reads (read_file/grep/glob/list_dir) span the whole folder; writes (`propose_edit`/`create_file`/`delete_file`) may target ANY workspace-relative path incl. subfolders (`Code/a.v`). Ask mode is read-only; Plan mode may create (plan md) but not propose_edit/delete_file. `current`/`.`/`active` alias still requires an open file.
+- `StudyWorkspaceStore.createFile` accepts relative subpaths (creates intermediate dirs); `absoluteURL` filters `.`/`..` and `deleteFile` has a containment guard — writes can never leave the workspace root.
+- Document identity: resolve via `WorkspaceAgentRuntime.resolveDocumentID` / `registeredDocumentID` (registers on-disk files never imported); both prefer exact relative-path match over basename to handle duplicate names in subfolders.
+- Review pipeline is per-document: `WorkspaceEditSession.PendingFile` (frozen `before`, latest `after`, `createdFresh`). Agent `create_file` surfaces `.proposeEdit(createdFresh: true)` → Undo deletes the file (`StudyWorkspaceStore.deleteDocumentFile`), not an empty restore. Legacy `CONNECTS_EDIT` cross-file full-body proposals stage `.staged` into the same session; `.selection` edits still require the target open.
+- QA: `-StudyAgentProcessQA` asserts cross-file delete/edit/create + `createdFresh` undo semantics — extend it when changing write policy.
+
 ## Empty-chat lifecycle
 
 `ConversationStore.dropDisposableEmptyConversations()` removes `messages.isEmpty && id != currentConversationID` — runs on load, select, create. Composer text is shared `InputBarView` state, not per-conversation drafts.

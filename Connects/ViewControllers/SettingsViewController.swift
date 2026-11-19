@@ -21,6 +21,17 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
     private let dashscopeField = UITextField()
     private let zhipuField = UITextField()
     private let doubaoField = UITextField()
+    private let minimaxField = UITextField()
+    private let stepfunField = UITextField()
+    private let hunyuanField = UITextField()
+    private let yiField = UITextField()
+    private let siliconflowField = UITextField()
+
+    /// All provider key fields — theme / show-plaintext / save iterate this.
+    private var apiKeyFields: [UITextField] {
+        [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField,
+         minimaxField, stepfunField, hunyuanField, yiField, siliconflowField]
+    }
     private let doubaoEndpointField = UITextField()
     private let kimiCNSwitch = UISwitch()
     private let kimiCNLabel = UILabel()
@@ -143,7 +154,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             line.backgroundColor = c.divider
         }
 
-        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField, doubaoEndpointField] {
+        for field in apiKeyFields + [doubaoEndpointField] {
             field.textColor = c.textPrimary
             field.tintColor = c.accent
             if let raw = field.placeholder {
@@ -227,7 +238,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
         // 1. API keys — one grouped card: provider rows + endpoint options.
         contentStack.addArrangedSubview(makeSectionTitle(L("API Key", "API Keys")))
-        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField] {
+        for field in apiKeyFields {
             configureField(field)
         }
         configureField(doubaoEndpointField)
@@ -237,6 +248,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
         zhipuField.text = SettingsManager.shared.zhipuAPIKey
         doubaoField.text = SettingsManager.shared.doubaoAPIKey
+        minimaxField.text = SettingsManager.shared.minimaxAPIKey
+        stepfunField.text = SettingsManager.shared.stepfunAPIKey
+        hunyuanField.text = SettingsManager.shared.hunyuanAPIKey
+        yiField.text = SettingsManager.shared.yiAPIKey
+        siliconflowField.text = SettingsManager.shared.siliconflowAPIKey
         doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
 
         let keysCard = makeGroupedCard(rows: [
@@ -256,6 +272,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
             makeProviderRow(L("智谱 GLM", "Zhipu GLM"), field: zhipuField, placeholder: "API Key"),
             makeProviderRow(L("豆包", "Doubao"), field: doubaoField, placeholder: L("方舟 API Key", "Ark API Key")),
             makeProviderRow(L("豆包接入点", "Doubao endpoint"), field: doubaoEndpointField, placeholder: L("可选 ep-…", "optional ep-…")),
+            makeProviderRow("MiniMax", field: minimaxField, placeholder: "API Key"),
+            makeProviderRow(L("阶跃星辰", "StepFun"), field: stepfunField, placeholder: "API Key"),
+            makeProviderRow(L("腾讯混元", "Hunyuan"), field: hunyuanField, placeholder: "API Key"),
+            makeProviderRow(L("零一万物", "01.AI Yi"), field: yiField, placeholder: "API Key"),
+            makeProviderRow(L("硅基流动", "SiliconFlow"), field: siliconflowField, placeholder: "API Key"),
             makeInlineSwitchRow(
                 label: showKeysLabel, text: L("显示 API Key 明文", "Show API keys"),
                 sw: showKeysSwitch, isOn: false,
@@ -632,7 +653,7 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
 
     @objc private func showKeysChanged() {
         let show = showKeysSwitch.isOn
-        for field in [deepseekField, kimiField, dashscopeField, zhipuField, doubaoField] {
+        for field in apiKeyFields {
             field.isSecureTextEntry = !show
         }
     }
@@ -683,6 +704,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         SettingsManager.shared.dashscopeAPIKey = dashscopeField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         SettingsManager.shared.zhipuAPIKey = zhipuField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         SettingsManager.shared.doubaoAPIKey = doubaoField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.minimaxAPIKey = minimaxField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.stepfunAPIKey = stepfunField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.hunyuanAPIKey = hunyuanField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.yiAPIKey = yiField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        SettingsManager.shared.siliconflowAPIKey = siliconflowField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         SettingsManager.shared.doubaoEndpointID = doubaoEndpointField.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         view.endEditing(true)
         dismiss(animated: true)
@@ -993,6 +1019,11 @@ final class SettingsViewController: UIViewController, ThemeRefreshable, UITextFi
         dashscopeField.text = SettingsManager.shared.dashscopeAPIKey
         zhipuField.text = SettingsManager.shared.zhipuAPIKey
         doubaoField.text = SettingsManager.shared.doubaoAPIKey
+        minimaxField.text = SettingsManager.shared.minimaxAPIKey
+        stepfunField.text = SettingsManager.shared.stepfunAPIKey
+        hunyuanField.text = SettingsManager.shared.hunyuanAPIKey
+        yiField.text = SettingsManager.shared.yiAPIKey
+        siliconflowField.text = SettingsManager.shared.siliconflowAPIKey
         doubaoEndpointField.text = SettingsManager.shared.doubaoEndpointID
         kimiCNSwitch.isOn = SettingsManager.shared.kimiUseChinaEndpoint
         qwenCNSwitch.isOn = SettingsManager.shared.qwenUseChinaEndpoint

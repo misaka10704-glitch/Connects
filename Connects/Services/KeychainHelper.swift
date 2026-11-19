@@ -70,6 +70,11 @@ enum KeychainHelper {
         static let dashscopeAPIKey = "dashscope_api_key"
         static let zhipuAPIKey = "zhipu_api_key"
         static let doubaoAPIKey = "doubao_api_key"
+        static let minimaxAPIKey = "minimax_api_key"
+        static let stepfunAPIKey = "stepfun_api_key"
+        static let hunyuanAPIKey = "hunyuan_api_key"
+        static let yiAPIKey = "yi_api_key"
+        static let siliconflowAPIKey = "siliconflow_api_key"
 
         static let all: [String] = [
             deepseekAPIKey,
@@ -77,6 +82,11 @@ enum KeychainHelper {
             dashscopeAPIKey,
             zhipuAPIKey,
             doubaoAPIKey,
+            minimaxAPIKey,
+            stepfunAPIKey,
+            hunyuanAPIKey,
+            yiAPIKey,
+            siliconflowAPIKey,
         ]
 
         /// Keychain account for a BYOK profile's API key.

@@ -21,7 +21,7 @@ struct AgentToolCall {
 enum AgentToolResult {
     case text(String)
     case askUser(prompt: String)
-    case proposeEdit(path: String, content: String)
+    case proposeEdit(path: String, content: String, createdFresh: Bool)
     case plan(String)
     case subagentSummary(String)
 }
@@ -75,8 +75,8 @@ enum AgentTools {
     - Edit via propose_edit with old_string/new_string, or spawn_subagent role=edit. Never rewrite whole large files in body.
     - Do not call spawn_subagent in a tight loop without advancing work.
     - Never claim a file exists/deleted until TOOL_RESULTS show success. If create/delete fails, retry once.
-    - Modes: Agent=edit/delete ok; Plan=no propose_edit/delete_file; Ask=read-only + ask_user.
-    - ACTIVE FILE LOCK: propose_edit / delete_file ONLY for the currently open Study file (see ACTIVE FILE below). list_dir/read/grep/glob may use the whole folder. create_file is blocked in Agent (user creates via UI +); Plan mode may create_file for plan markdown. To edit another file, stop — the user must switch the reader title first.
+    - Modes: Agent=edit/create/delete ok; Plan=no propose_edit/delete_file; Ask=read-only + ask_user.
+    - WRITE SCOPE: propose_edit / create_file / delete_file may target ANY file inside the workspace folder (relative path for subfolders, e.g. Code/a.v). All edits stage as pending changes — the user Keeps or Undoes each file. Never touch paths outside the workspace.
     After tools run you receive results and continue.
     """
 
@@ -163,18 +163,24 @@ enum AgentTools {
     private static func parseOne(_ body: String) -> AgentToolCall? {
         var args: [String: String] = [:]
         var nameRaw = ""
-        var inFence = false
-        var fenceLines: [String] = []
-        for line in body.components(separatedBy: .newlines) {
+        let lines = body.components(separatedBy: .newlines)
+        // Body = everything between the FIRST ``` line and the LAST ``` line, so
+        // markdown/code content containing inner fences survives intact.
+        var firstFence: Int? = nil
+        var lastFence: Int? = nil
+        for (i, line) in lines.enumerated() where line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+            if firstFence == nil { firstFence = i }
+            lastFence = i
+        }
+        var argLines: [String] = []
+        if let first = firstFence, let last = lastFence, last > first {
+            argLines = Array(lines[..<first]) + Array(lines[(last + 1)...])
+            args["body"] = lines[(first + 1)..<last].joined(separator: "\n")
+        } else {
+            argLines = lines
+        }
+        for line in argLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") {
-                inFence.toggle()
-                continue
-            }
-            if inFence {
-                fenceLines.append(line)
-                continue
-            }
             if trimmed.lowercased().hasPrefix("name:") {
                 nameRaw = trimmed.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
             } else if let colon = trimmed.firstIndex(of: ":") {
@@ -182,9 +188,6 @@ enum AgentTools {
                 let val = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
                 args[key] = val
             }
-        }
-        if !fenceLines.isEmpty {
-            args["body"] = fenceLines.joined(separator: "\n")
         }
         guard let name = AgentToolName(rawValue: nameRaw.lowercased()) else { return nil }
         return AgentToolCall(name: name, arguments: args)
@@ -244,7 +247,7 @@ enum AgentTools {
                     createBody = body
                 }
                 guard !createBody.isEmpty else {
-                    return .text("error: \(resolvedPath) does not exist — switch to an existing open file, or create via UI (+)")
+                    return .text("error: \(resolvedPath) does not exist — include the new file contents in body (or new_string)")
                 }
                 return execute(
                     AgentToolCall(name: .createFile, arguments: ["path": resolvedPath, "body": createBody]),
@@ -262,7 +265,10 @@ enum AgentTools {
                     return .text("error: old_string matched \(occurrences) times in \(resolvedPath); make it unique")
                 }
                 let patched = current.replacingOccurrences(of: oldS, with: newS, options: [], range: nil)
-                return .proposeEdit(path: resolvedPath, content: patched)
+                if patched == current {
+                    return .text("(no changes — \(resolvedPath) already matches)")
+                }
+                return .proposeEdit(path: resolvedPath, content: patched, createdFresh: false)
             }
             if body.isEmpty {
                 return .text("error: propose_edit needs old_string/new_string (preferred) or body")
@@ -274,7 +280,10 @@ enum AgentTools {
                     return .text("error: full-body rewrite blocked for \(resolvedPath); use old_string/new_string patch")
                 }
             }
-            return .proposeEdit(path: resolvedPath, content: body)
+            if body == current {
+                return .text("(no changes — \(resolvedPath) already matches)")
+            }
+            return .proposeEdit(path: resolvedPath, content: body, createdFresh: false)
         case .createFile:
             if mode == .ask {
                 return .text("error: create_file not allowed in ask mode")
@@ -303,12 +312,14 @@ enum AgentTools {
             }
             // File I/O + registry; StudyDocumentStore/Workspace notify already hop to main async.
             do {
-                let doc = try StudyWorkspaceStore.shared.createFile(
+                _ = try StudyWorkspaceStore.shared.createFile(
                     named: path,
                     content: body,
                     in: workspaceID
                 )
-                return .proposeEdit(path: doc.title, content: body)
+                // Return the workspace-relative path so downstream staging resolves
+                // the just-created doc exactly (subfolders / duplicate basenames).
+                return .proposeEdit(path: path, content: body, createdFresh: true)
             } catch {
                 return .text("error: \(error.localizedDescription)")
             }
@@ -324,10 +335,19 @@ enum AgentTools {
             if let denied = mutateScopeError(tool: "delete_file", path: path, activeFileName: active, mode: mode) {
                 return .text(denied)
             }
-            let name = Self.canonicalizeMutatePath(path, activeFileName: active)
+            // Keep relative paths (subfolder deletes); only the current/./active
+            // alias collapses to the open file's leaf name.
+            let name: String = {
+                let lower = path.lowercased()
+                if lower == "current" || lower == "." || lower == "active",
+                   let active, !active.isEmpty {
+                    return active
+                }
+                return path
+            }()
             do {
                 try StudyWorkspaceStore.shared.deleteFile(named: name, in: workspaceID)
-                return .text("deleted \(name)")
+                return .text("deleted \((name as NSString).lastPathComponent)")
             } catch {
                 return .text("error: \(error.localizedDescription)")
             }
@@ -417,40 +437,35 @@ enum AgentTools {
     }
 
     private static func canonicalizeMutatePath(_ path: String, activeFileName: String?) -> String {
-        let name = (path as NSString).lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = name.lowercased()
+        // Keep the workspace-relative path (subfolders survive); only the
+        // current/./active alias collapses to the open file.
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
         if lower == "current" || lower == "." || lower == "active",
            let active = activeFileName, !active.isEmpty {
             return active
         }
-        return name
+        return trimmed
     }
 
-    /// Returns an error string when the mutate is out of Study active-file scope.
+    /// Returns an error string when the mutate is out of scope. Writes may target
+    /// any file inside the workspace folder (multi-document read/write); Ask mode
+    /// stays read-only and the current/./active alias still needs an open file.
     private static func mutateScopeError(
         tool: String,
         path: String,
         activeFileName: String?,
         mode: StudyAgentMode
     ) -> String? {
-        // Plan mode may create plan markdown anywhere in the folder.
-        if tool == "create_file", mode == .plan { return nil }
-        // Agent/Ask: create_file never — folder growth is UI-only (+ / import).
-        if tool == "create_file" {
-            if let active = activeFileName, !active.isEmpty {
-                return "error: create_file blocked — Study may only edit the open file (\(active)). Create other files via UI (+), then switch to them."
-            }
-            return "error: create_file blocked — Study may only edit the currently open file. Create files via UI (+)."
-        }
-        guard let active = activeFileName, !active.isEmpty else {
-            return "error: \(tool) blocked — no open Study file; open a file in the folder first"
-        }
-        let name = (path as NSString).lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if tool == "create_file" { return nil }
+        let name = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "error: \(tool) needs a path" }
         let lower = name.lowercased()
-        if lower == "current" || lower == "." || lower == "active" { return nil }
-        if name.caseInsensitiveCompare(active) == .orderedSame { return nil }
-        return "error: \(tool) blocked for \(name) — Study edits only the currently open file (\(active)). Switch files in the reader title, then retry."
+        if lower == "current" || lower == "." || lower == "active" {
+            guard let active = activeFileName, !active.isEmpty else {
+                return "error: \(tool) blocked — no open Study file; open a file in the folder first"
+            }
+        }
+        return nil
     }
 }

@@ -120,9 +120,9 @@ enum AgentSubagentRunner {
         let pathHint = paths.isEmpty ? "infer from task" : paths.joined(separator: ", ")
         let system = """
         ## CONNECTS_EDIT_SUBAGENT
-        You edit ONLY the currently open Study file. Tools: read_file (target only), propose_edit.
-        Do NOT create_file. Do NOT edit other workspace paths — if the task names another file, report that the user must switch the reader first.
-        Existing open file: propose_edit with unique old_string + new_string only (no full-file rewrite).
+        You edit files inside the workspace folder. Tools: read_file, propose_edit.
+        You may propose_edit ANY file listed in the workspace (prefer the task's named paths); use relative paths for subfolders.
+        Existing files: propose_edit with unique old_string + new_string only (no full-file rewrite).
         Task: \(task)
         Preferred paths: \(pathHint)
         Max \(maxRounds) rounds. Emit CONNECTS_TOOL blocks; finish with a one-line summary naming files written.
@@ -167,7 +167,7 @@ enum AgentSubagentRunner {
             ChatMessage(role: .user, content: task)
         ]
         var readOnce = Set<String>()
-        var pendingEdits: [(String, String)] = []
+        var pendingEdits: [(path: String, content: String, createdFresh: Bool)] = []
 
         for _ in 0..<maxRounds {
             let reply = completeSync(messages: history, model: model, maxTokens: 2048)
@@ -208,12 +208,12 @@ enum AgentSubagentRunner {
                     step.detail = AgentTools.humanStepDetailSummary(for: call, result: result)
                     onStep?(step)
                     chunk.append("[\(call.name.rawValue)]\n\(String(t.prefix(4000)))")
-                case .proposeEdit(let path, let content):
+                case .proposeEdit(let path, let content, let fresh):
                     step.markDone()
                     step.detail = AgentTools.humanStepDetailSummary(for: call, result: result)
                     onStep?(step)
                     if proposeSink {
-                        pendingEdits.append((path, content))
+                        pendingEdits.append((path, content, fresh))
                     }
                     chunk.append("[propose_edit] \(path) (\(content.count) chars) queued")
                 case .askUser(let p):
@@ -240,18 +240,18 @@ enum AgentSubagentRunner {
         }
 
         // Apply queued edits after the loop (caller ChatVC also handles root propose_edit).
-        for (path, body) in pendingEdits {
-            notes.append("[edit_applied_pending] \(path) \(body.count)B — root will persist via session")
+        for edit in pendingEdits {
+            notes.append("[edit_applied_pending] \(edit.path) \(edit.content.count)B — root will persist via session")
             // Persist via notification-style side channel: store for orchestrator callback.
-            AgentSubagentRunner.drainPendingEdits.append((path, body))
+            AgentSubagentRunner.drainPendingEdits.append(edit)
         }
         return notes
     }
 
     /// Edits produced by edit subagent awaiting disk write by ChatViewController.
-    static var drainPendingEdits: [(path: String, content: String)] = []
+    static var drainPendingEdits: [(path: String, content: String, createdFresh: Bool)] = []
 
-    static func takePendingEdits() -> [(path: String, content: String)] {
+    static func takePendingEdits() -> [(path: String, content: String, createdFresh: Bool)] {
         let out = drainPendingEdits
         drainPendingEdits = []
         return out

@@ -44,24 +44,25 @@ final class WorkspaceAgentRuntime {
     }
 
     /// Safe from tool-loop background queue. Resolves/creates doc + writes disk; UI deferred to flush.
-    func enqueueProposedEdit(path: String, body: String) {
+    func enqueueProposedEdit(path: String, body: String, createdFresh: Bool = false) {
         lock.lock()
         let wsID = batchWorkspaceID
         let conversationID = batchConversationID
         lock.unlock()
         guard let wsID else { return }
 
-        // Hard lock: never write a file other than the Study-open document (Plan may stage new plans).
+        // Writes may target any file inside the workspace folder; Ask mode stays
+        // read-only. Pending edits are review-gated per document.
         if let conversationID,
            let conv = ConversationStore.shared.conversation(id: conversationID),
-           conv.studyAgentMode != .plan,
-           !conv.allowsStudyMutating(path: path) {
+           conv.studyAgentMode == .ask {
             return
         }
 
         let name = (path as NSString).lastPathComponent
-        guard let docID = Self.resolveDocumentID(path: path, workspaceID: wsID) else {
-            // Creating a new path is out of Study edit scope (UI + only).
+        guard let docID = Self.resolveDocumentID(path: path, workspaceID: wsID)
+                ?? Self.registeredDocumentID(path: path, workspaceID: wsID) else {
+            // Path neither resolves to a workspace document nor exists on disk.
             return
         }
 
@@ -90,7 +91,7 @@ final class WorkspaceAgentRuntime {
                 documentID: docID,
                 fileName: fileName,
                 before: before,
-                createdFresh: false
+                createdFresh: createdFresh
             ))
         }
         lock.unlock()
@@ -129,7 +130,8 @@ final class WorkspaceAgentRuntime {
                 documentID: edit.documentID,
                 fileName: edit.fileName,
                 before: edit.before,
-                after: edit.body
+                after: edit.body,
+                createdFresh: edit.createdFresh
             )
             let card = AgentEditCard(
                 fileName: edit.fileName,
@@ -181,10 +183,44 @@ final class WorkspaceAgentRuntime {
         lock.unlock()
     }
 
+    /// Register an on-disk workspace file that was never imported, so multi-doc
+    /// writes can reach files the user dropped into the folder directly.
+    static func registeredDocumentID(path: String, workspaceID: String) -> String? {
+        let rel = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rel.isEmpty else { return nil }
+        var url = try? StudyWorkspaceStore.shared.fileURL(relativePath: rel, in: workspaceID)
+        if url == nil || !FileManager.default.fileExists(atPath: url!.path) {
+            let leaf = (rel as NSString).lastPathComponent
+            url = StudyWorkspaceStore.shared.listFileNames(in: workspaceID)
+                .filter { ($0 as NSString).lastPathComponent == leaf }
+                .compactMap { try? StudyWorkspaceStore.shared.fileURL(relativePath: $0, in: workspaceID) }
+                .first { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let doc = try? StudyDocumentStore.shared.registerFileInPlace(
+            at: url,
+            createEmptyIfNeeded: false
+        ) else { return nil }
+        StudyWorkspaceStore.shared.addDocument(doc.id, to: workspaceID)
+        return doc.id
+    }
+
     static func resolveDocumentID(path: String, workspaceID: String) -> String? {
-        let needle = (path as NSString).lastPathComponent
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = (trimmed as NSString).lastPathComponent
         guard !needle.isEmpty else { return nil }
         guard let ws = StudyWorkspaceStore.shared.workspace(id: workspaceID) else { return nil }
+        // Exact relative-path match first — keeps subfolder paths honest when two
+        // docs share a basename (`Code/a.v` vs `Docs/a.v`).
+        if let url = try? StudyWorkspaceStore.shared.fileURL(relativePath: trimmed, in: workspaceID) {
+            let abs = (url.path as NSString).standardizingPath
+            if let exact = ws.documentIDs.first(where: { id in
+                guard let p = StudyDocumentStore.shared.document(id: id)?.displayPath else { return false }
+                return (p as NSString).standardizingPath == abs
+            }) {
+                return exact
+            }
+        }
         for id in ws.documentIDs {
             guard let doc = StudyDocumentStore.shared.document(id: id) else { continue }
             if let display = doc.displayPath,

@@ -174,7 +174,13 @@ final class CodeEditCoordinator: CodeEditorCompletionProviding {
         } else {
             // Editor already restored `before` in finishDiffSession when undoing.
             if let docID = editor.activeDocumentID {
+                // Agent-created file: Undo deletes it instead of keeping an empty body.
+                let wasFresh = WorkspaceEditSession.shared.pending(documentID: docID)?.createdFresh == true
                 WorkspaceEditSession.shared.remove(documentID: docID)
+                if wasFresh,
+                   let wsID = ConversationStore.shared.currentConversation?.activeStudyWorkspaceID {
+                    StudyWorkspaceStore.shared.deleteDocumentFile(documentID: docID, in: wsID)
+                }
             }
             ConnectsToast.show("已撤销", in: editor.view, duration: 1.0)
         }

@@ -85,15 +85,10 @@ struct Conversation: Codable, Equatable {
         return title.isEmpty ? nil : title
     }
 
-    /// Study writes (Agent / CONNECTS_EDIT) may only touch the open file.
+    /// Study writes (Agent / CONNECTS_EDIT) may touch any file inside the
+    /// workspace folder — pending edits are review-gated per document.
     func allowsStudyMutating(path: String) -> Bool {
-        let name = (path as NSString).lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return false }
-        let lower = name.lowercased()
-        if lower == "current" || lower == "." || lower == "active" { return true }
-        guard let current = studyActiveFileName else { return false }
-        return name.caseInsensitiveCompare(current) == .orderedSame
+        !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     init(id: String = UUID().uuidString,

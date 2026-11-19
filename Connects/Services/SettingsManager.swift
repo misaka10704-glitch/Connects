@@ -67,6 +67,31 @@ final class SettingsManager {
         set { persist(key: KeychainHelper.Keys.doubaoAPIKey, value: Self.sanitizeKey(newValue)) }
     }
 
+    var minimaxAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.minimaxAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.minimaxAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var stepfunAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.stepfunAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.stepfunAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var hunyuanAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.hunyuanAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.hunyuanAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var yiAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.yiAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.yiAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
+    var siliconflowAPIKey: String {
+        get { KeychainHelper.load(key: KeychainHelper.Keys.siliconflowAPIKey) ?? "" }
+        set { persist(key: KeychainHelper.Keys.siliconflowAPIKey, value: Self.sanitizeKey(newValue)) }
+    }
+
     // MARK: - BYOK custom providers (OpenAI-compatible)
 
     private let customProvidersKey = "connects_custom_providers"
@@ -371,8 +396,9 @@ final class SettingsManager {
         } else {
             enabled = Set(stored ?? AIModelOption.defaultEnabled.map { $0.stableID })
             enabled = Set(enabled.filter { catalog.contains($0) })
-            // 新上架模型默认开启（仅 GLM / 豆包这类精选）
-            for id in catalog where !known.contains(id) {
+            // 新上架模型默认开启（仅 GLM / 豆包这类精选；新 provider 需手动到「显示的模型」开）
+            let autoEnable = Set(AIModelOption.catalog.filter { $0.provider.autoEnablesNewModels }.map { $0.stableID })
+            for id in catalog where !known.contains(id) && autoEnable.contains(id) {
                 enabled.insert(id)
             }
             if enabled.isEmpty {
@@ -403,6 +429,11 @@ final class SettingsManager {
         case .qwen: raw = dashscopeAPIKey
         case .zhipu: raw = zhipuAPIKey
         case .doubao: raw = doubaoAPIKey
+        case .minimax: raw = minimaxAPIKey
+        case .stepfun: raw = stepfunAPIKey
+        case .hunyuan: raw = hunyuanAPIKey
+        case .yi: raw = yiAPIKey
+        case .siliconflow: raw = siliconflowAPIKey
         case .custom: raw = "" // BYOK keys are per-profile — use apiKey(for: model)
         }
         return Self.sanitizeKey(raw)

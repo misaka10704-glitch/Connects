@@ -433,7 +433,7 @@ extension AgentTools {
             }
         case .askUser(let prompt):
             return String(prompt.prefix(80))
-        case .proposeEdit(let path, let body):
+        case .proposeEdit(let path, let body, _):
             let name = (path as NSString).lastPathComponent
             let fileLabel = name.isEmpty ? "file" : name
             if call.name == .createFile {
