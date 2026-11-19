@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Connects — iPad 上的 AI 聊天与 Study</title>
-  <meta name="description" content="Connects 是面向 iPad（iOS 15+）的本地 AI 聊天客户端。自带 API Key，Study AI Diff，原生数学渲染，会话可导出。" />
-  <meta property="og:title" content="Connects 4.0" />
-  <meta property="og:description" content="iPad 上的正经 AI 阅读壳：自带 Key、Study Diff、原生 Markdown / TeX、流式对话与导出。" />
+  <meta name="theme-color" content="#0b1624" />
+  <title>Connects — iPad 上的开源 AI 工作台</title>
+  <meta name="description" content="Connects 是面向 iPad（iOS 18+）的开源 AI 客户端：多家模型 + BYOK 自定义端点，原生 Markdown / TeX 渲染，Study 工作区 Agent 读改真实文件夹，所有改动先进 Diff 审查。GPL-3.0。" />
+  <meta property="og:title" content="Connects 5.1" />
+  <meta property="og:description" content="iPad 上的开源 AI 阅读与改造壳：BYOK、原生渲染管线、工作区 Agent、逐文件 Diff 审查。" />
   <meta property="og:image" content="assets/icon.png" />
   <link rel="icon" href="assets/logo-120.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <style>
     :root {
       --ink: #102033;
@@ -38,6 +39,9 @@
     }
     a { color: inherit; }
     img { max-width: 100%; display: block; }
+    code, pre, .mono {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     .nav {
       position: absolute;
       inset: 0 0 auto;
@@ -45,6 +49,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 12px;
       padding: 22px clamp(20px, 4vw, 48px);
       color: #f7fafb;
     }
@@ -57,17 +62,21 @@
       font-weight: 700;
       letter-spacing: 0.02em;
     }
-    .nav-brand img { width: 34px; height: 34px; border-radius: 8px; }
+    .nav-brand img { width: 34px; height: 34px; border-radius: 8px; box-shadow: 0 0 0 1px rgba(247, 250, 251, 0.18); }
+    .nav-links { display: flex; gap: 10px; align-items: center; }
     .nav-link {
       text-decoration: none;
-      border: 1px solid rgba(247, 250, 251, 0.35);
       padding: 10px 16px;
       border-radius: 999px;
       font-size: 14px;
       font-weight: 600;
       transition: background 0.25s ease, border-color 0.25s ease;
     }
-    .nav-link:hover {
+    .nav-link.plain:hover { background: rgba(247, 250, 251, 0.12); }
+    .nav-link.cta {
+      border: 1px solid rgba(247, 250, 251, 0.35);
+    }
+    .nav-link.cta:hover {
       background: rgba(247, 250, 251, 0.12);
       border-color: rgba(247, 250, 251, 0.7);
     }
@@ -113,8 +122,11 @@
       place-items: center;
     }
     .hero-visual img {
-      width: 46%;
-      filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.35));
+      width: 42%;
+      border-radius: 24%;
+      box-shadow:
+        0 24px 48px rgba(0, 0, 0, 0.4),
+        0 0 0 1px rgba(247, 250, 251, 0.14);
       animation: mark-rise 1.1s cubic-bezier(0.2, 0.8, 0.2, 1) both;
     }
     .hero-inner {
@@ -125,45 +137,53 @@
       padding: clamp(120px, 18vh, 180px) clamp(20px, 4vw, 48px) clamp(56px, 9vh, 96px);
     }
     .hero-kicker {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
       margin: 0 0 18px;
       font-size: 13px;
       font-weight: 600;
-      letter-spacing: 0.16em;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--sand);
       opacity: 0;
       animation: rise 0.8s ease 0.1s forwards;
     }
+    .hero-kicker .pill {
+      padding: 4px 12px;
+      border: 1px solid rgba(216, 196, 164, 0.5);
+      border-radius: 999px;
+      letter-spacing: 0.08em;
+    }
     .hero h1 {
       margin: 0;
-      max-width: 11ch;
+      max-width: 14ch;
       font-family: "Bricolage Grotesque", sans-serif;
-      font-size: clamp(56px, 11vw, 108px);
-      line-height: 0.92;
-      letter-spacing: -0.045em;
+      font-size: clamp(44px, 8.5vw, 88px);
+      line-height: 0.98;
+      letter-spacing: -0.04em;
       font-weight: 800;
       opacity: 0;
       animation: rise 0.9s ease 0.18s forwards;
     }
     .hero-lead {
       margin: 22px 0 0;
-      max-width: 34ch;
-      font-family: "Instrument Serif", Georgia, serif;
-      font-size: clamp(22px, 3.2vw, 30px);
-      font-style: italic;
-      line-height: 1.35;
+      max-width: 46ch;
+      font-size: clamp(17px, 2.2vw, 20px);
+      line-height: 1.6;
       color: rgba(247, 250, 251, 0.88);
       opacity: 0;
       animation: rise 0.9s ease 0.28s forwards;
     }
-    .hero-sub {
-      margin: 16px 0 0;
-      max-width: 42ch;
-      color: rgba(247, 250, 251, 0.72);
-      font-size: 16px;
-      opacity: 0;
-      animation: rise 0.9s ease 0.36s forwards;
+    .hero-lead em {
+      font-family: "Instrument Serif", Georgia, serif;
+      font-size: 1.12em;
+    }
+    .hero-lead .en {
+      display: block;
+      margin-top: 10px;
+      font-size: 0.85em;
+      color: rgba(247, 250, 251, 0.6);
     }
     .hero-cta {
       display: flex;
@@ -173,6 +193,14 @@
       opacity: 0;
       animation: rise 0.9s ease 0.44s forwards;
     }
+    .hero-meta {
+      margin: 22px 0 0;
+      font-size: 14px;
+      color: rgba(247, 250, 251, 0.6);
+      opacity: 0;
+      animation: rise 0.9s ease 0.52s forwards;
+    }
+    .hero-meta a { color: rgba(247, 250, 251, 0.85); }
     .btn {
       display: inline-flex;
       align-items: center;
@@ -208,7 +236,7 @@
     }
     .section h2 {
       margin: 0;
-      max-width: 16ch;
+      max-width: 18ch;
       font-family: "Bricolage Grotesque", sans-serif;
       font-size: clamp(32px, 5vw, 48px);
       line-height: 1.08;
@@ -216,75 +244,11 @@
     }
     .section-lead {
       margin: 16px 0 0;
-      max-width: 46ch;
+      max-width: 52ch;
       color: var(--ink-soft);
     }
-    .why {
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: clamp(28px, 5vw, 64px);
-      align-items: end;
-      border-top: 1px solid var(--line);
-      border-bottom: 1px solid var(--line);
-      background:
-        linear-gradient(180deg, rgba(228, 235, 240, 0.55), transparent 40%),
-        var(--paper);
-    }
-    .why-list {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 18px;
-    }
-    .why-list li {
-      padding-top: 18px;
-      border-top: 1px solid var(--line);
-    }
-    .why-list strong {
-      display: block;
-      margin-bottom: 4px;
-      font-family: "Bricolage Grotesque", sans-serif;
-      font-size: 18px;
-    }
-    .why-list span { color: var(--ink-soft); font-size: 15px; }
-    .feature {
-      display: grid;
-      grid-template-columns: minmax(140px, 180px) 1fr;
-      gap: 24px;
-      padding: 36px 0;
-      border-bottom: 1px solid var(--line);
-    }
-    .feature:first-of-type { border-top: 1px solid var(--line); margin-top: 48px; }
-    .feature-index {
-      font-family: "Bricolage Grotesque", sans-serif;
-      font-size: 14px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      color: var(--teal);
-    }
-    .feature h3 {
-      margin: 0 0 8px;
-      font-family: "Bricolage Grotesque", sans-serif;
-      font-size: clamp(22px, 3vw, 28px);
-      letter-spacing: -0.02em;
-    }
-    .feature p {
-      margin: 0;
-      max-width: 58ch;
-      color: var(--ink-soft);
-    }
-    .feature code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.92em;
-      color: var(--teal-deep);
-    }
-    .models {
-      background:
-        radial-gradient(700px 320px at 80% 0%, var(--glow), transparent 60%),
-        linear-gradient(180deg, var(--paper-deep), var(--paper));
-    }
-    .model-grid {
+    /* How it works — numbered cards */
+    .how-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 1px;
@@ -292,36 +256,108 @@
       background: var(--line);
       border: 1px solid var(--line);
     }
-    .model-item {
+    .how-card {
       background: var(--paper);
-      padding: 28px 24px;
+      padding: 32px 26px;
     }
-    .model-item h3 {
+    .how-num {
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: var(--teal);
+    }
+    .how-card h3 {
+      margin: 14px 0 8px;
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: 21px;
+      letter-spacing: -0.02em;
+    }
+    .how-card p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+    }
+    .how-card code { font-size: 0.86em; color: var(--teal-deep); }
+    /* Dense detail grid */
+    .details { border-top: 1px solid var(--line); }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      margin-top: 48px;
+      border-top: 1px solid var(--line);
+    }
+    .detail-grid > div {
+      padding: 20px 24px 20px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .detail-grid strong {
+      display: block;
+      margin-bottom: 2px;
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .detail-grid span { color: var(--ink-soft); font-size: 14.5px; }
+    /* Modes + terminal */
+    .modes {
+      background:
+        radial-gradient(700px 320px at 80% 0%, var(--glow), transparent 60%),
+        linear-gradient(180deg, var(--paper-deep), var(--paper));
+    }
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 48px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+    .mode-item { background: var(--paper); padding: 26px 24px; }
+    .mode-item h3 {
       margin: 0 0 8px;
       font-family: "Bricolage Grotesque", sans-serif;
       font-size: 20px;
     }
-    .model-item p {
+    .mode-item p { margin: 0; color: var(--ink-soft); font-size: 15px; }
+    .terminal {
+      margin-top: 40px;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #0d1b26;
+      border: 1px solid rgba(16, 32, 51, 0.2);
+      box-shadow: 0 18px 40px rgba(16, 32, 51, 0.18);
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: rgba(247, 250, 251, 0.05);
+      border-bottom: 1px solid rgba(247, 250, 251, 0.08);
+    }
+    .terminal-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .terminal-dot:nth-child(1) { background: #e0645c; }
+    .terminal-dot:nth-child(2) { background: #e0b34f; }
+    .terminal-dot:nth-child(3) { background: #5cb872; }
+    .terminal-title {
+      margin-left: 8px;
+      font-size: 12.5px;
+      color: rgba(247, 250, 251, 0.5);
+      letter-spacing: 0.04em;
+    }
+    .terminal pre {
       margin: 0;
-      color: var(--ink-soft);
-      font-size: 15px;
+      padding: 20px 22px;
+      overflow-x: auto;
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: #d8e6ee;
     }
-    .tech-row {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 28px 48px;
-      margin-top: 48px;
-    }
-    .tech-row dt {
-      font-family: "Bricolage Grotesque", sans-serif;
-      font-size: 18px;
-      margin-bottom: 6px;
-    }
-    .tech-row dd {
-      margin: 0;
-      color: var(--ink-soft);
-      font-size: 15px;
-    }
+    .terminal .c { color: #6b8296; }
+    .terminal .k { color: #7fd1b9; }
+    /* Get started */
     .start-steps {
       margin: 40px 0 0;
       padding: 0;
@@ -329,13 +365,15 @@
       counter-reset: step;
       display: grid;
       gap: 20px;
-      max-width: 52ch;
+      max-width: 56ch;
     }
     .start-steps li {
       position: relative;
       padding-left: 48px;
       counter-increment: step;
+      color: var(--ink-soft);
     }
+    .start-steps li strong { color: var(--ink); }
     .start-steps li::before {
       content: counter(step);
       position: absolute;
@@ -358,15 +396,9 @@
       gap: 12px;
       margin-top: 36px;
     }
-    .start .btn-primary {
-      background: var(--teal);
-      color: #f7fafb;
-    }
+    .start .btn-primary { background: var(--teal); color: #f7fafb; }
     .start .btn-primary:hover { background: var(--teal-deep); }
-    .start .btn-ghost {
-      border: 1px solid var(--line);
-      color: var(--ink);
-    }
+    .start .btn-ghost { border: 1px solid var(--line); color: var(--ink); }
     .start .btn-ghost:hover { background: var(--paper-deep); }
     .footer {
       border-top: 1px solid var(--line);
@@ -378,6 +410,7 @@
       color: var(--ink-soft);
       font-size: 14px;
     }
+    .footer .links { display: flex; gap: 18px; flex-wrap: wrap; }
     .footer a { color: var(--teal-deep); }
     @keyframes rise {
       from { opacity: 0; transform: translateY(18px); }
@@ -402,20 +435,16 @@
         top: 4%;
         opacity: 0.85;
       }
-      .why,
-      .model-grid,
-      .tech-row,
-      .feature {
-        grid-template-columns: 1fr;
-      }
-      .feature { gap: 8px; }
+      .how-grid, .mode-grid { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .nav-links .plain { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation: none !important;
         transition: none !important;
       }
-      .hero-kicker, .hero h1, .hero-lead, .hero-sub, .hero-cta { opacity: 1; }
+      .hero-kicker, .hero h1, .hero-lead, .hero-cta, .hero-meta { opacity: 1; }
     }
   </style>
 </head>
@@ -426,147 +455,125 @@
         <img src="assets/logo-120.png" alt="" width="34" height="34" />
         Connects
       </a>
-      <a class="nav-link" href="https://github.com/misaka10704-glitch/Connects">GitHub</a>
+      <div class="nav-links">
+        <a class="nav-link plain" href="https://github.com/misaka10704-glitch/Connects">GitHub</a>
+        <a class="nav-link plain" href="https://github.com/misaka10704-glitch/Connects/releases">Releases</a>
+        <a class="nav-link cta" href="https://github.com/misaka10704-glitch/Connects/releases/latest/download/Connects.ipa">下载 IPA</a>
+      </div>
     </nav>
     <div class="hero-visual" aria-hidden="true">
       <img src="assets/logo.png" alt="" />
     </div>
     <div class="hero-inner" id="top">
-      <p class="hero-kicker">Version 4.0 · iPad / iOS 15+</p>
-      <h1>Connects</h1>
-      <p class="hero-lead">平板上的正经 AI 阅读壳。</p>
-      <p class="hero-sub">自带 Key、流式对话、Study 读改文件与 AI Diff，原生数学与 Markdown，会话随时带走。</p>
+      <p class="hero-kicker"><span class="pill">GPL-3.0 · 开源</span> iPad / iPhone · iOS 18+</p>
+      <h1>自带 Key、读改文件、干活 Agent。<br />现在，整个开源。</h1>
+      <p class="hero-lead">
+        Connects 是 iPad 上的本地 AI 工作台：十家内置模型 + 任意 OpenAI 兼容端点（BYOK），原生
+        Markdown / TeX 渲染管线，Study 工作区 Agent 直接读改你的文件夹——所有写操作先进逐文件 Diff 审查。
+        <span class="en"><em>An open-source AI reading &amp; workspace client for iPad — bring your own key, keep your files yours.</em></span>
+      </p>
       <div class="hero-cta">
-        <a class="btn btn-primary" href="https://github.com/misaka10704-glitch/Connects">打开仓库</a>
-        <a class="btn btn-ghost" href="#features">了解能力</a>
+        <a class="btn btn-primary" href="https://github.com/misaka10704-glitch/Connects/releases/latest/download/Connects.ipa">下载 IPA（自签）</a>
+        <a class="btn btn-ghost" href="https://github.com/misaka10704-glitch/Connects">GitHub 仓库 →</a>
       </div>
+      <p class="hero-meta">iOS 18+（iPad 为主，iPhone 可装） · 未签名 IPA，Sideloadly / AltStore / SideStore 自签 · <a href="https://github.com/misaka10704-glitch/Connects/releases">全部版本</a></p>
     </div>
   </header>
 
-  <section class="section why" id="why">
-    <div>
-      <p class="section-label">动机</p>
-      <h2>主流客户端默认新设备。旧硬件被落在后面。</h2>
-      <p class="section-lead">主流客户端默认新设备与封闭 Key。Connects 把自管 Key、Study 读改与可读排版放在第一位（4.0 起要求 iOS 15+）。</p>
-    </div>
-    <ol class="why-list">
-      <li>
-        <strong>UIKit 可读优先</strong>
-        <span>UIKit + iOS 15+，不追求 SwiftUI / 最新系统专属花活。</span>
-      </li>
-      <li>
-        <strong>自己带 Key</strong>
-        <span>DeepSeek / Kimi 等存在本机钥匙串，不经第三方中转。</span>
-      </li>
-      <li>
-        <strong>为阅读排版</strong>
-        <span>居中阅读列、可调字号、思考可折叠，数学尽量渲染完整。</span>
-      </li>
-    </ol>
-  </section>
-
-  <section class="section" id="features">
-    <p class="section-label">能力</p>
-    <h2>4.0：Study AI Diff 与更稳的编辑链路。</h2>
-    <p class="section-lead">开「AI 编辑」后模型可提出 CONNECTS_EDIT；按块 Keep / Undo。聊天脱敏编辑载荷，未闭合块自动续写。</p>
-    <article class="feature">
-      <div class="feature-index">01</div>
-      <div>
-        <h3>原生 Markdown / TeX</h3>
-        <p>解析块级结构与行内公式，内置 iosMath 0.9.x 与 XITS 字体；兼容 \( \)、$$ $$、\boxed 以及常见算子归一化。</p>
+  <section class="section" id="how">
+    <p class="section-label">How it works</p>
+    <h2>聊天、阅读、改文件，同一个壳。</h2>
+    <p class="section-lead">不经云端中转、不绑生态。Key 在本机，文件在本机，Agent 干活的每一步都留痕可撤。</p>
+    <div class="how-grid">
+      <div class="how-card">
+        <div class="how-num">1</div>
+        <h3>自带 Key（BYOK）</h3>
+        <p>DeepSeek / Kimi / Qwen / GLM / 豆包 / MiniMax / StepFun / 混元 / Yi / SiliconFlow 内置目录；自定义提供商填个 Base URL 就行（base / <code>/v1</code> / 完整端点都认）。Key 只进 Keychain。</p>
       </div>
-    </article>
-    <article class="feature">
-      <div class="feature-index">02</div>
-      <div>
-        <h3>稳定流式</h3>
-        <p>SSE 按固定节奏刷新界面；UTF-8 分包与缓冲不再互相踩踏。思考过程直播展开，结束后默认折叠，避免切入会话时留下大片空白。</p>
+      <div class="how-card">
+        <div class="how-num">2</div>
+        <h3>原生渲染管线</h3>
+        <p><code>NativeMarkdownParser → NativeMessageLayouter</code> 每条消息出一张 bitmap，滚动 = 纹理合成。iosMath / KaTeX 成图，宽公式横向滚动带；流式阶段轻量纯文本，完成即出片。</p>
       </div>
-    </article>
-    <article class="feature">
-      <div class="feature-index">03</div>
-      <div>
-        <h3>多会话工作台</h3>
-        <p>新建、搜索、归档、重命名、分叉；助手消息可复制 / 重跑 / 换版本；完整 Markdown 导出与分享。</p>
-      </div>
-    </article>
-    <article class="feature">
-      <div class="feature-index">04</div>
-      <div>
-        <h3>侧拉与窄栏</h3>
-        <p>iPad Slide Over / 分屏时按宽度重排；公式按可用宽度缩放，参考来源折叠为可点击标题列表。</p>
-      </div>
-    </article>
-    <article class="feature">
-      <div class="feature-index">05</div>
-      <div>
-        <h3>联网检索（可选）</h3>
-        <p>开启后由 App 代搜并注入上下文；回答末尾以紧凑「参考来源」呈现，避免裸 URL 搅乱版面。</p>
-      </div>
-    </article>
-  </section>
-
-  <section class="section models" id="models">
-    <p class="section-label">模型</p>
-    <h2>多提供商，本机配置。</h2>
-    <p class="section-lead">在设置里填写各家 Key。费用与配额由你的账号承担。</p>
-    <div class="model-grid">
-      <div class="model-item">
-        <h3>DeepSeek</h3>
-        <p>V4 Flash / Pro。偏快推理与长文推导。</p>
-      </div>
-      <div class="model-item">
-        <h3>Kimi</h3>
-        <p>K3 旗舰（`kimi-k3`）与 K2.6，支持图片；可切国内 / 海外节点。</p>
-      </div>
-      <div class="model-item">
-        <h3>更多</h3>
-        <p>可见模型池可扩展（如 Qwen、GLM、豆包等，视本机构建配置）。</p>
+      <div class="how-card">
+        <div class="how-num">3</div>
+        <h3>Study 工作区 Agent</h3>
+        <p>Ask / Plan / Agent 三模式。对整个文件夹跑 <code>list_dir / read_file / grep / glob</code>；<code>propose_edit / create_file / delete_file</code> 全部进 Diff 审查，Keep 才落盘。</p>
       </div>
     </div>
   </section>
 
-  <section class="section" id="tech">
-    <p class="section-label">技术</p>
-    <h2>刻意保守的技术栈。</h2>
-    <dl class="tech-row">
-      <div>
-        <dt>UI</dt>
-        <dd>UIKit · 无 SwiftUI / Combine · 目标 iPad（TARGETED_DEVICE_FAMILY = 2）</dd>
+  <section class="section details" id="details">
+    <p class="section-label">Details</p>
+    <h2>为阅读与改造做的那些细节。</h2>
+    <div class="detail-grid">
+      <div><strong>流式 SSE 稳态输出</strong><span>固定节奏刷新；思考过程直播展开、结束默认折叠；切会话后台生成不中断</span></div>
+      <div><strong>多会话工作台</strong><span>新建 / 搜索 / 归档 / 重命名 / 分叉；助手消息复制、重跑、多版本切换</span></div>
+      <div><strong>原文件读写</strong><span>security-scoped bookmark 直接读写原 PDF / MD / 代码，不再导入副本</span></div>
+      <div><strong>PDF 划线注释</strong><span>选区高亮与文字注释写回原 PDF；AI 优先吃选区文字与 notes</span></div>
+      <div><strong>EPUB / 代码 / Markdown</strong><span>Readium + Foliate 阅读；代码全文进上下文（pin / FILE_REF / delta）</span></div>
+      <div><strong>逐文件 Diff 审查</strong><span>按块 Keep / Undo；create_file 的 Undo 直接删文件，不留空壳</span></div>
+      <div><strong>数据可带走</strong><span>对话完整导出 Markdown；备份 / 迁移工具含 Keychain Key 转移</span></div>
+      <div><strong>中英双语 + 深色</strong><span>界面中 / 英切换，白天 / 黑夜主题，三档聊天字号</span></div>
+    </div>
+  </section>
+
+  <section class="section modes" id="modes">
+    <p class="section-label">Workspace agent</p>
+    <h2>一个工作区，三种模式。</h2>
+    <p class="section-lead">工具调用走 <code>&lt;&lt;&lt;CONNECTS_TOOL&gt;&gt;&gt;</code> 协议，读工具放开整个文件夹，写工具一律先进审查会话——Agent 提的不是"已改"，是"提案"。</p>
+    <div class="mode-grid">
+      <div class="mode-item">
+        <h3>Ask</h3>
+        <p>只读工具 + ask_user。读文档、答问题、给建议，一个字节都不动。</p>
       </div>
-      <div>
-        <dt>网络</dt>
-        <dd>URLSession SSE · 多会话并行生成，切换聊天不打断后台流</dd>
+      <div class="mode-item">
+        <h3>Plan</h3>
+        <p>可产计划文档与拆解，但不允许 propose_edit / delete_file——先想清楚再动手。</p>
       </div>
-      <div>
-        <dt>渲染</dt>
-        <dd>NativeMarkdownParser + NativeMessageLayouter + iosMath；流式阶段仍用轻量纯文本</dd>
+      <div class="mode-item">
+        <h3>Agent</h3>
+        <p>全工具集：跨文件改、建、删 + spawn_subagent 分工；所有改动进逐文件 Diff，Keep / Undo 由你裁决。</p>
       </div>
-      <div>
-        <dt>数据</dt>
-        <dd>会话本地持久化 · Keychain 存 Key · Markdown 可导出带走</dd>
+    </div>
+    <div class="terminal" aria-hidden="true">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span>
+        <span class="terminal-title">agent tools — workspace scoped</span>
       </div>
-    </dl>
+      <pre><span class="c"># Ask / Plan / Agent — 工具集不变，权限变</span>
+<span class="k">name:</span> list_dir | read_file | grep | glob | ask_user | update_plan
+        propose_edit | create_file | delete_file | spawn_subagent
+
+<span class="c"># 写操作 → WorkspaceEditSession → 逐文件 Keep / Undo</span>
+<span class="k">WRITE SCOPE:</span> workspace 内任意相对路径（含子目录），越界直接拒绝</pre>
+    </div>
   </section>
 
   <section class="section start" id="start">
-    <p class="section-label">开始</p>
-    <h2>用 Xcode 打开即可跑。</h2>
+    <p class="section-label">Get started</p>
+    <h2>源码或 IPA，两条路都能跑。</h2>
     <ol class="start-steps">
-      <li>克隆仓库，打开 <code>Connects.xcodeproj</code>。</li>
-      <li>Signing 选择你的 Team，目标选真机 iPad 或 iOS 15+ 模拟器。</li>
-      <li>首次真机安装后，在「设置 → 通用 → 设备管理」信任开发者证书。</li>
-      <li>侧栏设置里填入 API Key，开始对话。</li>
+      <li><strong>源码</strong>：克隆仓库，打开 <code>Connects.xcodeproj</code>，Signing 换成你的 Team，选 <code>Connects-iPad</code> / <code>Connects-iPhone</code> scheme 直接跑。</li>
+      <li><strong>IPA</strong>：Releases 下未签名 <code>Connects.ipa</code>，用 Sideloadly / AltStore / SideStore 自签安装；真机首次启动后在「设置 → 通用 → 设备管理」信任证书。</li>
+      <li><strong>配 Key</strong>：侧栏设置里填任意提供商 Key——或加一个自定义 OpenAI 兼容端点。</li>
+      <li><strong>进 Study</strong>：打开一个文件夹作为工作区，切 Agent 模式，让它读、让它改——每个文件你都有最终裁决权。</li>
     </ol>
     <div class="start-actions">
       <a class="btn btn-primary" href="https://github.com/misaka10704-glitch/Connects">GitHub · misaka10704-glitch/Connects</a>
+      <a class="btn btn-ghost" href="https://github.com/misaka10704-glitch/Connects/releases">全部 Releases</a>
       <a class="btn btn-ghost" href="https://github.com/misaka10704-glitch/Connects/blob/main/README.md">阅读 README</a>
     </div>
   </section>
 
   <footer class="footer">
-    <span>Connects 1.7.0 · 为旧 iPad 的长期阅读与推导</span>
-    <span>代码可自用与修改 · 模型费用由你的 Key 承担 · <a href="https://github.com/misaka10704-glitch/Connects">源码</a></span>
+    <span>Connects · iPad 上的开源 AI 工作台 · GPL-3.0 License</span>
+    <span class="links">
+      <a href="https://github.com/misaka10704-glitch/Connects">GitHub</a>
+      <a href="https://github.com/misaka10704-glitch/Connects/releases">Releases</a>
+      <a href="https://github.com/misaka10704-glitch/Connects/issues">Issues</a>
+      <a href="https://github.com/misaka10704-glitch/Connects/blob/main/THIRD_PARTY_NOTICES.md">第三方声明</a>
+    </span>
   </footer>
 </body>
 </html>

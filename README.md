@@ -1,10 +1,12 @@
 # Connects
 
-面向 **iPad** 的 AI 聊天客户端（**iOS 18+**）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型。
+面向 **iPad** 的开源 AI 聊天与 Study 工作台（**iOS 18+**，GPL-3.0）。界面参考 ChatGPT 的阅读节奏与侧栏结构，本地配置 API Key，调用 **DeepSeek V4（Flash / Pro）**、**Kimi** 等模型，也支持任意 OpenAI 兼容端点（BYOK）。
 
-**当前版本：5.1.0**
+**当前版本：5.1.0** · **License：GPL-3.0** · 仅源码发行（自签 / sideload，不上架 App Store）
 
 介绍页：[https://misaka10704-glitch.github.io/Connects/](https://misaka10704-glitch.github.io/Connects/)
+
+> **开源说明**：本项目按 GPL-3.0 开源（见 `LICENSE`），第三方组件许可见 `THIRD_PARTY_NOTICES.md`。仓库不含任何 API Key——所有 Key 仅存本机 Keychain。`Connects.xcodeproj` 里保留的 `DEVELOPMENT_TEAM` 是作者个人签名 ID，克隆后请在 Signing 中换成你自己的 Team。
 
 ## 5.1 亮点（稳定版）
 
@@ -88,10 +90,11 @@
 
 - 流式对话（SSE），切换会话时后台生成不中断
 - 多会话：新建 / 搜索 / 归档 / 重命名 / 分叉
-- 模型：DeepSeek V4 Flash、DeepSeek V4 Pro、Kimi 等（可扩展可见池）
+- 模型：DeepSeek、Kimi、Qwen、GLM、豆包、MiniMax、StepFun、混元、Yi、SiliconFlow 等内置目录 + **BYOK 自定义 OpenAI 兼容提供商**
+- Study 工作区 Agent：Ask / Plan / Agent 三模式，对整个文件夹 `list_dir` / `read_file` / `grep` / `glob`，`propose_edit` / `create_file` / `delete_file` 全部进逐文件 Diff 审查（Keep / Undo）
 - 深度思考可开关；Kimi 可切国内 / 海外节点
 - 助手消息：复制、重跑、分叉、多版本切换；完整 Markdown 导出与分享
-- 主题：白天 / 黑夜；聊天字号：小 / 中 / 大
+- 主题：白天 / 黑夜；聊天字号：小 / 中 / 大；界面中 / 英双语
 
 ## 设备与布局
 
@@ -135,18 +138,22 @@ open Connects.xcodeproj
 |--------|-----------------|------------------|
 | DeepSeek | `deepseek-v4-flash` / `deepseek-v4-pro` | `https://api.deepseek.com` |
 | Kimi | `kimi-k3`（旗舰）、`kimi-k2.6` 等 | `https://api.moonshot.cn/v1` 或 `https://api.moonshot.ai/v1` |
+| 自定义（BYOK） | 任意模型 ID | 任意 OpenAI 兼容端点（base / `/v1` / 完整 `/chat/completions` 均可） |
 
 Key 只存本机 Keychain，不会打进仓库或上传。
 
 ## 技术栈
 
-- UIKit（iOS 15+，无 SwiftUI / Combine）
-- `URLSession` SSE；已完成消息：`NativeMarkdownParser` + `NativeMessageLayouter` + vendored **iosMath 0.9.x**
-- 会话本地持久化；Markdown 自动落盘与导出
+- UIKit（**iOS 18+**，无 SwiftUI / Combine）
+- `URLSession` SSE；已完成消息：`NativeMarkdownParser` + `NativeMessageLayouter` → 单张 bitmap 渲染，vendored **iosMath 0.9.x** + KaTeX
+- 会话本地持久化；Markdown 自动落盘与导出；EPUB 走 Readium / Foliate
 
 ## 许可与声明
 
-本仓库代码可按需自用与修改。调用各家模型需遵守对应平台条款；费用与配额由你自己的 API Key 承担。
+- 代码以 **GPL-3.0** 开源，见 `LICENSE`；第三方组件及各自许可见 `THIRD_PARTY_NOTICES.md`。
+- 项目仅源码发行（自签或 sideload 安装），不上架 App Store；fork / 再分发请遵守 GPL-3.0（衍生作品同样 GPL-3.0 并保留声明）。
+- 调用各家模型需遵守对应平台条款；费用与配额由你自己的 API Key 承担。
+- 与 DeepSeek、Moonshot 等模型提供商均无隶属关系。
 
 ---
 
