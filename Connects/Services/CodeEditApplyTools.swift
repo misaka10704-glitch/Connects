@@ -206,12 +206,21 @@ enum CodeEditApplyTools {
     /// Per-message `(utf8Count → visible)` so cells/layout skip re-scan on reuse.
     private static var displayByMessage: [String: (utf8: Int, visible: String)] = [:]
 
+    /// Serializes ALL access to the mutable statics above. `chatVisibleContent` runs on
+    /// the main thread during streaming AND on background layout/prewarm queues from
+    /// `ChatMessage.chatDisplayBodyCurrentRound` — unsynchronized `Dictionary`/`String`
+    /// reads+writes corrupt memory (wrong-type objects → unrecognized-selector crashes).
+    /// Public entry points take this lock once; the `*Unlocked` impls require it held.
+    private static let visibleCacheLock = NSLock()
+
     static func chatVisibleContent(for messageID: String, raw: String) -> String {
+        visibleCacheLock.lock()
+        defer { visibleCacheLock.unlock() }
         let utf8 = raw.utf8.count
         if let hit = displayByMessage[messageID], hit.utf8 == utf8 {
             return hit.visible
         }
-        let visible = chatVisibleContent(raw)
+        let visible = chatVisibleContentUnlocked(raw)
         displayByMessage[messageID] = (utf8, visible)
         if displayByMessage.count > 64 {
             displayByMessage.removeAll(keepingCapacity: true)
@@ -221,6 +230,13 @@ enum CodeEditApplyTools {
     }
 
     static func chatVisibleContent(_ raw: String) -> String {
+        visibleCacheLock.lock()
+        defer { visibleCacheLock.unlock() }
+        return chatVisibleContentUnlocked(raw)
+    }
+
+    /// Locking-free implementation — caller MUST hold `visibleCacheLock`.
+    private static func chatVisibleContentUnlocked(_ raw: String) -> String {
         let utf8 = raw.utf8.count
         let beginOpts: String.CompareOptions = [.caseInsensitive]
         let endMarker = "CONNECTS_EDIT>>>"
@@ -352,6 +368,8 @@ enum CodeEditApplyTools {
         return rows.count > maxLines ? "…\n" + body : body
     }
 
+    /// Locking-free — only invoked from `chatVisibleContentUnlocked` / `clearVisibleCache`
+    /// while `visibleCacheLock` is held. Do NOT call from anywhere else.
     private static func resetStreamVisibleCache() {
         visUTF8 = -1
         visBeginUTF16 = -1
@@ -362,6 +380,8 @@ enum CodeEditApplyTools {
     }
 
     static func clearVisibleCache() {
+        visibleCacheLock.lock()
+        defer { visibleCacheLock.unlock() }
         resetStreamVisibleCache()
         displayByMessage.removeAll(keepingCapacity: true)
     }
