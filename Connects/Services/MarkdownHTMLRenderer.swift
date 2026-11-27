@@ -649,10 +649,13 @@ enum MarkdownHTMLRenderer {
         }
         // Some providers double-escape delimiters while serialising JSON.
         // Keep ordinary backslashes untouched; only normalize actual delimiters.
+        // `\\[<dimen>]` is never a delimiter — it is the TeX row-break-with-spacing
+        // syntax (`\end{vmatrix}\\[2mm]` inside aligned). Collapsing it to `\[`
+        // destroys the formula, so a leading digit/dot/sign vetoes the rewrite.
         let escapedDelimiters = [
             (#"\\{2,}\("#, #"\\("#),
             (#"\\{2,}\)"#, #"\\)"#),
-            (#"\\{2,}\["#, #"\\["#),
+            (#"\\{2,}\[(?![\d.+-])"#, #"\\["#),
             (#"\\{2,}\]"#, #"\\]"#),
             (#"\\{2,}begin\{"#, #"\\begin{"#),
             (#"\\{2,}end\{"#, #"\\end{"#)
@@ -720,6 +723,17 @@ enum MarkdownHTMLRenderer {
                 index += 1
                 continue
             }
+            // `\begin{equation}`-style environments are fences too: without this
+            // the body line matches the bare-formula wrap and the document ends up
+            // with the hybrid `\begin{equation}\n$$…$$\n\end{equation}`.
+            if let env = mathEnvironmentOpener(trimmed) {
+                normalizedLines.append(line)
+                if !trimmed.contains("\\end{\(env)}") {
+                    displayFence = .environment(env)
+                }
+                index += 1
+                continue
+            }
 
             guard isBareDisplayMathStart(trimmed) else {
                 normalizedLines.append(line)
@@ -749,6 +763,25 @@ enum MarkdownHTMLRenderer {
     private enum DisplayMathFence {
         case dollars
         case brackets
+        case environment(String)
+    }
+
+    /// `\begin{aligned}` at line start opens a math environment fence. Only
+    /// math-layout environments count — `\begin{itemize}` in pasted LaTeX
+    /// documents must not swallow following prose.
+    private static func mathEnvironmentOpener(_ trimmed: String) -> String? {
+        guard trimmed.hasPrefix("\\begin{") else { return nil }
+        let envs = [
+            "equation*", "equation", "gather*", "gather", "align*", "align",
+            "alignat*", "alignat", "multline*", "multline", "eqnarray*", "eqnarray",
+            "displaymath", "subequations", "flalign*", "flalign",
+            "aligned", "gathered", "alignedat", "split",
+            "matrix", "pmatrix", "bmatrix", "vmatrix", "Vmatrix", "cases"
+        ]
+        for env in envs {
+            if trimmed.hasPrefix("\\begin{\(env)}") { return env }
+        }
+        return nil
     }
 
     private static func closesDisplayFence(_ trimmed: String, fence: DisplayMathFence) -> Bool {
@@ -760,6 +793,8 @@ enum MarkdownHTMLRenderer {
             return false
         case .brackets:
             return trimmed == "\\]" || trimmed.hasSuffix("\\]")
+        case .environment(let env):
+            return trimmed.contains("\\end{\(env)}")
         }
     }
 
