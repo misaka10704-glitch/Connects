@@ -33,7 +33,7 @@ struct NativeTable {
 enum NativeMessageBlock {
     case paragraph([NativeInline])
     case heading(level: Int, inlines: [NativeInline])
-    case list(kind: NativeListKind, items: [[NativeInline]])
+    case list(kind: NativeListKind, items: [[NativeInline]], levels: [Int])
     case blockquote([NativeInline])
     case codeBlock(language: String?, code: String)
     case table(NativeTable)

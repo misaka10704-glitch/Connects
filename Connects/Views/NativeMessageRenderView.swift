@@ -66,7 +66,7 @@ final class NativeMessageRenderView: UIView {
             appearance: appearance,
             colors: colors
         )
-        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)"
+        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)|f\(NativeFormulaRenderer.artifactGeneration)"
         if requestKey == nextRequestKey, let current = layout {
             return NativeConfigureResult(
                 height: current.size.height,
@@ -116,13 +116,20 @@ final class NativeMessageRenderView: UIView {
         )
     }
 
-    private func formulaIsReady(_ formula: (tex: String, display: Bool),
+    private func formulaFontSize(_ formula: NativeFormulaWarmRequest,
+                                 style: NativeLayoutStyle) -> CGFloat {
+        formula.fontSize(bodyFontSize: style.bodyFontSize)
+    }
+
+    private func formulaIsReady(_ formula: NativeFormulaWarmRequest,
                                 style: NativeLayoutStyle) -> Bool {
         NativeFormulaRenderer.shared.hasMemoryArtifact(
             tex: formula.tex,
-            fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
-            color: style.colors.textPrimary,
-            display: formula.display
+            fontSize: formulaFontSize(formula, style: style),
+            color: formula.color(in: style),
+            display: formula.artifactDisplay,
+            maxWidth: max(style.width, 40),
+            shrinkFloor: formula.shrinkFloor
         )
     }
 
@@ -162,7 +169,7 @@ final class NativeMessageRenderView: UIView {
         guard let final = NativeMessageLayouter.shared.cachedLayout(document: document, style: style) else {
             return nil
         }
-        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)"
+        let nextRequestKey = "\(document.stamp)|\(style.keySuffix)|f\(NativeFormulaRenderer.artifactGeneration)"
         if requestKey != nextRequestKey {
             requestKey = nextRequestKey
             renderGeneration += 1
@@ -171,20 +178,26 @@ final class NativeMessageRenderView: UIView {
         return final.size.height
     }
 
-    private func hydrateCachedFormulas(_ formulas: [(tex: String, display: Bool)],
+    private func hydrateCachedFormulas(_ formulas: [NativeFormulaWarmRequest],
                                        style: NativeLayoutStyle) {
         for formula in formulas {
+            let fontSize = formulaFontSize(formula, style: style)
+            let color = formula.color(in: style)
             guard NativeFormulaRenderer.shared.hasCachedArtifact(
                 tex: formula.tex,
-                fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: formula.display
+                fontSize: fontSize,
+                color: color,
+                display: formula.artifactDisplay,
+                maxWidth: max(style.width, 40),
+                shrinkFloor: formula.shrinkFloor
             ) else { continue }
             _ = NativeFormulaRenderer.shared.artifact(
                 tex: formula.tex,
-                fontSize: style.bodyFontSize * (formula.display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: formula.display
+                fontSize: fontSize,
+                color: color,
+                display: formula.artifactDisplay,
+                maxWidth: max(style.width, 40),
+                shrinkFloor: formula.shrinkFloor
             )
         }
     }
@@ -332,12 +345,13 @@ final class NativeMessageRenderView: UIView {
             imageView.clipsToBounds = true
             imageView.frame = CGRect(origin: .zero, size: band.contentSize)
             scroll.addSubview(imageView)
+            scroll.rightEdgeFadeEnabled = band.contentSize.width > band.viewportFrame.width + 1
             addSubview(scroll)
             mathScrollViews.append(scroll)
         }
     }
 
-    private func warm(formulas: [(tex: String, display: Bool)],
+    private func warm(formulas: [NativeFormulaWarmRequest],
                       index: Int,
                       document: NativeMarkdownDocument,
                       style: NativeLayoutStyle,
@@ -351,19 +365,24 @@ final class NativeMessageRenderView: UIView {
             return
         }
         let formula = formulas[index]
-        let fontSize = style.bodyFontSize * (formula.display ? 1.08 : 1)
+        let fontSize = formulaFontSize(formula, style: style)
+        let color = formula.color(in: style)
         let wasCached = NativeFormulaRenderer.shared.hasMemoryArtifact(
             tex: formula.tex,
             fontSize: fontSize,
-            color: style.colors.textPrimary,
-            display: formula.display
+            color: color,
+            display: formula.artifactDisplay,
+            maxWidth: max(style.width, 40),
+            shrinkFloor: formula.shrinkFloor
         )
         autoreleasepool {
             _ = NativeFormulaRenderer.shared.artifact(
                 tex: formula.tex,
                 fontSize: fontSize,
-                color: style.colors.textPrimary,
-                display: formula.display
+                color: color,
+                display: formula.artifactDisplay,
+                maxWidth: max(style.width, 40),
+                shrinkFloor: formula.shrinkFloor
             )
         }
         let nextIndex = index + 1
@@ -388,7 +407,7 @@ final class NativeMessageRenderView: UIView {
         }
     }
 
-    private func formulaRequests(_ document: NativeMarkdownDocument) -> [(tex: String, display: Bool)] {
+    private func formulaRequests(_ document: NativeMarkdownDocument) -> [NativeFormulaWarmRequest] {
         NativeMessageLayouter.formulaWarmRequests(document: document)
     }
 
@@ -430,15 +449,22 @@ final class NativeMessageRenderView: UIView {
 }
 
 /// Horizontal math band: claim pans that are mostly sideways so the chat table keeps vertical scroll.
-private final class MathBandScrollView: UIScrollView, UIGestureRecognizerDelegate {
+private final class MathBandScrollView: UIScrollView, UIGestureRecognizerDelegate, UIScrollViewDelegate {
+    /// Scrollability affordance: a subtle right-edge fade while more content hides off-screen.
+    var rightEdgeFadeEnabled = false {
+        didSet { updateFadeMask() }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         panGestureRecognizer.delegate = self
+        delegate = self
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         panGestureRecognizer.delegate = self
+        delegate = self
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -447,6 +473,45 @@ private final class MathBandScrollView: UIScrollView, UIGestureRecognizerDelegat
         }
         let velocity = panGestureRecognizer.velocity(in: self)
         return abs(velocity.x) >= abs(velocity.y)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateFadeMask()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateFadeMask()
+    }
+
+    /// Fade only while content actually continues past the right edge — when the user
+    /// scrolls to the end, the tail of the formula must paint fully opaque.
+    private func updateFadeMask() {
+        let hiddenOverflow = contentSize.width - (contentOffset.x + bounds.width)
+        let shouldFade = rightEdgeFadeEnabled && hiddenOverflow > 4 && bounds.width > 1
+        guard shouldFade else {
+            if layer.mask != nil { layer.mask = nil }
+            return
+        }
+        let gradient: CAGradientLayer
+        if let existing = layer.mask as? CAGradientLayer {
+            gradient = existing
+        } else {
+            gradient = CAGradientLayer()
+            gradient.colors = [
+                UIColor.white.cgColor,
+                UIColor.white.cgColor,
+                UIColor.white.withAlphaComponent(0).cgColor
+            ]
+            gradient.locations = [0, 0.85, 1]
+            gradient.startPoint = CGPoint(x: 0, y: 0.5)
+            gradient.endPoint = CGPoint(x: 1, y: 0.5)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradient.frame = bounds
+        layer.mask = gradient
+        CATransaction.commit()
     }
 }
 

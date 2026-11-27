@@ -84,7 +84,7 @@ enum ActionIconFactory {
     }
 
     static func image(_ kind: Kind, pointSize: CGFloat = chromeGlyph, color: UIColor = .black) -> UIImage {
-        let key = "v19-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
+        let key = "v23-\(kind.rawValue)-\(Int(pointSize * 10))-\(color.description)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
 
         let canvas = ceil(pointSize + 8)

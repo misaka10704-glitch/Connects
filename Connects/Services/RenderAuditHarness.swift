@@ -229,44 +229,14 @@ enum RenderAuditHarness {
 
     private static func countMissingFormulas(document: NativeMarkdownDocument,
                                            style: NativeLayoutStyle) -> Int {
-        var formulas: [(String, Bool)] = []
-        func scan(_ inlines: [NativeInline]) {
-            for inline in inlines {
-                switch inline {
-                case .inlineMath(let tex):
-                    formulas.append((tex, false))
-                case .mathWithScript(let base, _, _):
-                    formulas.append((base, false))
-                case .bold(let children), .italic(let children), .link(let children, _):
-                    scan(children)
-                default:
-                    break
-                }
-            }
-        }
-        for block in document.blocks {
-            switch block {
-            case .displayMath(let tex):
-                formulas.append((tex, true))
-            case .displayMathComposite(let inlines):
-                scan(inlines)
-            case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
-                scan(inlines)
-            case .list(_, let items):
-                items.forEach(scan)
-            case .table(let table):
-                table.header.forEach(scan)
-                table.rows.flatMap { $0 }.forEach(scan)
-            default:
-                break
-            }
-        }
-        return formulas.filter { tex, display in
+        NativeMessageLayouter.formulaWarmRequests(document: document).filter { request in
             NativeFormulaRenderer.shared.artifact(
-                tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: display
+                tex: request.tex,
+                fontSize: request.fontSize(bodyFontSize: style.bodyFontSize),
+                color: request.color(in: style),
+                display: request.artifactDisplay,
+                maxWidth: max(style.width, 40),
+                shrinkFloor: request.shrinkFloor
             ) == nil
         }.count
     }

@@ -82,7 +82,7 @@ enum RenderAuditChecks {
             case .displayMath(let tex): formulas.append((tex, true))
             case .displayMathComposite(let inlines): scan(inlines)
             case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines): scan(inlines)
-            case .list(_, let items): items.forEach(scan)
+            case .list(_, let items, _): items.forEach(scan)
             case .table(let table):
                 table.header.forEach(scan)
                 table.rows.flatMap { $0 }.forEach(scan)
@@ -95,9 +95,12 @@ enum RenderAuditChecks {
             }
             return NativeFormulaRenderer.shared.artifact(
                 tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                fontSize: style.bodyFontSize * (display
+                    ? NativeMessageLayouter.displayMathScale
+                    : NativeMessageLayouter.inlineMathScale),
                 color: style.colors.textPrimary,
-                display: display
+                display: display,
+                maxWidth: max(style.width, 40)
             ) == nil
         }.count
     }

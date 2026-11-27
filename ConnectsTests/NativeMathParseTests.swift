@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Connects
 
 final class NativeMathParseTests: XCTestCase {
@@ -217,14 +218,18 @@ final class NativeMathParseTests: XCTestCase {
             tex: #"tr_{scope} \approx \frac{0.35}{\mathrm{BW}}"#,
             fontSize: 17,
             color: .white,
-            display: true
+            display: true,
+            maxWidth: 0
         ) else {
             return XCTFail("iosMath should still paint a sync preview")
         }
         XCTAssertGreaterThan(artifact.size.height, 20)
     }
 
-    func testCJKTextInDisplayMathExpandsToProse() {
+    /// KaTeX-first: `\text{中文}` and prose inside display math render fine via
+    /// system font fallback, so the block must reach the renderer as ONE piece.
+    /// Parse-time decomposition split TeX into structurally invalid fragments.
+    func testCJKTextInDisplayMathStaysWholeForKaTeX() {
         NativeMarkdownParser.shared.clear()
         let raw = #"""
         傅里叶变换做的事情：
@@ -233,66 +238,42 @@ final class NativeMathParseTests: XCTestCase {
         \]
         """#
         let doc = NativeMarkdownParser.shared.parse(raw)
-        XCTAssertFalse(
-            doc.blocks.contains(where: {
-                if case .displayMath = $0 { return true }
-                return false
-            }),
-            "CJK prose math must not stay as displayMath: \(describe(doc.blocks))"
-        )
-        func inlinesFrom(_ block: NativeMessageBlock) -> [NativeInline]? {
-            switch block {
-            case .paragraph(let inlines), .displayMathComposite(let inlines):
-                return inlines
-            default:
-                return nil
-            }
-        }
-        guard let paragraph = doc.blocks.compactMap(inlinesFrom).first(where: { inlines in
-            inlines.contains {
-                if case .text(let t) = $0 { return t.contains("探测") }
-                return false
-            }
-        }) else {
-            return XCTFail("expected expanded Chinese prose: \(describe(doc.blocks))")
-        }
-        let joinedText = paragraph.compactMap { inline -> String? in
-            if case .text(let t) = inline { return t }
+        guard let tex = doc.blocks.compactMap({ block -> String? in
+            if case .displayMath(let tex) = block { return tex }
             return nil
-        }.joined()
-        XCTAssertTrue(joinedText.contains("对每个频率"))
-        XCTAssertTrue(joinedText.contains("探测"))
-        XCTAssertTrue(paragraph.contains {
-            if case .inlineMath(let tex) = $0 { return tex.contains("\\omega") || tex == "\\omega" }
+        }).first else {
+            return XCTFail("CJK prose math must stay one displayMath block: \(describe(doc.blocks))")
+        }
+        XCTAssertTrue(tex.contains("\\text{对每个频率 }"), tex)
+        XCTAssertTrue(tex.contains("探测"), tex)
+        XCTAssertTrue(tex.contains("e^{-j"), tex)
+        XCTAssertFalse(doc.blocks.contains(where: {
+            if case .displayMathComposite = $0 { return true }
             return false
-        })
-        XCTAssertTrue(paragraph.contains {
-            if case .inlineMath(let tex) = $0 {
-                return tex.contains("e^{-j")
-            }
-            return false
-        })
+        }), describe(doc.blocks))
     }
 
-    func testProseTextCommandTriggersExpansion() {
+    func testProseTextCommandStaysInsideDisplayMath() {
         NativeMarkdownParser.shared.clear()
         let raw = #"$$\text{subject to } x+y=1$$"#
         let doc = NativeMarkdownParser.shared.parse(raw)
-        XCTAssertFalse(doc.blocks.contains(where: {
-            if case .displayMath = $0 { return true }
+        XCTAssertTrue(doc.blocks.contains(where: {
+            if case .displayMath(let tex) = $0 {
+                return tex.contains("\\text{subject to }") && tex.contains("x+y=1")
+            }
             return false
         }), describe(doc.blocks))
-        XCTAssertTrue(doc.blocks.contains(where: {
-            switch $0 {
-            case .paragraph(let inlines), .displayMathComposite(let inlines):
-                return inlines.contains {
-                    if case .text(let t) = $0 { return t.contains("subject to") }
-                    return false
-                }
-            default:
-                return false
-            }
-        }), describe(doc.blocks))
+    }
+
+    func testUnderbraceCJKTextStaysOneDisplayMath() {
+        NativeMarkdownParser.shared.clear()
+        let raw = #"$$D_n=\underbrace{(x_2-x_1)}_{D_2\text{ 层}}\,(x_3-x_1)\cdots(x_n-x_{n-1})$$"#
+        let doc = NativeMarkdownParser.shared.parse(raw)
+        XCTAssertEqual(doc.blocks.count, 1, describe(doc.blocks))
+        guard case .displayMath(let tex) = doc.blocks.first else {
+            return XCTFail("underbrace with CJK text must stay whole: \(describe(doc.blocks))")
+        }
+        XCTAssertTrue(tex.contains("\\underbrace{(x_2-x_1)}_{D_2\\text{ 层}}"), tex)
     }
 
     func testShortTextUnitStaysDisplayMath() {
@@ -371,7 +352,8 @@ final class NativeMathParseTests: XCTestCase {
                 tex: #"\bar{X}_n \xrightarrow{P} \mu"#,
                 fontSize: 17,
                 color: .black,
-                display: false
+                display: false,
+                maxWidth: 0
             )
         )
         XCTAssertNotNil(
@@ -379,9 +361,120 @@ final class NativeMathParseTests: XCTestCase {
                 tex: #"\operatorname{Var}(\bar{X}_n)=\frac{\sigma^2}{n}"#,
                 fontSize: 17,
                 color: .black,
-                display: true
+                display: true,
+                maxWidth: 0
             )
         )
+    }
+
+    func testPrepareTeXPeelsNestedDelimitersInsideEquationEnv() {
+        // `\begin{equation}` bodies sometimes get bare-line-wrapped in `$$` by the
+        // normalizer; prepareTeX must peel both layers so KaTeX never sees a `$`.
+        let hybrid = "\\begin{equation}\n$$\\operatorname{Var}(\\bar{X}_n)=\\frac{\\sigma^2}{n}$$\n\\end{equation}"
+        let prepared = NativeFormulaRenderer.shared.prepareTeX(hybrid)
+        XCTAssertFalse(prepared.contains("$"), prepared)
+        XCTAssertFalse(prepared.contains("\\begin{equation}"), prepared)
+        XCTAssertTrue(prepared.contains("\\operatorname{Var}"), prepared)
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.prepareTeX(#"$\bar{X}_n$"#),
+            #"\bar{X}_n"#
+        )
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.prepareTeX(#"$$\frac{a}{b}$$"#),
+            #"\frac{a}{b}"#
+        )
+    }
+
+    func testBracelessFractionCommandsNormalizeForIosMath() {
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.normalizedIosMathTeX(#"\tfrac12"#),
+            #"\frac12"#
+        )
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.normalizedIosMathTeX(#"\dfrac34"#),
+            #"\frac34"#
+        )
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.normalizedIosMathTeX(#"4+\tfrac12=\tfrac92"#),
+            #"4+\frac12=\frac92"#
+        )
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.normalizedIosMathTeX(#"\tfrac{1}{2}"#),
+            #"\frac{1}{2}"#
+        )
+    }
+
+    func testTallInlineListWarmRequestUsesExactLayouterArtifactKeyInputs() {
+        let doc = NativeMarkdownParser.shared.parse(#"- 强迫响应：\(\tfrac12 e^{-3t}\)"#)
+        guard let request = NativeMessageLayouter.formulaWarmRequests(document: doc)
+            .first(where: { $0.tex == #"\tfrac12 e^{-3t}"# }) else {
+            XCTFail("tfrac inline math missing from warm requests")
+            return
+        }
+        XCTAssertFalse(request.display, "source span is inline math in a list item")
+        XCTAssertTrue(request.artifactDisplay, "tall inline math is promoted to display mode at the artifact call site")
+        XCTAssertEqual(request.fontSize(bodyFontSize: 17.5), 17.5, accuracy: 0.0001)
+        XCTAssertEqual(request.shrinkFloor, NativeFormulaRenderer.inlineShrinkFloor, accuracy: 0.0001)
+        XCTAssertEqual(request.colorContext.rawValue, "primary")
+    }
+
+    func testRenderViewReconfiguresWhenFormulaArtifactGenerationAdvances() {
+        NativeMarkdownParser.shared.clear()
+        NativeMessageLayouter.shared.clear()
+        NativeFormulaRenderer.shared.clear()
+        let view = NativeMessageRenderView(frame: CGRect(x: 0, y: 0, width: 320, height: 80))
+        let content = #"系数 \(\tfrac12\) 已化简"#
+        _ = view.configure(
+            content: content,
+            width: 320,
+            fontSize: 16,
+            appearance: "light",
+            colors: DSTheme.c
+        )
+        let warmupDeadline = Date().addingTimeInterval(0.25)
+        while Date() < warmupDeadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        guard let beforeKey = view.layout?.key else {
+            XCTFail("initial native layout must be applied")
+            return
+        }
+
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        NativeFormulaRenderer.shared.storeExternalArtifact(
+            NativeFormulaArtifact(image: image, size: CGSize(width: 4, height: 4), baseline: 3),
+            cacheKey: "manual-regression-\(UUID().uuidString)"
+        )
+        _ = view.configure(
+            content: content,
+            width: 320,
+            fontSize: 16,
+            appearance: "light",
+            colors: DSTheme.c
+        )
+        XCTAssertNotEqual(
+            view.layout?.key,
+            beforeKey,
+            "KaTeX artifact completion must invalidate the render-view/layout key path; otherwise the stale iosMath bitmap stays on screen"
+        )
+    }
+
+    func testBareLineWrapSkipsEquationEnvironmentBodies() {
+        // The bare-TeX-line wrapper must not fire inside `\begin{equation}` fences —
+        // rewrapping produced the hybrid that prepareTeX then had to peel.
+        let raw = "\\begin{equation}\n\\operatorname{Var}(\\bar{X}_n)=\\frac{\\sigma^2}{n}\n\\end{equation}"
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertFalse(normalized.contains("$$"), normalized)
+    }
+
+    func testAlignedRowBreakWithSpacingKeepsBothBackslashes() {
+        // `\\[2mm]` is TeX row-break-with-spacing, never a double-escaped `\[` delimiter.
+        let raw = #"$$\begin{aligned} a&=b\\[2mm] c&=d \end{aligned}$$"#
+        let normalized = MarkdownHTMLRenderer.normalizeForRender(raw)
+        XCTAssertTrue(normalized.contains(#"\\[2mm]"#), normalized)
     }
 
     func testLoneNumericDollarIsMathNotCurrency() {
@@ -500,6 +593,84 @@ final class NativeMathParseTests: XCTestCase {
         }), describe(mathZero.blocks))
     }
 
+    func testNestedListRecordsIndentLevels() {
+        let doc = NativeMarkdownParser.shared.parse("""
+        - outer
+          - inner
+            - deep
+        - back
+        """)
+        guard case .list(_, let items, let levels) = doc.blocks.first else {
+            XCTFail(describe(doc.blocks))
+            return
+        }
+        XCTAssertEqual(items.count, 4, describe(doc.blocks))
+        XCTAssertEqual(levels, [0, 1, 2, 0])
+    }
+
+    func testIndentedLineContinuesListItem() {
+        let doc = NativeMarkdownParser.shared.parse("""
+        - first line
+          continued here
+        - second
+        """)
+        guard case .list(_, let items, let levels) = doc.blocks.first else {
+            XCTFail(describe(doc.blocks))
+            return
+        }
+        XCTAssertEqual(items.count, 2, describe(doc.blocks))
+        XCTAssertEqual(levels, [0, 0])
+        XCTAssertTrue(
+            flattenInlines(items[0]).contains("first line continued here"),
+            flattenInlines(items[0])
+        )
+    }
+
+    func testConsecutiveBlockquoteLinesMergeIntoOneBlock() {
+        let doc = NativeMarkdownParser.shared.parse("""
+        > first line
+        >
+        > second line
+        """)
+        let quotes = doc.blocks.filter {
+            if case .blockquote = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(quotes.count, 1, describe(doc.blocks))
+        guard case .blockquote(let inlines) = quotes.first else { return }
+        XCTAssertEqual(
+            inlines.filter {
+                if case .lineBreak = $0 { return true }
+                return false
+            }.count,
+            2,
+            describeInlines(inlines)
+        )
+        XCTAssertTrue(flattenInlines(inlines).contains("first line"))
+        XCTAssertTrue(flattenInlines(inlines).contains("second line"))
+    }
+
+    func testMacroBackedInlineMathParses() {
+        let doc = NativeMarkdownParser.shared.parse("方差 $\\Var(X)$ 与期望 $\\E[X]$。")
+        let texes = doc.blocks.flatMap { block -> [String] in
+            guard case .paragraph(let inlines) = block else { return [] }
+            return inlines.compactMap {
+                if case .inlineMath(let tex) = $0 { return tex }
+                return nil
+            }
+        }
+        XCTAssertTrue(texes.contains("\\Var(X)"), describe(doc.blocks))
+        XCTAssertTrue(texes.contains("\\E[X]"), describe(doc.blocks))
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.prepareTeX("\\Var(X)"),
+            "\\Var(X)"
+        )
+        XCTAssertEqual(
+            NativeFormulaRenderer.shared.prepareTeX("\\begin{eqnarray}a&=&b\\end{eqnarray}"),
+            "\\begin{aligned}a&=&b\\end{aligned}"
+        )
+    }
+
     private func flattenText(_ doc: NativeMarkdownDocument) -> String {
         doc.blocks.map { block in
             switch block {
@@ -507,7 +678,7 @@ final class NativeMathParseTests: XCTestCase {
                 return flattenInlines(inlines)
             case .heading(_, let inlines):
                 return flattenInlines(inlines)
-            case .list(_, let items):
+            case .list(_, let items, _):
                 return items.map { flattenInlines($0) }.joined()
             case .table(let table):
                 let header = table.header.map { flattenInlines($0) }.joined(separator: "|")

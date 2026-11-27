@@ -2,7 +2,46 @@ import UIKit
 
 final class NativeFormulaRenderer {
     static let shared = NativeFormulaRenderer()
-    private static let metadataKey = "connects_native_formula_meta_v4"
+    private static let metadataKey = "connects_native_formula_meta_v6"
+
+    /// Bumped every time a KaTeX bitmap replaces an iosMath preview. Layout and
+    /// render-view keys fold this in: cache keys are content/style identity, so
+    /// without the generation a post-KaTeX rebuild has the same key as the stale
+    /// preview bitmap and NativeMessageRenderView refuses to repaint it.
+    /// Guarded because layout prewarm may read it from a background queue.
+    private static let artifactGenerationLock = NSLock()
+    private static var artifactGenerationValue = 0
+    static var artifactGeneration: Int {
+        artifactGenerationLock.lock()
+        defer { artifactGenerationLock.unlock() }
+        return artifactGenerationValue
+    }
+
+    private static func advanceArtifactGeneration() {
+        artifactGenerationLock.lock()
+        artifactGenerationValue += 1
+        artifactGenerationLock.unlock()
+    }
+
+    /// Never shrink a formula below this fraction of its requested font size.
+    /// Display math may shrink harder (a scroll band is the last resort);
+    /// inline math stops higher because bitmaps cannot wrap to the next line.
+    static let displayShrinkFloor: CGFloat = 0.55
+    static let inlineShrinkFloor: CGFloat = 0.7
+
+    /// Candidate font-size factors for shrink-to-fit, descending, never below `floor`.
+    static func shrinkFactors(floor: CGFloat) -> [CGFloat] {
+        var factors = [0.85, 0.75, 0.65, 0.55].filter { $0 >= floor - 0.001 }
+        if factors.isEmpty || abs(factors[factors.count - 1] - floor) > 0.001 {
+            factors.append(floor)
+        }
+        return factors
+    }
+
+    static func resolvedShrinkFloor(display: Bool, override: CGFloat?) -> CGFloat {
+        if let override, override > 0 { return override }
+        return display ? displayShrinkFloor : inlineShrinkFloor
+    }
 
     private final class Box: NSObject {
         let artifact: NativeFormulaArtifact
@@ -21,8 +60,19 @@ final class NativeFormulaRenderer {
                   fontSize: CGFloat,
                   color: UIColor,
                   display: Bool,
+                  maxWidth: CGFloat,
+                  shrinkFloor: CGFloat? = nil,
                   scale: CGFloat = UIScreen.main.scale) -> NativeFormulaArtifact? {
-        let key = cacheKey(tex: tex, fontSize: fontSize, color: color, display: display, scale: scale)
+        let floor = Self.resolvedShrinkFloor(display: display, override: shrinkFloor)
+        let key = cacheKey(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: floor,
+            scale: scale
+        )
         if let hit = cache.object(forKey: key as NSString) {
             return hit.artifact
         }
@@ -34,16 +84,15 @@ final class NativeFormulaRenderer {
         // KaTeX is the only bitmap source. iosMath must not occupy this cache key.
         guard Thread.isMainThread else { return nil }
         let prepared = prepareTeX(tex)
-        // KaTeX default fonts have no CJK glyphs — refuse so callers expand via NativeMathProse.
-        if NativeMathProse.containsCJK(prepared) {
-            return nil
-        }
+        // KaTeX renders `\text{中文}` / prose via system font fallback — enqueue everything.
         if !KaTeXFormulaSnapshot.shared.hasFailed(cacheKey: key) {
             KaTeXFormulaSnapshot.shared.enqueue(
                 tex: prepared,
                 fontSize: fontSize,
                 color: color,
                 display: display,
+                maxWidth: maxWidth,
+                shrinkFloor: floor,
                 scale: scale,
                 cacheKey: key
             )
@@ -55,6 +104,8 @@ final class NativeFormulaRenderer {
             fontSize: fontSize,
             color: color,
             display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: floor,
             scale: scale
         ) {
             let cost = Int(preview.size.width * scale * preview.size.height * scale * 4)
@@ -68,7 +119,42 @@ final class NativeFormulaRenderer {
                                fontSize: CGFloat,
                                color: UIColor,
                                display: Bool,
+                               maxWidth: CGFloat,
+                               shrinkFloor: CGFloat,
                                scale: CGFloat) -> NativeFormulaArtifact? {
+        // iosMath/XITS has no CJK glyphs and prose `\text{}` paints garbled —
+        // decline those previews entirely; the KaTeX snapshot lands shortly.
+        if NativeMathProse.needsExpansion(prepared) { return nil }
+        guard let first = renderIosMathOnce(
+            prepared: prepared,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            scale: scale
+        ) else { return nil }
+        guard maxWidth > 0, first.size.width > maxWidth else { return first }
+        // Shrink-to-fit preview: re-render at reduced font sizes, largest fit wins.
+        // If even the floor overflows, keep the smallest render (scroll band/clip as today).
+        var best = first
+        for factor in Self.shrinkFactors(floor: shrinkFloor) {
+            guard let attempt = renderIosMathOnce(
+                prepared: prepared,
+                fontSize: fontSize * factor,
+                color: color,
+                display: display,
+                scale: scale
+            ) else { break }
+            best = attempt
+            if attempt.size.width <= maxWidth { break }
+        }
+        return best
+    }
+
+    private func renderIosMathOnce(prepared: String,
+                                   fontSize: CGFloat,
+                                   color: UIColor,
+                                   display: Bool,
+                                   scale: CGFloat) -> NativeFormulaArtifact? {
         let (innerTeX, isBoxed) = unwrapLeadingBoxed(prepared)
         let renderTeX = normalizeLegacyCommands(innerTeX)
         let boxPadding: CGFloat = isBoxed ? max(5, fontSize * 0.3) : 0
@@ -76,7 +162,7 @@ final class NativeFormulaRenderer {
         label.backgroundColor = .clear
         label.textColor = color
         label.fontSize = fontSize
-        label.font = fontManager.xitsFont(withSize: fontSize)
+        label.font = fontManager.latinModernFont(withSize: fontSize)
         label.labelMode = display ? .display : .text
         label.textAlignment = display ? .center : .left
         label.contentInsets = UIEdgeInsets(
@@ -131,6 +217,7 @@ final class NativeFormulaRenderer {
     }
 
     func storeExternalArtifact(_ artifact: NativeFormulaArtifact, cacheKey: String) {
+        Self.advanceArtifactGeneration()
         let cost = Int(artifact.size.width * artifact.size.height * 16)
         cache.setObject(Box(artifact), forKey: cacheKey as NSString, cost: max(cost, 1))
         storeToDisk(artifact, key: cacheKey)
@@ -139,11 +226,35 @@ final class NativeFormulaRenderer {
     }
 
     /// Shared by tests: delimiter peel + equation unwrap, no iosMath-only remaps.
+    /// Peels iterate to a fixpoint: unwrapping `\begin{equation}` can expose a
+    /// `$$`-wrapped body (the bare-line normalizer does not track env fences),
+    /// and each layer is meaningless without the next.
     func prepareTeX(_ tex: String) -> String {
-        unwrapDisplayEnvironments(stripOuterMathDelimiters(tex))
+        var result = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        for _ in 0..<4 {
+            let next = unwrapDisplayEnvironments(
+                rewriteUnsupportedEnvironments(stripOuterMathDelimiters(result))
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if next == result { break }
+            result = next
+        }
+        return result
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// KaTeX lacks eqnarray/multline/subequations; map them onto `aligned` / strip.
+    private func rewriteUnsupportedEnvironments(_ tex: String) -> String {
+        var result = tex
+        for name in ["eqnarray*", "eqnarray", "multline*", "multline"] {
+            result = result
+                .replacingOccurrences(of: "\\begin{\(name)}", with: "\\begin{aligned}")
+                .replacingOccurrences(of: "\\end{\(name)}", with: "\\end{aligned}")
+        }
+        return result
+            .replacingOccurrences(of: "\\begin{subequations}", with: "")
+            .replacingOccurrences(of: "\\end{subequations}", with: "")
     }
 
     /// iosMath-only remaps. Tests can assert `\\big` never becomes `\\mathrm{big}`.
@@ -189,8 +300,8 @@ final class NativeFormulaRenderer {
             (#"\\end\{bmatrix\}"#, #"\\end{matrix}\\right]"#),
             (#"\\begin\{cases\}"#, #"\\left\\{\\begin{matrix}"#),
             (#"\\end\{cases\}"#, #"\\end{matrix}\\right."#),
-            (#"\\dfrac\{"#, #"\\frac{"#),
-            (#"\\tfrac\{"#, #"\\frac{"#),
+            (#"\\dfrac"#, #"\\frac"#),
+            (#"\\tfrac"#, #"\\frac"#),
             (#"\\blacksquare"#, "■"),
             (#"\\limits"#, ""),
             (#"\\nolimits"#, ""),
@@ -234,7 +345,8 @@ final class NativeFormulaRenderer {
     /// Models / broken normalize passes sometimes leave outer `$$` / `\[\]` on the TeX body.
     private func stripOuterMathDelimiters(_ tex: String) -> String {
         var result = tex.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pairs = [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")]
+        // `$$` must come before `$` so a double-dollar fence peels as one layer.
+        let pairs = [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$")]
         for (open, close) in pairs {
             if result.hasPrefix(open), result.hasSuffix(close), result.count > open.count + close.count {
                 result = String(result.dropFirst(open.count).dropLast(close.count))
@@ -330,12 +442,16 @@ final class NativeFormulaRenderer {
                            fontSize: CGFloat,
                            color: UIColor,
                            display: Bool,
+                           maxWidth: CGFloat,
+                           shrinkFloor: CGFloat? = nil,
                            scale: CGFloat = UIScreen.main.scale) -> Bool {
         let key = cacheKey(
             tex: tex,
             fontSize: fontSize,
             color: color,
             display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: Self.resolvedShrinkFloor(display: display, override: shrinkFloor),
             scale: scale
         )
         return cache.object(forKey: key as NSString) != nil
@@ -346,12 +462,16 @@ final class NativeFormulaRenderer {
                            fontSize: CGFloat,
                            color: UIColor,
                            display: Bool,
+                           maxWidth: CGFloat,
+                           shrinkFloor: CGFloat? = nil,
                            scale: CGFloat = UIScreen.main.scale) -> Bool {
         if hasMemoryArtifact(
             tex: tex,
             fontSize: fontSize,
             color: color,
             display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: shrinkFloor,
             scale: scale
         ) {
             return true
@@ -361,6 +481,8 @@ final class NativeFormulaRenderer {
             fontSize: fontSize,
             color: color,
             display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: Self.resolvedShrinkFloor(display: display, override: shrinkFloor),
             scale: scale
         )
         let stamp = RenderCacheStore.stamp(key)
@@ -370,13 +492,45 @@ final class NativeFormulaRenderer {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// True only when the KaTeX job for this exact key permanently failed
+    /// (parse error after retries). Distinguishes "will never render" — where a
+    /// prose/mono fallback is appropriate — from "snapshot still in flight".
+    func hasFailedKaTeX(tex: String,
+                        fontSize: CGFloat,
+                        color: UIColor,
+                        display: Bool,
+                        maxWidth: CGFloat,
+                        shrinkFloor: CGFloat? = nil,
+                        scale: CGFloat = UIScreen.main.scale) -> Bool {
+        let key = cacheKey(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: Self.resolvedShrinkFloor(display: display, override: shrinkFloor),
+            scale: scale
+        )
+        return KaTeXFormulaSnapshot.shared.hasFailed(cacheKey: key)
+    }
+
     /// Memory or on-disk metadata size — never invokes iosMath (safe for layout hot paths).
     func knownArtifactSize(tex: String,
                            fontSize: CGFloat,
                            color: UIColor,
                            display: Bool,
+                           maxWidth: CGFloat,
+                           shrinkFloor: CGFloat? = nil,
                            scale: CGFloat = UIScreen.main.scale) -> CGSize? {
-        let key = cacheKey(tex: tex, fontSize: fontSize, color: color, display: display, scale: scale)
+        let key = cacheKey(
+            tex: tex,
+            fontSize: fontSize,
+            color: color,
+            display: display,
+            maxWidth: maxWidth,
+            shrinkFloor: Self.resolvedShrinkFloor(display: display, override: shrinkFloor),
+            scale: scale
+        )
         if let box = cache.object(forKey: key as NSString) {
             return box.artifact.size
         }
@@ -419,6 +573,8 @@ final class NativeFormulaRenderer {
                           fontSize: CGFloat,
                           color: UIColor,
                           display: Bool,
+                          maxWidth: CGFloat,
+                          shrinkFloor: CGFloat,
                           scale: CGFloat) -> String {
         var red: CGFloat = 0
         var green: CGFloat = 0
@@ -426,11 +582,13 @@ final class NativeFormulaRenderer {
         var alpha: CGFloat = 0
         color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return [
-            "native_tex_katex_v4",
+            "native_tex_katex_v7",
             RenderCacheStore.stamp(tex),
             String(Int((fontSize * 10).rounded())),
             display ? "d" : "i",
             String(format: "%.3f-%.3f-%.3f-%.3f", red, green, blue, alpha),
+            String(Int(maxWidth.rounded())),
+            String(Int((shrinkFloor * 100).rounded())),
             String(Int(scale))
         ].joined(separator: "|")
     }

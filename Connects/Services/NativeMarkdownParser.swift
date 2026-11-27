@@ -311,11 +311,11 @@ final class NativeMarkdownParser {
 
             if let math = displayMathStarting(at: index, lines: lines) {
                 flushParagraph()
-                if NativeMathProse.needsExpansion(math.source) {
-                    blocks.append(.displayMathComposite(NativeMathProse.decompose(math.source)))
-                } else {
-                    blocks.append(.displayMath(math.source))
-                }
+                // KaTeX renders `\text{中文}` / prose via system font fallback, so the
+                // block stays whole. Splitting it into NativeMathProse fragments here
+                // produced structurally invalid TeX pieces (`D_n=\underbrace` alone).
+                // The expansion survives only as the layouter's last-resort fallback.
+                blocks.append(.displayMath(math.source))
                 index = math.next
                 continue
             }
@@ -357,25 +357,49 @@ final class NativeMarkdownParser {
 
             if trimmed.hasPrefix(">") {
                 flushParagraph()
-                var quote = trimmed
-                quote.removeFirst()
-                blocks.append(.blockquote(parseInlines(quote.trimmingCharacters(in: .whitespaces))))
-                index += 1
+                var quoteLines = [String]()
+                while index < lines.count {
+                    let quoteTrimmed = lines[index].trimmingCharacters(in: .whitespaces)
+                    guard quoteTrimmed.hasPrefix(">") else { break }
+                    var quote = quoteTrimmed
+                    quote.removeFirst()
+                    quoteLines.append(quote.trimmingCharacters(in: .whitespaces))
+                    index += 1
+                }
+                blocks.append(.blockquote(parseInlines(quoteLines.joined(separator: "\n"))))
                 continue
             }
 
             if let marker = listMarker(trimmed) {
                 flushParagraph()
-                var items = [[NativeInline]]()
+                var rawItems = [(units: Int, level: Int, text: String)]()
                 var start = marker.start
-                while index < lines.count, let item = listMarker(lines[index].trimmingCharacters(in: .whitespaces)),
-                      item.ordered == marker.ordered {
-                    if start == nil { start = item.start }
-                    items.append(parseInlines(item.text))
-                    index += 1
+                while index < lines.count {
+                    let raw = lines[index]
+                    let itemTrimmed = raw.trimmingCharacters(in: .whitespaces)
+                    if let item = listMarker(itemTrimmed), item.ordered == marker.ordered {
+                        let units = listIndentUnits(raw)
+                        if start == nil { start = item.start }
+                        rawItems.append((units, min(units / 2, 3), item.text))
+                        index += 1
+                        continue
+                    }
+                    // An indented non-marker line continues the previous item.
+                    if !rawItems.isEmpty, !itemTrimmed.isEmpty,
+                       listMarker(itemTrimmed) == nil,
+                       listIndentUnits(raw) > rawItems[rawItems.count - 1].units {
+                        rawItems[rawItems.count - 1].text += " " + itemTrimmed
+                        index += 1
+                        continue
+                    }
+                    break
                 }
                 let kind: NativeListKind = marker.ordered ? .ordered(start: start ?? 1) : .unordered
-                blocks.append(.list(kind: kind, items: items))
+                blocks.append(.list(
+                    kind: kind,
+                    items: rawItems.map { parseInlines($0.text) },
+                    levels: rawItems.map(\.level)
+                ))
                 continue
             }
 
@@ -566,11 +590,10 @@ final class NativeMarkdownParser {
     private func appendMathBody(_ body: String, to result: inout [NativeInline]) {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if NativeMathProse.needsExpansion(trimmed) {
-            result.append(contentsOf: NativeMathProse.decompose(trimmed))
-        } else {
-            result.append(.inlineMath(trimmed))
-        }
+        // KaTeX-first: `\text{…}` prose and CJK render fine inside math, so the
+        // span stays one piece. Parse-time decomposition into invalid TeX
+        // fragments was an iosMath-era workaround.
+        result.append(.inlineMath(trimmed))
     }
 
     private func shouldParseDollarMath(_ body: String) -> Bool {
@@ -831,6 +854,21 @@ final class NativeMarkdownParser {
         return nil
     }
 
+    /// Leading whitespace in units (space = 1, tab = 2); two units = one level.
+    private func listIndentUnits(_ line: String) -> Int {
+        var units = 0
+        for character in line {
+            if character == " " {
+                units += 1
+            } else if character == "\t" {
+                units += 2
+            } else {
+                break
+            }
+        }
+        return units
+    }
+
     private func listMarker(_ line: String) -> (ordered: Bool, start: Int?, text: String)? {
         if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
             return (false, nil, String(line.dropFirst(2)))
@@ -1016,7 +1054,7 @@ enum NativeRendererSelfTest {
         2. \\(\\lim_{n\\to\\infty}(b_n-a_n)=0\\)
         """)
         let listFormulaCount = formulaList.blocks.reduce(0) { count, block in
-            guard case .list(_, let items) = block else { return count }
+            guard case .list(_, let items, _) = block else { return count }
             return count + items.flatMap { $0 }.reduce(0) { inlineCount, inline in
                 if case .inlineMath = inline { return inlineCount + 1 }
                 return inlineCount
@@ -1111,7 +1149,7 @@ enum NativeRendererSelfTest {
         [2] [Another source](https://news.example.org/story)
         """)
         let refList = references.blocks.compactMap { block -> [[NativeInline]]? in
-            if case .list(_, let items) = block { return items }
+            if case .list(_, let items, _) = block { return items }
             return nil
         }.first
         assert(refList?.count == 2)
@@ -1153,13 +1191,15 @@ enum NativeRendererSelfTest {
             tex: formula,
             fontSize: 17,
             color: DSTheme.c.textPrimary,
-            display: true
+            display: true,
+            maxWidth: 0
         )
         let second = NativeFormulaRenderer.shared.artifact(
             tex: formula,
             fontSize: 17,
             color: DSTheme.c.textPrimary,
-            display: true
+            display: true,
+            maxWidth: 0
         )
         assert(first != nil && second != nil)
         assert(first?.image === second?.image)
@@ -1167,19 +1207,22 @@ enum NativeRendererSelfTest {
             tex: "\\bar{X}_n \\xrightarrow{P} \\mu",
             fontSize: 17,
             color: DSTheme.c.textPrimary,
-            display: false
+            display: false,
+            maxWidth: 0
         ) != nil)
         assert(NativeFormulaRenderer.shared.artifact(
             tex: "\\foobar{x}+1",
             fontSize: 17,
             color: DSTheme.c.textPrimary,
-            display: false
+            display: false,
+            maxWidth: 0
         ) != nil)
         assert(NativeFormulaRenderer.shared.artifact(
             tex: "a=b\\tag{1}",
             fontSize: 17,
             color: DSTheme.c.textPrimary,
-            display: true
+            display: true,
+            maxWidth: 0
         ) != nil)
         let compact = NativeMessageLayouter.shared.layout(
             document: document,
@@ -1257,13 +1300,16 @@ enum NativeRendererSelfTest {
         let cjkDisplay = NativeMarkdownParser.shared.parse(
             "$$\\frac{Y(s)}{R(s)} = \\frac{C(s)G(s)}{1 + C(s)G(s)H(s)} = \\frac{G_{前向}}{1 + L(s)}$$"
         )
+        // KaTeX-first: CJK inside display math must NOT decompose into fragments —
+        // the block stays one `.displayMath` so KaTeX renders it whole.
         assert(cjkDisplay.blocks.contains {
-            if case .displayMathComposite(let inlines) = $0 {
-                return inlines.contains {
-                    if case .mathWithScript(_, let script, _) = $0 { return script == "前向" }
-                    return false
-                }
+            if case .displayMath(let tex) = $0 {
+                return tex.contains("G_{前向}")
             }
+            return false
+        })
+        assert(!cjkDisplay.blocks.contains {
+            if case .displayMathComposite = $0 { return true }
             return false
         })
 

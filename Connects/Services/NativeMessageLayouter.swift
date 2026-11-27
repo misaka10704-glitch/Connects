@@ -12,11 +12,91 @@ struct NativeLayoutStyle {
     }
 }
 
+/// Font identity used by formula warm-up. Most text scales linearly from the
+/// chat body size; the references list is the one nonlinear exception
+/// (`max(13, body - 1)`), so it needs a distinct base rather than a hard-coded scale.
+struct NativeFormulaFontContext {
+    let usesReferenceBase: Bool
+    let scale: CGFloat
+
+    static func body(scale: CGFloat = 1) -> NativeFormulaFontContext {
+        NativeFormulaFontContext(usesReferenceBase: false, scale: scale)
+    }
+
+    static func reference(scale: CGFloat = 1) -> NativeFormulaFontContext {
+        NativeFormulaFontContext(usesReferenceBase: true, scale: scale)
+    }
+
+    func scaled(_ factor: CGFloat) -> NativeFormulaFontContext {
+        NativeFormulaFontContext(usesReferenceBase: usesReferenceBase, scale: scale * factor)
+    }
+
+    func fontSize(bodyFontSize: CGFloat) -> CGFloat {
+        let base = usesReferenceBase ? max(13, bodyFontSize - 1) : bodyFontSize
+        return base * scale
+    }
+
+    var dedupeKey: String {
+        "\(usesReferenceBase ? "r" : "b")\(String(format: "%.5f", scale))"
+    }
+}
+
+enum NativeFormulaWarmColor: String {
+    case primary
+    case secondary
+    case link
+
+    func resolve(in style: NativeLayoutStyle) -> UIColor {
+        switch self {
+        case .primary: return style.colors.textPrimary
+        case .secondary: return style.colors.textSecondary
+        case .link: return style.colors.mdLinkFg
+        }
+    }
+}
+
+/// Exact artifact parameters for one math span at the layouter call site.
+/// `display` keeps the old source-kind meaning for diagnostics; `artifactDisplay`
+/// is the actual KaTeX/iosMath displayMode (tall inline math is promoted).
+struct NativeFormulaWarmRequest {
+    let tex: String
+    let display: Bool
+    let artifactDisplay: Bool
+    let fontContext: NativeFormulaFontContext
+    let colorContext: NativeFormulaWarmColor
+    let shrinkFloor: CGFloat
+
+    func fontSize(bodyFontSize: CGFloat) -> CGFloat {
+        fontContext.fontSize(bodyFontSize: bodyFontSize)
+    }
+
+    func color(in style: NativeLayoutStyle) -> UIColor {
+        colorContext.resolve(in: style)
+    }
+
+    var dedupeKey: String {
+        [
+            tex,
+            display ? "sd" : "si",
+            artifactDisplay ? "d" : "i",
+            fontContext.dedupeKey,
+            colorContext.rawValue,
+            String(Int((shrinkFloor * 1000).rounded()))
+        ].joined(separator: "|")
+    }
+}
+
 final class NativeMessageLayouter {
     static let shared = NativeMessageLayouter()
 
     /// Bump together with layout shape changes so store/lookup never diverge.
-    private static let layoutCacheVersion = "v19"
+    private static let layoutCacheVersion = "v23"
+
+    /// CM glyphs at body size already read larger than adjacent PingFang CJK,
+    /// so inline math is exactly body size; display math keeps a small bump.
+    /// Exposed so warm/probe paths key into the exact same cache entries.
+    static let inlineMathScale: CGFloat = 1.0
+    static let displayMathScale: CGFloat = 1.1
 
     private final class Box: NSObject {
         let layout: NativeMessageLayout
@@ -36,7 +116,7 @@ final class NativeMessageLayouter {
     static func layoutCacheKey(phase: String,
                                document: NativeMarkdownDocument,
                                style: NativeLayoutStyle) -> String {
-        "native_layout_\(layoutCacheVersion)|\(phase)|\(document.stamp)|\(style.keySuffix)"
+        "native_layout_\(layoutCacheVersion)|\(phase)|f\(NativeFormulaRenderer.artifactGeneration)|\(document.stamp)|\(style.keySuffix)"
     }
 
     func layout(document: NativeMarkdownDocument,
@@ -75,69 +155,215 @@ final class NativeMessageLayouter {
 
     private func allFormulaSyntaxRenderable(_ document: NativeMarkdownDocument,
                                             style: NativeLayoutStyle) -> Bool {
-        Self.formulaWarmRequests(document: document).allSatisfy { tex, display in
-            NativeFormulaRenderer.shared.hasMemoryArtifact(
-                tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: display
+        let maxWidth = max(style.width, 40)
+        return Self.formulaWarmRequests(document: document).allSatisfy { request in
+            let fontSize = request.fontSize(bodyFontSize: style.bodyFontSize)
+            let color = request.color(in: style)
+            return NativeFormulaRenderer.shared.hasMemoryArtifact(
+                tex: request.tex,
+                fontSize: fontSize,
+                color: color,
+                display: request.artifactDisplay,
+                maxWidth: maxWidth,
+                shrinkFloor: request.shrinkFloor
             ) || NativeFormulaRenderer.shared.hasCachedArtifact(
-                tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
-                color: style.colors.textPrimary,
-                display: display
+                tex: request.tex,
+                fontSize: fontSize,
+                color: color,
+                display: request.artifactDisplay,
+                maxWidth: maxWidth,
+                shrinkFloor: request.shrinkFloor
             )
         }
     }
 
-    /// Formulas that layout will ask iosMath for — includes tall sole-line `$…$` promoted to display.
-    static func formulaWarmRequests(document: NativeMarkdownDocument) -> [(tex: String, display: Bool)] {
-        var result = [(tex: String, display: Bool)]()
+    /// Formulas that layout will ask for, carrying the exact artifact-key inputs
+    /// of their call sites. In particular a fraction inside an ordinary list item
+    /// is source-inline (`display == false`) but renders with `artifactDisplay == true`,
+    /// body font size, and the inline shrink floor — warming it as plain inline math
+    /// used to put every KaTeX snapshot under a key the layouter never read.
+    static func formulaWarmRequests(document: NativeMarkdownDocument) -> [NativeFormulaWarmRequest] {
+        var result = [NativeFormulaWarmRequest]()
         var seen = Set<String>()
-        func append(_ tex: String, _ display: Bool) {
-            let key = "\(display ? "d" : "i")|\(tex)"
-            if seen.insert(key).inserted {
-                result.append((tex, display))
+
+        func append(_ request: NativeFormulaWarmRequest) {
+            if seen.insert(request.dedupeKey).inserted {
+                result.append(request)
             }
         }
-        func scan(_ inlines: [NativeInline]) {
+
+        func appendDisplay(_ tex: String) {
+            append(NativeFormulaWarmRequest(
+                tex: tex,
+                display: true,
+                artifactDisplay: true,
+                fontContext: .body(scale: displayMathScale),
+                colorContext: .primary,
+                shrinkFloor: NativeFormulaRenderer.displayShrinkFloor
+            ))
+        }
+
+        func appendInline(_ tex: String,
+                          fontContext: NativeFormulaFontContext,
+                          colorContext: NativeFormulaWarmColor,
+                          mathBold: Bool,
+                          mathDisplay: Bool) {
+            let mathTex = warmBoldMathTeXIfNeeded(tex, mathBold: mathBold)
+            let artifactDisplay = mathDisplay || isTallMathTeX(mathTex)
+            let mathScale = mathDisplay ? displayMathScale : inlineMathScale
+            append(NativeFormulaWarmRequest(
+                tex: mathTex,
+                display: false,
+                artifactDisplay: artifactDisplay,
+                fontContext: fontContext.scaled(mathScale),
+                colorContext: colorContext,
+                shrinkFloor: mathDisplay
+                    ? NativeFormulaRenderer.displayShrinkFloor
+                    : NativeFormulaRenderer.inlineShrinkFloor
+            ))
+        }
+
+        func scan(_ inlines: [NativeInline],
+                  fontContext: NativeFormulaFontContext,
+                  colorContext: NativeFormulaWarmColor,
+                  mathBold: Bool = false,
+                  mathDisplay: Bool = false) {
             for inline in inlines {
                 switch inline {
                 case .inlineMath(let tex):
-                    append(tex, false)
+                    appendInline(
+                        tex,
+                        fontContext: fontContext,
+                        colorContext: colorContext,
+                        mathBold: mathBold,
+                        mathDisplay: mathDisplay
+                    )
                 case .mathWithScript(let base, _, _):
-                    append(base, false)
-                case .bold(let children), .italic(let children), .link(let children, _):
-                    scan(children)
+                    appendInline(
+                        base,
+                        fontContext: fontContext,
+                        colorContext: colorContext,
+                        mathBold: mathBold,
+                        mathDisplay: mathDisplay
+                    )
+                case .bold(let children):
+                    scan(
+                        children,
+                        fontContext: fontContext,
+                        colorContext: colorContext,
+                        mathBold: true,
+                        mathDisplay: mathDisplay
+                    )
+                case .italic(let children):
+                    scan(
+                        children,
+                        fontContext: fontContext,
+                        colorContext: colorContext,
+                        mathBold: mathBold,
+                        mathDisplay: mathDisplay
+                    )
+                case .link(let children, _):
+                    scan(
+                        children,
+                        fontContext: fontContext,
+                        colorContext: .link,
+                        mathBold: mathBold,
+                        mathDisplay: mathDisplay
+                    )
                 default:
                     break
                 }
             }
         }
+
+        var expectReferencesList = false
         for block in document.blocks {
             switch block {
             case .displayMath(let tex):
-                append(tex, true)
+                expectReferencesList = false
+                appendDisplay(tex)
             case .displayMathComposite(let inlines):
-                scan(inlines)
+                expectReferencesList = false
+                scan(
+                    inlines,
+                    fontContext: .body(scale: 1.02),
+                    colorContext: .primary,
+                    mathDisplay: true
+                )
             case .paragraph(let inlines):
+                expectReferencesList = false
                 if let tall = soleTallInlineMathTeX(inlines) {
-                    append(tall, true)
+                    appendDisplay(tall)
                 } else {
-                    scan(inlines)
+                    scan(inlines, fontContext: .body(), colorContext: .primary)
                 }
-            case .heading(_, let inlines), .blockquote(let inlines):
-                scan(inlines)
-            case .list(_, let items):
-                items.forEach(scan)
+            case .heading(let level, let inlines):
+                let headingText = warmPlainText(inlines).trimmingCharacters(in: .whitespacesAndNewlines)
+                let isReferences = headingText == "参考来源"
+                if isReferences {
+                    scan(inlines, fontContext: .reference(), colorContext: .secondary)
+                } else {
+                    let scale: CGFloat
+                    switch level {
+                    case 1: scale = 1.32
+                    case 2: scale = 1.2
+                    case 3: scale = 1.1
+                    default: scale = 1.0
+                    }
+                    scan(
+                        inlines,
+                        fontContext: .body(scale: scale),
+                        colorContext: level >= 5 ? .secondary : .primary
+                    )
+                }
+                expectReferencesList = isReferences
+            case .list(_, let items, _):
+                let fontContext: NativeFormulaFontContext = expectReferencesList ? .reference() : .body()
+                let colorContext: NativeFormulaWarmColor = expectReferencesList ? .secondary : .primary
+                for item in items {
+                    scan(item, fontContext: fontContext, colorContext: colorContext)
+                }
+                expectReferencesList = false
+            case .blockquote(let inlines):
+                expectReferencesList = false
+                scan(inlines, fontContext: .body(), colorContext: .secondary)
             case .table(let table):
-                table.header.forEach(scan)
-                table.rows.flatMap { $0 }.forEach(scan)
+                expectReferencesList = false
+                table.header.forEach {
+                    scan($0, fontContext: .body(scale: 0.92), colorContext: .primary)
+                }
+                table.rows.flatMap { $0 }.forEach {
+                    scan($0, fontContext: .body(scale: 0.92), colorContext: .primary)
+                }
             default:
-                break
+                expectReferencesList = false
             }
         }
         return result
+    }
+
+    private static func warmPlainText(_ inlines: [NativeInline]) -> String {
+        inlines.map { inline -> String in
+            switch inline {
+            case .text(let text): return text
+            case .bold(let children), .italic(let children), .link(let children, _):
+                return warmPlainText(children)
+            case .inlineCode(let code): return code
+            case .inlineMath(let tex): return tex
+            case .mathWithScript(let base, let script, _): return base + script
+            case .lineBreak: return "\n"
+            }
+        }.joined()
+    }
+
+    private static func warmBoldMathTeXIfNeeded(_ tex: String, mathBold: Bool) -> String {
+        let trimmed = tex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard mathBold, !trimmed.isEmpty else { return tex }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("\\boldsymbol{") || lower.hasPrefix("\\mathbf{") || lower.hasPrefix("\\bm{") {
+            return trimmed
+        }
+        return "\\boldsymbol{\(trimmed)}"
     }
 
     private static func soleTallInlineMathTeX(_ inlines: [NativeInline]) -> String? {
@@ -188,7 +414,7 @@ final class NativeMessageLayouter {
                     )
                     let height = textHeight(attributed, width: width)
                     commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
-                    y += height + 9
+                    y += height + 10
                 }
 
             case .heading(let level, let inlines):
@@ -220,21 +446,33 @@ final class NativeMessageLayouter {
                     expectReferencesList = true
                 } else {
                     expectReferencesList = false
-                    if y > 0 { y += 7 }
-                    let size = style.bodyFontSize + CGFloat(max(1, 6 - level))
-                    let font = UIFont.systemFont(ofSize: size, weight: level <= 2 ? .bold : .semibold)
+                    if y > 0 { y += level <= 2 ? 16 : (level == 3 ? 12 : 10) }
+                    let font: UIFont
+                    switch level {
+                    case 1:
+                        font = UIFont.systemFont(ofSize: style.bodyFontSize * 1.32, weight: .bold)
+                    case 2:
+                        font = UIFont.systemFont(ofSize: style.bodyFontSize * 1.2, weight: .bold)
+                    case 3:
+                        font = UIFont.systemFont(ofSize: style.bodyFontSize * 1.1, weight: .bold)
+                    case 4:
+                        font = UIFont.systemFont(ofSize: style.bodyFontSize, weight: .bold)
+                    default:
+                        font = UIFont.systemFont(ofSize: style.bodyFontSize, weight: .semibold)
+                    }
                     let attributed = attributedString(
                         inlines,
                         style: style,
                         font: font,
+                        color: level >= 5 ? style.colors.textSecondary : nil,
                         renderMissingFormulas: renderMissingFormulas
                     )
                     let height = textHeight(attributed, width: width)
                     commands.append(.text(fragment(attributed, frame: CGRect(x: 0, y: y, width: width, height: height))))
-                    y += height + 7
+                    y += height + 6
                 }
 
-            case .list(let kind, let items):
+            case .list(let kind, let items, let levels):
                 let asReferences = expectReferencesList
                 expectReferencesList = false
                 var number = 1
@@ -242,22 +480,30 @@ final class NativeMessageLayouter {
                 let itemFont: UIFont = asReferences
                     ? UIFont.systemFont(ofSize: max(13, style.bodyFontSize - 1), weight: .regular)
                     : bodyFont(style)
-                for item in items {
+                let bullets = ["•", "◦", "▪"]
+                var levelNumbers = [Int: Int]()
+                for (itemIndex, item) in items.enumerated() {
+                    let level = itemIndex < levels.count ? min(max(levels[itemIndex], 0), 3) : 0
+                    let levelIndent = CGFloat(level) * 16
                     let prefix: String
                     switch kind {
                     case .unordered:
-                        prefix = asReferences ? "\(number).  " : "•  "
-                        if asReferences { number += 1 }
+                        if asReferences {
+                            prefix = "\(number).  "
+                            number += 1
+                        } else {
+                            prefix = bullets[min(level, bullets.count - 1)] + "  "
+                        }
                     case .ordered:
-                        prefix = "\(number).  "
-                        number += 1
+                        let current = levelNumbers[level] ?? (level == 0 ? number : 1)
+                        prefix = "\(current).  "
+                        levelNumbers[level] = current + 1
+                        levelNumbers = levelNumbers.filter { $0.key <= level }
                     }
+                    let prefixColor = asReferences ? style.colors.textSecondary : style.colors.textPrimary
                     let value = NSMutableAttributedString(
                         string: prefix,
-                        attributes: baseAttributes(
-                            font: itemFont,
-                            color: asReferences ? style.colors.textSecondary : style.colors.textPrimary
-                        )
+                        attributes: baseAttributes(font: itemFont, color: prefixColor)
                     )
                     value.append(attributedString(
                         item,
@@ -267,9 +513,12 @@ final class NativeMessageLayouter {
                         linkStyle: asReferences ? .reference : .default,
                         renderMissingFormulas: renderMissingFormulas
                     ))
+                    let prefixWidth = (prefix as NSString).size(
+                        withAttributes: baseAttributes(font: itemFont, color: prefixColor)
+                    ).width
                     let paragraph = NSMutableParagraphStyle()
-                    paragraph.firstLineHeadIndent = 0
-                    paragraph.headIndent = asReferences ? 20 : 22
+                    paragraph.firstLineHeadIndent = levelIndent
+                    paragraph.headIndent = levelIndent + ceil(prefixWidth)
                     paragraph.lineSpacing = asReferences ? 3 : 4
                     value.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: value.length))
                     let height = textHeight(value, width: width)
@@ -327,9 +576,10 @@ final class NativeMessageLayouter {
                     )
                 } else if let formula = NativeFormulaRenderer.shared.artifact(
                     tex: tex,
-                    fontSize: style.bodyFontSize * 1.08,
+                    fontSize: style.bodyFontSize * Self.displayMathScale,
                     color: style.colors.textPrimary,
-                    display: true
+                    display: true,
+                    maxWidth: width
                 ) {
                     y += appendDisplayFormula(
                         formula,
@@ -337,7 +587,18 @@ final class NativeMessageLayouter {
                         width: width,
                         commands: &commands
                     )
-                } else if NativeMathProse.needsExpansion(tex) {
+                } else if NativeMathProse.needsExpansion(tex),
+                          NativeFormulaRenderer.shared.hasFailedKaTeX(
+                              tex: tex,
+                              fontSize: style.bodyFontSize * Self.displayMathScale,
+                              color: style.colors.textPrimary,
+                              display: true,
+                              maxWidth: width
+                          ) {
+                    // KaTeX permanently failed — prose decomposition is the last-resort
+                    // rendering. While the snapshot is merely in flight we must NOT
+                    // expand: expansion pieces re-enter artifact() as truncated inline
+                    // jobs (e.g. `D_n=\underbrace`) and poison the queue.
                     let attributed = attributedString(
                         NativeMathProse.expandToInlines(tex),
                         style: style,
@@ -631,7 +892,7 @@ final class NativeMessageLayouter {
                     children,
                     style: style,
                     font: bold,
-                    color: style.colors.mdBoldFg,
+                    color: color,
                     linkStyle: linkStyle,
                     mathBold: true,
                     mathDisplay: mathDisplay,
@@ -695,24 +956,14 @@ final class NativeMessageLayouter {
                     tex: boldMathTeXIfNeeded(base, mathBold: mathBold),
                     to: result,
                     font: font,
-                    foreground: inlineMathColor(
-                        tex: base,
-                        mathBold: mathBold,
-                        style: style,
-                        fallback: foreground
-                    ),
+                    foreground: foreground,
                     style: style,
                     mathBold: mathBold,
                     mathDisplay: mathDisplay,
                     renderMissingFormulas: renderMissingFormulas
                 )
                 let scriptFont = UIFont.systemFont(ofSize: font.pointSize * 0.72)
-                let scriptColor = inlineMathColor(
-                    tex: base,
-                    mathBold: mathBold,
-                    style: style,
-                    fallback: foreground
-                )
+                let scriptColor = foreground
                 let baselineOffset: CGFloat
                 switch kind {
                 case .sub:
@@ -753,19 +1004,6 @@ final class NativeMessageLayouter {
             return trimmed
         }
         return "\\boldsymbol{\(trimmed)}"
-    }
-
-    private func inlineMathColor(tex: String,
-                                 mathBold: Bool,
-                                 style: NativeLayoutStyle,
-                                 fallback: UIColor) -> UIColor {
-        if mathBold || isBoldMathTeX(tex) { return style.colors.mdBoldFg }
-        return fallback
-    }
-
-    private func isBoldMathTeX(_ tex: String) -> Bool {
-        let lower = tex.lowercased()
-        return lower.contains("\\boldsymbol{") || lower.contains("\\mathbf{") || lower.contains("\\bm{")
     }
 
     private func bodyFont(_ style: NativeLayoutStyle) -> UIFont {
@@ -920,9 +1158,10 @@ final class NativeMessageLayouter {
         }
         guard let formula = NativeFormulaRenderer.shared.artifact(
             tex: mathTex,
-            fontSize: style.bodyFontSize * 1.08,
+            fontSize: style.bodyFontSize * Self.displayMathScale,
             color: style.colors.textPrimary,
-            display: true
+            display: true,
+            maxWidth: width
         ) else { return nil }
 
         var commands = [NativeDrawCommand]()
@@ -1027,14 +1266,15 @@ final class NativeMessageLayouter {
             return hintHeight + 18
         }
 
-        let fontSize = style.bodyFontSize * 1.08
+        let fontSize = style.bodyFontSize * Self.displayMathScale
         let color = style.colors.textPrimary
         let drawHeight: CGFloat
         if let known = NativeFormulaRenderer.shared.knownArtifactSize(
             tex: tex,
             fontSize: fontSize,
             color: color,
-            display: true
+            display: true,
+            maxWidth: width
         ) {
             drawHeight = known.height
         } else {
@@ -1075,14 +1315,20 @@ final class NativeMessageLayouter {
                                      mathDisplay: Bool,
                                      renderMissingFormulas: Bool) {
         let mathTex = boldMathTeXIfNeeded(tex, mathBold: mathBold)
-        let mathColor = inlineMathColor(tex: mathTex, mathBold: mathBold, style: style, fallback: foreground)
-        let formulaFontSize = font.pointSize * (mathDisplay ? 1.08 : 1)
+        let mathColor = foreground
+        let formulaFontSize = font.pointSize * (mathDisplay ? Self.displayMathScale : Self.inlineMathScale)
         let useDisplay = mathDisplay || Self.isTallMathTeX(mathTex)
+        // Bitmaps cannot wrap inside a text line: shrinking beats overflowing,
+        // but inline math stops at the higher floor to stay readable.
         if renderMissingFormulas, let formula = NativeFormulaRenderer.shared.artifact(
             tex: mathTex,
             fontSize: formulaFontSize,
             color: mathColor,
-            display: useDisplay
+            display: useDisplay,
+            maxWidth: max(style.width, 40),
+            shrinkFloor: mathDisplay
+                ? NativeFormulaRenderer.displayShrinkFloor
+                : NativeFormulaRenderer.inlineShrinkFloor
         ) {
             let attachment = NSTextAttachment()
             attachment.image = formula.image

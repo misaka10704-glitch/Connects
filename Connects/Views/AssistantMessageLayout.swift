@@ -12,6 +12,11 @@ enum AssistantMessageLayout {
     private static var thinkingBodyHeightCache = [String: CGFloat]()
     /// `(messageID|width|utf8Count)` → measured search / transcription body height.
     private static var searchBodyHeightCache = [String: CGFloat]()
+    /// Serializes both body-height dictionaries: they are written on
+    /// `layoutPrewarmQueue` and read/written during main-thread layout.
+    /// Lock only cache access; callers must not invoke another locking wrapper
+    /// while holding this non-recursive lock.
+    private static let bodyHeightCacheLock = NSLock()
     private static let thinkingMeasureCapChars = 4_000
     private static let searchMeasureCapChars = 4_000
     private static let thinkingHeightSoftCap: CGFloat = 2_400
@@ -296,7 +301,7 @@ enum AssistantMessageLayout {
                 scan(inlines)
             case .paragraph(let inlines), .heading(_, let inlines), .blockquote(let inlines):
                 scan(inlines)
-            case .list(_, let items):
+            case .list(_, let items, _):
                 items.forEach(scan)
             case .table(let table):
                 table.header.forEach(scan)
@@ -306,17 +311,23 @@ enum AssistantMessageLayout {
             }
         }
         guard !formulas.isEmpty else { return true }
+        let maxWidth = max(style.width, 40)
         return formulas.allSatisfy { tex, display in
-            NativeFormulaRenderer.shared.hasMemoryArtifact(
+            let fontSize = style.bodyFontSize * (display
+                ? NativeMessageLayouter.displayMathScale
+                : NativeMessageLayouter.inlineMathScale)
+            return NativeFormulaRenderer.shared.hasMemoryArtifact(
                 tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                fontSize: fontSize,
                 color: style.colors.textPrimary,
-                display: display
+                display: display,
+                maxWidth: maxWidth
             ) || NativeFormulaRenderer.shared.hasCachedArtifact(
                 tex: tex,
-                fontSize: style.bodyFontSize * (display ? 1.08 : 1),
+                fontSize: fontSize,
                 color: style.colors.textPrimary,
-                display: display
+                display: display,
+                maxWidth: maxWidth
             )
         }
     }
@@ -432,11 +443,13 @@ enum AssistantMessageLayout {
                                       utf8Count: Int) {
         guard !messageID.isEmpty, height > 0 else { return }
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        bodyHeightCacheLock.lock()
         searchBodyHeightCache[chromeHeightCacheKey(
             messageID: messageID,
             width: width,
             utf8Count: utf8Count
         )] = height
+        bodyHeightCacheLock.unlock()
     }
 
     static func lookupSearchBodyHeight(messageID: String,
@@ -444,11 +457,14 @@ enum AssistantMessageLayout {
                                        utf8Count: Int) -> CGFloat? {
         guard !messageID.isEmpty else { return nil }
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
-        return searchBodyHeightCache[chromeHeightCacheKey(
+        bodyHeightCacheLock.lock()
+        let cached = searchBodyHeightCache[chromeHeightCacheKey(
             messageID: messageID,
             width: width,
             utf8Count: utf8Count
         )]
+        bodyHeightCacheLock.unlock()
+        return cached
     }
 
     static func resolvedSearchBodyHeight(text: String,
@@ -521,13 +537,17 @@ enum AssistantMessageLayout {
         let font = UIFont.systemFont(ofSize: thinkFont)
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
         let utf8Count = text.utf8.count
-        if !messageID.isEmpty,
-           let cached = searchBodyHeightCache[chromeHeightCacheKey(
-               messageID: messageID,
-               width: width,
-               utf8Count: utf8Count
-           )] {
-            return max(cached, 16)
+        if !messageID.isEmpty {
+            bodyHeightCacheLock.lock()
+            let cached = searchBodyHeightCache[chromeHeightCacheKey(
+                messageID: messageID,
+                width: width,
+                utf8Count: utf8Count
+            )]
+            bodyHeightCacheLock.unlock()
+            if let cached {
+                return max(cached, 16)
+            }
         }
         let bodyH: CGFloat
         if utf8Count > searchMeasureCapChars {
@@ -552,11 +572,13 @@ enum AssistantMessageLayout {
                 ).height
             )
             if !messageID.isEmpty {
+                bodyHeightCacheLock.lock()
                 searchBodyHeightCache[chromeHeightCacheKey(
                     messageID: messageID,
                     width: width,
                     utf8Count: utf8Count
                 )] = bodyH
+                bodyHeightCacheLock.unlock()
             }
         }
         return max(bodyH, 16)
@@ -568,11 +590,13 @@ enum AssistantMessageLayout {
                                         utf8Count: Int) {
         guard !messageID.isEmpty, height > 0 else { return }
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
+        bodyHeightCacheLock.lock()
         thinkingBodyHeightCache[thinkingHeightCacheKey(
             messageID: messageID,
             width: width,
             utf8Count: utf8Count
         )] = height
+        bodyHeightCacheLock.unlock()
     }
 
     static func lookupThinkingBodyHeight(messageID: String,
@@ -580,11 +604,14 @@ enum AssistantMessageLayout {
                                          utf8Count: Int) -> CGFloat? {
         guard !messageID.isEmpty else { return nil }
         let width = max(nativeLayoutWidth(for: max(layoutWidth, 120)) - 24, 80)
-        return thinkingBodyHeightCache[thinkingHeightCacheKey(
+        bodyHeightCacheLock.lock()
+        let cached = thinkingBodyHeightCache[thinkingHeightCacheKey(
             messageID: messageID,
             width: width,
             utf8Count: utf8Count
         )]
+        bodyHeightCacheLock.unlock()
+        return cached
     }
 
     /// Body height only (excludes the 32pt tag header + chrome padding).
@@ -680,13 +707,17 @@ enum AssistantMessageLayout {
             80
         )
         let utf8Count = reasoning.utf8.count
-        if !messageID.isEmpty,
-           let cached = thinkingBodyHeightCache[thinkingHeightCacheKey(
-               messageID: messageID,
-               width: width,
-               utf8Count: utf8Count
-           )] {
-            return 28 + max(cached, 16) + 14
+        if !messageID.isEmpty {
+            bodyHeightCacheLock.lock()
+            let cached = thinkingBodyHeightCache[thinkingHeightCacheKey(
+                messageID: messageID,
+                width: width,
+                utf8Count: utf8Count
+            )]
+            bodyHeightCacheLock.unlock()
+            if let cached {
+                return 28 + max(cached, 16) + 14
+            }
         }
 
         let bodyH: CGFloat
@@ -712,11 +743,13 @@ enum AssistantMessageLayout {
                 ).height
             )
             if !messageID.isEmpty {
+                bodyHeightCacheLock.lock()
                 thinkingBodyHeightCache[thinkingHeightCacheKey(
                     messageID: messageID,
                     width: width,
                     utf8Count: utf8Count
                 )] = bodyH
+                bodyHeightCacheLock.unlock()
             }
         }
         return 28 + max(bodyH, 16) + 14
