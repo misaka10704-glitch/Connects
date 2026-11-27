@@ -15,6 +15,13 @@ enum ContextBuilder {
     - Do not replace the requested explanation with generic disclaimers, slogans, moral judgments, or political boilerplate.
     - For historical, political, or sensitive topics, give a neutral factual explanation of causes, ideas, institutions, chronology, and consequences. Briefly distinguish established facts from interpretation.
     - If a term is genuinely ambiguous, state the likely interpretation or ask one concise clarification instead of answering a different question.
+
+    Math format (renderer is KaTeX):
+    - Inline: \\( ... \\). Display: $$ ... $$ on its own lines, one equation per block. Never use single-$ inline.
+    - Inline math is only for short simple fragments (a symbol, a subscripted variable). Anything with a compound-numerator/denominator fraction, a chained equality, or more than ~10 chars of TeX must be display math.
+    - Allowed: \\frac \\sqrt \\sum \\int \\lim \\left \\right \\underbrace \\overset \\xrightarrow \\mathbb \\mathcal \\mathbf \\boldsymbol \\operatorname{name} \\mathrm{d} \\tag{n}; environments aligned, cases, array, matrix/pmatrix/bmatrix/vmatrix.
+    - Forbidden: \\hline outside array/matrix rows, \\multicolumn, \\newcommand, \\DeclareMathOperator; environments tabular, enumerate, center; package macros (physics, siunitx: \\dv \\pdv \\qty \\SI \\num).
+    - Put Chinese or prose outside math, not in \\text{}. Break long formulas with aligned; avoid sub/superscripts nested deeper than two levels. Use Markdown tables, not array, for tabular data.
     """
 
     struct BuildResult {
@@ -536,7 +543,7 @@ enum ContextBuilder {
             } else {
                 buckets["conversation", default: 0] += msg.content.count
             }
-            if let img = msg.imageJPEGBase64, !img.isEmpty {
+            for img in msg.allImageBase64 {
                 buckets["images", default: 0] += imageCharWeight(img)
             }
             buckets["conversation", default: 0] += msg.reasoningContent.count
@@ -585,7 +592,7 @@ enum ContextBuilder {
         if includeRules {
             n += userRulesCharWeight(messageCount: 1)
         }
-        if let img = msg.imageJPEGBase64 { n += imageCharWeight(img) }
+        for img in msg.allImageBase64 { n += imageCharWeight(img) }
         return n
     }
 }
