@@ -1,7 +1,7 @@
 import UIKit
 
 protocol InputBarViewDelegate: AnyObject {
-    func inputBarDidTapSend(text: String, imageBase64: String?)
+    func inputBarDidTapSend(text: String, imagesBase64: [String])
     func inputBarDidTapStop()
     func inputBarDidTapAttach()
     func inputBarDidToggleStudyCapture(_ enabled: Bool)
@@ -87,11 +87,11 @@ final class InputBarView: UIView, ThemeRefreshable {
     private let sendButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
 
-    /// Inline attachment chip inside the composer (ChatGPT-like).
+    /// Horizontal attachment thumbnail strip inside the composer (ChatGPT-like).
     private let chip = UIView()
-    private let chipImage = UIImageView()
-    private let chipRemove = UIButton(type: .system)
-    private let chipLabel = UILabel()
+    private let attachmentScrollView = UIScrollView()
+    private let attachmentStackView = UIStackView()
+    private var attachmentRemoveButtons: [UIButton] = []
 
     private var textViewHeightConstraint: NSLayoutConstraint?
     private var chipHeightConstraint: NSLayoutConstraint?
@@ -102,7 +102,9 @@ final class InputBarView: UIView, ThemeRefreshable {
     private var askSelectionWidthConstraint: NSLayoutConstraint?
     private var aiOptionsWidthConstraint: NSLayoutConstraint?
     private var contextUsageWidthConstraint: NSLayoutConstraint?
-    private var pendingImageBase64: String?
+    static let maxImageAttachments = 9
+    /// Only bounded chip thumbnails plus base64 strings are retained — never picker originals.
+    private(set) var pendingImages: [(image: UIImage, base64: String)] = []
     /// Slot reserved in the tool row for Ask (supported study docs).
     private var askSlotVisible = false
     /// Bright when a selection is attached; gray placeholder otherwise.
@@ -136,7 +138,7 @@ final class InputBarView: UIView, ThemeRefreshable {
     }
 
     private var blocksUnsupportedImageSend: Bool {
-        pendingImageBase64 != nil && !modelSupportsVision
+        !pendingImages.isEmpty && !modelSupportsVision
     }
 
     /// Window for anchoring menus to the + button.
@@ -144,7 +146,9 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     func attachAnchorRect() -> CGRect { attachButton.bounds }
 
-    var hasAttachment: Bool { pendingImageBase64 != nil }
+    var hasAttachment: Bool { !pendingImages.isEmpty }
+    var attachmentCount: Int { pendingImages.count }
+    var pendingImageBase64List: [String] { pendingImages.map { $0.base64 } }
     var contextUsageAnchorView: UIView { contextUsageButton }
 
     private var contextUsageVisible = false
@@ -225,11 +229,11 @@ final class InputBarView: UIView, ThemeRefreshable {
         stopButton.backgroundColor = c.textPrimary
         stopButton.tintColor = c.background
         stopButton.setImage(ActionIconFactory.image(.stop, pointSize: ActionIconFactory.sendGlyph, color: .white), for: .normal)
-        chip.backgroundColor = c.surfaceHover
-        chip.layer.borderColor = c.border.cgColor
-        chipLabel.textColor = c.textSecondary
-        chipRemove.tintColor = c.textSecondary
-        chipRemove.backgroundColor = c.surface.withAlphaComponent(0.92)
+        chip.backgroundColor = .clear
+        for button in attachmentRemoveButtons {
+            button.setTitleColor(c.textSecondary, for: .normal)
+            button.backgroundColor = c.surface.withAlphaComponent(0.92)
+        }
         applyDiffBannerTheme()
         updateAskSelectionAppearance()
         updateFocusBorder()
@@ -439,26 +443,97 @@ final class InputBarView: UIView, ThemeRefreshable {
         setAskSelectionArmed(visible)
     }
 
-    func setAttachment(image: UIImage, base64: String) {
-        pendingImageBase64 = base64
-        chipImage.image = image
-        chip.isHidden = false
-        chipHeightConstraint?.constant = 56
-        textTopToChip?.isActive = true
-        textTopToContainer?.isActive = false
-        updateSendEnabled()
-        UIView.animate(withDuration: 0.15) { self.layoutIfNeeded() }
+    /// Append one image to the composer. Returns false when the 9-image cap is full.
+    @discardableResult
+    func addAttachment(image: UIImage, base64: String) -> Bool {
+        guard !base64.isEmpty else { return false }
+        guard pendingImages.count < Self.maxImageAttachments else {
+            showAttachmentCapToast()
+            return false
+        }
+        // Never retain the picker/camera original — only this bounded chip bitmap.
+        let chipImage = ImageAttachmentHelper.composerThumbnail(from: image)
+        pendingImages.append((image: chipImage, base64: base64))
+        rebuildAttachmentStrip(animated: true)
+        return true
     }
 
     func clearAttachment() {
-        pendingImageBase64 = nil
-        chipImage.image = nil
-        chip.isHidden = true
-        chipHeightConstraint?.constant = 0
-        textTopToChip?.isActive = false
-        textTopToContainer?.isActive = true
+        guard !pendingImages.isEmpty else { return }
+        pendingImages.removeAll()
+        rebuildAttachmentStrip(animated: true)
+    }
+
+    private func showAttachmentCapToast() {
+        let text = L("最多添加 9 张图片", "Up to 9 images")
+        if let window = window {
+            ConnectsToast.show(text, in: window, duration: 1.2)
+        } else {
+            ConnectsToast.show(text, in: self, duration: 1.2)
+        }
+    }
+
+    private func rebuildAttachmentStrip(animated: Bool) {
+        attachmentStackView.arrangedSubviews.forEach {
+            attachmentStackView.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        attachmentRemoveButtons.removeAll()
+
+        let c = DSTheme.c
+        for (index, item) in pendingImages.enumerated() {
+            let tile = UIView()
+            tile.translatesAutoresizingMaskIntoConstraints = false
+
+            let imageView = UIImageView(image: item.image)
+            imageView.translatesAutoresizingMaskIntoConstraints = false
+            imageView.contentMode = .scaleAspectFill
+            imageView.clipsToBounds = true
+            imageView.layer.cornerRadius = 10
+            tile.addSubview(imageView)
+
+            let remove = UIButton(type: .system)
+            remove.translatesAutoresizingMaskIntoConstraints = false
+            remove.setTitle("×", for: .normal)
+            remove.setTitleColor(c.textSecondary, for: .normal)
+            remove.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+            remove.backgroundColor = c.surface.withAlphaComponent(0.92)
+            remove.layer.cornerRadius = 9
+            remove.clipsToBounds = true
+            remove.tag = index
+            remove.accessibilityLabel = L("移除图片", "Remove image")
+            remove.isEnabled = !isStreaming
+            remove.addTarget(self, action: #selector(removeAttachmentAtIndex(_:)), for: .touchUpInside)
+            tile.addSubview(remove)
+            attachmentRemoveButtons.append(remove)
+
+            attachmentStackView.addArrangedSubview(tile)
+            NSLayoutConstraint.activate([
+                tile.widthAnchor.constraint(equalToConstant: 56),
+                tile.heightAnchor.constraint(equalToConstant: 56),
+                imageView.leadingAnchor.constraint(equalTo: tile.leadingAnchor),
+                imageView.trailingAnchor.constraint(equalTo: tile.trailingAnchor),
+                imageView.topAnchor.constraint(equalTo: tile.topAnchor),
+                imageView.bottomAnchor.constraint(equalTo: tile.bottomAnchor),
+                remove.topAnchor.constraint(equalTo: tile.topAnchor, constant: 2),
+                remove.trailingAnchor.constraint(equalTo: tile.trailingAnchor, constant: -2),
+                remove.widthAnchor.constraint(equalToConstant: 18),
+                remove.heightAnchor.constraint(equalToConstant: 18)
+            ])
+        }
+
+        let hasImages = !pendingImages.isEmpty
+        chip.isHidden = !hasImages
+        chipHeightConstraint?.constant = hasImages ? 64 : 0
+        textTopToChip?.isActive = hasImages
+        textTopToContainer?.isActive = !hasImages
         updateSendEnabled()
-        UIView.animate(withDuration: 0.15) { self.layoutIfNeeded() }
+        let applyLayout = { self.layoutIfNeeded() }
+        if animated {
+            UIView.animate(withDuration: 0.15, animations: applyLayout)
+        } else {
+            applyLayout()
+        }
     }
 
     private func setup() {
@@ -515,32 +590,21 @@ final class InputBarView: UIView, ThemeRefreshable {
         buildTodoStrip.addSubview(buildTodoLabel)
 
         chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.layer.cornerRadius = DSTheme.chipCornerRadius
-        chip.layer.borderWidth = 1 / UIScreen.main.scale
         chip.clipsToBounds = true
         chip.isHidden = true
         containerView.addSubview(chip)
 
-        chipImage.translatesAutoresizingMaskIntoConstraints = false
-        chipImage.contentMode = .scaleAspectFill
-        chipImage.clipsToBounds = true
-        chipImage.layer.cornerRadius = 8
-        chip.addSubview(chipImage)
+        attachmentScrollView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentScrollView.showsHorizontalScrollIndicator = false
+        attachmentScrollView.showsVerticalScrollIndicator = false
+        attachmentScrollView.alwaysBounceHorizontal = true
+        chip.addSubview(attachmentScrollView)
 
-        chipLabel.translatesAutoresizingMaskIntoConstraints = false
-        chipLabel.text = "图片"
-        chipLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium)
-        chip.addSubview(chipLabel)
-
-        chipRemove.translatesAutoresizingMaskIntoConstraints = false
-        // Draw a small × via title for clarity.
-        chipRemove.setImage(nil, for: .normal)
-        chipRemove.setTitle("×", for: .normal)
-        chipRemove.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        chipRemove.layer.cornerRadius = 11
-        chipRemove.clipsToBounds = true
-        chipRemove.addTarget(self, action: #selector(removePreview), for: .touchUpInside)
-        chip.addSubview(chipRemove)
+        attachmentStackView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentStackView.axis = .horizontal
+        attachmentStackView.alignment = .center
+        attachmentStackView.spacing = 8
+        attachmentScrollView.addSubview(attachmentStackView)
 
         attachButton.translatesAutoresizingMaskIntoConstraints = false
         attachButton.setImage(ActionIconFactory.image(.plus, pointSize: ActionIconFactory.toolGlyph), for: .normal)
@@ -724,23 +788,19 @@ final class InputBarView: UIView, ThemeRefreshable {
 
             chip.topAnchor.constraint(equalTo: attachButton.bottomAnchor, constant: 6),
             chip.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
-            chip.trailingAnchor.constraint(lessThanOrEqualTo: sendButton.leadingAnchor, constant: -8),
-            chipWidthConstraint(),
+            chip.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
             chipHeightConstraint!,
 
-            chipImage.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 6),
-            chipImage.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-            chipImage.widthAnchor.constraint(equalToConstant: 40),
-            chipImage.heightAnchor.constraint(equalToConstant: 40),
+            attachmentScrollView.leadingAnchor.constraint(equalTo: chip.leadingAnchor),
+            attachmentScrollView.trailingAnchor.constraint(equalTo: chip.trailingAnchor),
+            attachmentScrollView.topAnchor.constraint(equalTo: chip.topAnchor, constant: 4),
+            attachmentScrollView.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -4),
 
-            chipLabel.leadingAnchor.constraint(equalTo: chipImage.trailingAnchor, constant: 8),
-            chipLabel.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-
-            chipRemove.leadingAnchor.constraint(equalTo: chipLabel.trailingAnchor, constant: 6),
-            chipRemove.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
-            chipRemove.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-            chipRemove.widthAnchor.constraint(equalToConstant: 22),
-            chipRemove.heightAnchor.constraint(equalToConstant: 22),
+            attachmentStackView.leadingAnchor.constraint(equalTo: attachmentScrollView.contentLayoutGuide.leadingAnchor),
+            attachmentStackView.trailingAnchor.constraint(equalTo: attachmentScrollView.contentLayoutGuide.trailingAnchor),
+            attachmentStackView.topAnchor.constraint(equalTo: attachmentScrollView.contentLayoutGuide.topAnchor),
+            attachmentStackView.bottomAnchor.constraint(equalTo: attachmentScrollView.contentLayoutGuide.bottomAnchor),
+            attachmentStackView.heightAnchor.constraint(equalTo: attachmentScrollView.frameLayoutGuide.heightAnchor),
 
             // Composer tools live in a compact row above the editor, leaving the
             // input line its full width while keeping send in its usual place.
@@ -813,13 +873,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         ])
     }
 
-    private func chipWidthConstraint() -> NSLayoutConstraint {
-        // Hug content: image + label + remove + paddings ≈ 130
-        let w = chip.widthAnchor.constraint(greaterThanOrEqualToConstant: 118)
-        w.priority = .defaultHigh
-        return w
-    }
-
+    // Multi-image strip constraints are installed in setup(); no separate width helper.
     private func updateStreamingState() {
         sendButton.isHidden = isStreaming
         stopButton.isHidden = !isStreaming
@@ -846,7 +900,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         aiOptionsButton.isEnabled = !isStreaming
         aiOptionsButton.alpha = isStreaming ? 0.35 : 1
         containerView.bringSubviewToFront(aiOptionsButton)
-        chipRemove.isEnabled = !isStreaming
+        attachmentRemoveButtons.forEach { $0.isEnabled = !isStreaming }
         updateSendEnabled()
     }
 
@@ -947,7 +1001,7 @@ final class InputBarView: UIView, ThemeRefreshable {
 
     private func updateSendEnabled() {
         let hasText = !(textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasContent = (hasText || pendingImageBase64 != nil) && !isStreaming
+        let hasContent = (hasText || !pendingImages.isEmpty) && !isStreaming
         let on = hasContent && !blocksUnsupportedImageSend
         // Stay tappable when blocked so the tap can explain why send is gray.
         sendButton.isEnabled = hasContent
@@ -956,7 +1010,7 @@ final class InputBarView: UIView, ThemeRefreshable {
         sendButton.backgroundColor = on ? c.sendEnabled : c.sendDisabled
         sendButton.tintColor = .white
         // Highlight attach when an image is staged.
-        if pendingImageBase64 != nil {
+        if !pendingImages.isEmpty {
             attachButton.tintColor = c.accent
             attachButton.backgroundColor = c.accent.withAlphaComponent(0.14)
         } else {
@@ -990,8 +1044,8 @@ final class InputBarView: UIView, ThemeRefreshable {
             return
         }
         let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || pendingImageBase64 != nil else { return }
-        delegate?.inputBarDidTapSend(text: text, imageBase64: pendingImageBase64)
+        guard !text.isEmpty || !pendingImages.isEmpty else { return }
+        delegate?.inputBarDidTapSend(text: text, imagesBase64: pendingImageBase64List)
     }
 
     @objc private func stopTapped() {
@@ -1149,8 +1203,11 @@ final class InputBarView: UIView, ThemeRefreshable {
         delegate?.inputBarDidTapContextUsage()
     }
 
-    @objc private func removePreview() {
-        clearAttachment()
+    @objc private func removeAttachmentAtIndex(_ sender: UIButton) {
+        let index = sender.tag
+        guard pendingImages.indices.contains(index) else { return }
+        pendingImages.remove(at: index)
+        rebuildAttachmentStrip(animated: true)
     }
     func syncToolTogglesFromSettings() {
         updateThinkingAppearance()

@@ -1,4 +1,5 @@
 import UIKit
+import PhotosUI
 
 protocol ChatViewControllerDelegate: AnyObject {
     func chatDidUpdateTitle(_ title: String)
@@ -7,7 +8,7 @@ protocol ChatViewControllerDelegate: AnyObject {
     func chatDidRequestSettings()
 }
 
-final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate, StudyDocumentPickerDelegate {
+final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate, StudyDocumentPickerDelegate {
     enum StudyChromeMode: Equatable {
         case none
         case documentReader
@@ -168,7 +169,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     #if DEBUG
     var debugLayoutWidthOverride: CGFloat?
     #endif
-    private static let imageCache = NSCache<NSString, UIImage>()
+    private static let imageCache = NSCache<NSString, NSArray>()
     private static let attrCache = NSCache<NSString, NSAttributedString>()
     private static let switchPrewarmMessageWindow = 40
     private static let switchPrewarmParseCount = 8
@@ -4957,11 +4958,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
               assistantIndex > 0 else { return }
         let user = conversation.messages[assistantIndex - 1]
         guard user.role == .user,
-              let base64 = user.imageJPEGBase64,
-              !base64.isEmpty else {
+              !user.allImageBase64.isEmpty else {
             showAlert(title: "无法重试", message: "原始图片已不存在，无法重新转写。")
             return
         }
+        let base64List = user.allImageBase64
         // Study turns with reading context already carry durable page text —
         // do not re-run OCR (it would leak source into「图片转写」).
         if user.apiContextPrefix?.contains("[阅读上下文") == true {
@@ -4973,7 +4974,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             conversationID: conversation.id,
             userMessageID: user.id,
             assistantMessageID: assistantID,
-            base64: base64,
+            base64List: base64List,
             model: model,
             studyPagePDFText: nil
         )
@@ -5731,7 +5732,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let prompt = """
         按工作区计划文件「\(name)」执行：完成全部未勾选 todos；每完成一项用 propose_edit 把该文件中对应 `- [ ]` 改为 `- [x]`（或用 update_plan 同步全文）。先 read_file 该计划，再逐项落地改文件。
         """
-        performSend(prompt, imageBase64: nil, conversationID: id)
+        performSend(prompt, imagesBase64: [], conversationID: id)
     }
 
     func refreshBuildTodoChrome() {
@@ -8164,14 +8165,23 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             && !capture.prefersTextOnly
             && !hasDescription
         let jpeg = attachJPEG ? capture.imageJPEGBase64 : nil
+        let nextImages: [String]
+        if attachJPEG, let jpeg {
+            nextImages = [jpeg]
+        } else if capture.imageJPEGBase64 == nil {
+            // A text-only capture must not strip images the user manually attached
+            // to this turn; legacy capture-injected images are refreshed/cleared below.
+            nextImages = msg.hidesAttachedImageInChat ? [] : msg.imageJPEGBase64List
+        } else {
+            nextImages = []
+        }
         let hideBubble = attachJPEG ? capture.hidesImageInChatBubble : msg.hidesAttachedImageInChat
         let changed = msg.apiContextPrefix != prefix
-            || msg.imageJPEGBase64 != jpeg
+            || msg.imageJPEGBase64List != nextImages
             || (attachJPEG && msg.hidesAttachedImageInChat != hideBubble)
-            || (!attachJPEG && msg.imageJPEGBase64 != nil && (hasDescription || capture.hasRichExtractableText))
         guard changed else { return }
         msg.apiContextPrefix = prefix
-        msg.imageJPEGBase64 = jpeg
+        msg.imageJPEGBase64List = nextImages
         if attachJPEG {
             msg.hidesAttachedImageInChat = hideBubble
         }
@@ -8181,7 +8191,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         ConversationStore.shared.updateConversationQuietly(id: conversationID) { draft in
             guard let i = draft.messages.firstIndex(where: { $0.id == messageID }) else { return }
             draft.messages[i].apiContextPrefix = prefix
-            draft.messages[i].imageJPEGBase64 = jpeg
+            draft.messages[i].imageJPEGBase64List = nextImages
             if attachJPEG {
                 draft.messages[i].hidesAttachedImageInChat = hideBubble
             }
@@ -8238,7 +8248,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         }
 
         let userMessage = conv.messages[userIndex]
-        let hasImages = userMessage.imageJPEGBase64?.isEmpty == false
+        let hasImages = userMessage.hasImage
         guard let model = streamModel(for: conv.model, hasImages: hasImages) else {
             showAlert(
                 title: "缺少 API Key",
@@ -8385,7 +8395,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     private func presentImagePicker() {
         var items: [ConnectsMenuItem] = [
             ConnectsMenuItem(title: "从相册选择", icon: .plus) { [weak self] in
-                self?.openImagePicker(source: .photoLibrary)
+                self?.openPhotoPicker()
             }
         ]
         if UIImagePickerController.isSourceTypeAvailable(.camera) {
@@ -8413,6 +8423,22 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             sourceRect: inputBar.attachAnchorRect(),
             preferAbove: true
         )
+    }
+
+    private func openPhotoPicker() {
+        let remaining = InputBarView.maxImageAttachments - inputBar.attachmentCount
+        guard remaining > 0 else {
+            ConnectsToast.show(L("最多添加 9 张图片", "Up to 9 images"), in: view, duration: 1.2)
+            return
+        }
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = min(InputBarView.maxImageAttachments, remaining)
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        picker.modalPresentationStyle = .formSheet
+        present(picker, animated: true)
     }
 
     private func openImagePicker(source: UIImagePickerController.SourceType) {
@@ -8460,16 +8486,111 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     func imagePickerController(_ picker: UIImagePickerController,
                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
         picker.dismiss(animated: true)
-        guard let image = info[.originalImage] as? UIImage,
-              let b64 = ImageAttachmentHelper.prepareJPEGBase64(from: image) else {
+        guard let image = info[.originalImage] as? UIImage else {
             showAlert(title: "无法添加图片", message: "图片处理失败，请换一张再试。")
             return
         }
-        inputBar.setAttachment(image: image, base64: b64)
+        let existingBase64 = inputBar.pendingImageBase64List
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var prepared: (image: UIImage, base64: String)?
+            autoreleasepool {
+                if let base64 = ImageAttachmentHelper.prepareJPEGBase64(from: image) {
+                    let limited = ImageAttachmentHelper.enforceCombinedPayloadLimit(
+                        existing: existingBase64,
+                        incoming: [base64]
+                    ).first ?? base64
+                    let thumbnail = ImageAttachmentHelper.composerThumbnail(from: image)
+                    prepared = (image: thumbnail, base64: limited)
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                guard let prepared = prepared else {
+                    self.showAlert(title: "无法添加图片", message: "图片处理失败，请换一张再试。")
+                    return
+                }
+                self.inputBar.addAttachment(image: prepared.image, base64: prepared.base64)
+            }
+        }
     }
 
     func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
         picker.dismiss(animated: true)
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        let providers = results.map(\.itemProvider).filter {
+            $0.canLoadObject(ofClass: UIImage.self)
+        }
+        guard !providers.isEmpty else { return }
+        preparePickedAttachments(providers: providers) { [weak self] prepared in
+            guard let self = self else { return }
+            guard !prepared.isEmpty else {
+                self.showAlert(title: "无法添加图片", message: "图片处理失败，请换一张再试。")
+                return
+            }
+            let existingBase64 = self.inputBar.pendingImageBase64List
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let limitedBase64 = ImageAttachmentHelper.enforceCombinedPayloadLimit(
+                    existing: existingBase64,
+                    incoming: prepared.map { $0.base64 }
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    for (index, item) in prepared.enumerated() {
+                        guard index < limitedBase64.count else { continue }
+                        self.inputBar.addAttachment(image: item.image, base64: limitedBase64[index])
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load PHPicker images serially so nine full-size picker originals never coexist.
+    /// Completion is invoked on the main queue with successful items in selection order.
+    private func preparePickedAttachments(
+        providers: [NSItemProvider],
+        completion: @escaping ([(image: UIImage, base64: String)]) -> Void
+    ) {
+        var prepared: [(image: UIImage, base64: String)] = []
+        prepared.reserveCapacity(providers.count)
+
+        func finish() {
+            DispatchQueue.main.async {
+                completion(prepared)
+            }
+        }
+
+        func load(at index: Int) {
+            guard index < providers.count else {
+                finish()
+                return
+            }
+            providers[index].loadObject(ofClass: UIImage.self) { object, _ in
+                guard let image = object as? UIImage else {
+                    load(at: index + 1)
+                    return
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var item: (image: UIImage, base64: String)?
+                    autoreleasepool {
+                        if let base64 = ImageAttachmentHelper.prepareJPEGBase64(from: image) {
+                            let thumbnail = ImageAttachmentHelper.composerThumbnail(from: image)
+                            item = (image: thumbnail, base64: base64)
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        if let item = item {
+                            prepared.append(item)
+                        }
+                        load(at: index + 1)
+                    }
+                }
+            }
+        }
+
+        load(at: 0)
     }
 
     /// After paint: jump contentOffset to the table bottom (no fancy settle).
@@ -8520,7 +8641,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
     /// before a continuation request. This keeps visual details useful after the
     /// base64 payload has been removed from both storage and later API contexts.
     private func transcribeImagesThenSend(_ text: String,
-                                          pendingImageBase64: String?,
+                                          pendingImagesBase64: [String],
                                           conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
         guard !isTranscribingImages else {
@@ -8537,21 +8658,28 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             return
         }
 
-        var pending = conv.messages.compactMap { message -> (String, String)? in
-            guard let base64 = message.imageJPEGBase64, !base64.isEmpty else { return nil }
-            return (message.id, base64)
+        typealias PendingImage = (messageID: String, imageIndex: Int, base64: String)
+        var pending: [PendingImage] = []
+        for message in conv.messages {
+            for (imageIndex, base64) in message.allImageBase64.enumerated() {
+                pending.append((messageID: message.id, imageIndex: imageIndex, base64: base64))
+            }
         }
         let pendingAttachmentID = "__pending_image__"
-        if let base64 = pendingImageBase64, !base64.isEmpty {
-            pending.append((pendingAttachmentID, base64))
+        for (imageIndex, base64) in pendingImagesBase64.filter({ !$0.isEmpty }).enumerated() {
+            pending.append((messageID: pendingAttachmentID, imageIndex: imageIndex, base64: base64))
         }
         guard !pending.isEmpty else {
-            performSend(text, imageBase64: nil, conversationID: conversationID)
+            performSend(text, imagesBase64: [], conversationID: conversationID)
             return
         }
 
         isTranscribingImages = true
-        var descriptions: [String: String] = [:]
+        var descriptions: [String: [Int: String]] = [:]
+        func orderedDescriptions(for messageID: String) -> [String] {
+            guard let byIndex = descriptions[messageID] else { return [] }
+            return byIndex.keys.sorted().compactMap { byIndex[$0] }
+        }
 
         func finish(_ error: Error? = nil) {
             self.isTranscribingImages = false
@@ -8563,19 +8691,21 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             ConversationStore.shared.updateConversation(id: conversationID) { value in
                 for i in value.messages.indices {
                     let id = value.messages[i].id
-                    guard let description = descriptions[id] else { continue }
-                    let block = "【图片文字描述】\n\(description)"
+                    let blocks = orderedDescriptions(for: id).map { "【图片文字描述】\n\($0)" }
+                    guard !blocks.isEmpty else { continue }
+                    let block = blocks.joined(separator: "\n\n")
                     if value.messages[i].content == "[图片]" {
                         value.messages[i].content = block
                     } else {
                         value.messages[i].content += "\n\n\(block)"
                     }
-                    value.messages[i].imageJPEGBase64 = nil
+                    value.messages[i].imageJPEGBase64List.removeAll()
                 }
             }
 
-            let attachmentDescription = descriptions[pendingAttachmentID]
-                .map { "【图片文字描述】\n\($0)" } ?? ""
+            let attachmentDescription = orderedDescriptions(for: pendingAttachmentID)
+                .map { "【图片文字描述】\n\($0)" }
+                .joined(separator: "\n\n")
             let combinedText: String
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 combinedText = attachmentDescription
@@ -8584,7 +8714,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             } else {
                 combinedText = text + "\n\n" + attachmentDescription
             }
-            self.performSend(combinedText, imageBase64: nil, conversationID: conversationID)
+            self.performSend(combinedText, imagesBase64: [], conversationID: conversationID)
         }
 
         func transcribe(at index: Int) {
@@ -8596,7 +8726,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             let prompt = ChatMessage(
                 role: .user,
                 content: Self.imageTranscriptionPrompt,
-                imageJPEGBase64: item.1
+                imageJPEGBase64: item.base64
             )
             APIClient.shared.complete(messages: [prompt], model: captionModel, maxTokens: 2_000) { result in
                 switch result {
@@ -8606,7 +8736,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                         finish(APIClientError.decodeError)
                         return
                     }
-                    descriptions[item.0] = description
+                    descriptions[item.messageID, default: [:]][item.imageIndex] = description
                     transcribe(at: index + 1)
                 case .failure(let error):
                     finish(error)
@@ -8617,10 +8747,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         transcribe(at: 0)
     }
 
-    private func sendMessage(_ text: String, imageBase64: String?) {
+    private func sendMessage(_ text: String, imagesBase64: [String]) {
         guard let conv = ConversationStore.shared.currentConversation else { return }
+        let images = imagesBase64.filter { !$0.isEmpty }
 
-        if let imageBase64, !imageBase64.isEmpty, !conv.model.supportsVision {
+        if !images.isEmpty, !conv.model.supportsVision {
             notifyUnsupportedImageSend()
             return
         }
@@ -8650,17 +8781,17 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
                 }
                 self.performSend(
                     text,
-                    imageBase64: imageBase64,
+                    imagesBase64: images,
                     conversationID: intendedConversationID
                 )
             }
             return
         }
-        performSend(text, imageBase64: imageBase64, conversationID: intendedConversationID)
+        performSend(text, imagesBase64: images, conversationID: intendedConversationID)
     }
 
     private func performSend(_ text: String,
-                             imageBase64: String?,
+                             imagesBase64: [String],
                              conversationID: String) {
         guard let conv = ConversationStore.shared.conversation(id: conversationID) else { return }
 
@@ -8696,19 +8827,29 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
             studyContextProvider?.clearAskSelectionHighlightInReader()
         }
 
-        let finalImage: String?
-        if let jpeg = resolvedStudyCapture?.imageJPEGBase64 ?? imageBase64, !jpeg.isEmpty {
+        let manualImages = imagesBase64.filter { !$0.isEmpty }
+        let finalImages: [String]
+        if let studyJPEG = resolvedStudyCapture?.imageJPEGBase64, !studyJPEG.isEmpty {
+            // Preserve legacy Study behavior: a page capture is the visual payload for
+            // this turn and takes precedence over manually staged composer images.
             if conv.model.supportsVision {
-                finalImage = jpeg
+                finalImages = [studyJPEG]
             } else if resolvedStudyCapture?.prefersTextOnly == true
                         || resolvedStudyCapture?.hasRichExtractableText == true {
-                finalImage = nil
+                finalImages = []
+            } else {
+                notifyUnsupportedImageSend()
+                return
+            }
+        } else if !manualImages.isEmpty {
+            if conv.model.supportsVision {
+                finalImages = manualImages
             } else {
                 notifyUnsupportedImageSend()
                 return
             }
         } else {
-            finalImage = nil
+            finalImages = []
         }
         var studyPrefix = resolvedStudyCapture?.apiContextPrefix()
         // Auth is also re-applied in buildAPIContextAsync (covers retry). Keep here for
@@ -8756,7 +8897,7 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let displayText: String
         if !trimmedUserText.isEmpty {
             displayText = text
-        } else if finalImage != nil {
+        } else if !finalImages.isEmpty {
             displayText = resolvedStudyCapture.map { "[\($0.label)]" } ?? "[图片]"
         } else {
             displayText = text
@@ -8764,11 +8905,11 @@ final class ChatViewController: UIViewController, ThemeRefreshable, UIImagePicke
         let userMsg = ChatMessage(
             role: .user,
             content: displayText,
-            imageJPEGBase64: finalImage,
+            imageJPEGBase64List: finalImages,
             hidesAttachedImageInChat: resolvedStudyCapture?.hidesImageInChatBubble ?? false,
             apiContextPrefix: studyPrefix
         )
-        let hasImageAttachment = finalImage != nil && !(finalImage?.isEmpty ?? true)
+        let hasImageAttachment = !finalImages.isEmpty
         guard let model = streamModel(for: conv.model, hasImages: hasImageAttachment) else {
             if currentConversationID == conversationID {
                 showAlert(
@@ -9126,25 +9267,35 @@ extension ChatViewController: UITableViewDataSource, UITableViewDelegate {
 
     private func bindImageCache(to cell: MessageCellType, message: ChatMessage) {
         // PDF study screenshots keep JPEG for API/图片转写 but must never paint in the bubble.
-        guard message.showsImageInChat, let b64 = message.imageJPEGBase64 else {
-            cell.setCachedImage(nil)
+        guard message.showsImageInChat else {
+            cell.setCachedImages(nil)
+            return
+        }
+        let payloads = message.allImageBase64
+        guard !payloads.isEmpty else {
+            cell.setCachedImages(nil)
             return
         }
         let key = message.id as NSString
-        if let cached = ChatViewController.imageCache.object(forKey: key) {
-            cell.setCachedImage(cached)
+        if let cached = ChatViewController.imageCache.object(forKey: key) as? [UIImage],
+           cached.count == payloads.count {
+            cell.setCachedImages(cached)
             return
         }
         let msgID = message.id
+        // Avoid reusing another message's thumbnails while this message's cache warms.
+        cell.setCachedImages(nil)
         DispatchQueue.global(qos: .utility).async {
-            guard let img = ImageAttachmentHelper.image(from: b64) else { return }
-            ChatViewController.imageCache.setObject(img, forKey: key)
+            let images = payloads.compactMap { ImageAttachmentHelper.thumbnail(from: $0) }
+            guard images.count == payloads.count, !images.isEmpty else { return }
+            ChatViewController.imageCache.setObject(images as NSArray, forKey: key)
             DispatchQueue.main.async { [weak cell] in
                 guard let cell = cell, cell.messageID == msgID else { return }
                 guard let live = ConversationStore.shared.currentConversation?.messages
                     .first(where: { $0.id == msgID }),
-                      live.showsImageInChat else { return }
-                cell.setCachedImage(img)
+                      live.showsImageInChat,
+                      live.imageCount == images.count else { return }
+                cell.setCachedImages(images)
                 if let userCell = cell as? UserMessageCell {
                     userCell.applyCachedImageIfNeeded()
                 } else if let assistantCell = cell as? AssistantMessageCell {
@@ -10595,8 +10746,8 @@ extension ChatViewController: InputBarViewDelegate {
         )
     }
 
-    func inputBarDidTapSend(text: String, imageBase64: String?) {
-        sendMessage(text, imageBase64: imageBase64)
+    func inputBarDidTapSend(text: String, imagesBase64: [String]) {
+        sendMessage(text, imagesBase64: imagesBase64)
     }
 
     func inputBarDidRejectUnsupportedImage() {
@@ -11525,7 +11676,7 @@ extension ChatViewController {
             timeoutWork.cancel()
             completion(true)
         }
-        sendMessage(text, imageBase64: imageBase64)
+        sendMessage(text, imagesBase64: imageBase64.map { [$0] } ?? [])
     }
 
     /// No-network stress: agent chrome + body growth without beginUpdates storms.

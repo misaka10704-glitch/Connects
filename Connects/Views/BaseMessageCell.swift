@@ -1,5 +1,65 @@
 import UIKit
 
+/// Horizontal thumbnail row used when one chat message carries multiple images.
+final class MessageImageStripView: UIView {
+    private let scrollView = UIScrollView()
+    private let stackView = UIStackView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceHorizontal = true
+        addSubview(scrollView)
+
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.axis = .horizontal
+        stackView.alignment = .center
+        stackView.spacing = 8
+        scrollView.addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            stackView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    func setImages(_ images: [UIImage]) {
+        stackView.arrangedSubviews.forEach {
+            stackView.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for image in images {
+            let view = UIImageView(image: image)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.contentMode = .scaleAspectFill
+            view.clipsToBounds = true
+            view.layer.cornerRadius = 10
+            stackView.addArrangedSubview(view)
+            NSLayoutConstraint.activate([
+                view.widthAnchor.constraint(equalToConstant: 118),
+                view.heightAnchor.constraint(equalToConstant: 152)
+            ])
+        }
+    }
+
+    func clear() {
+        setImages([])
+    }
+}
+
 /// Column + optional image attachment shared by user and assistant rows.
 class BaseMessageCell: UITableViewCell, MessageCellType {
     var messageID: String = ""
@@ -8,6 +68,7 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
     let column = UIView()
     let roleLabel = UILabel()
     let imageViewMsg = UIImageView()
+    let imageStripView = MessageImageStripView()
 
     var columnWidthFill: NSLayoutConstraint!
     var columnWidthMax: NSLayoutConstraint!
@@ -15,6 +76,7 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
     var imageHeight: NSLayoutConstraint!
 
     var cachedImage: UIImage?
+    var cachedImages: [UIImage] = []
     var preferredLayoutWidth: CGFloat = 0
     var configuredPreferredHeight: CGFloat?
 
@@ -34,6 +96,12 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
 
     func setCachedImage(_ image: UIImage?) {
         cachedImage = image
+        cachedImages = image.map { [$0] } ?? []
+    }
+
+    func setCachedImages(_ images: [UIImage]?) {
+        cachedImages = images ?? []
+        cachedImage = cachedImages.first
     }
 
     func measuredContentHeight() -> CGFloat {
@@ -53,21 +121,50 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
 
     func applySharedImage(to message: ChatMessage) {
         if message.showsImageInChat {
+            let expectedCount = max(1, message.imageCount)
+            let usableCache = cachedImages.count == expectedCount && !cachedImages.isEmpty
+            let images: [UIImage]
             if cellDelegate?.messageCellShouldDeferHeavyRender(self) == true {
-                imageViewMsg.image = cachedImage
-                imageViewMsg.isHidden = cachedImage == nil
-                imageHeight.constant = cachedImage != nil ? 160 : 0
+                images = usableCache ? cachedImages : []
+            } else if usableCache {
+                images = cachedImages
             } else {
-                imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
-                imageViewMsg.isHidden = imageViewMsg.image == nil
-                imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
+                images = message.allImageBase64.compactMap {
+                    ImageAttachmentHelper.thumbnail(from: $0)
+                }
             }
+            presentMessageImages(images)
         } else {
-            imageViewMsg.image = nil
-            imageViewMsg.isHidden = true
-            imageHeight.constant = 0
+            clearMessageImages()
             cachedImage = nil
+            cachedImages = []
         }
+    }
+
+    func presentMessageImages(_ images: [UIImage]) {
+        guard !images.isEmpty else {
+            clearMessageImages()
+            return
+        }
+        imageViewMsg.isHidden = false
+        imageHeight.constant = 160
+        if images.count > 1 {
+            imageViewMsg.image = nil
+            imageStripView.setImages(images)
+            imageStripView.isHidden = false
+        } else {
+            imageStripView.clear()
+            imageStripView.isHidden = true
+            imageViewMsg.image = images[0]
+        }
+    }
+
+    func clearMessageImages() {
+        imageViewMsg.image = nil
+        imageViewMsg.isHidden = true
+        imageHeight.constant = 0
+        imageStripView.clear()
+        imageStripView.isHidden = true
     }
 
     func scheduleMeasuredHeightNotify(for messageID: String) {
@@ -85,9 +182,8 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
     func resetSharedReuseState() {
         messageID = ""
         cachedImage = nil
-        imageViewMsg.image = nil
-        imageViewMsg.isHidden = true
-        imageHeight.constant = 0
+        cachedImages = []
+        clearMessageImages()
         configuredPreferredHeight = nil
         preferredLayoutWidth = 0
         roleLabel.isHidden = true
@@ -113,7 +209,12 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
         imageViewMsg.clipsToBounds = true
         imageViewMsg.layer.cornerRadius = 12
         imageViewMsg.isHidden = true
+        imageViewMsg.isUserInteractionEnabled = true
         column.addSubview(imageViewMsg)
+
+        imageStripView.translatesAutoresizingMaskIntoConstraints = false
+        imageStripView.isHidden = true
+        imageViewMsg.addSubview(imageStripView)
 
         columnWidthFill = column.widthAnchor.constraint(equalTo: contentView.widthAnchor, constant: -48)
         columnWidthFill.priority = UILayoutPriority(999)
@@ -149,7 +250,12 @@ class BaseMessageCell: UITableViewCell, MessageCellType {
             imageViewMsg.topAnchor.constraint(equalTo: roleLabel.bottomAnchor, constant: 0),
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             imageViewMsg.trailingAnchor.constraint(equalTo: column.trailingAnchor),
-            imageHeight
+            imageHeight,
+
+            imageStripView.leadingAnchor.constraint(equalTo: imageViewMsg.leadingAnchor),
+            imageStripView.trailingAnchor.constraint(equalTo: imageViewMsg.trailingAnchor),
+            imageStripView.topAnchor.constraint(equalTo: imageViewMsg.topAnchor),
+            imageStripView.bottomAnchor.constraint(equalTo: imageViewMsg.bottomAnchor)
         ])
     }
 }

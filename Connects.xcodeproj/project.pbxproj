@@ -94,6 +94,8 @@
 		D10000010000000000000005 /* NativeMathParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000005 /* NativeMathParseTests.swift */; };
 		D10000010000000000000006 /* ReadiumEbookOpenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000006 /* ReadiumEbookOpenTests.swift */; };
 		D10000010000000000000007 /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000007 /* Fixtures */; };
+		D10000010000000000000008 /* RenderPipelineVisualTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000008 /* RenderPipelineVisualTests.swift */; };
+		D10000010000000000000009 /* ChatMessagePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000009 /* ChatMessagePersistenceTests.swift */; };
 		DFL100010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */; };
 		E10000010000000000000001 /* MessageCellType.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000001 /* MessageCellType.swift */; };
 		E10000010000000000000002 /* BaseMessageCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000010000000000000002 /* BaseMessageCell.swift */; };
@@ -268,6 +270,8 @@
 		D20000010000000000000005 /* NativeMathParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMathParseTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000006 /* ReadiumEbookOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumEbookOpenTests.swift; sourceTree = "<group>"; };
 		D20000010000000000000007 /* Fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fixtures; sourceTree = "<group>"; };
+		D20000010000000000000008 /* RenderPipelineVisualTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderPipelineVisualTests.swift; sourceTree = "<group>"; };
+		D20000010000000000000009 /* ChatMessagePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessagePersistenceTests.swift; sourceTree = "<group>"; };
 		D30000010000000000000001 /* ConnectsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DFL200010000000000000001 /* DiffFullLineBackgroundLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffFullLineBackgroundLayoutManager.swift; sourceTree = "<group>"; };
 		E20000010000000000000001 /* MessageCellType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageCellType.swift; sourceTree = "<group>"; };
@@ -602,6 +606,8 @@
 				D20000010000000000000004 /* CodeDiffModeTests.swift */,
 				D20000010000000000000005 /* NativeMathParseTests.swift */,
 				D20000010000000000000006 /* ReadiumEbookOpenTests.swift */,
+				D20000010000000000000008 /* RenderPipelineVisualTests.swift */,
+				D20000010000000000000009 /* ChatMessagePersistenceTests.swift */,
 				D20000010000000000000007 /* Fixtures */,
 			);
 			path = ConnectsTests;
@@ -896,6 +902,8 @@
 				D10000010000000000000004 /* CodeDiffModeTests.swift in Sources */,
 				D10000010000000000000005 /* NativeMathParseTests.swift in Sources */,
 				D10000010000000000000006 /* ReadiumEbookOpenTests.swift in Sources */,
+				D10000010000000000000008 /* RenderPipelineVisualTests.swift in Sources */,
+				D10000010000000000000009 /* ChatMessagePersistenceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

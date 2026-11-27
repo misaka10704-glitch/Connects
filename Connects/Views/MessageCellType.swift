@@ -7,6 +7,7 @@ protocol MessageCellType: UITableViewCell {
     func configure(with message: ChatMessage, preferredHeight: CGFloat?, layoutWidth: CGFloat)
     func measuredContentHeight() -> CGFloat
     func setCachedImage(_ image: UIImage?)
+    func setCachedImages(_ images: [UIImage]?)
     func refreshRenderDebugOverlay()
     var hasPendingDeferredNativeRender: Bool { get }
 }

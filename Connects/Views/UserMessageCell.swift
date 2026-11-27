@@ -149,11 +149,9 @@ final class UserMessageCell: BaseMessageCell {
 
     func applyCachedImageIfNeeded() {
         guard showsImageInBubble else { return }
-        guard let image = cachedImage else { return }
-        guard imageViewMsg.image !== image || imageViewMsg.isHidden else { return }
-        imageViewMsg.image = image
-        imageViewMsg.isHidden = false
-        imageHeight.constant = 160
+        let images = !cachedImages.isEmpty ? cachedImages : (cachedImage.map { [$0] } ?? [])
+        guard !images.isEmpty else { return }
+        presentMessageImages(images)
         userTopToRole.isActive = false
         userTopToImage.isActive = true
         applyUserLayoutWidth()

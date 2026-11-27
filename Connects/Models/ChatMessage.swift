@@ -87,9 +87,25 @@ struct ChatMessage: Codable, Equatable {
     var searchProcessPhase: SearchProcessPhase
     let createdAt: Date
     var isStreaming: Bool
-    /// JPEG base64 for Kimi multimodal & local display
-    var imageJPEGBase64: String?
-    /// When true, keep `imageJPEGBase64` for API /「图片转写」but hide the chat thumbnail.
+    /// JPEG base64 payloads for vision models & local display, in user-selected order.
+    var imageJPEGBase64List: [String]
+    /// Backward-compatible single-image accessor. Setting nil clears the whole list;
+    /// setting a value replaces the first image (or inserts it when empty).
+    var imageJPEGBase64: String? {
+        get { imageJPEGBase64List.first }
+        set {
+            guard let newValue else {
+                imageJPEGBase64List.removeAll()
+                return
+            }
+            if imageJPEGBase64List.isEmpty {
+                imageJPEGBase64List.append(newValue)
+            } else {
+                imageJPEGBase64List[0] = newValue
+            }
+        }
+    }
+    /// When true, keep image payloads for API /「图片转写」but hide the chat thumbnail.
     var hidesAttachedImageInChat: Bool
     /// Prepended to this user turn when serializing for the API. Not shown in chat bubbles.
     var apiContextPrefix: String?
@@ -127,6 +143,7 @@ struct ChatMessage: Codable, Equatable {
          createdAt: Date = Date(),
          isStreaming: Bool = false,
          imageJPEGBase64: String? = nil,
+         imageJPEGBase64List: [String]? = nil,
          hidesAttachedImageInChat: Bool = false,
          apiContextPrefix: String? = nil,
          imageDescription: String? = nil,
@@ -150,7 +167,13 @@ struct ChatMessage: Codable, Equatable {
         self.searchProcessPhase = searchProcessPhase
         self.createdAt = createdAt
         self.isStreaming = isStreaming
-        self.imageJPEGBase64 = imageJPEGBase64
+        if let imageJPEGBase64List {
+            self.imageJPEGBase64List = imageJPEGBase64List
+        } else if let imageJPEGBase64 {
+            self.imageJPEGBase64List = [imageJPEGBase64]
+        } else {
+            self.imageJPEGBase64List = []
+        }
         self.hidesAttachedImageInChat = hidesAttachedImageInChat
         self.apiContextPrefix = apiContextPrefix
         self.imageDescription = imageDescription
@@ -173,9 +196,16 @@ struct ChatMessage: Codable, Equatable {
 
     var apiRole: String { role.rawValue }
 
-    var hasImage: Bool { imageJPEGBase64 != nil && !(imageJPEGBase64?.isEmpty ?? true) }
+    var hasImage: Bool { imageJPEGBase64List.contains(where: { !$0.isEmpty }) }
 
-    /// Whether the chat bubble should render the attached JPEG thumbnail.
+    /// Non-empty image payloads in their original order.
+    var allImageBase64: [String] {
+        imageJPEGBase64List.filter { !$0.isEmpty }
+    }
+
+    var imageCount: Int { allImageBase64.count }
+
+    /// Whether the chat bubble should render the attached JPEG thumbnail(s).
     var showsImageInChat: Bool { hasImage && !hidesAttachedImageInChat }
 
     var hasReasoning: Bool {
@@ -1036,7 +1066,7 @@ struct ChatMessage: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, reasoningContent, searchProcessContent, searchProcessPhase
-        case createdAt, isStreaming, imageJPEGBase64, hidesAttachedImageInChat
+        case createdAt, isStreaming, imageJPEGBase64, imageJPEGBase64List, hidesAttachedImageInChat
         case apiContextPrefix, imageDescription
         case imageTranscriptionContent, imageTranscriptionPhase
         case agentProcessSteps, agentProcessPhase, agentProcessStartedAt
@@ -1054,7 +1084,14 @@ struct ChatMessage: Codable, Equatable {
         searchProcessPhase = try c.decodeIfPresent(SearchProcessPhase.self, forKey: .searchProcessPhase) ?? .idle
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
-        imageJPEGBase64 = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64)
+        if let list = try c.decodeIfPresent([String].self, forKey: .imageJPEGBase64List) {
+            imageJPEGBase64List = list
+        } else if let legacy = try c.decodeIfPresent(String.self, forKey: .imageJPEGBase64) {
+            // Pre-multi-image persistence stored one string. Migrate it into the list.
+            imageJPEGBase64List = legacy.isEmpty ? [] : [legacy]
+        } else {
+            imageJPEGBase64List = []
+        }
         hidesAttachedImageInChat = try c.decodeIfPresent(Bool.self, forKey: .hidesAttachedImageInChat) ?? false
         apiContextPrefix = try c.decodeIfPresent(String.self, forKey: .apiContextPrefix)
         imageDescription = try c.decodeIfPresent(String.self, forKey: .imageDescription)
@@ -1113,7 +1150,11 @@ struct ChatMessage: Codable, Equatable {
         }
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(isStreaming, forKey: .isStreaming)
-        try c.encodeIfPresent(imageJPEGBase64, forKey: .imageJPEGBase64)
+        // Multi-image payloads are already large; do not duplicate the first image
+        // under the legacy key on every save. Decode still accepts the legacy key.
+        if !imageJPEGBase64List.isEmpty {
+            try c.encode(imageJPEGBase64List, forKey: .imageJPEGBase64List)
+        }
         if hidesAttachedImageInChat {
             try c.encode(true, forKey: .hidesAttachedImageInChat)
         }

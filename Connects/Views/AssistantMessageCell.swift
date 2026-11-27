@@ -12,6 +12,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     private let column = UIView()
     private let roleLabel = UILabel()
     private let imageViewMsg = UIImageView()
+    private let imageStripView = MessageImageStripView()
 
     private let thinkingHeader = UIButton(type: .system)
     private let thinkingBody = UILabel()
@@ -206,15 +207,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         showsImageInBubble = message.showsImageInChat
         roleLabel.isHidden = true
         roleLabel.text = nil
-        if message.showsImageInChat {
-            imageViewMsg.image = cachedImage
-            imageViewMsg.isHidden = cachedImage == nil
-            imageHeight.constant = cachedImage != nil ? 160 : 0
-        } else {
-            imageViewMsg.image = nil
-            imageViewMsg.isHidden = true
-            imageHeight.constant = 0
-        }
+        applyMessageImages(to: message, deferHeavyRender: true)
         forcePaintOpenTailBody(with: message, layoutWidth: layoutWidth)
     }
 
@@ -263,15 +256,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         let thinkFont = SettingsManager.shared.chatThinkingFontSize
         roleLabel.isHidden = true
         roleLabel.text = nil
-        if message.showsImageInChat {
-            imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
-            imageViewMsg.isHidden = imageViewMsg.image == nil
-            imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
-        } else {
-            imageViewMsg.image = nil
-            imageViewMsg.isHidden = true
-            imageHeight.constant = 0
-        }
+        applyMessageImages(to: message, deferHeavyRender: false)
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         hasSearch = message.showsProcessChrome
@@ -1249,9 +1234,8 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         searchBody.text = nil
         thinkingLivePreviewMode = false
         searchLivePreviewMode = false
-        imageViewMsg.image = nil
-        imageViewMsg.isHidden = true
-        imageHeight.constant = 0
+        clearMessageImages()
+        cachedImages = []
         showsImageInBubble = false
         showActions(false)
         setThinking(visible: false, expanded: false)
@@ -1296,19 +1280,70 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
     }
 
     private var cachedImage: UIImage?
+    private var cachedImages: [UIImage] = []
     private var showsImageInBubble = false
 
     func setCachedImage(_ image: UIImage?) {
         cachedImage = image
+        cachedImages = image.map { [$0] } ?? []
+    }
+
+    func setCachedImages(_ images: [UIImage]?) {
+        cachedImages = images ?? []
+        cachedImage = cachedImages.first
+    }
+
+    private func presentMessageImages(_ images: [UIImage]) {
+        guard !images.isEmpty else {
+            clearMessageImages()
+            return
+        }
+        imageViewMsg.isHidden = false
+        imageHeight.constant = 160
+        if images.count > 1 {
+            imageViewMsg.image = nil
+            imageStripView.setImages(images)
+            imageStripView.isHidden = false
+        } else {
+            imageStripView.clear()
+            imageStripView.isHidden = true
+            imageViewMsg.image = images[0]
+        }
+    }
+
+    private func clearMessageImages() {
+        imageViewMsg.image = nil
+        imageViewMsg.isHidden = true
+        imageHeight.constant = 0
+        imageStripView.clear()
+        imageStripView.isHidden = true
+    }
+
+    private func applyMessageImages(to message: ChatMessage, deferHeavyRender: Bool) {
+        guard message.showsImageInChat else {
+            clearMessageImages()
+            cachedImage = nil
+            cachedImages = []
+            return
+        }
+        let expectedCount = max(1, message.imageCount)
+        let usableCache = cachedImages.count == expectedCount && !cachedImages.isEmpty
+        let images: [UIImage]
+        if deferHeavyRender {
+            images = usableCache ? cachedImages : []
+        } else if usableCache {
+            images = cachedImages
+        } else {
+            images = message.allImageBase64.compactMap { ImageAttachmentHelper.thumbnail(from: $0) }
+        }
+        presentMessageImages(images)
     }
 
     func applyCachedImageIfNeeded() {
         guard showsImageInBubble else { return }
-        guard let image = cachedImage else { return }
-        guard imageViewMsg.image !== image || imageViewMsg.isHidden else { return }
-        imageViewMsg.image = image
-        imageViewMsg.isHidden = false
-        imageHeight.constant = 160
+        let images = !cachedImages.isEmpty ? cachedImages : (cachedImage.map { [$0] } ?? [])
+        guard !images.isEmpty else { return }
+        presentMessageImages(images)
         scheduleMeasuredHeightNotify(for: messageID)
     }
 
@@ -1463,23 +1498,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         roleLabel.isHidden = true
         roleLabel.text = nil
 
-        if message.showsImageInChat {
-            if deferHeavyRender {
-                imageViewMsg.image = cachedImage
-                imageViewMsg.isHidden = cachedImage == nil
-                imageHeight.constant = cachedImage != nil ? 160 : 0
-            } else {
-                imageViewMsg.image = cachedImage ?? ImageAttachmentHelper.image(from: message.imageJPEGBase64 ?? "")
-                imageViewMsg.isHidden = imageViewMsg.image == nil
-                imageHeight.constant = imageViewMsg.isHidden ? 0 : 160
-            }
-        } else {
-            imageViewMsg.image = nil
-            imageViewMsg.isHidden = true
-            imageHeight.constant = 0
-            cachedImage = nil
-        }
-
+        applyMessageImages(to: message, deferHeavyRender: deferHeavyRender)
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         hasSearch = message.showsProcessChrome
@@ -1569,16 +1588,7 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         roleLabel.isHidden = true
         roleLabel.text = nil
 
-        if message.showsImageInChat {
-            imageViewMsg.image = cachedImage
-            imageViewMsg.isHidden = cachedImage == nil
-            imageHeight.constant = cachedImage != nil ? 160 : 0
-        } else {
-            imageViewMsg.image = nil
-            imageViewMsg.isHidden = true
-            imageHeight.constant = 0
-        }
-
+        applyMessageImages(to: message, deferHeavyRender: true)
         let hasImage = !imageViewMsg.isHidden
         hasThinking = !message.reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         hasSearch = message.showsProcessChrome
@@ -3235,7 +3245,12 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
         imageViewMsg.clipsToBounds = true
         imageViewMsg.layer.cornerRadius = 12
         imageViewMsg.isHidden = true
+        imageViewMsg.isUserInteractionEnabled = true
         column.addSubview(imageViewMsg)
+
+        imageStripView.translatesAutoresizingMaskIntoConstraints = false
+        imageStripView.isHidden = true
+        imageViewMsg.addSubview(imageStripView)
 
         searchBox.translatesAutoresizingMaskIntoConstraints = false
         searchBox.layer.cornerRadius = MessageChromeStyle.cornerRadius
@@ -3485,6 +3500,11 @@ final class AssistantMessageCell: UITableViewCell, MessageCellType {
             imageViewMsg.leadingAnchor.constraint(equalTo: column.leadingAnchor),
             imageViewMsg.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             imageHeight,
+
+            imageStripView.leadingAnchor.constraint(equalTo: imageViewMsg.leadingAnchor),
+            imageStripView.trailingAnchor.constraint(equalTo: imageViewMsg.trailingAnchor),
+            imageStripView.topAnchor.constraint(equalTo: imageViewMsg.topAnchor),
+            imageStripView.bottomAnchor.constraint(equalTo: imageViewMsg.bottomAnchor),
 
             searchTop,
             searchBox.leadingAnchor.constraint(equalTo: column.leadingAnchor),

@@ -305,20 +305,21 @@ final class APIClient: NSObject {
 
     static func serializeMessagePublic(_ message: ChatMessage, model: AIModelOption, includeReasoning: Bool = true) -> [String: Any] {
         let apiContent = apiRequestContent(for: message)
-        // Only keep the latest image in the request to avoid multi-MB re-uploads every turn.
-        // (Caller may already filter; this is a safety net when message still has image.)
-        if model.supportsVision, let b64 = message.imageJPEGBase64, !b64.isEmpty {
-            var parts: [[String: Any]] = [
+        // Only keep the latest image turn in the request to avoid multi-MB re-uploads every turn.
+        // Within that turn, preserve the user's image order as one image_url part per image.
+        let imagePayloads = message.allImageBase64
+        if model.supportsVision, !imagePayloads.isEmpty {
+            var parts: [[String: Any]] = imagePayloads.map { b64 in
                 [
                     "type": "image_url",
                     "image_url": ["url": "data:image/jpeg;base64,\(b64)"]
                 ]
-            ]
+            }
             let text = apiContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 parts.append(["type": "text", "text": text])
             } else {
-                parts.append(["type": "text", "text": "请描述这张图片。"])
+                parts.append(["type": "text", "text": imagePayloads.count > 1 ? "请描述这些图片。" : "请描述这张图片。"])
             }
             return ["role": message.apiRole, "content": parts]
         }

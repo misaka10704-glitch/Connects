@@ -341,7 +341,7 @@ final class ConversationStore {
                     searchProcessContent: $0.searchProcessContent,
                     searchProcessPhase: $0.searchProcessPhase == .idle ? .idle : .done,
                     createdAt: $0.createdAt,
-                    imageJPEGBase64: $0.imageJPEGBase64,
+                    imageJPEGBase64List: $0.imageJPEGBase64List,
                     hidesAttachedImageInChat: $0.hidesAttachedImageInChat,
                     imageDescription: $0.imageDescription,
                     imageTranscriptionContent: $0.imageTranscriptionContent,

@@ -37,7 +37,7 @@ final class ImageTranscriptionCoordinator {
     func start(conversationID: String,
                userMessageID: String,
                assistantMessageID: String,
-               base64: String,
+               base64List: [String],
                model: AIModelOption = AIModelOption.preferredImageTranscription,
                studyPagePDFText: String? = nil,
                onComplete: ((Bool) -> Void)? = nil) {
@@ -102,7 +102,7 @@ final class ImageTranscriptionCoordinator {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let ocr = StudyPageOCRExtractor.extract(
                     pdfText: studyPagePDFText,
-                    imageBase64: base64
+                    imageBase64: base64List.first ?? ""
                 )
                 DispatchQueue.main.async {
                     guard let self = self, self.isGenerationActive(conversationID, generation) else { return }
@@ -119,7 +119,7 @@ final class ImageTranscriptionCoordinator {
                         conversationID: conversationID,
                         userMessageID: userMessageID,
                         assistantMessageID: assistantMessageID,
-                        base64: base64,
+                        base64List: base64List,
                         model: model,
                         generation: generation,
                         ocrText: ocrText.isEmpty ? nil : ocrText
@@ -133,7 +133,7 @@ final class ImageTranscriptionCoordinator {
             conversationID: conversationID,
             userMessageID: userMessageID,
             assistantMessageID: assistantMessageID,
-            base64: base64,
+            base64List: base64List,
             model: model,
             generation: generation,
             ocrText: nil
@@ -174,16 +174,17 @@ final class ImageTranscriptionCoordinator {
     private func runVisionTranscription(conversationID: String,
                                         userMessageID: String,
                                         assistantMessageID: String,
-                                        base64: String,
+                                        base64List: [String],
                                         model: AIModelOption,
                                         generation: UInt64,
                                         ocrText: String?) {
+        let instruction = base64List.count > 1
+            ? "把每张图片依次转换为供后续对话引用的准确中文文字描述，并按“图片 1 / 图片 2”分节。转写可见文字；数学、物理、化学式必须写成 LaTex；乐谱必须列出调号、拍号、速度、谱表、音高、节奏、临时记号、指法、表情与力度。无法辨识时明确标注，不要猜测。只输出描述正文，控制在 1600 字内。"
+            : "把图片转换为供后续对话引用的准确中文文字描述。转写可见文字；数学、物理、化学式必须写成 LaTex；乐谱必须列出调号、拍号、速度、谱表、音高、节奏、临时记号、指法、表情与力度。无法辨识时明确标注，不要猜测。只输出描述正文，控制在 1000 字内。"
         let prompt = ChatMessage(
             role: .user,
-            content: """
-            把图片转换为供后续对话引用的准确中文文字描述。转写可见文字；数学、物理、化学式必须写成 LaTex；乐谱必须列出调号、拍号、速度、谱表、音高、节奏、临时记号、指法、表情与力度。无法辨识时明确标注，不要猜测。只输出描述正文，控制在 1000 字内。
-            """,
-            imageJPEGBase64: base64
+            content: instruction,
+            imageJPEGBase64List: base64List
         )
         APIClient.shared.complete(messages: [prompt], model: model, maxTokens: 1_200, timeout: 180) { [weak self] result in
             self?.finish(
